@@ -4869,12 +4869,14 @@ struct AtriaSleepStageSummary: View, Equatable {
                 Text(night.stageDisplayLabel)
                     .font(.caption.weight(.semibold))
                 if night.isEstimatedStageDisplay {
+                    // Theme unification (2026-08-29): a provenance note, not a
+                    // warning — neutral capsule, .secondary text.
                     Text("Low confidence")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.12),
+                        .background(Color.primary.opacity(0.06),
                                     in: Capsule(style: .continuous))
                 }
                 Spacer(minLength: 0)
@@ -4929,7 +4931,10 @@ struct AtriaSleepStageSummary: View, Equatable {
                                     .foregroundStyle(.secondary)
                                 Text("\(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes)) · \(entry.percent)%")
                                     .font(.caption2.weight(.semibold).monospacedDigit())
-                                    .foregroundStyle(color(for: entry.stage))
+                                    // Theme unification (2026-08-29): the dot
+                                    // carries the stage color; the value reads
+                                    // in .primary like every other value.
+                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                             }
@@ -4944,6 +4949,8 @@ struct AtriaSleepStageSummary: View, Equatable {
             let totalStaged = totalStagedDuration
             let restorativeSeconds = restorativeStageSeconds
             if totalStaged > 0 {
+                // Theme unification (2026-08-29): a quiet summary row is quiet —
+                // plain .secondary text, no indigo, no tinted background.
                 HStack(spacing: 6) {
                     Image(systemName: "bolt.heart.fill")
                         .font(.caption2.weight(.bold))
@@ -4952,19 +4959,15 @@ struct AtriaSleepStageSummary: View, Equatable {
                     Spacer(minLength: 0)
                     Text("\(SleepHistorySnapshot.formatDuration(restorativeSeconds)) · \(Int((restorativeSeconds / totalStaged * 100).rounded()))% · REM + SWS + Deep")
                         .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 }
-                .foregroundStyle(.indigo)
-                .padding(.vertical, 7)
-                .padding(.horizontal, 10)
-                .background(Color.indigo.opacity(0.07),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .foregroundStyle(.secondary)
             }
         }
         .padding(10)
-        .atriaInsetCard(tint: .cyan)
+        // Theme unification (2026-08-29): sleep identity hue, not cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(night.evidenceLabel) \(night.stageDisplayLabel). \(night.isEstimatedStageDisplay ? AtriaSleepStageEstimateLabel.caption + " " : "")Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
@@ -5058,9 +5061,10 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
         HStack(alignment: .center, spacing: 9) {
             Image(systemName: "moon.zzz.fill")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.cyan)
+                // Theme unification (2026-08-29): sleep identity hue, not cyan.
+                .foregroundStyle(Metrics.electricSleep)
                 .frame(width: 22, height: 22)
-                .background(.cyan.opacity(0.12), in: Circle())
+                .background(Metrics.electricSleep.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(headline)

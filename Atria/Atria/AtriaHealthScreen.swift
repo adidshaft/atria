@@ -1154,7 +1154,12 @@ struct AtriaHealthScreen: View {
                                     // validated motion the stored value is span
                                     // coverage, not efficiency.
                                     state: currentSleep?.displaySleepEfficiency == nil ? .learning : .research,
-                                    tint: .cyan,
+                                    // Theme unification (2026-08-29): efficiency
+                                    // is a sleep-family metric, so it wears the
+                                    // one sleep identity hue the
+                                    // AtriaMetricIdentity authority defines —
+                                    // not its own cyan.
+                                    tint: Metrics.electricSleep,
                                     footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
                 }
                 .buttonStyle(AtriaPressableCardStyle())
@@ -3018,9 +3023,13 @@ struct AtriaSleepStressCard: View {
                     .font(.subheadline.weight(.bold))
                 Spacer(minLength: 8)
                 if projection.availability == .ready {
+                    // Theme unification (2026-08-29): the header count is a
+                    // receipt, not an alarm — neutral text with the value in
+                    // .primary. Judgment color stays with the data marks
+                    // inside the chart.
                     Text(highSummary)
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(highPeriods.isEmpty ? Metrics.electricGreen : .orange)
+                        .foregroundStyle(highPeriods.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 }
             }
 
@@ -3121,7 +3130,11 @@ struct AtriaSleepStressCard: View {
                                 // an alarm.
                                 Text("\(value)")
                                     .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
+                                    // Theme unification (2026-08-29): the axis
+                                    // is scaffolding, not data — the tri-color
+                                    // grading belongs to the trace gradient it
+                                    // duplicated.
+                                    .foregroundStyle(.secondary)
                             } else if let value = value.as(Double.self) { Text("\(Int(value.rounded()))") }
                         }
                     }
@@ -3149,15 +3162,18 @@ struct AtriaSleepStressCard: View {
                 if mode == .heartRate {
                     stageLegend
                 }
+                // Theme unification (2026-08-29): one caption line, not two —
+                // the elevated timing detail wins when present (it is the only
+                // place those windows render); the typical-resting numbers
+                // otherwise, both in neutral .secondary. The accessibility
+                // label below still carries the timing summary either way, and
+                // the band explanation stays in the inspector subtitle.
                 if let highTimingSummary {
                     Text(highTimingSummary)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-                if mode == .heartRate, let band = typicalRestingBand {
-                    // What the shaded band is stays explained in the inspector
-                    // subtitle; the caption keeps only the numbers.
+                } else if mode == .heartRate, let band = typicalRestingBand {
                     Text("Typical resting \(Int(band.lowerBound.rounded()))–\(Int(band.upperBound.rounded())) bpm")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -3172,7 +3188,10 @@ struct AtriaSleepStressCard: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(tint: .orange)
+        // Theme unification (2026-08-29): this card lives in the sleep family,
+        // so its frame wears the sleep identity hue — orange stays inside the
+        // chart, where it encodes data.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         // The ready branch keeps the relocated provenance title and the 0–3
         // scale disclaimer audible even though they left the visible card.
@@ -3360,23 +3379,21 @@ private struct AtriaSleepConsistencyStrip: View {
         }
     }
 
-    private var recommendedWindowText: String? {
-        consistency.recommendedWindow.map {
-            "Aim for \(AtriaSleepConsistency.clockText($0.bedtimeMinutes)) – \(AtriaSleepConsistency.clockText($0.wakeMinutes))"
-        }
-    }
-
     private var bedtimeSpreadMinutes: Int { consistency.bedtimeVariationMinutes ?? 0 }
     private var wakeTimeSpreadMinutes: Int { consistency.wakeVariationMinutes ?? 0 }
     private var typicalBedtime: String { consistency.typicalBedtimeText }
     private var typicalWakeTime: String { consistency.typicalWakeTimeText }
 
+    // Theme unification (2026-08-29): only the verdict WORD grades its color —
+    // green/orange/red, the cyan bucket folded into green. The plot itself
+    // (window band, capsules, dots) is structure, not judgment, and renders in
+    // the one sleep identity hue.
     private var consistencyVerdict: (title: String, detail: String, tint: Color) {
         switch consistency.combinedPercent ?? 0 {
         case 85...:
             return ("Very consistent", "Your bed and wake times stayed within half an hour.", Metrics.electricGreen)
         case 70...:
-            return ("Consistent", "Your schedule moved less than an hour night to night.", .cyan)
+            return ("Consistent", "Your schedule moved less than an hour night to night.", Metrics.electricGreen)
         case 50...:
             return ("Variable", "A steadier bedtime would make this week more regular.", .orange)
         default:
@@ -3391,18 +3408,14 @@ private struct AtriaSleepConsistencyStrip: View {
                     Text("Sleep schedule")
                         .font(.caption.weight(.semibold))
                     if consistency.isQualified {
+                        // Theme unification (2026-08-29): one caption line, not
+                        // three — the typical window is the reference every row
+                        // below is read against. Last night is the outlined row
+                        // in the plot (and stays in the accessibility label);
+                        // the "Aim for" recommendation restated that window.
                         Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        if let latestNightText {
-                            Text(latestNightText)
-                                .font(.caption2.weight(.semibold))
-                        }
-                        if let recommendedWindowText {
-                            Text(recommendedWindowText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -3433,7 +3446,7 @@ private struct AtriaSleepConsistencyStrip: View {
                            let wakeFrac = consistency.typicalWakeTimeMinutes.flatMap(fraction),
                            wakeFrac > bedFrac {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(consistencyVerdict.tint.opacity(0.10))
+                                .fill(Metrics.electricSleep.opacity(0.10))
                                 .frame(width: max(3, (wakeFrac - bedFrac) * plotWidth))
                                 .offset(x: 28 + bedFrac * plotWidth)
                         }
@@ -3449,7 +3462,7 @@ private struct AtriaSleepConsistencyStrip: View {
                                             .fill(Color.primary.opacity(0.05))
                                             .frame(height: 11)
                                         Capsule(style: .continuous)
-                                            .fill(consistencyVerdict.tint.opacity(row.isLatest ? 1.0 : 0.55))
+                                            .fill(Metrics.electricSleep.opacity(row.isLatest ? 1.0 : 0.55))
                                             .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
                                             .offset(x: row.startFrac * plotWidth)
                                             .overlay(alignment: .leading) {
@@ -3461,11 +3474,11 @@ private struct AtriaSleepConsistencyStrip: View {
                                                 }
                                             }
                                         Circle()
-                                            .fill(consistencyVerdict.tint)
+                                            .fill(Metrics.electricSleep)
                                             .frame(width: 7, height: 7)
                                             .offset(x: row.startFrac * plotWidth - 3.5)
                                         Circle()
-                                            .fill(consistencyVerdict.tint)
+                                            .fill(Metrics.electricSleep)
                                             .frame(width: 7, height: 7)
                                             .offset(x: row.endFrac * plotWidth - 3.5)
                                     }
@@ -3503,7 +3516,8 @@ private struct AtriaSleepConsistencyStrip: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(tint: .cyan)
+        // Theme unification (2026-08-29): sleep identity hue, not cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(consistency.isQualified
                             ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."

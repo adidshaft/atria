@@ -71,22 +71,27 @@ final class AtriaInsightDetailNavigationTests: XCTestCase {
                        "no day-range branch may run before (outside) chartSlot")
     }
 
-    // MARK: - About is bottom-visible on every metric detail sheet
+    // MARK: - Minimalism reveal (owner directive 2026-08-29, supersedes the
+    // same-day About-always-visible directive): About and the heavy cards sit
+    // INSIDE the single "Show details" reveal; the summary strip is gone.
 
-    func testAboutSectionIsAlwaysVisibleAtSheetBottom() throws {
+    func testAboutLivesInsideTheRevealAndSummaryStripIsGone() throws {
         let source = try overviewSource()
 
-        // The About block itself is expanded static text, never a disclosure.
+        // The About block itself is plain text, never a disclosure or card.
         let aboutStart = try XCTUnwrap(source.range(of: "private var aboutSection: some View"))
         let aboutEnd = try XCTUnwrap(
             source.range(of: "private var", range: aboutStart.upperBound..<source.endIndex)
         )
         let about = String(source[aboutStart.lowerBound..<aboutEnd.lowerBound])
         XCTAssertTrue(about.contains("AtriaMetricMeaningInline(metric: metric"))
-        XCTAssertFalse(about.contains("DisclosureGroup"),
-                       "About must be readable without a reveal tap")
+        XCTAssertFalse(about.contains("DisclosureGroup"))
+        XCTAssertFalse(about.contains("atriaInsetCard"),
+                       "About is plain secondary text, not a card")
+        XCTAssertFalse(about.contains("Label("),
+                       "About carries no header — a hairline divider precedes it")
 
-        // Template body: `about` sits after (outside) the showDetails reveal.
+        // Template body: no unconditional `about` render — the reveal owns it.
         let templateStart = try XCTUnwrap(
             source.range(of: "private struct AtriaMetricDetailTemplate")
         )
@@ -97,23 +102,74 @@ final class AtriaInsightDetailNavigationTests: XCTestCase {
             source.range(of: ", value: showDetails)", range: bodyStart.upperBound..<source.endIndex)
         )
         let body = String(source[bodyStart.lowerBound..<animationEnd.lowerBound])
-        let reveal = try XCTUnwrap(body.range(of: "if showDetails {"))
-        let aboutUse = try XCTUnwrap(
-            body.range(of: "\n            about\n"),
-            "the template body must render `about` unconditionally"
-        )
-        XCTAssertTrue(aboutUse.lowerBound > reveal.upperBound,
-                      "About renders at the bottom, after the reveal block")
+        XCTAssertTrue(body.contains("if showDetails {"))
+        XCTAssertFalse(body.contains("\n            about\n"),
+                       "About must not render outside the Show-details reveal")
 
-        // And the collapsed panel no longer owns it.
+        // The panel owns contributors AND About, separated by a divider.
         let panelStart = try XCTUnwrap(source.range(of: "private var detailPanel: some View"))
         let panelEnd = try XCTUnwrap(
-            source.range(of: ".atriaInsetCard(tint: tint)", range: panelStart.upperBound..<source.endIndex)
+            source.range(of: "private var heroIsUncertain", range: panelStart.upperBound..<source.endIndex)
         )
         let panel = String(source[panelStart.lowerBound..<panelEnd.lowerBound])
         XCTAssertTrue(panel.contains("contributors"))
-        XCTAssertFalse(panel.contains("\n            about\n"),
-                       "About must not be gated behind the Show-details reveal")
+        XCTAssertTrue(panel.contains("Divider()"))
+        XCTAssertTrue(panel.contains("about"),
+                      "About renders inside the reveal panel")
+        XCTAssertFalse(panel.contains("atriaInsetCard"),
+                       "the panel must not wrap cards in another card")
+
+        // The tinted period summary strip stayed deleted; the neutral
+        // one-line row replaced it.
+        XCTAssertFalse(source.contains("private struct AtriaDetailPeriodSummaryStrip"),
+                       "the tinted summary strip must stay deleted")
+        XCTAssertTrue(source.contains("private struct AtriaDetailPeriodSummaryLine"))
+        XCTAssertTrue(source.contains("AtriaDetailPeriodSummaryLine(summary: summary)"))
+    }
+
+    // MARK: - Sleep sheet above-fold block budget
+
+    /// Above the fold the sleep sheet is exactly: hero → chart slot →
+    /// hypnogram → neutral 4-up stat row → reveal. The plan card and need
+    /// ledger live behind the reveal; the debt-trend mount stays deleted.
+    func testSleepDetailAboveFoldIsFiveBlocks() throws {
+        let source = try overviewSource()
+        let detailTemplate = try XCTUnwrap(source.range(of: "private var detailTemplate: some View"))
+        let start = try XCTUnwrap(
+            source.range(of: "case .sleep:", range: detailTemplate.upperBound..<source.endIndex)
+        )
+        let end = try XCTUnwrap(
+            source.range(of: "case .strain:", range: start.upperBound..<source.endIndex)
+        )
+        let sleepDetail = String(source[start.lowerBound..<end.lowerBound])
+
+        let contributorsStart = try XCTUnwrap(sleepDetail.range(of: "} contributors: {"))
+        let chartStart = try XCTUnwrap(
+            sleepDetail.range(of: "} chart:", range: contributorsStart.upperBound..<sleepDetail.endIndex)
+        )
+        let aboveFold = String(sleepDetail[sleepDetail.startIndex..<contributorsStart.lowerBound])
+        let revealed = String(sleepDetail[contributorsStart.lowerBound..<chartStart.lowerBound])
+
+        XCTAssertTrue(aboveFold.contains("AtriaSleepHypnogramCard(night: latest"))
+        XCTAssertTrue(aboveFold.contains("sleepStatSummaryRow"))
+        for heavy in ["AtriaSleepPlanCard(", "sleepNeedLedgerCard("] {
+            XCTAssertFalse(aboveFold.contains(heavy),
+                           "\(heavy) must live behind the Show-details reveal")
+            XCTAssertTrue(revealed.contains(heavy))
+        }
+        XCTAssertFalse(source.contains("sleepDebtTrendCard"),
+                       "the debt-trend mount duplicates the W/M chart and stays deleted")
+
+        // The 4-up row is label + value only — no icons, no color — and reads
+        // from the same rows the revealed detail uses, so numbers cannot drift.
+        let rowStart = try XCTUnwrap(source.range(of: "private var sleepStatSummaryRow: some View"))
+        let rowEnd = try XCTUnwrap(
+            source.range(of: "private func sleepNeedLedgerCard", range: rowStart.upperBound..<source.endIndex)
+        )
+        let row = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
+        XCTAssertTrue(row.contains("ForEach(sleepContributorRows)"))
+        XCTAssertFalse(row.contains("Image(systemName:"))
+        XCTAssertFalse(row.contains("foregroundStyle(Metrics."))
     }
 
     // MARK: - History day sheet steps across days

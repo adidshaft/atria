@@ -3676,11 +3676,16 @@ struct AtriaMetricDetailSheet: View {
                             // chart.bar.xaxis (not the slider glyph — that
                             // bare literal is banned by the removed-customize
                             // guard in this file).
+                            // Ink, not accent blue (2026-08-29 theme pass).
                             Image(systemName: "chart.bar.xaxis")
                                 .font(.headline.weight(.semibold))
+                                .foregroundStyle(.secondary)
                                 .padding(10)
                                 .background(.quaternary.opacity(0.22), in: Circle())
                         }
+                        // .plain, like the period chevrons: the default
+                        // borderless style paints accent blue over the ink.
+                        .buttonStyle(.plain)
                         .accessibilityLabel("Chart options: bucketing and min-max band")
                     }
                     Button {
@@ -3688,9 +3693,11 @@ struct AtriaMetricDetailSheet: View {
                     } label: {
                         Image(systemName: "info.circle")
                             .font(.headline.weight(.semibold))
+                            .foregroundStyle(.secondary)
                             .padding(10)
                             .background(.quaternary.opacity(0.22), in: Circle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("\(metric.title) meaning and coaching")
                 }
 
@@ -3866,14 +3873,16 @@ struct AtriaMetricDetailSheet: View {
                                       } ?? .secondary,
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
+                contributorCard
+                strainRecoveryComboCard
+            } contributors: {
+                // 2026-08-29 minimalism restructure: provenance + behaviors
+                // moved behind the "Show details" reveal; the contributor map
+                // (the signature visual) stays on the first screen.
                 if let provenance {
                     AtriaMetricProvenanceCard(provenance: provenance)
                 }
-                contributorCard
-                strainRecoveryComboCard
                 behaviorsMoveYouCard
-            } contributors: {
-                EmptyView()
             } chart: {
                 chartSlot {
                     metricChart(title: "Recovery",
@@ -3999,6 +4008,12 @@ struct AtriaMetricDetailSheet: View {
                 aboutSection
             }
         case .sleep:
+            // Minimalism restructure (owner directive 2026-08-29, "the sleep
+            // tab has 1000s of things"): above the fold = hero, chart,
+            // hypnogram, one neutral 4-up stat row, reveal — 5 blocks. The
+            // plan card, need ledger and About live behind the reveal. The
+            // debt-trend card mount was DELETED: it re-plotted the same data
+            // the main chart already shows in W/M.
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: sleepHeroState,
                                       tint: Metrics.electricSleep) {
@@ -4008,6 +4023,10 @@ struct AtriaMetricDetailSheet: View {
                     // building states itself for unvalidated nights.
                     AtriaSleepHypnogramCard(night: latest,
                                             motionAvailability: strapMotionAvailability)
+                }
+                sleepStatSummaryRow
+            } contributors: {
+                if let latest = sleepHistory.latestMainSleep {
                     AtriaSleepPlanCard(night: latest,
                                        neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                 baseNeedHours: sleepBaseNeedHours,
@@ -4016,10 +4035,7 @@ struct AtriaMetricDetailSheet: View {
                                        tonightProjection: tonightProjectedNeed,
                                        nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
-                    sleepDebtTrendCard
                 }
-            } contributors: {
-                AtriaMetricContributorRows(rows: sleepContributorRows, tint: Metrics.electricSleep)
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep duration",
@@ -4052,15 +4068,16 @@ struct AtriaMetricDetailSheet: View {
                                                             && !dayStrainMetricsIncomplete
                                                             ? guidance.target
                                                             : nil)) {
+                // 2026-08-29 minimalism restructure: only the combo card stays
+                // above the fold; the workout/zone/mix/split cards moved
+                // behind the "Show details" reveal (contributors slot).
                 strainRecoveryComboCard
+            } contributors: {
                 if showsCurrentPhysiologicalCycleContext {
                     strainWorkoutSection
                     strainZoneHistogramCard
                     strainActivityMixCard
                     strainCardioLiftingSplitCard
-                }
-            } contributors: {
-                if showsCurrentPhysiologicalCycleContext {
                     AtriaMetricContributorRows(rows: strainContributorRows,
                                                tint: Metrics.electricStrain)
                 }
@@ -4130,9 +4147,9 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: fitnessAgeHeroState,
                                       tint: fitnessAgeTint) {
                 if preparedHistory.paceOfAging.isReady {
+                    // 2026-08-29 theme pass: ink outside the hero and chart.
                     Text(preparedHistory.paceOfAging.copyText)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(fitnessAgeTint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } chart: {
@@ -4162,7 +4179,8 @@ struct AtriaMetricDetailSheet: View {
             // monitor). This compact sheet stays chart-free and points there.
             honestPartialDetail(heroValue: "Live read",
                                 heroState: "Live estimate",
-                                tint: .orange,
+                                // 2026-08-29 theme pass: identity hue, not raw .orange.
+                                tint: metric.identity.identityTint(),
                                 bodyText: "A live read from heart rate and beat-to-beat timing. Open the Stress tile for the full timeline and trend \u{2014} breathwork can bring an elevated read down.")
         case .vo2max:
             honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
@@ -4208,7 +4226,8 @@ struct AtriaMetricDetailSheet: View {
                                     summary: summary,
                                     decoderAvailable: decoderAvailable),
                                 heroState: hasReading ? "vs sleep baseline" : (decoderAvailable ? "Learning" : "Decoder not verified"),
-                                tint: .teal,
+                                // 2026-08-29 theme pass: identity hue, not raw .teal.
+                                tint: metric.identity.identityTint(),
                                 bodyText: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                     summary: summary,
                                     decoderAvailable: decoderAvailable))
@@ -4219,12 +4238,13 @@ struct AtriaMetricDetailSheet: View {
             // unknown (never a fabricated boundary).
             AtriaMetricDetailTemplate(heroValue: hrZoneMinutes.valueText,
                                       heroState: hrZoneMinutes.hasSamples ? "today" : "No wear today",
-                                      tint: .orange) {
+                                      // 2026-08-29 theme pass: identity hue, not raw .orange.
+                                      tint: metric.identity.identityTint()) {
                 hrZoneBoundariesCard
             } contributors: {
                 EmptyView()
             } chart: {
-                honestPartialCard(tint: .orange, bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
+                honestPartialCard(tint: metric.identity.identityTint(), bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
             } about: {
                 aboutSection
             }
@@ -4233,7 +4253,9 @@ struct AtriaMetricDetailSheet: View {
             // experimental candidate as a blood-oxygen percentage.
             honestPartialDetail(heroValue: "\u{2014}",
                                 heroState: AtriaSpO2Copy.decoderNotVerified,
-                                tint: .pink,
+                                // 2026-08-29 theme pass: identity authority says
+                                // blood oxygen has no earned hue (.secondary).
+                                tint: metric.identity.identityTint(),
                                 bodyText: AtriaSpO2Copy.longUnavailable)
         }
     }
@@ -4287,7 +4309,8 @@ struct AtriaMetricDetailSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
-            .atriaInsetCard(tint: .orange)
+            // 2026-08-29 theme pass: card chrome uses the identity hue.
+            .atriaInsetCard(tint: metric.identity.identityTint())
         }
     }
 
@@ -4671,8 +4694,13 @@ struct AtriaMetricDetailSheet: View {
                         offset: -1
                     )
                 } label: {
+                    // 40pt circular affordance — matches the header buttons
+                    // (2026-08-29 controls audit: bare glyphs read as text).
                     Image(systemName: "chevron.left")
-                        .frame(width: 32, height: 32)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                        .background(.quaternary.opacity(0.22), in: Circle())
+                        .contentShape(Circle())
                 }
                 .accessibilityLabel("Previous \(range.narrativeLabel)")
 
@@ -4701,7 +4729,10 @@ struct AtriaMetricDetailSheet: View {
                     )
                 } label: {
                     Image(systemName: "chevron.right")
-                        .frame(width: 32, height: 32)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                        .background(.quaternary.opacity(0.22), in: Circle())
+                        .contentShape(Circle())
                 }
                 .disabled(nextMetricPeriodIsUnavailable)
                 .accessibilityLabel("Next \(range.narrativeLabel)")
@@ -4724,21 +4755,15 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
-    /// Always-visible About block (owner directive 2026-08-29): the textual
-    /// "What it means" / "What to do" copy sits at the bottom of every metric
-    /// detail sheet — previously a collapsed "Learn" DisclosureGroup, which hid
-    /// it behind two taps. Static text, so it costs nothing to keep expanded.
+    /// About block, minimalism pass (owner directive 2026-08-29, supersedes
+    /// the same-day always-visible directive): two plain secondary sentences
+    /// inside the "Show details" reveal — no card, no Label header. The
+    /// template renders a hairline divider above it.
     private var aboutSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("About", systemImage: "info.circle")
-                .font(.subheadline.weight(.semibold))
-            AtriaMetricMeaningInline(metric: metric,
-                                     guidance: guidance,
-                                     recoveryEstimate: recoveryEstimate,
-                                     sleepGoalHours: sleepGoalHours)
-        }
-        .padding(14)
-        .atriaInsetCard(tint: metric.tint)
+        AtriaMetricMeaningInline(metric: metric,
+                                 guidance: guidance,
+                                 recoveryEstimate: recoveryEstimate,
+                                 sleepGoalHours: sleepGoalHours)
     }
 
     /// The recovery number behind the hero, per selected period, read from the
@@ -4924,13 +4949,33 @@ struct AtriaMetricDetailSheet: View {
             todayStrainFallback: currentCycleAuthority?.strain ?? todayRollup?.strain)
     }
 
-    /// Seven-night hours-vs-need chart. It uses the exact same sleep-need
-    /// target as the ledger and supports adjacent observed weeks; no missing
-    /// sleep is invented to keep a line visually continuous.
-    private var sleepDebtTrendCard: some View {
-        return AtriaSleepDebtChartCard(
-            nights: sleepHistory.nights,
-            rollups: rollups)
+    /// Compact neutral 4-up stat row for the sleep sheet's first screen
+    /// (2026-08-29 minimalism restructure): label + value only — no icons,
+    /// no color — replacing the four full contributor rows above the fold.
+    /// Values come from the SAME sleepContributorRows source so the numbers
+    /// cannot drift from the detailed rows behind the reveal. Local copy of
+    /// the Activity Monitor vitalsCell pattern (that file is owned elsewhere).
+    private var sleepStatSummaryRow: some View {
+        HStack(alignment: .top, spacing: AtriaDesignTokens.Spacing.sm) {
+            ForEach(sleepContributorRows) { row in
+                VStack(spacing: 2) {
+                    Text(row.name)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(row.value)
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(row.name) \(row.value)")
+            }
+        }
+        .padding(.vertical, 10)
+        .atriaInsetCard(tint: Metrics.electricSleep)
     }
 
     /// "How we got <total>" ledger (design 6a, 2026-08-01 parity slice):
@@ -6013,13 +6058,18 @@ private struct AtriaPreparedMetricChart: View {
                 // in the dated row below; the header caption repeated it
                 // verbatim (hero + header + Latest + Avg + row = 5 renders).
                 if let latest = latestVisiblePoint, points.count >= 2 {
-                    Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(tint)
+                    // Ink, not tint (2026-08-29 theme): hue lives in the plot.
+                    Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if let onExpand, points.count >= 2 {
+                    // 40pt circular affordance — same chrome as the sheet's
+                    // header buttons (2026-08-29 controls audit).
                     Button(action: onExpand) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                            .frame(width: 40, height: 40)
+                            .background(.quaternary.opacity(0.22), in: Circle())
+                            .contentShape(Circle())
                     }
                     .accessibilityLabel("Expand chart: landscape, zoom, range selection, activity markers")
                 }
@@ -6027,14 +6077,6 @@ private struct AtriaPreparedMetricChart: View {
 
             if points.count >= 2, summary == nil {
                 AtriaDetailRangeDotStrip(points: points, fallbackTint: tint)
-            }
-            // 2026-08-15 dedup: with one rendered observation and zero spread,
-            // Latest == Avg == the observation and change == 0 — nothing the
-            // dated row doesn't already say. `summary.hasSpread` keeps the
-            // strip when a bucket override collapses a real multi-day window
-            // into one displayed point (Latest vs Avg still differ there).
-            if let summary, points.count >= 2 || summary.hasSpread {
-                AtriaDetailPeriodSummaryStrip(summary: summary, tint: tint)
             }
 
             if points.isEmpty {
@@ -6055,6 +6097,15 @@ private struct AtriaPreparedMetricChart: View {
                 // the card inset and carries explicit headroom instead.
                 chartContent
                 chartLegendAndCompanions
+            }
+
+            // 2026-08-29 minimalism pass: the tinted three-surface summary
+            // strip (rail + chips) restated the chart; one neutral line under
+            // the plot carries Latest/Avg/Range. `summary.hasSpread` keeps it
+            // when a bucket override collapses a multi-day window into one
+            // displayed point (Latest vs Avg still differ there).
+            if let summary, points.count >= 2 || summary.hasSpread {
+                AtriaDetailPeriodSummaryLine(summary: summary)
             }
         }
         // 12pt gutter (2026-08-05 width audit): match the app-wide screen
@@ -6764,52 +6815,55 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     var body: some View {
-        // Real progressive disclosure: the first screen is the WHOOP-like simple
-        // view — value, graph, and the metric's own signature visual (hypnogram /
-        // strain gauge / contributor map). The generic contributor rows are
-        // collapsed behind an explicit "Show details" tap, so a metric tap no
-        // longer dumps every stat in one long scroll. The textual About copy is
-        // NOT part of that reveal (owner directive 2026-08-29): it renders as an
-        // always-visible section at the bottom of every metric detail sheet.
-        VStack(alignment: .leading, spacing: 16) {
+        // Minimalism pass (owner directive 2026-08-29, supersedes the same-day
+        // About-always-visible directive): the first screen is value, graph,
+        // and the metric's own signature visual only. EVERYTHING textual —
+        // contributor rows, heavy per-metric cards, and the About copy — sits
+        // behind the single "Show details" reveal, so a metric tap never dumps
+        // a wall of literature.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
             hero
             chart
             betweenHeroAndContributors
-            if hasContributors {
-                revealAffordance
-                if showDetails {
-                    detailPanel
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+            revealAffordance
+            if showDetails {
+                detailPanel
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            about
         }
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showDetails)
     }
 
     /// Static type check, not a runtime one: templates without contributor rows
-    /// pass `EmptyView` for the slot, and with About now bottom-visible the
-    /// reveal would open a header-only panel for them.
+    /// pass `EmptyView` for the slot; the reveal then holds About alone.
     private var hasContributors: Bool {
         Contributors.self != EmptyView.self
     }
 
     private var revealAffordance: some View {
+        // Visible button chrome (2026-08-29 controls audit): the old flat
+        // 5%-primary capsule read as a label. Explicit bordered capsule —
+        // the same quaternary fill the header/chevron circles use — so the
+        // control reads as tappable in every render context (glass effects
+        // do not paint in headless layer renders).
         Button {
             showDetails.toggle()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.black))
-                    .rotationEffect(.degrees(showDetails ? 180 : 0))
                 Text(showDetails ? "Hide details" : "Show details")
+                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.down")
                     .font(.caption.weight(.bold))
-                Spacer(minLength: 0)
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(showDetails ? 180 : 0))
             }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.primary.opacity(0.05), in: Capsule(style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .background(.quaternary.opacity(0.22), in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(.quaternary.opacity(0.6), lineWidth: 1)
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -6817,29 +6871,23 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     private var detailPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label("Details", systemImage: "slider.horizontal.3")
-                    .font(.headline.weight(.semibold))
-                Spacer(minLength: 0)
-                Text("Deeper context")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
+        // Un-nested (2026-08-29 minimalism pass): no header row, no outer card
+        // wrapping cards — contributors render directly, then a hairline
+        // divider and the plain About lines.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
+            if hasContributors {
+                contributors
             }
-
-            contributors
+            Divider()
+            about
         }
-        .padding(16)
-        .atriaInsetCard(tint: tint)
     }
 
-    /// Confidence-ladder hero (design-handoff detail template): the big number
-    /// is painted in the metric's identity hue and the state sits in a small
-    /// dot+capsule confidence pill — the SAME hue the ring and chips use, so
-    /// the whole sheet reads as one metric. HONESTY GUARD: when there's no
-    /// trusted value yet (empty / "—" placeholder, or a Learning state) the
-    /// number and pill fall back to neutral grey — a colored number never
-    /// implies a confidence the data hasn't earned.
+    /// Hero honesty guard: the numeral is painted in the metric's identity
+    /// hue — the ONE tinted element of the standard hero (2026-08-29 theme).
+    /// When there's no trusted value yet (empty / "—" placeholder, or a
+    /// Learning state) the numeral falls back to neutral grey — a colored
+    /// number never implies a confidence the data hasn't earned.
     private var heroIsUncertain: Bool {
         let v = heroValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if v.isEmpty || v == "—" || v == "--" { return true }
@@ -6854,24 +6902,19 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     private var hero: some View {
         switch heroStyle {
         case .standard:
-            VStack(alignment: .leading, spacing: 10) {
+            // One hue per sheet (2026-08-29 minimalism pass): the numeral is
+            // the ONLY tinted element of the hero. The state is a plain
+            // secondary caption — no dot, no tinted capsule fill.
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
                 AtriaMetricHeroValueText(text: heroValue, tint: heroTint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heroValue)
 
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(heroTint)
-                        .frame(width: 6, height: 6)
-                    Text(heroState)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(heroTint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(heroTint.opacity(0.14), in: Capsule(style: .continuous))
+                Text(heroState)
+                    .font(AtriaDesignTokens.Typography.metricLabel)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
@@ -6968,12 +7011,10 @@ struct AtriaMetricContributorRows: View, Equatable {
         lhs.rows == rhs.rows
     }
 
-    // WHOOP stat-row grammar (2026-08-05 design-language pass): ALL-CAPS
-    // letterspaced micro-labels, numerals louder than labels, ▲▼ triangle
-    // qualifiers, flat rows with hairline dividers instead of chip-boxes
-    // (lesser nested boxes), and a recessed legend strip. The legend says
-    // what the triangles actually MEAN here — band judgments, not a prior-
-    // period delta — because `direction` is band-based at every call site.
+    // WHOOP stat-row grammar (2026-08-05), de-colored 2026-08-29 minimalism
+    // pass ("one hue per sheet, ink otherwise"): icons and ▲▼ triangles are
+    // secondary ink, no tinted circles, and the green/red legend strip is
+    // gone — name/comparison/value carry the judgment in words.
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("CONTRIBUTORS")
@@ -6987,9 +7028,8 @@ struct AtriaMetricContributorRows: View, Equatable {
                     HStack(spacing: 10) {
                         Image(systemName: row.systemImage)
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(rowTint(row))
+                            .foregroundStyle(.secondary)
                             .frame(width: 28, height: 28)
-                            .background(rowTint(row).opacity(0.12), in: Circle())
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.name)
@@ -7015,7 +7055,7 @@ struct AtriaMetricContributorRows: View, Equatable {
                                 if row.direction != 0 {
                                     Image(systemName: directionSymbol(row.direction))
                                         .font(.caption2.weight(.bold))
-                                        .foregroundStyle(rowTint(row))
+                                        .foregroundStyle(.secondary)
                                 } else {
                                     Color.clear
                                 }
@@ -7026,31 +7066,9 @@ struct AtriaMetricContributorRows: View, Equatable {
                     .padding(.vertical, 10)
                 }
             }
-
-            if rows.contains(where: { $0.direction != 0 }) {
-                HStack(spacing: 12) {
-                    Label("On target", systemImage: "arrowtriangle.up.fill")
-                        .foregroundStyle(Metrics.electricGreen)
-                    Label("Needs attention", systemImage: "arrowtriangle.down.fill")
-                        .foregroundStyle(Metrics.electricRed)
-                }
-                .font(.caption2.weight(.semibold))
-                .imageScale(.small)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .padding(.horizontal, 10)
-                .background(.primary.opacity(0.045),
-                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            }
         }
         .padding(14)
         .atriaInsetCard(tint: tint)
-    }
-
-    private func rowTint(_ row: AtriaMetricContributorRow) -> Color {
-        if row.direction > 0 { return Metrics.electricGreen }
-        if row.direction < 0 { return Metrics.electricRed }
-        return tint
     }
 
     private func directionSymbol(_ direction: Int) -> String {
@@ -7064,15 +7082,29 @@ private struct AtriaMetricMeaningInline: View {
     let recoveryEstimate: Metrics.RecoveryEstimate
     let sleepGoalHours: Double
 
+    // Minimalism pass (2026-08-29): the two sentences render as plain
+    // secondary text — no card, no "What it means"/"What to do" headers.
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            detailBlock(title: "What it means", body: meaning)
-            detailBlock(title: "What to do", body: coaching)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(AtriaMetricMeaningCopy.meaning(metric: metric,
+                                                recoveryEstimate: recoveryEstimate,
+                                                sleepGoalHours: sleepGoalHours))
+            Text(AtriaMetricMeaningCopy.coaching(metric: metric, guidance: guidance))
         }
-        .padding(.top, 8)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var meaning: String {
+/// One authored copy of the meaning/coaching sentences (2026-08-29 dedup):
+/// the inline About and AtriaMetricMeaningSheet both read from here — the
+/// sheet's near-verbatim paraphrase switches were deleted.
+enum AtriaMetricMeaningCopy {
+    static func meaning(metric: AtriaMetricDetailKind,
+                        recoveryEstimate: Metrics.RecoveryEstimate,
+                        sleepGoalHours: Double) -> String {
         switch metric {
         case .recovery:
             let contributorSummary = recoveryEstimate.contributors.isEmpty
@@ -7112,7 +7144,8 @@ private struct AtriaMetricMeaningInline: View {
         }
     }
 
-    private var coaching: String {
+    static func coaching(metric: AtriaMetricDetailKind,
+                         guidance: Coach.Guidance) -> String {
         switch metric {
         case .recovery:
             return guidance.headline.isEmpty ? guidance.detail : "\(guidance.headline) \(guidance.detail)"
@@ -7146,18 +7179,6 @@ private struct AtriaMetricMeaningInline: View {
         case .bloodOxygen:
             return "There's no verified blood-oxygen reading to act on."
         }
-    }
-
-    private func detailBlock(title: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.bold))
-            Text(body)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -7400,8 +7421,16 @@ private struct AtriaMetricMeaningSheet: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    detailBlock(title: "What it means", body: meaning)
-                    detailBlock(title: "What to do", body: coaching)
+                    // 2026-08-29 dedup: the sheet's own near-verbatim
+                    // meaning/coaching paraphrases were deleted; it now
+                    // renders the SAME strings the inline About shows.
+                    detailBlock(title: "What it means",
+                                body: AtriaMetricMeaningCopy.meaning(metric: metric,
+                                                                     recoveryEstimate: recoveryEstimate,
+                                                                     sleepGoalHours: sleepGoalHours))
+                    detailBlock(title: "What to do",
+                                body: AtriaMetricMeaningCopy.coaching(metric: metric,
+                                                                      guidance: guidance))
                 }
                 .padding(18)
             }
@@ -7480,79 +7509,6 @@ private struct AtriaMetricMeaningSheet: View {
         case .bloodOxygen:
             // SpO2 copy consolidation (2026-08-01): canonical honesty line.
             return AtriaSpO2Copy.wontFakeAPercentage
-        }
-    }
-
-    private var meaning: String {
-        switch metric {
-        case .recovery:
-            let contributorSummary = recoveryEstimate.contributors.isEmpty
-                ? "Recovery is still building toward a stable baseline."
-                : "The contributor list shows which terms pushed the score up or down today."
-            return "\(contributorSummary) Recovery is morning-frozen so it does not drift all day."
-        case .hrv:
-            return "HRV is most useful as a trend. Compare today with your baseline band instead of chasing someone else’s 'good' number."
-        case .restingHeartRate:
-            return "Resting HR is a context metric. A sudden rise versus your normal can line up with stress, illness, poor sleep, or hard training."
-        case .respiratoryRate:
-            return "Respiratory rate is compared with your own sleep baseline. Sustained shifts can line up with stress, travel, environment, or feeling off."
-        case .sleep:
-            return String(format: "Sleep sufficiency compares your night with a %.1f hour goal while consistency tracks how stable your recent timing has been.", sleepGoalHours)
-        case .strain:
-            return "Light, Moderate, High, and All-Out bands make it easier to read the number as a coaching zone instead of raw effort."
-        case .stress:
-            return "This estimates autonomic load right now from heart rate and beat-to-beat timing, not a lab cortisol measurement."
-        case .vo2max:
-            return "VO2max is derived from your resting heart-rate baseline and measured max heart rate, refined as more sessions come in."
-        case .sleepPerformance:
-            return String(format: "Sleep sufficiency compares last night's duration against a need that adjusts for sleep debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
-        case .sleepEfficiency:
-            return "Sleep efficiency is time asleep divided by time in bed, estimated from duration rather than a checked sleep study."
-        case .skinTemperature:
-            return "This metric stays empty until Atria can read it reliably."
-        case .fitnessAge:
-            return "Fitness age blends your recovery, training, and VO2max-adjacent signals into one younger/older-than-your-years read."
-        case .hrZones:
-            return "Zone minutes show how much of today was spent in each heart-rate effort band, from resting to max."
-        case .bloodOxygen:
-            // SpO2 copy consolidation (2026-08-01): canonical hardware copy.
-            return AtriaSpO2Copy.longUnavailable
-        }
-    }
-
-    private var coaching: String {
-        switch metric {
-        case .recovery:
-            return guidance.headline.isEmpty ? guidance.detail : "\(guidance.headline) \(guidance.detail)"
-        case .hrv:
-            return "Look for multi-day direction. If HRV is suppressed and recovery is also down, favor easier training and protect tonight’s sleep."
-        case .restingHeartRate:
-            return "Treat a higher-than-normal RHR as a reason to reduce intensity, hydrate, and keep an eye on how you feel."
-        case .respiratoryRate:
-            return "Watch the trend, not one night. If respiratory rate stays outside your usual range, take it as a wellness signal and compare with how you feel."
-        case .sleep:
-            return "If debt is climbing, buy back time tonight before trying to force a bigger strain score tomorrow."
-        case .strain:
-            if let target = guidance.target {
-                return String(format: "Aim for the target arc around %.1f today. If recovery is still building, use the band label to stay controlled instead of pushing for max load.", target)
-            }
-            return "Use the active band to stay controlled while Atria learns your recovery-scaled target."
-        case .stress:
-            return "If it stays elevated, a few minutes of slow paced breathing is the fastest lever — open guided breathwork from the Stress tile."
-        case .vo2max:
-            return "Consistent aerobic training over weeks moves this more than any single session."
-        case .sleepPerformance:
-            return "A run of nights under 100% compounds as debt — pay it back with an earlier bedtime rather than one long catch-up night."
-        case .sleepEfficiency:
-            return "Low efficiency alongside normal duration usually means restless time in bed — a cooler, darker, screen-free wind-down tends to help."
-        case .skinTemperature:
-            return "There is no temperature reading to act on."
-        case .fitnessAge:
-            return "This moves slowly by design — consistent sleep and aerobic training are what shift the pace of aging over months."
-        case .hrZones:
-            return "More Z2–Z3 time builds an aerobic base; keep Z4–Z5 minutes purposeful rather than accidental."
-        case .bloodOxygen:
-            return "There's no verified blood-oxygen reading to act on."
         }
     }
 
@@ -7656,111 +7612,46 @@ private enum AtriaDetailPeriodChangeDirection: Sendable {
         case .down: return "arrow.down.right"
         }
     }
+
+    /// Plain-text triangle for the neutral one-line period summary
+    /// (2026-08-29 minimalism pass); flat renders nothing.
+    var triangleText: String {
+        switch self {
+        case .up: return " ▲"
+        case .flat: return ""
+        case .down: return " ▼"
+        }
+    }
 }
 
 
 
 
-private struct AtriaDetailPeriodSummaryStrip: View {
+/// 2026-08-29 minimalism pass: replaces AtriaDetailPeriodSummaryStrip — the
+/// tinted card (gradient rail, change capsule, two chips: 10 tinted elements
+/// across 3 nested surfaces) restated what the chart already draws. One
+/// neutral secondary line now carries the same numbers; the change direction
+/// survives as a plain ▲/▼ next to Latest.
+private struct AtriaDetailPeriodSummaryLine: View {
     let summary: AtriaDetailPeriodSummary
-    let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Latest")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(summary.latestText)
-                        .font(.title3.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: 6) {
-                    Image(systemName: summary.changeDirection.symbolName)
-                        .font(.caption.weight(.bold))
-                    Text(summary.changeText)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-                .foregroundStyle(tint)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(tint.opacity(0.12), in: Capsule())
-                .layoutPriority(1)
-            }
-
-            if summary.hasSpread {
-                summaryRangeRail
-            }
-
-            HStack(spacing: 8) {
-                summaryMiniStat(label: "Avg", value: summary.averageText)
-                if summary.hasSpread {
-                    summaryMiniStat(label: "Range", value: summary.rangeText)
-                }
-            }
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).")
+        Text(lineText)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).")
     }
 
-    private var summaryRangeRail: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let markerX = width * summary.latestPosition
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(tint.opacity(0.12))
-                    .frame(height: 8)
-
-                Capsule()
-                    .fill(LinearGradient(colors: [tint.opacity(0.28), tint.opacity(0.76)],
-                                         startPoint: .leading,
-                                         endPoint: .trailing))
-                    .frame(width: max(8, markerX), height: 8)
-
-                Circle()
-                    .fill(tint)
-                    .frame(width: 14, height: 14)
-                    .shadow(color: tint.opacity(0.28), radius: 6, y: 2)
-                    .offset(x: min(max(markerX - 7, 0), max(width - 14, 0)))
-            }
-            .frame(maxHeight: .infinity, alignment: .center)
+    private var lineText: String {
+        var parts = ["Latest \(summary.latestText)\(summary.changeDirection.triangleText)",
+                     "Avg \(summary.averageText)"]
+        if summary.hasSpread {
+            parts.append("Range \(summary.rangeText)")
         }
-        .frame(height: 18)
-    }
-
-    private func summaryMiniStat(label: String, value: String) -> some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(value)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.74)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -8305,20 +8196,12 @@ private struct AtriaSleepPlanCard: View {
             // contributor rows below the chart own both values. The footer
             // keeps only the need context — duration and performance live
             // on the hero.
+            // 2026-08-29 minimalism trim: the frozen-receipt itemization line
+            // went — the need ledger card behind the reveal owns that "why".
             Text(neededHours.map { "Needed \(AtriaMetricFormat.sleepHours($0)) last night" }
                  ?? "Last night's target was not saved")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-
-            // ITEM-2 2026-08-15: the "why" behind the number — the frozen
-            // receipt's own itemization, never a recomputation.
-            if let receipt = frozenReceipt {
-                Text(AtriaSleepNeedLedgerPresentation.componentsSummaryText(for: receipt)
-                     + " · frozen when this night was saved")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             wakeAlarmCard
 
@@ -8326,7 +8209,8 @@ private struct AtriaSleepPlanCard: View {
 
         }
         .padding(14)
-        .atriaInsetCard(tint: .cyan)
+        // 2026-08-29 theme pass: sleep's identity hue, not raw .cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
     }
 
     /// Sleep Planner (2026-07-07, WHOOP-research adaptation): pick a goal,
@@ -8358,24 +8242,14 @@ private struct AtriaSleepPlanCard: View {
                 Spacer(minLength: 0)
             }
 
-            if let projection = tonightProjection {
-                Text("Tonight's need so far: \(AtriaMetricFormat.sleepHours(projection.totalHours)) projected — moves as today's strain accrues; frozen only when tonight is saved"
-                     + (projection.isClamped ? " · capped to the 6\u{2013}10h range" : ""))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
+            // 2026-08-29 minimalism trim: the projected-need and efficiency
+            // explanation sentences went; the "In bed by" caption above is
+            // this surface's one caption. The plan math is unchanged.
             AtriaTextSelector(items: AtriaSleepPlannerGoal.allCases,
                               title: { $0.title },
                               selection: Binding(
                                   get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
                                   set: { plannerGoalRaw = $0.rawValue }))
-
-            Text("\(goal.detail) tonight, assuming your \(plan.efficiencyIsDefault ? "typical-population" : "own typical") efficiency (\(Int((plan.assumedEfficiency * 100).rounded()))%)\(plan.efficiencyIsDefault ? " \u{2014} learning yours" : ""). Anchored to your wake-by time above.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -8387,7 +8261,8 @@ private struct AtriaSleepPlanCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "alarm.fill")
-                    .foregroundStyle(.cyan)
+                    // 2026-08-29 theme pass: sleep's identity hue, not .cyan.
+                    .foregroundStyle(Metrics.electricSleep)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Wake alarm")
                         .font(.caption.weight(.bold))
@@ -8407,7 +8282,7 @@ private struct AtriaSleepPlanCard: View {
                     }
                     .font(.caption2.weight(.bold))
                 }
-                .atriaCardAction(prominent: false, tint: .cyan)
+                .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
                 .sheet(isPresented: $showsSmartWakeSheet) {
                     AtriaSmartWakeSheet()
                         .presentationDetents([.medium, .large])
@@ -8445,13 +8320,17 @@ private struct AtriaSleepPlanCard: View {
                 } label: {
                     Label(wakeAlarmEnabled ? "On" : "Set", systemImage: wakeAlarmEnabled ? "checkmark.circle.fill" : "alarm")
                 }
-                .atriaCardAction(tint: .cyan)
+                .atriaCardAction(tint: Metrics.electricSleep)
             }
 
-            Text(alarmStatusText ?? "Phone alarm uses AlarmKit. Smart window can wake early during light or awake sleep; hard wake-by remains the fallback.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            // 2026-08-29 minimalism trim: the standing AlarmKit explainer
+            // went; only live scheduling feedback renders here.
+            if let alarmStatusText {
+                Text(alarmStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
