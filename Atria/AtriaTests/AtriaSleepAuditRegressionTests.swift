@@ -1662,13 +1662,26 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         ), identifier)
     }
 
-    func testDaytimeLowHRWithoutValidatedStillnessDoesNotBecomeNap() {
+    func testDaytimeLowHRWithoutValidatedStillnessStaysReviewOnly() throws {
+        // 2026-08-29 clock-agnostic nap fix: an HR-only nap above the stricter
+        // review bar (avg <= rest+12, P90 <= rest+30, >= 30 min) surfaces for
+        // wearer review instead of dying on lagging motion offload. Daytime HR
+        // alone still cannot CONFIRM a nap: the candidate stays unvalidated,
+        // low-confidence, and outside every auto-confirm tier.
         let quietDaytime = session(start: date(2032, 7, 3, 13, 0),
                                    end: date(2032, 7, 3, 13, 45),
                                    bpm: 52)
 
-        XCTAssertTrue(candidates([quietDaytime]).isEmpty,
-                      "daytime HR alone cannot distinguish a nap from quiet or intermittently active wakefulness")
+        let candidate = try XCTUnwrap(candidates([quietDaytime]).first)
+        XCTAssertEqual(candidate.kind, "nap_candidate")
+        XCTAssertFalse(candidate.motionEvidenceValidated,
+                       "no stillness evidence exists; the candidate must say so")
+        XCTAssertEqual(candidate.confidence, .low)
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(candidate,
+                                                                        baselineRestingIsTrusted: true,
+                                                                        baselineRestingIsNearTrusted: true),
+                       "an unvalidated HR-only nap must never auto-confirm")
     }
 
     func testDaytimeNapWithValidatedStillnessRemainsReviewOnly() throws {
