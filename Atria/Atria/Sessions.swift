@@ -46591,11 +46591,28 @@ final class SessionStore: ObservableObject {
         }
         var candidates: [AggregateSleepCandidate] = []
         candidates.reserveCapacity(clusters.count)
-        for cluster in clusters {
-            try cooperativeDeadline?.checkpoint()
-            let candidate: AggregateSleepCandidate? = try {
-                () throws -> AggregateSleepCandidate? in
+        // Awake-split retry context. Non-nil ONLY for a sub-cluster produced by
+        // `awakeSplitSubClusters` after the whole cluster was refused by every
+        // lane; a nil context is exact identity with the pre-retry evaluation.
+        // `boundedByAwakeRunAfter` records that the cut immediately after this
+        // sub-cluster was a sustained elevated-HR run — positive awake evidence
+        // at least as strong as the awake-after-session bound the nap lanes
+        // already accept (>= 20 min of per-minute means at rest+22 versus a
+        // 10-minute session averaging rest+15). `originalSessionIDs` names the
+        // parent fragments of the failed cluster so they cannot be misread as
+        // an independent recording continuing past a sub-window's end.
+        struct AwakeSplitContext {
+            let boundedByAwakeRunAfter: Bool
+            let originalSessionIDs: Set<UUID>
+        }
+        let evaluateCluster: (
+            _ cluster: [SavedSession],
+            _ splitContext: AwakeSplitContext?
+        ) throws -> AggregateSleepCandidate? = { cluster, splitContext in
                 try cooperativeDeadline?.checkpoint()
+                // A sub-cluster refusal must stay distinguishable from a
+                // whole-cluster refusal in the detection ring.
+                let skipDetailSuffix = splitContext == nil ? "" : "; post_split"
                 var capturedDuration = 0.0
                 var gaps: [TimeInterval] = []
                 gaps.reserveCapacity(max(0, cluster.count - 1))
@@ -46772,8 +46789,20 @@ final class SessionStore: ObservableObject {
                     guard !clusterDaytimeNapWindow, napSpanAndDurationReady else {
                         return false
                     }
+                    // A sub-cluster whose trailing cut was a sustained
+                    // elevated-HR run is bounded by construction: the run is
+                    // positive awake evidence stronger than the awake-after
+                    // session bound below. A hole-bounded sub-cluster gets no
+                    // such credit — a hole is a boundary, never awake evidence.
+                    if splitContext?.boundedByAwakeRunAfter == true { return true }
                     let joinGap: TimeInterval = 2 * 60 * 60
-                    let clusterIDs = Set(cluster.map(\.id))
+                    var clusterIDs = Set(cluster.map(\.id))
+                    // Parent fragments of the just-failed cluster are the same
+                    // evidence this sub-cluster was carved from, not an
+                    // independent recording continuing past its end.
+                    if let splitContext {
+                        clusterIDs.formUnion(splitContext.originalSessionIDs)
+                    }
                     var awakeHRAfterWindow = false
                     var continuesPastWindowEnd = false
                     for (index, other) in sourceSessions.enumerated() {
@@ -46920,7 +46949,8 @@ final class SessionStore: ObservableObject {
                         "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
                             + "\(Int(totalDuration / 60)) min captured; no lane fit "
                             + "(strict 3h, fragmented fallback, nap shape, dense morning "
-                            + "and dense long HR-only were all evaluated and refused)",
+                            + "and dense long HR-only were all evaluated and refused)"
+                            + skipDetailSuffix,
                         start,
                         end
                     )
@@ -47126,7 +47156,8 @@ final class SessionStore: ObservableObject {
                                 + "\(Int(totalDuration / 60)) min captured; stillness "
                                 + "unvalidated and HR below the stricter review bar "
                                 + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
-                                + "30 min floor)",
+                                + "30 min floor)"
+                                + skipDetailSuffix,
                             start,
                             end
                         )
@@ -47135,7 +47166,8 @@ final class SessionStore: ObservableObject {
                             "cluster_no_surviving_lane",
                             "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
                                 + "\(Int(totalDuration / 60)) min captured; motion and "
-                                + "main-sleep review lanes were all evaluated and refused",
+                                + "main-sleep review lanes were all evaluated and refused"
+                                + skipDetailSuffix,
                             start,
                             end
                         )
@@ -47155,7 +47187,8 @@ final class SessionStore: ObservableObject {
                             + "\(Int(totalDuration / 60)) min captured; stillness "
                             + "unvalidated and HR below the stricter review bar "
                             + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
-                            + "30 min floor)",
+                            + "30 min floor)"
+                            + skipDetailSuffix,
                         start,
                         end
                     )
@@ -47277,10 +47310,50 @@ final class SessionStore: ObservableObject {
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
                                                denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady,
                                                qualifiedRRCoverageFraction: qualifiedRRCoverageFraction)
-            }()
+        }
+        for cluster in clusters {
             try cooperativeDeadline?.checkpoint()
-            if let candidate {
+            if let candidate = try evaluateCluster(cluster, nil) {
                 candidates.append(candidate)
+                continue
+            }
+            // Awake-split retry (2026-08-29 device dead-end): a whole evening
+            // sleep plus the next morning's naps can chain into one cluster
+            // whose span exceeds every lane's ceiling, so the real sleep inside
+            // it can never surface no matter how strong its evidence is. Only
+            // when the unsplit cluster was refused everywhere AND its span is
+            // beyond what any single lane could ever accept, cut it at
+            // POSITIVE sustained-awake evidence (and at long coverage holes,
+            // which are boundaries, never evidence) and re-evaluate each
+            // sub-cluster through the same lanes exactly once. A cluster any
+            // lane accepts returns above and is never split.
+            guard let unsplitStart = cluster.first?.start,
+                  let unsplitEnd = cluster.last?.end,
+                  unsplitEnd.timeIntervalSince(unsplitStart)
+                    > AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan else {
+                continue
+            }
+            let split = try Self.awakeSplitSubClusters(
+                in: cluster,
+                rest: rest,
+                cooperativeDeadline: cooperativeDeadline
+            )
+            guard !split.subClusters.isEmpty else { continue }
+            for (sliceID, sliceStats) in split.sliceHRStats {
+                sessionHRStats[sliceID] = sliceStats
+            }
+            let originalSessionIDs = Set(cluster.map(\.id))
+            for subCluster in split.subClusters {
+                try cooperativeDeadline?.checkpoint()
+                if let candidate = try evaluateCluster(
+                    subCluster.sessions,
+                    AwakeSplitContext(
+                        boundedByAwakeRunAfter: subCluster.boundedByAwakeRunAfter,
+                        originalSessionIDs: originalSessionIDs
+                    )
+                ) {
+                    candidates.append(candidate)
+                }
             }
         }
         let resumed: [AggregateSleepCandidate]
@@ -47324,6 +47397,206 @@ final class SessionStore: ObservableObject {
             result.sort(by: ordering)
         }
         return result
+    }
+
+    /// Awake-split thresholds. The elevation floor sits at rest+22 — above the
+    /// average-HR ceiling of every HR-only review lane's admission shape — so a
+    /// run that clears it could never have been accepted sleep, and sustained
+    /// mid-sleep elevation below it (real REM/arousal minutes) never cuts a
+    /// night apart. Twenty consecutive minutes is the same order as the
+    /// sustained-awake motion deduction floor (10 min) with margin for the
+    /// HR-only channel's weaker specificity. A coverage hole must exceed the
+    /// 45-minute quiet-tail horizon the nap bound already uses before it can
+    /// act as a boundary; a hole is never awake evidence.
+    private nonisolated static let awakeSplitElevationOverRestBPM = 22
+    private nonisolated static let awakeSplitMinimumRunMinutes = 20
+    private nonisolated static let awakeSplitMinimumHoleSeconds: TimeInterval = 45 * 60
+    /// Cost bounds: the per-minute timeline is capped at 26 hours and the
+    /// session fan-out at 64 fragments; a cluster beyond either bound skips
+    /// the retry entirely and keeps the plain refusal.
+    private nonisolated static let awakeSplitMaximumTimelineMinutes = 26 * 60
+    private nonisolated static let awakeSplitMaximumSessions = 64
+
+    /// Cuts a lane-refused cluster at sustained elevated-HR runs and long
+    /// coverage holes, yielding sub-clusters for exactly one re-evaluation
+    /// pass. Honesty law: every sub-cluster's metrics recompute from its own
+    /// sessions' points only — a sliced fragment keeps only the HR/RR samples
+    /// and recovered-motion epochs that physically fall inside its window, and
+    /// awake-run minutes belong to no sub-cluster. An empty result means no
+    /// positive cut point existed; the caller keeps the original refusal.
+    private nonisolated static func awakeSplitSubClusters(
+        in cluster: [SavedSession],
+        rest: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (subClusters: [(sessions: [SavedSession], boundedByAwakeRunAfter: Bool)],
+                 sliceHRStats: [UUID: CooperativeBPMStats]) {
+        guard cluster.count <= awakeSplitMaximumSessions,
+              let clusterStart = cluster.first?.start,
+              let clusterEnd = cluster.last?.end else { return ([], [:]) }
+        let span = clusterEnd.timeIntervalSince(clusterStart)
+        let minuteCount = Int((span / 60).rounded(.up))
+        guard minuteCount > 0,
+              minuteCount <= awakeSplitMaximumTimelineMinutes else { return ([], [:]) }
+        // Per-minute mean HR over the cluster span. Downsampling to minute
+        // means bounds the work of this synchronous, non-deadlined lane.
+        var minuteSum = [Double](repeating: 0, count: minuteCount)
+        var minuteSamples = [Int](repeating: 0, count: minuteCount)
+        for session in cluster {
+            try cooperativeDeadline?.checkpoint()
+            let base = session.start.timeIntervalSince(clusterStart)
+            for (index, point) in session.points.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let offset = base + min(max(0, point.t), session.duration)
+                let minute = min(minuteCount - 1, max(0, Int(offset / 60)))
+                minuteSum[minute] += Double(point.bpm)
+                minuteSamples[minute] += 1
+            }
+        }
+        // Cut intervals in minute indices. `awakeRun` distinguishes positive
+        // awake evidence from a mere coverage boundary.
+        var cuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
+        let elevationFloor = Double(rest + awakeSplitElevationOverRestBPM)
+        var runStart: Int?
+        var holeStart: Int?
+        for minute in 0...minuteCount {
+            if minute.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            let covered = minute < minuteCount && minuteSamples[minute] > 0
+            let elevated = covered
+                && minuteSum[minute] / Double(minuteSamples[minute]) >= elevationFloor
+            if elevated {
+                if runStart == nil { runStart = minute }
+            } else if let started = runStart {
+                if minute - started >= awakeSplitMinimumRunMinutes {
+                    cuts.append((started, minute, true))
+                }
+                runStart = nil
+            }
+            let uncovered = minute < minuteCount && minuteSamples[minute] == 0
+            if uncovered {
+                if holeStart == nil { holeStart = minute }
+            } else if let started = holeStart {
+                if Double(minute - started) * 60 > awakeSplitMinimumHoleSeconds {
+                    cuts.append((started, minute, false))
+                }
+                holeStart = nil
+            }
+        }
+        guard !cuts.isEmpty else { return ([], [:]) }
+        cuts.sort { $0.startMinute < $1.startMinute }
+        var mergedCuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
+        for cut in cuts {
+            if var last = mergedCuts.last, cut.startMinute <= last.endMinute {
+                last.endMinute = max(last.endMinute, cut.endMinute)
+                last.awakeRun = last.awakeRun || cut.awakeRun
+                mergedCuts[mergedCuts.count - 1] = last
+            } else {
+                mergedCuts.append(cut)
+            }
+        }
+        // Keep intervals are the complement of the cuts within the cluster
+        // span. Each records whether the cut ending it was positive awake
+        // evidence (versus a hole, or the end of the cluster).
+        var keeps: [(start: Date, end: Date, boundedByAwakeRunAfter: Bool)] = []
+        var cursorMinute = 0
+        for cut in mergedCuts {
+            if cut.startMinute > cursorMinute {
+                keeps.append((
+                    clusterStart.addingTimeInterval(Double(cursorMinute) * 60),
+                    clusterStart.addingTimeInterval(Double(cut.startMinute) * 60),
+                    cut.awakeRun
+                ))
+            }
+            cursorMinute = max(cursorMinute, cut.endMinute)
+        }
+        if cursorMinute < minuteCount {
+            keeps.append((
+                clusterStart.addingTimeInterval(Double(cursorMinute) * 60),
+                clusterEnd,
+                false
+            ))
+        }
+        var subClusters: [(sessions: [SavedSession], boundedByAwakeRunAfter: Bool)] = []
+        var sliceHRStats: [UUID: CooperativeBPMStats] = [:]
+        for keep in keeps {
+            try cooperativeDeadline?.checkpoint()
+            var subSessions: [SavedSession] = []
+            for session in cluster {
+                guard session.end > keep.start, session.start < keep.end else { continue }
+                if session.start >= keep.start, session.end <= keep.end {
+                    // Untouched fragment: identity, including its cached stats.
+                    subSessions.append(session)
+                    continue
+                }
+                let sliceStart = max(session.start, keep.start)
+                let sliceEnd = min(session.end, keep.end)
+                guard sliceEnd.timeIntervalSince(sliceStart)
+                        >= AggregateSleepCandidate.minimumFragmentDuration else { continue }
+                let fromOffset = sliceStart.timeIntervalSince(session.start)
+                let toOffset = sliceEnd.timeIntervalSince(session.start)
+                // A slice that reaches the session's own end keeps the exact
+                // end-boundary sample; an interior slice stays half-open so a
+                // cut-run boundary sample never leaks into the sleep side.
+                let includesSessionEnd = sliceEnd >= session.end
+                var slicePoints: [SavedSession.Point] = []
+                for (index, point) in session.points.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    guard point.t >= fromOffset,
+                          includesSessionEnd ? point.t <= toOffset : point.t < toOffset else { continue }
+                    slicePoints.append(.init(t: point.t - fromOffset, bpm: point.bpm))
+                }
+                guard !slicePoints.isEmpty else { continue }
+                var sliceRRPoints: [SavedSession.RRPoint]?
+                if let rrPoints = session.rrPoints {
+                    var kept: [SavedSession.RRPoint] = []
+                    for (index, rrPoint) in rrPoints.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        guard rrPoint.t >= fromOffset,
+                              includesSessionEnd ? rrPoint.t <= toOffset : rrPoint.t < toOffset else { continue }
+                        kept.append(.init(t: rrPoint.t - fromOffset,
+                                          ms: rrPoint.ms,
+                                          source: rrPoint.source))
+                    }
+                    sliceRRPoints = kept.isEmpty ? nil : kept
+                }
+                var sliceEpochs: [AtriaRecoveredMotionEpoch]?
+                if let epochs = session.recoveredMotionEpochs {
+                    let kept = epochs.filter { $0.end > sliceStart && $0.start < sliceEnd }
+                    sliceEpochs = kept.isEmpty ? nil : kept
+                }
+                // The whole-session stillness claim covers any sub-window of
+                // the same session, so the validated-motion booleans carry
+                // over; diagnostic hint counters and audit tallies cannot be
+                // attributed to a sub-window and are dropped rather than
+                // duplicated onto each slice.
+                let slice = SavedSession(id: UUID(),
+                                         start: sliceStart,
+                                         end: sliceEnd,
+                                         label: session.label,
+                                         points: slicePoints,
+                                         rrPoints: sliceRRPoints,
+                                         motionEvidenceSource: session.motionEvidenceSource,
+                                         motionEvidenceValidated: session.motionEvidenceValidated,
+                                         recoveredMotionEpochs: sliceEpochs,
+                                         kind: session.kind,
+                                         eventTimeZoneIdentifier: session.eventTimeZoneIdentifier)
+                sliceHRStats[slice.id] = try slice.cooperativeBPMStats(
+                    cooperativeDeadline: cooperativeDeadline
+                )
+                subSessions.append(slice)
+            }
+            if !subSessions.isEmpty {
+                subClusters.append((subSessions, keep.boundedByAwakeRunAfter))
+            }
+        }
+        return (subClusters, sliceHRStats)
     }
 
     private nonisolated static func cooperativeRecoveredMotionSleepProvenance(
