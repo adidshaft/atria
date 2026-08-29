@@ -225,9 +225,12 @@ struct AtriaSleepStageRowStrip: View {
                 Text(row.name)
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
+                // 2026-08-29 minimalism pass: the value reads primary, the
+                // unit-ish duration secondary — no stage-tinted text; the dot
+                // and the lanes below carry the stage color.
                 Text("\(row.percent)%")
                     .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                 Text(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -324,7 +327,10 @@ struct AtriaSleepStageRowStrip: View {
                 let mark = Path(roundedRect: CGRect(x: max(0, x), y: 0,
                                                     width: width, height: size.height),
                                 cornerRadius: size.height / 2)
-                context.fill(mark, with: .color(color))
+                // 2026-08-29 minimalism pass: capsules keep the stage color
+                // (they are the data) at reduced opacity so the strip reads
+                // calmer against the neutral text around it.
+                context.fill(mark, with: .color(color.opacity(0.85)))
             }
         }
         .frame(height: 8)

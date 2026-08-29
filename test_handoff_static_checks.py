@@ -456,7 +456,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "case \"sleep-detail\":",
             "debugMetricDetailRecoveryEstimate",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: AtriaDetailPeriodSummaryStrip (tinted
+            # card: gradient rail + change capsule + Avg/Range chips) was
+            # DELETED and replaced by the neutral one-line
+            # AtriaDetailPeriodSummaryLine under the chart. The rail/mini-stat
+            # pins migrated to the line's tokens; AtriaDetailPeriodSummary and
+            # its change-direction enum survive as the shared math.
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "AtriaDetailPeriodSummary(points: recoveryPoints, unit: \"%\")",
             "AtriaDetailPeriodSummary(points: hrvPoints, unit: \"ms\")",
             "AtriaDetailPeriodSummary(points: restingPoints, unit: \"bpm\")",
@@ -466,17 +472,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaDetailRangeDotStrip: View, Equatable",
             "private struct Bar: Equatable, Identifiable",
             "private let bars: [Bar]",
-            "AtriaDetailPeriodSummaryStrip(summary: summary,",
+            "AtriaDetailPeriodSummaryLine(summary: summary)",
             # 2026-07-06: AtriaDetailPeriodReportCard call removed from metricChart
             # (detail-sheet redesign collapsed 3 redundant latest/avg/change cards
-            # into the single AtriaDetailPeriodSummaryStrip). Struct definition kept
-            # as uncalled scaffolding, so its declaration/internal pins still hold.
+            # into one summary surface).
             "comparison: comparison,",
             "let latestPosition: Double",
             "private enum AtriaDetailPeriodChangeDirection",
-            "summaryRangeRail",
-            "summaryMiniStat(label: \"Avg\", value: summary.averageText)",
-            "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
+            "Latest \\(summary.latestText)\\(summary.changeDirection.triangleText)",
+            "Avg \\(summary.averageText)",
+            "Range \\(summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
             # added by the design-handoff chart-language pass.
             # 2026-07-07 (loop 3): domain also covers the dashed
@@ -7342,7 +7347,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct TrendMetricChartModel: Identifiable",
             "self.metricCards = [",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: the summary strip was replaced by the
+            # neutral AtriaDetailPeriodSummaryLine (see migration note above).
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "private struct AtriaDetailPeriodReportCard: View, Equatable",
             "Label(\"This period\", systemImage: \"chart.bar.xaxis\")",
             "reportChip(title: \"Latest\"",
