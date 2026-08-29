@@ -2610,11 +2610,12 @@ final class AtriaStressMonitorTests: XCTestCase {
                 hrvAvailable: false
             ),
         ]
-        // More than 48 hours of minute facts exercise exact retention and the
-        // independent 2,880-point hard cap without exceeding 64 points/hour.
-        points += (0..<3_000).map { index in
+        // More than 7 days of minute facts exercise exact retention and the
+        // independent 10,080-point hard cap without exceeding 64 points/hour
+        // or the 180 recognized in-window shards the loader tolerates.
+        points += (0..<10_200).map { index in
             persistedPoint(
-                t: end.addingTimeInterval(-Double(2_999 - index) * 60),
+                t: end.addingTimeInterval(-Double(10_199 - index) * 60),
                 activation: 0.4,
                 level: .low,
                 confidence: 0.8,
@@ -2634,12 +2635,38 @@ final class AtriaStressMonitorTests: XCTestCase {
         })
 
         // The same complete archive is legitimately empty once every exact
-        // sample timestamp falls outside the 48-hour retention window.
+        // sample timestamp falls outside the seven-day retention window.
         let expiredAt = end.addingTimeInterval(AtriaStressHistoryArchive.retentionWindow + 1)
         guard case .loaded(let expired) = await persistence.load(now: expiredAt) else {
             return XCTFail("expiry is a valid empty archive, not an I/O failure")
         }
         XCTAssertTrue(expired.points.isEmpty)
+    }
+
+    func testSevenDayRetentionStaysDecoupledFromReplaySourceBounds() {
+        // 2026-08-29 owner request: 7 days of navigable HR/Stress day charts.
+        XCTAssertEqual(AtriaStressHistoryArchive.retentionWindow, 7 * 24 * 60 * 60)
+        XCTAssertEqual(AtriaStressHistoryArchive.maximumPointCount, 10_080)
+        // One point per minute: the count cap and the time window must state
+        // the same bound, or one silently becomes the real retention policy.
+        XCTAssertEqual(Int(AtriaStressHistoryArchive.retentionWindow / 60),
+                       AtriaStressHistoryArchive.maximumPointCount)
+        // Replay re-derives from raw ~1 Hz HR rows behind a 250k fail-closed
+        // snapshot cap. A full-retention source (~605k rows) would make every
+        // snapshot return nil and silently kill replay forever — the repo's
+        // recovery-state defect class — so the replay source window must stay
+        // inside the cap and strictly narrower than retention.
+        XCTAssertEqual(AtriaHistoricalStressReplay.replaySourceWindow, 48 * 60 * 60)
+        XCTAssertLessThanOrEqual(
+            Int(AtriaHistoricalStressReplay.replaySourceWindow),
+            AtriaHistoricalStressReplay.maximumHeartRateRowCount,
+            "seconds ≈ rows at 1 Hz; the replay source must fit the fail-closed cap"
+        )
+        XCTAssertGreaterThan(
+            Int(AtriaStressHistoryArchive.retentionWindow),
+            AtriaHistoricalStressReplay.maximumHeartRateRowCount,
+            "retention at 1 Hz no longer fits the snapshot cap — replay must stay decoupled"
+        )
     }
 
     func testMaximumStressHourShardStaysInsideMeasuredWriteBudget() async throws {
@@ -2978,7 +3005,7 @@ final class AtriaStressMonitorTests: XCTestCase {
 
     func testStressHistoryCheckpointCadenceIsNotPerSample() {
         XCTAssertEqual(AtriaStressMonitorStore.boundedUnsavedHistorySampleCount(
-            6_000,
+            AtriaStressHistoryArchive.maximumPointCount + 3_000,
             retainedPointCount: AtriaStressHistoryArchive.maximumPointCount
         ), AtriaStressHistoryArchive.maximumPointCount)
         XCTAssertEqual(AtriaStressMonitorStore.boundedUnsavedHistorySampleCount(

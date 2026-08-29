@@ -312,7 +312,10 @@ struct AtriaHistorySection: View, Equatable {
         .sheet(item: $selectedDay) { day in
             AtriaHistoryDayDetailSheet(day: day,
                                        medians: model.medianWindow(around: day),
-                                       nights: store.sleepHistorySnapshot.confirmedNights(on: day.date))
+                                       nights: store.sleepHistorySnapshot.confirmedNights(on: day.date),
+                                       allDays: model.days,
+                                       mediansForDay: { model.medianWindow(around: $0) },
+                                       nightsForDay: { store.sleepHistorySnapshot.confirmedNights(on: $0.date) })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -1324,6 +1327,27 @@ private struct AtriaHistoryStatRow: View {
     }
 }
 
+/// Pure day-stepping over the History day list (2026-08-29, detail-sheet
+/// navigation): finds the day `offset` chronological steps away from `current`
+/// among the days that actually exist — the model only mints a day row when it
+/// has a rollup, saved activity, or review evidence, so stepping the array is
+/// exactly "skip days with no data". Order-agnostic on purpose: `model.days`
+/// is newest-first, but the helper must not silently invert if that changes.
+enum AtriaHistoryDayStepping {
+    /// `offset` is chronological: -1 = the nearest older day, +1 = the nearest
+    /// newer day. Returns nil at either end or when `current` is not listed.
+    static func adjacentDay(to current: Date,
+                            in days: [AtriaHistoryDay],
+                            offset: Int) -> AtriaHistoryDay? {
+        guard offset != 0 else { return nil }
+        let ordered = days.sorted { $0.date < $1.date }
+        guard let index = ordered.firstIndex(where: { $0.date == current }) else { return nil }
+        let target = index + offset
+        guard ordered.indices.contains(target) else { return nil }
+        return ordered[target]
+    }
+}
+
 struct AtriaHistoryDayDetailSheet: View {
     let day: AtriaHistoryDay
     let medians: AtriaHistoryMedians
@@ -1332,15 +1356,50 @@ struct AtriaHistoryDayDetailSheet: View {
     /// with entries, each row is tappable and opens the shared stage-timeline
     /// hypnogram for that sleep.
     var nights: [SleepHistorySnapshot.Night] = []
+    /// In-sheet day navigation (2026-08-29): with the full day list plus the
+    /// per-day medians/nights providers, the header grows prev/next chevrons so
+    /// past days are reachable without dismissing and re-picking. All three
+    /// default empty/nil so the sheet still renders a single fixed day.
+    var allDays: [AtriaHistoryDay] = []
+    var mediansForDay: ((AtriaHistoryDay) -> AtriaHistoryMedians)? = nil
+    var nightsForDay: ((AtriaHistoryDay) -> [SleepHistorySnapshot.Night])? = nil
     /// nil = default (first night open). The empty string is the explicit
     /// "everything collapsed" marker — night ids are never empty.
     @State private var expandedNightID: String?
+    /// The day the chevrons stepped to; nil until the user navigates.
+    @State private var steppedDay: AtriaHistoryDay?
+
+    private var displayedDay: AtriaHistoryDay { steppedDay ?? day }
+
+    private var displayedMedians: AtriaHistoryMedians {
+        guard let steppedDay, steppedDay.id != day.id else { return medians }
+        return mediansForDay?(steppedDay) ?? .empty
+    }
+
+    private var displayedNights: [SleepHistorySnapshot.Night] {
+        guard let steppedDay, steppedDay.id != day.id else { return nights }
+        return nightsForDay?(steppedDay) ?? []
+    }
+
+    private var canStepDays: Bool { allDays.count > 1 }
+
+    private func adjacentDay(offset: Int) -> AtriaHistoryDay? {
+        AtriaHistoryDayStepping.adjacentDay(to: displayedDay.date,
+                                            in: allDays,
+                                            offset: offset)
+    }
+
+    private func step(_ offset: Int) {
+        guard let next = adjacentDay(offset: offset) else { return }
+        steppedDay = next
+        // A different day's nights must not inherit the old expansion choice.
+        expandedNightID = nil
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                AtriaPanelSectionHeader(title: day.date.formatted(.dateTime.weekday(.wide).month().day()),
-                                        subtitle: "vs 14-day median")
+                headerRow
                 VStack(spacing: 10) {
                     recoveryRow
                     rhrRow
@@ -1354,17 +1413,50 @@ struct AtriaHistoryDayDetailSheet: View {
         }
     }
 
+    /// Header with the same chevron affordance the metric detail sheet's
+    /// period navigation uses (32pt hit targets, plain style, spoken labels);
+    /// chevrons disable at the ends of the available-day list.
+    private var headerRow: some View {
+        HStack(spacing: 12) {
+            AtriaPanelSectionHeader(title: displayedDay.date.formatted(.dateTime.weekday(.wide).month().day()),
+                                    subtitle: "vs 14-day median")
+            Spacer(minLength: 0)
+            if canStepDays {
+                HStack(spacing: 12) {
+                    Button {
+                        step(-1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 32, height: 32)
+                    }
+                    .disabled(adjacentDay(offset: -1) == nil)
+                    .accessibilityLabel("Previous day")
+
+                    Button {
+                        step(1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 32, height: 32)
+                    }
+                    .disabled(adjacentDay(offset: 1) == nil)
+                    .accessibilityLabel("Next day")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     private var effectiveExpandedNightID: String? {
-        expandedNightID ?? nights.first?.id
+        expandedNightID ?? displayedNights.first?.id
     }
 
     @ViewBuilder
     private var sleepNightsSection: some View {
-        if !nights.isEmpty {
+        if !displayedNights.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Sleep this day")
                     .font(.subheadline.weight(.semibold))
-                ForEach(nights) { night in
+                ForEach(displayedNights) { night in
                     sleepNightEntry(night)
                 }
             }
@@ -1426,60 +1518,62 @@ struct AtriaHistoryDayDetailSheet: View {
 
     private var recoveryRow: some View {
         AtriaHistoryStatRow(title: "Recovery",
-                            value: day.recovery.map { "\($0)%" } ?? "--",
-                            detail: medians.recovery.map { "Median \(Int($0.rounded()))%" } ?? "Building median",
-                            systemImage: "heart.fill",
-                            tint: day.recovery.map { Metrics.recoveryColor($0) } ?? .secondary,
-                            delta: AtriaHistoryDeltaGlyph(current: day.recovery.map(Double.init),
-                                                          median: medians.recovery,
+                            value: displayedDay.recovery.map { "\($0)%" } ?? "--",
+                            detail: displayedMedians.recovery.map { "Median \(Int($0.rounded()))%" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.recovery.systemImage,
+                            // Recovery is one of the two value-graded metrics
+                            // (`usesValueGradedTint`); its hue is its grade.
+                            tint: displayedDay.recovery.map { Metrics.recoveryColor($0) } ?? .secondary,
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.recovery.map(Double.init),
+                                                          median: displayedMedians.recovery,
                                                           goodDirection: .up,
                                                           formatMagnitude: { "\(Int($0.rounded()))%" }))
     }
 
     private var rhrRow: some View {
         AtriaHistoryStatRow(title: "Resting HR",
-                            value: day.rhrInt.map { "\($0) bpm" } ?? "--",
-                            detail: medians.rhr.map { "Median \(Int($0.rounded())) bpm" } ?? "Building median",
-                            systemImage: "heart.text.square.fill",
-                            tint: .cyan,
-                            delta: AtriaHistoryDeltaGlyph(current: day.rhrInt.map(Double.init),
-                                                          median: medians.rhr,
+                            value: displayedDay.rhrInt.map { "\($0) bpm" } ?? "--",
+                            detail: displayedMedians.rhr.map { "Median \(Int($0.rounded())) bpm" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.rhr.systemImage,
+                            tint: AtriaTodayMetric.rhr.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.rhrInt.map(Double.init),
+                                                          median: displayedMedians.rhr,
                                                           goodDirection: .down,
                                                           formatMagnitude: { "\(Int($0.rounded())) bpm" }))
     }
 
     private var hrvRow: some View {
         AtriaHistoryStatRow(title: "HRV",
-                            value: AtriaMetricFormat.hrv(day.hrvMs),
-                            detail: medians.hrvMs.map { "Median \(AtriaMetricFormat.hrv($0))" } ?? "Building median",
-                            systemImage: "waveform.path.ecg",
-                            tint: Metrics.electricGreen,
-                            delta: AtriaHistoryDeltaGlyph(current: day.hrvMs,
-                                                          median: medians.hrvMs,
+                            value: AtriaMetricFormat.hrv(displayedDay.hrvMs),
+                            detail: displayedMedians.hrvMs.map { "Median \(AtriaMetricFormat.hrv($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.hrv.systemImage,
+                            tint: AtriaTodayMetric.hrv.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.hrvMs,
+                                                          median: displayedMedians.hrvMs,
                                                           goodDirection: .up,
                                                           formatMagnitude: { "\(Int($0.rounded())) ms" }))
     }
 
     private var sleepRow: some View {
         AtriaHistoryStatRow(title: "Sleep",
-                            value: SleepHistorySnapshot.formatDuration(day.sleepSeconds ?? 0),
-                            detail: medians.sleepSeconds.map { "Median \(SleepHistorySnapshot.formatDuration($0))" } ?? "Building median",
-                            systemImage: "moon.fill",
-                            tint: Metrics.electricSleep,
-                            delta: AtriaHistoryDeltaGlyph(current: day.sleepSeconds,
-                                                          median: medians.sleepSeconds,
+                            value: SleepHistorySnapshot.formatDuration(displayedDay.sleepSeconds ?? 0),
+                            detail: displayedMedians.sleepSeconds.map { "Median \(SleepHistorySnapshot.formatDuration($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.sleep.systemImage,
+                            tint: AtriaTodayMetric.sleep.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.sleepSeconds,
+                                                          median: displayedMedians.sleepSeconds,
                                                           goodDirection: .up,
                                                           formatMagnitude: { SleepHistorySnapshot.formatDuration($0) }))
     }
 
     private var strainRow: some View {
         AtriaHistoryStatRow(title: "Strain",
-                            value: AtriaMetricFormat.strain(day.strain),
-                            detail: medians.strain.map { "Median \(AtriaMetricFormat.strain($0))" } ?? "Building median",
-                            systemImage: "bolt.fill",
-                            tint: Metrics.electricStrain,
-                            delta: AtriaHistoryDeltaGlyph(current: day.strain,
-                                                          median: medians.strain,
+                            value: AtriaMetricFormat.strain(displayedDay.strain),
+                            detail: displayedMedians.strain.map { "Median \(AtriaMetricFormat.strain($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.strain.systemImage,
+                            tint: AtriaTodayMetric.strain.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.strain,
+                                                          median: displayedMedians.strain,
                                                           goodDirection: .neutral,
                                                           formatMagnitude: { String(format: "%.1f", $0) }))
     }

@@ -336,8 +336,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let recent = DateInterval(start: now.addingTimeInterval(-12 * 3_600),
                                   end: now.addingTimeInterval(-11 * 3_600))
-        let expired = DateInterval(start: now.addingTimeInterval(-72 * 3_600),
-                                   end: now.addingTimeInterval(-71 * 3_600))
+        // 2026-08-29: retention grew to 7 days, so "expired" must sit beyond
+        // 168 hours — a 3-day-old interval is now retained detailed history.
+        let expired = DateInterval(start: now.addingTimeInterval(-200 * 3_600),
+                                   end: now.addingTimeInterval(-199 * 3_600))
 
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
             loadState: .loading,
@@ -359,7 +361,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             isCurrentPhysiologicalDay: false,
             currentState: .noSignal,
             now: now
-        ).contains("2-day detailed-history window"))
+        ).contains("7-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
             loadState: .loaded,
             interval: recent,
@@ -550,9 +552,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ).contains("couldn’t be read"))
         XCTAssertTrue(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
             loadState: .loaded,
-            workoutEnd: now.addingTimeInterval(-72 * 3_600),
+            workoutEnd: now.addingTimeInterval(-200 * 3_600),
             now: now
-        ).contains("2-day detailed-history window"))
+        ).contains("7-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
             loadState: .loaded,
             workoutEnd: now,

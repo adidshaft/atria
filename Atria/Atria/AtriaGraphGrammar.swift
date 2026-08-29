@@ -95,6 +95,124 @@ enum AtriaChartVisualGrammar {
     )
 }
 
+// MARK: - Drag-to-inspect scrub (shared interaction grammar, 2026-08-29)
+
+/// Pure selection rule behind the shared scrub: the nearest REAL sample by
+/// absolute time distance. A drag over a gap snaps to the closest recorded
+/// observation — nothing between samples is ever selectable, so the card can
+/// never display an interpolated value.
+enum AtriaChartScrubSelection {
+    static func nearest<Point>(to target: Date,
+                               points: [Point],
+                               date: (Point) -> Date) -> Point? {
+        points.min {
+            abs(date($0).timeIntervalSince(target))
+                < abs(date($1).timeIntervalSince(target))
+        }
+    }
+}
+
+/// One drag-to-inspect interaction for every inline time-series trace: the
+/// Vitals Live-monitor stress chart, Activity's day HR/Stress charts, and the
+/// stress-detail measured-HR chart. Drag (or touch) across the plot to select
+/// the nearest real sample; a vertical rule, a dot on the sample, and a
+/// compact clamped card (via `AtriaChartPointerPlacement`) render inside the
+/// plot. Selection only ever lands on a recorded point — a drag over a gap
+/// snaps to the nearest real observation, never to an interpolated value.
+///
+/// The gesture lives only on the plot overlay, so an enclosing
+/// `.atriaInspectableGraph` card tap stays reachable everywhere outside the
+/// plot (the shipped stress-detail timeline established this coexistence).
+/// Rendered as the content of `chartOverlay`; generic over the chart's own
+/// point type so no call site converts its series.
+struct AtriaChartScrubOverlay<Point, Card: View>: View {
+    let proxy: ChartProxy
+    let geometry: GeometryProxy
+    let points: [Point]
+    let date: (Point) -> Date
+    let value: (Point) -> Double
+    @Binding var selectedDate: Date?
+    @ViewBuilder let card: (Point) -> Card
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(.clear)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { dragValue in
+                            guard let plotFrame = proxy.plotFrame else { return }
+                            let frame = geometry[plotFrame]
+                            let x = dragValue.location.x - frame.origin.x
+                            guard x >= 0, x <= frame.width,
+                                  let target: Date = proxy.value(atX: x) else { return }
+                            selectedDate = nearestPoint(to: target).map(date)
+                        }
+                )
+            if let selected = selectedPoint,
+               let plotFrame = proxy.plotFrame,
+               let xPosition = proxy.position(forX: date(selected)),
+               let yPosition = proxy.position(forY: value(selected)) {
+                let frame = geometry[plotFrame]
+                let anchor = CGPoint(x: frame.origin.x + xPosition,
+                                     y: frame.origin.y + yPosition)
+                selectionMarker(anchor: anchor, plot: frame)
+                let placement = AtriaChartPointerPlacement.place(anchor: anchor,
+                                                                 plot: frame)
+                card(selected)
+                    .frame(width: AtriaChartPointerPlacement.defaultCardSize.width,
+                           alignment: .leading)
+                    .offset(x: placement.origin.x, y: placement.origin.y)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var selectedPoint: Point? {
+        selectedDate.flatMap(nearestPoint(to:))
+    }
+
+    private func nearestPoint(to target: Date) -> Point? {
+        AtriaChartScrubSelection.nearest(to: target, points: points, date: date)
+    }
+
+    /// Drawn overlay-side (not as chart content) so function-built Chart
+    /// bodies share the exact grammar without threading selection state into
+    /// their mark builders. Same visual weight as the historical in-chart
+    /// RuleMark/PointMark: a 1 pt rule at 28 % primary spanning the plot, and
+    /// a 7 pt primary dot on the real sample.
+    @ViewBuilder
+    private func selectionMarker(anchor: CGPoint, plot: CGRect) -> some View {
+        Rectangle()
+            .fill(.primary.opacity(0.28))
+            .frame(width: 1, height: plot.height)
+            .offset(x: anchor.x - 0.5, y: plot.minY)
+            .allowsHitTesting(false)
+        Circle()
+            .fill(.primary)
+            .frame(width: 7, height: 7)
+            .offset(x: anchor.x - 3.5,
+                    y: min(max(anchor.y, plot.minY + 3.5), plot.maxY - 3.5) - 3.5)
+            .allowsHitTesting(false)
+    }
+}
+
+extension View {
+    /// The one visual chrome for a scrub inspection card: caption type, single
+    /// lines, compact padding on regular material. Content stays per-surface
+    /// (stress shows score · zone, HR shows bpm); the shell never varies.
+    func atriaChartScrubCardChrome() -> some View {
+        self
+            .font(.caption2)
+            .lineLimit(1)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
 extension View {
     /// A quiet, plot-aligned surface gives axes and dense traces enough
     /// contrast without adding a competing card inside the existing card.

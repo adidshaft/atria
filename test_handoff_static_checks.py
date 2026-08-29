@@ -9527,8 +9527,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "rrCount: rrPoints.count",
             "firstT: first?.t ?? 0",
             "lastT: last?.t ?? 0",
-            "while lowerIndex < segment.endIndex",
-            "while upperIndex < segment.endIndex",
+            # 2026-08-29 pair-based HRV qualification: windows slide over the
+            # whole sorted RR stream instead of per-gap segments, so the
+            # incremental two-pointer scan now walks `sorted`, not `segment`.
+            "while lowerIndex < sorted.endIndex",
+            "while upperIndex < sorted.endIndex",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -11996,9 +11999,17 @@ class HandoffStaticChecks(unittest.TestCase):
         # so this branch never actually matched and the Stress tile silently
         # dead-ended like every other tile. Replaced with a real enum
         # comparison as part of routing every glance tile to its detail.
+        # Pin migrated again (2026-08-29, insight-detail directive): the tile
+        # now opens the full stress detail (information first); breathwork is
+        # reached through the detail's Relax action, and the breathwork
+        # full-screen host plus its debug fixture stay pinned below.
         for needle in [
             "@State private var showBreathworkSession = false",
+            "@State private var showStressDetail = false",
             "if metric == .stress {",
+            "showStressDetail = true",
+            ".fullScreenCover(isPresented: $showStressDetail) {",
+            "onRelax: {",
             "showBreathworkSession = true",
             "AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,",
             "currentRRSamples: pulseStore.state.recentRRSamples",

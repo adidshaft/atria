@@ -190,4 +190,46 @@ final class AtriaGraphGrammarTests: XCTestCase {
         XCTAssertEqual(AtriaGraphChartType.options(hasMinMaxBand: false), [.line, .bars])
         XCTAssertEqual(AtriaGraphChartType.options(hasMinMaxBand: true), [.line, .bars, .range])
     }
+
+    // MARK: - Shared scrub selection (2026-08-29)
+
+    func testScrubSelectionPicksNearestRealSampleAcrossGaps() {
+        let base = reference
+        let dates = [0.0, 60, 120, 3_600].map { base.addingTimeInterval($0) }
+        // Deep inside the 58-minute hole the selection snaps to a REAL edge
+        // sample — nothing between recorded observations is ever selectable.
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(500), points: dates, date: { $0 }
+        ), dates[2])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(3_000), points: dates, date: { $0 }
+        ), dates[3])
+    }
+
+    func testScrubSelectionClampsToRealEndpointsAndHandlesEmpty() {
+        let base = reference
+        let dates = [0.0, 60, 120].map { base.addingTimeInterval($0) }
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(-9_999), points: dates, date: { $0 }
+        ), dates[0])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(9_999), points: dates, date: { $0 }
+        ), dates[2])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: dates[1], points: dates, date: { $0 }
+        ), dates[1], "an exact hit selects that sample")
+        XCTAssertNil(AtriaChartScrubSelection.nearest(
+            to: base, points: [Date](), date: { $0 }
+        ), "no samples means no selection — never a fabricated one")
+    }
+
+    func testScrubSelectionIsGenericOverTheChartsOwnPointType() {
+        struct Sample: Equatable { let t: Date; let bpm: Int }
+        let base = reference
+        let samples = [Sample(t: base, bpm: 61),
+                       Sample(t: base.addingTimeInterval(300), bpm: 95)]
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(200), points: samples, date: { $0.t }
+        ), samples[1])
+    }
 }

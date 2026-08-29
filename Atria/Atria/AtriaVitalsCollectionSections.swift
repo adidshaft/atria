@@ -1347,9 +1347,31 @@ private struct AtriaVitalsPulseCardHost: View {
         // downsample off-main to a bounded count. The chart re-thins to ~400 for
         // display, so ~2500 span-preserving points keep the merge + Equatable
         // cheap while covering the full window.
-        let since = Calendar.current.date(byAdding: .hour, value: -24, to: now)
+        // 2026-08-29: the tail facade (`since:limit:`) rescans up to ~limit KiB
+        // per archive file on EVERY refresh (a measured 144 s-CPU class at
+        // large limits). The exact-window reader selects only the raw chunks
+        // overlapping the 24 h window and memoizes the result against the
+        // archive fingerprint. Quantizing the window to a five-minute boundary
+        // keeps the cache key stable between archive mutations; the closed-open
+        // window never contains future points, so a forward-rounded end adds
+        // nothing that was not measured.
+        let quantum: TimeInterval = 5 * 60
+        let windowEnd = Date(timeIntervalSince1970:
+            (now.timeIntervalSince1970 / quantum).rounded(.up) * quantum)
+        let windowStart = windowEnd.addingTimeInterval(-(24 * 60 * 60) - quantum)
         let points = await Task.detached(priority: .utility) {
-            let raw = HistoricalArchive.metricHeartRatePoints(since: since, limit: 50_000).map {
+            // A nil exact-window read is an incomplete scan, not an empty
+            // archive; fall back to the bounded recent tail at the same
+            // 12k budget Activity's current-day path uses — never the old
+            // 50k-limit full-tail rescan.
+            let window = HistoricalArchive.metricHeartRatePoints(
+                start: windowStart,
+                end: windowEnd,
+                maximumPoints: 100_000
+            )
+            let raw = (window?.points
+                ?? HistoricalArchive.metricHeartRatePoints(since: windowStart,
+                                                           limit: 12_000)).map {
                 AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
             }
             return AtriaVitalsHeartRateTimeline.downsampledSpan(raw, maxPoints: 2_500)
@@ -3217,17 +3239,11 @@ private struct AtriaVitalsStressTimelineChart: View {
                                                       endPoint: .top))
             }
 
-            if let selectedPoint {
-                RuleMark(x: .value("Inspected time", selectedPoint.reading.date))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .foregroundStyle(.primary.opacity(0.28))
-                PointMark(x: .value("Inspected time", selectedPoint.reading.date),
-                          y: .value("Inspected stress", selectedPoint.reading.score))
-                    .symbolSize(36)
-                    .foregroundStyle(.primary)
-                // Handoff-12 CP3: the wide top annotation is gone — the
-                // compact clamped card renders plot-locally in chartOverlay.
-            }
+            // Handoff-12 CP3: the wide top annotation is gone — the compact
+            // clamped card renders plot-locally in chartOverlay. 2026-08-29:
+            // the selection rule/dot moved into the shared
+            // AtriaChartScrubOverlay so Activity's day charts and the
+            // stress-detail HR chart render the identical scrub grammar.
         }
         .atriaGraphPlotSurface()
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
@@ -3271,45 +3287,13 @@ private struct AtriaVitalsStressTimelineChart: View {
         )
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(.clear)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    guard let plotFrame = proxy.plotFrame else { return }
-                                    let frame = geometry[plotFrame]
-                                    let x = value.location.x - frame.origin.x
-                                    guard x >= 0, x <= frame.width,
-                                          let date: Date = proxy.value(atX: x) else { return }
-                                    selectedDate = nearestPoint(to: date)?.reading.date
-                                }
-                        )
-                    if let selectedPoint,
-                       let plotFrame = proxy.plotFrame,
-                       let xPosition = proxy.position(
-                            forX: selectedPoint.reading.date
-                       ),
-                       let yPosition = proxy.position(
-                            forY: selectedPoint.reading.score
-                       ) {
-                        let frame = geometry[plotFrame]
-                        let placement = AtriaChartPointerPlacement.place(
-                            anchor: CGPoint(x: frame.origin.x + xPosition,
-                                            y: frame.origin.y + yPosition),
-                            plot: frame
-                        )
-                        inspectionCard(selectedPoint.reading)
-                            .frame(
-                                width: AtriaChartPointerPlacement
-                                    .defaultCardSize.width,
-                                alignment: .leading
-                            )
-                            .offset(x: placement.origin.x,
-                                    y: placement.origin.y)
-                            .allowsHitTesting(false)
-                    }
+                AtriaChartScrubOverlay(proxy: proxy,
+                                       geometry: geometry,
+                                       points: points,
+                                       date: { $0.reading.date },
+                                       value: { $0.reading.score },
+                                       selectedDate: $selectedDate) { point in
+                    inspectionCard(point.reading)
                 }
             }
         }
@@ -3317,17 +3301,6 @@ private struct AtriaVitalsStressTimelineChart: View {
             containsSleep: AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading))
         ))
         .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV availability, motion context, and confidence")
-    }
-
-    private var selectedPoint: AtriaStressTimelinePoint? {
-        selectedDate.flatMap(nearestPoint(to:))
-    }
-
-    private func nearestPoint(to date: Date) -> AtriaStressTimelinePoint? {
-        points.min {
-            abs($0.reading.date.timeIntervalSince(date))
-                < abs($1.reading.date.timeIntervalSince(date))
-        }
     }
 
     /// Handoff-12 CP3: three visible lines — time, score · zone, HR. The
@@ -3346,12 +3319,7 @@ private struct AtriaVitalsStressTimelineChart: View {
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" }
                 ?? "HR unavailable")
         }
-        .font(.caption2)
-        .lineLimit(1)
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .atriaChartScrubCardChrome()
         .accessibilityElement(children: .combine)
         .accessibilityValue(Text(
             "\(reading.sleepContext == .asleep ? "Sleep · " : "")\(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) milliseconds" } ?? "HR-only estimate") · \(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence"
@@ -5114,9 +5082,14 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
 
     private var headline: String {
         if night.isManualEntry { return "No stages — manual entry" }
+        // 2026-08-29: mirror the detail sheet's states (AtriaSleepHypnogram
+        // displayState) so the compact card and the sheet name the same
+        // night the same way: an HR-only night without drawable segments is
+        // the sheet's "Estimated asleep window", and a no-evidence night
+        // matches its terminal "Stage analysis unavailable" wording.
         return night.stageEvidence == .hrOnlyEstimate
-            ? "Stages need motion data"
-            : "Sleep stages unavailable"
+            ? "Estimated asleep window"
+            : "Stage analysis unavailable"
     }
 
     private var detail: String {

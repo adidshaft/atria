@@ -279,6 +279,9 @@ struct AtriaTodayScreen: View {
     @State private var showWeeklyReport = false
     @State private var showInsights = false
     @State private var showBreathworkSession = false
+    // The stress tile lands on stress INFORMATION (owner directive
+    // 2026-08-29); breathwork stays reachable via the detail's Relax action.
+    @State private var showStressDetail = false
     // Dedicated sheet for the Strap-steps tile (2026-08-08): the steps tile is
     // rendered by AtriaTodayLiveGlanceTileHost, which had no tap affordance, so
     // tapping it dead-ended and there was no way to view step history. Reuses
@@ -483,6 +486,29 @@ struct AtriaTodayScreen: View {
                 showBreathworkSession = false
             }
         }
+        // Same presentation shape as AtriaHealthScreen's stress detail: the
+        // full measured surface (timeline, distribution, daily trend), with
+        // Relax handing off to the breathwork full-screen after this cover has
+        // finished dismissing.
+        .fullScreenCover(isPresented: $showStressDetail) {
+            AtriaStressDetailView(
+                input: AtriaStressDetailInput(state: stressMonitorStore.state,
+                                              history: stressMonitorStore.history,
+                                              heartRateHistory: stressMonitorStore.heartRateHistory,
+                                              updatedAt: stressMonitorStore.lastMeasuredAt,
+                                              distributionComparison: stressMonitorStore.distributionComparison(),
+                                              trendDays: stressMonitorStore.dailyTrendDays(),
+                                              loggedContext: todayStressLoggedContext),
+                onDismiss: { showStressDetail = false },
+                onRelax: {
+                    showStressDetail = false
+                    Task { @MainActor in
+                        await Task.yield()
+                        showBreathworkSession = true
+                    }
+                }
+            )
+        }
         // Refreshed whenever a step receipt publishes, so the sparkline follows
         // the same store the Strap steps card reads.
         .task(id: sessionProjectionStore.state.dailyRollupHistory.count) {
@@ -528,6 +554,22 @@ struct AtriaTodayScreen: View {
         min(layoutSize(for: metric).columnSpan, glanceColumnCount)
     }
 
+    /// Today's journal tags as displayed stress context — the same
+    /// dedup-by-tag projection AtriaHealthScreen feeds its stress detail
+    /// (context, never inferred cause: journal tags carry no timestamp
+    /// precise enough to attribute a stress peak).
+    private var todayStressLoggedContext: [AtriaStressLoggedContext] {
+        let calendar = Calendar.current
+        let tags = sessionProjectionStore.state.behaviorJournalEntries
+            .filter { calendar.isDateInToday($0.day) }
+            .flatMap(\.tags)
+        var seen = Set<String>()
+        return tags.compactMap { tag in
+            guard seen.insert(tag.rawValue).inserted else { return nil }
+            return AtriaStressLoggedContext(tag: tag)
+        }
+    }
+
     /// Route audit (visibilitySpec §3, 2026-07-05): every glance tile used to
     /// dead-end on tap except Stress -- and even that was broken (see below),
     /// so in practice ALL of them dead-ended. Maps each metric to the detail
@@ -554,11 +596,14 @@ struct AtriaTodayScreen: View {
     ]
 
     /// Wraps a glance tile in whatever tap affordance it honestly supports.
-    /// Stress keeps its dedicated breathwork shortcut (previously gated on a
-    /// broken `item.id == "Stress"` string check -- `AtriaTodayMetric.stress`
-    /// raw-values to `"stress"`, never the capitalized literal, so that
-    /// branch never actually ran and Stress dead-ended along with everything
-    /// else). Insights opens the canonical ranked-insights card. Everything else
+    /// Stress opens the full stress detail (owner directive 2026-08-29: a
+    /// metric tap lands on information, not an exercise — the tile used to
+    /// jump straight into the breathwork full-screen; breathwork remains one
+    /// tap away via the detail's Relax action). The branch was previously
+    /// gated on a broken `item.id == "Stress"` string check --
+    /// `AtriaTodayMetric.stress` raw-values to `"stress"`, never the
+    /// capitalized literal, so it never ran and Stress dead-ended along with
+    /// everything else. Insights opens the canonical ranked-insights card. Everything else
     /// that has a real or honest-partial detail opens `metricDetail`; anything
     /// without one renders as a plain, non-tappable tile rather than a fake
     /// affordance.
@@ -567,7 +612,7 @@ struct AtriaTodayScreen: View {
         let metric = AtriaTodayMetric(rawValue: item.metricKey)
         if metric == .stress {
             Button {
-                showBreathworkSession = true
+                showStressDetail = true
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }

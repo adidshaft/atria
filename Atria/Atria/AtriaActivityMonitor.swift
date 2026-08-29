@@ -962,21 +962,27 @@ struct AtriaActivityTimelineStressSample: Equatable, Sendable {
     /// Compatibility break marker for a rejected legacy evidence point. All
     /// complete v3 facts—including HR-only estimates—share one numeric line.
     let startsNewSegment: Bool
+    /// Confirmed-sleep membership of this minute's stored fact. The scrub
+    /// card's classification word says "Sleep" for these minutes — sleeping HR
+    /// rises are not waking stress (same rule as the Vitals monitor).
+    let isAsleep: Bool
 
     init(t: Date,
          score: Double,
          levelRawValue: Int,
-         startsNewSegment: Bool = false) {
+         startsNewSegment: Bool = false,
+         isAsleep: Bool = false) {
         self.t = t
         self.score = score
         self.levelRawValue = levelRawValue
         self.startsNewSegment = startsNewSegment
+        self.isAsleep = isAsleep
     }
 }
 
 /// Immutable COW snapshot transferred to the utility task. Stress history is a
 /// value array whose points are immutable; the wrapper documents that ownership
-/// boundary without mapping the entire 48-hour ring on MainActor every 30s.
+/// boundary without mapping the entire retained ring on MainActor every 30s.
 private struct AtriaActivityTimelineStressSourceSnapshot: Sendable {
     let history: [AtriaStressMonitorStore.StressHistoryPoint]
 }
@@ -1003,7 +1009,7 @@ enum AtriaActivityStressHistoryPresentation {
 
         let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
         if interval.end <= cutoff {
-            return "Outside the 2-day detailed-history window"
+            return "Outside the 7-day detailed-history window"
         }
         if isCurrentPhysiologicalDay {
             if currentState.minuteFact?.isHROnly == true
@@ -1037,7 +1043,7 @@ enum AtriaActivityStressHistoryPresentation {
         case .disabled, .loaded:
             let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
             if workoutEnd <= cutoff {
-                return "Outside the 2-day detailed-history window"
+                return "Outside the 7-day detailed-history window"
             }
             return "No measured stress readings were recorded during this workout."
         }
@@ -1051,6 +1057,24 @@ struct AtriaActivityTimelineStressPoint: Identifiable, Equatable, Sendable {
     let levelRawValue: Int
     let segment: Int
     let isOnlyPointInSegment: Bool
+    /// Carried from the sample so the scrub card can say "Sleep" honestly.
+    let isAsleep: Bool
+
+    init(id: Int,
+         t: Date,
+         score: Double,
+         levelRawValue: Int,
+         segment: Int,
+         isOnlyPointInSegment: Bool,
+         isAsleep: Bool = false) {
+        self.id = id
+        self.t = t
+        self.score = score
+        self.levelRawValue = levelRawValue
+        self.segment = segment
+        self.isOnlyPointInSegment = isOnlyPointInSegment
+        self.isAsleep = isAsleep
+    }
 
     var level: AtriaStressLevel? { AtriaStressLevel(rawValue: levelRawValue) }
 }
@@ -1194,7 +1218,8 @@ enum AtriaActivityTimelineSignalProjection {
                                     score: sample.score,
                                     levelRawValue: sample.levelRawValue,
                                     segment: segment,
-                                    isOnlyPointInSegment: singleton))
+                                    isOnlyPointInSegment: singleton,
+                                    isAsleep: sample.isAsleep))
                 id += 1
             }
         }
@@ -2064,6 +2089,10 @@ struct AtriaActivityMonitorTab: View {
         @State private var heartRateRequestID: UUID?
         @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
         @State private var stressProjectionWindowKey: TimelineSignalWindowKey?
+        /// Drag-to-inspect selection for the visible day chart (shared scrub
+        /// grammar, 2026-08-29). Cleared on signal or day change so a stale
+        /// selection can never snap onto an unrelated trace's nearest point.
+        @State private var timelineScrubDate: Date?
         /// Advances only at a foreground boundary or after SessionStore has
         /// published one complete recovered-data revision. Including this in the
         /// task key backfills signal rows captured while the app was suspended,
@@ -2084,6 +2113,12 @@ struct AtriaActivityMonitorTab: View {
                 }
                 .onChange(of: stressMonitorStore.liveHeartRate) { _, reading in
                     appendFreshLiveHeartRate(reading)
+                }
+                .onChange(of: selectedSignal) { _, _ in
+                    timelineScrubDate = nil
+                }
+                .onChange(of: timelineSignalWindowKey) { _, _ in
+                    timelineScrubDate = nil
                 }
                 .onChange(of: scenePhase) { previous, current in
                     guard AtriaActivityTimelineRefreshPolicy.shouldRefresh(
@@ -2430,7 +2465,8 @@ struct AtriaActivityMonitorTab: View {
                     t: point.t,
                     score: score,
                     levelRawValue: point.level.rawValue,
-                    startsNewSegment: omittedEvidenceSincePreviousStress
+                    startsNewSegment: omittedEvidenceSincePreviousStress,
+                    isAsleep: point.minuteFact?.sleepContext == .asleep
                 ))
                 hasStressSample = true
                 omittedEvidenceSincePreviousStress = false
@@ -2640,15 +2676,36 @@ struct AtriaActivityMonitorTab: View {
         .frame(height: 154)
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                timelinePlotOverlay(proxy: proxy,
-                                    geometry: geometry,
-                                    spans: spans,
-                                    emptyMessage: heartRateEmptyMessage)
+                ZStack(alignment: .topLeading) {
+                    timelinePlotOverlay(proxy: proxy,
+                                        geometry: geometry,
+                                        spans: spans,
+                                        emptyMessage: heartRateEmptyMessage)
+                    // Shared scrub grammar (2026-08-29): the same
+                    // drag-to-inspect card the Vitals monitor charts carry.
+                    // The gesture lives only on the plot, so the whole-card
+                    // tap into the landscape inspector stays reachable.
+                    AtriaChartScrubOverlay(proxy: proxy,
+                                           geometry: geometry,
+                                           points: points,
+                                           date: { $0.t },
+                                           value: { Double($0.bpm) },
+                                           selectedDate: $timelineScrubDate) { point in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(point.t.formatted(date: .omitted, time: .shortened))
+                                .font(.caption2.weight(.semibold))
+                            Text("\(point.bpm) bpm")
+                                .font(.caption.monospacedDigit().weight(.bold))
+                        }
+                        .atriaChartScrubCardChrome()
+                    }
+                }
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Heart rate and activity timeline")
         .accessibilityValue(heartRateAccessibilityValue(spans: spans))
+        .accessibilityHint("Drag across the chart to inspect time and measured heart rate")
     }
 
     private func stressTimelineChart(
@@ -2709,15 +2766,36 @@ struct AtriaActivityMonitorTab: View {
         .frame(height: 154)
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                timelinePlotOverlay(proxy: proxy,
-                                    geometry: geometry,
-                                    spans: spans,
-                                    emptyMessage: stressEmptyMessage)
+                ZStack(alignment: .topLeading) {
+                    timelinePlotOverlay(proxy: proxy,
+                                        geometry: geometry,
+                                        spans: spans,
+                                        emptyMessage: stressEmptyMessage)
+                    // Shared scrub grammar (2026-08-29): time plus the same
+                    // score · zone line as the Vitals monitor's card
+                    // ("1.40 · Moderate"; confirmed sleep says "Sleep").
+                    AtriaChartScrubOverlay(proxy: proxy,
+                                           geometry: geometry,
+                                           points: points,
+                                           date: { $0.t },
+                                           value: { $0.score },
+                                           selectedDate: $timelineScrubDate) { point in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(point.t.formatted(date: .omitted, time: .shortened))
+                                .font(.caption2.weight(.semibold))
+                            Text(AtriaStressMinuteBand.scoreLine(score: point.score,
+                                                                 isAsleep: point.isAsleep))
+                                .font(.caption.monospacedDigit().weight(.bold))
+                        }
+                        .atriaChartScrubCardChrome()
+                    }
+                }
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Stress and activity timeline")
         .accessibilityValue(stressAccessibilityValue(spans: spans))
+        .accessibilityHint("Drag across the chart to inspect time, score, and zone")
     }
 
     @AxisContentBuilder
@@ -2847,7 +2925,7 @@ struct AtriaActivityMonitorTab: View {
         let cutoff = Date().addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
         if currentDisplayWindow.interval.start < cutoff,
            stressMonitorStore.historyLoadState != .loading {
-            signal += " Earlier detailed history is outside the two-day retention window."
+            signal += " Earlier detailed history is outside the seven-day retention window."
         }
         if stressMonitorStore.historyLoadState == .unavailable,
            !stressProjection.points.isEmpty {
@@ -3430,7 +3508,7 @@ enum AtriaActivityWorkoutStressProjection {
 
 /// Stress history is relevant only while a workout detail is presented. Retain
 /// the store without broad observation and subscribe to its two history tokens,
-/// so live pulse/state updates do not repeatedly filter the 48-hour ring.
+/// so live pulse/state updates do not repeatedly filter the retained ring.
 private struct AtriaActivityWorkoutDetailSheetHost: View {
     let store: SessionStore
     let workout: UserConfirmedWorkout

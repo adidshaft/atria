@@ -105,7 +105,10 @@ struct AtriaSettingsView: View {
     /// export paths preserve durable session evidence and summaries; short-lived
     /// derived timelines remain display state rather than a second health archive.
     private enum DataCopy {
-        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+        // 2026-08-29: the Stress display cache retains seven days now
+        // (AtriaStressHistoryArchive.retentionWindow); the disclosure must
+        // name the real window.
+        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local seven-day Stress display cache is excluded from both."
     }
 
     private enum BackupFeedbackTone {
