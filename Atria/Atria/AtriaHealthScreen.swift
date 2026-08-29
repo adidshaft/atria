@@ -673,6 +673,13 @@ enum AtriaHealthMetricEvidencePresentation {
         if let rollup, rollup.lnRMSSD != nil {
             return (rollup.sleepSeconds ?? 0) > 0 ? "sleep signal" : "limited signal"
         }
+        // A recorded sleep with no HRV is a signal outcome, not an adherence
+        // one: the night is there, but no five-minute window accumulated
+        // enough valid beat-to-beat pairs (dropouts, or no verified RR at
+        // all). "needs qualified sleep" would wrongly ask for more wear.
+        if let rollup, (rollup.sleepSeconds ?? 0) > 0 {
+            return "sleep recorded · not enough clean beat-to-beat signal"
+        }
         return liveValueAvailable ? "live estimate" : "needs qualified sleep"
     }
 

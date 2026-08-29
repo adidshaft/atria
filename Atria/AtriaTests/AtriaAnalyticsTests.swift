@@ -5685,8 +5685,12 @@ final class AtriaAnalyticsTests: XCTestCase {
     }
 
     /// A short daytime nap must never be promotable through the degraded HR-only
-    /// overnight tier (that tier is for main sleep only).
-    func testShortDaytimeNapRejectedByDegradedTier() {
+    /// overnight tier (that tier is for main sleep only). Since the 2026-08-29
+    /// clock-agnostic nap fix, an HR-only nap above the stricter review bar
+    /// (avg <= rest+12, P90 <= rest+30, >= 30 min) does surface — but only as
+    /// an unvalidated, review-only nap candidate that no auto-confirm tier can
+    /// ever pick up.
+    func testShortDaytimeNapSurfacesReviewOnlyAndNeverEntersDegradedTier() {
         let calendar = utcCalendar
         let rest = 50
         let start = utcDate(2027, 3, 2, 14, 0)
@@ -5698,10 +5702,20 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                maxHR: 190,
                                                                calendar: calendar,
                                                                historicalMotionPolicy: .boundedRecent)
-        XCTAssertTrue(
-            candidates.isEmpty,
-            "a short daytime HR-only window must not surface as a nap review or enter the degraded overnight tier"
-        )
+        XCTAssertEqual(candidates.count, 1,
+                       "an HR-only daytime nap above the stricter review bar surfaces for wearer review")
+        guard let candidate = candidates.first else { return }
+        XCTAssertEqual(candidate.kind, "nap_candidate")
+        XCTAssertFalse(candidate.motionEvidenceValidated,
+                       "no stillness evidence exists; the candidate must remain unvalidated")
+        XCTAssertEqual(candidate.confidence, .low)
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
+                       "the degraded overnight tier must still reject nap candidates")
+        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(candidate,
+                                                                        baselineRestingIsTrusted: true,
+                                                                        baselineRestingIsNearTrusted: true),
+                       "an unvalidated nap must never auto-confirm")
     }
 
     /// Motion validation stays strictly preferred: a fragmented night with real

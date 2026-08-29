@@ -1645,89 +1645,135 @@ struct SavedSession: Codable, Identifiable {
             cooperativeDeadline: cooperativeDeadline,
             areInIncreasingOrder: { $0.t < $1.t }
         )
-        guard sorted.count >= minimumBeatCount else { return [] }
+        guard sorted.count >= minimumBeatCount,
+              let first = sorted.first, let final = sorted.last else { return [] }
 
-        var segments: [[(t: Double, ms: Double)]] = []
-        var current: [(t: Double, ms: Double)] = []
-        for (index, point) in sorted.enumerated() {
+        // RR values end at their timestamps. Cover from the beginning of the
+        // first measured interval (when its value is physiologically plausible)
+        // so a capture that spans exactly N windows yields N window positions.
+        let coverageStart = (300.0...2_000.0).contains(first.ms)
+            ? first.t - first.ms / 1_000
+            : first.t
+        guard final.t - coverageStart >= Self.qualifiedWindowSeconds else { return [] }
+
+        // RMSSD is defined over successive differences of ADJACENT beats, so a
+        // brief link dropout inside a window only removes the beat pairs that
+        // straddle it (enforced per-window in qualifiedLnRMSSDCore). A window
+        // is therefore placed on a fixed half-window stride over the whole
+        // qualified stream rather than being required to sit entirely inside
+        // one dropout-free run — a geometry no real BLE night can satisfy.
+        var qualified: [(start: Double, end: Double, lnRMSSD: Double)] = []
+        var windowEnd = coverageStart + Self.qualifiedWindowSeconds
+        let finalEnd = final.t
+        var lowerIndex = sorted.startIndex
+        var upperIndex = sorted.startIndex
+        while windowEnd <= finalEnd {
+            try cooperativeDeadline?.checkpoint()
+            let windowStart = windowEnd - Self.qualifiedWindowSeconds
+            while lowerIndex < sorted.endIndex, sorted[lowerIndex].t <= windowStart {
+                lowerIndex += 1
+                if lowerIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+            }
+            if upperIndex < lowerIndex { upperIndex = lowerIndex }
+            while upperIndex < sorted.endIndex, sorted[upperIndex].t <= windowEnd {
+                upperIndex += 1
+                if upperIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+            }
+            let windowCount = upperIndex - lowerIndex
+            if cooperativeDeadline != nil, windowCount > 4_096 {
+                windowEnd += Self.qualifiedWindowStrideSeconds
+                continue
+            }
+            let window: [(t: Double, ms: Double)]
+            if cooperativeDeadline != nil {
+                var checkedWindow: [(t: Double, ms: Double)] = []
+                checkedWindow.reserveCapacity(windowCount)
+                if lowerIndex < upperIndex {
+                    for index in lowerIndex..<upperIndex {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        checkedWindow.append(sorted[index])
+                    }
+                }
+                window = checkedWindow
+            } else {
+                window = Array(sorted[lowerIndex..<upperIndex])
+            }
+            if let lnRMSSD = try Self.qualifiedLnRMSSDCore(
+                window,
+                cooperativeDeadline: cooperativeDeadline
+            ) {
+                qualified.append((start: windowStart, end: windowEnd, lnRMSSD: lnRMSSD))
+            }
+            windowEnd += Self.qualifiedWindowStrideSeconds
+        }
+        try cooperativeDeadline?.checkpoint()
+        return try Self.distinctCoverageHonestWindows(
+            qualified,
+            sorted: sorted,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    /// Overlapping windows must not multiply evidence: `windowCount >= 3` is a
+    /// trust threshold, so three windows have to stand on at least
+    /// `qualifiedEvidenceMinimumDistinctSeconds` of DISTINCT valid adjacent-beat
+    /// time — the same 450 seconds seen through three half-stride windows is
+    /// still 450 seconds of physiology. When the union falls short, only
+    /// span-disjoint windows survive, restoring the non-overlapping geometry
+    /// the threshold was originally written against.
+    private static func distinctCoverageHonestWindows(
+        _ qualified: [(start: Double, end: Double, lnRMSSD: Double)],
+        sorted: [(t: Double, ms: Double)],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [Double] {
+        guard qualified.count >= 3 else { return qualified.map(\.lnRMSSD) }
+        // Merge qualifying window spans (already in ascending start order).
+        var merged: [(start: Double, end: Double)] = []
+        for window in qualified {
+            if let last = merged.last, window.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, window.end)
+            } else {
+                merged.append((start: window.start, end: window.end))
+            }
+        }
+        // Distinct evidence is valid-pair time clipped to the merged spans:
+        // each adjacent-beat interval is real signal exactly once, no matter
+        // how many overlapping windows contain it.
+        var distinctSeconds = 0.0
+        var spanIndex = merged.startIndex
+        for index in 1..<sorted.count {
             if index.isMultiple(of: 256) {
                 try cooperativeDeadline?.checkpoint()
             }
-            if let last = current.last {
-                let gap = point.t - last.t
-                if gap <= 0 || gap > HRVSnapshot.maxReadyRRGapSeconds {
-                    if current.count >= 2 { segments.append(current) }
-                    current.removeAll(keepingCapacity: true)
-                }
+            let previous = sorted[index - 1]
+            let current = sorted[index]
+            let dt = current.t - previous.t
+            guard dt > 0, dt <= HRVSnapshot.maxReadyRRGapSeconds,
+                  (300.0...2_000.0).contains(previous.ms),
+                  (300.0...2_000.0).contains(current.ms) else { continue }
+            while spanIndex < merged.endIndex, merged[spanIndex].end <= previous.t {
+                spanIndex += 1
             }
-            current.append(point)
+            guard spanIndex < merged.endIndex else { break }
+            let overlap = min(current.t, merged[spanIndex].end)
+                - max(previous.t, merged[spanIndex].start)
+            if overlap > 0 { distinctSeconds += overlap }
         }
-        if current.count >= 2 { segments.append(current) }
-
-        var lnRMSSDs: [Double] = []
-        for (segmentIndex, segment) in segments.enumerated() {
-            if segmentIndex.isMultiple(of: 16) {
-                try cooperativeDeadline?.checkpoint()
-            }
-            guard let first = segment.first, let final = segment.last,
-                  (300...2000).contains(first.ms) else { continue }
-            // RR values end at their timestamps. Tile from the beginning of the
-            // first measured interval so a true 15-minute low-rate capture has
-            // three five-minute windows rather than only two.
-            let coverageStart = first.t - first.ms / 1_000
-            guard final.t - coverageStart >= 300 else { continue }
-            var windowEnd = coverageStart + 300
-            let finalEnd = final.t
-            var lowerIndex = segment.startIndex
-            var upperIndex = segment.startIndex
-            while windowEnd <= finalEnd {
-                try cooperativeDeadline?.checkpoint()
-                let windowStart = windowEnd - 300
-                while lowerIndex < segment.endIndex, segment[lowerIndex].t <= windowStart {
-                    lowerIndex += 1
-                    if lowerIndex.isMultiple(of: 256) {
-                        try cooperativeDeadline?.checkpoint()
-                    }
-                }
-                if upperIndex < lowerIndex { upperIndex = lowerIndex }
-                while upperIndex < segment.endIndex, segment[upperIndex].t <= windowEnd {
-                    upperIndex += 1
-                    if upperIndex.isMultiple(of: 256) {
-                        try cooperativeDeadline?.checkpoint()
-                    }
-                }
-                let windowCount = upperIndex - lowerIndex
-                if cooperativeDeadline != nil, windowCount > 4_096 {
-                    windowEnd += 300
-                    continue
-                }
-                let window: [(t: Double, ms: Double)]
-                if cooperativeDeadline != nil {
-                    var checkedWindow: [(t: Double, ms: Double)] = []
-                    checkedWindow.reserveCapacity(windowCount)
-                    if lowerIndex < upperIndex {
-                        for index in lowerIndex..<upperIndex {
-                            if index.isMultiple(of: 256) {
-                                try cooperativeDeadline?.checkpoint()
-                            }
-                            checkedWindow.append(segment[index])
-                        }
-                    }
-                    window = checkedWindow
-                } else {
-                    window = Array(segment[lowerIndex..<upperIndex])
-                }
-                if let lnRMSSD = try Self.qualifiedLnRMSSDCore(
-                    window,
-                    cooperativeDeadline: cooperativeDeadline
-                ) {
-                    lnRMSSDs.append(lnRMSSD)
-                }
-                windowEnd += 300
-            }
+        guard distinctSeconds < Self.qualifiedEvidenceMinimumDistinctSeconds else {
+            return qualified.map(\.lnRMSSD)
         }
-        try cooperativeDeadline?.checkpoint()
-        return lnRMSSDs
+        var disjoint: [(start: Double, end: Double, lnRMSSD: Double)] = []
+        for window in qualified
+        where disjoint.last.map({ window.start >= $0.end }) ?? true {
+            disjoint.append(window)
+        }
+        return disjoint.map(\.lnRMSSD)
     }
 
     private func localHRVCacheKey(rrPoints: [RRPoint]) -> SavedSessionLocalHRVCacheKey {
@@ -1753,28 +1799,42 @@ struct SavedSession: Codable, Identifiable {
     ) throws -> Double? {
         try cooperativeDeadline?.checkpoint()
         let minimumBeatCount = minimumQualifiedRRBeatCount()
-        guard samples.count >= minimumBeatCount,
-              let first = samples.first,
-              let last = samples.last,
-              (300...2000).contains(first.ms),
-              // Match the live readiness policy: the measured RR coverage may
-              // end just before the wall-clock boundary, but the uncovered tail
-              // must remain within the same strict three-second continuity gate.
-              last.t - (first.t - first.ms / 1_000)
-                >= 300 - HRVSnapshot.maxReadyRRGapSeconds else { return nil }
+        guard samples.count >= minimumBeatCount else { return nil }
+        // RMSSD is defined over successive differences of ADJACENT beats. A
+        // valid pair is two neighboring RR samples separated by a plausible
+        // inter-beat time (0 < dt <= maxReadyRRGapSeconds) whose values both
+        // sit in the accepted 300...2000 ms band. A link dropout invalidates
+        // exactly the pairs that touch it — never the rest of the window —
+        // and no difference may ever be taken across an invalid pair.
+        var pairValid = [Bool](repeating: false, count: samples.count)
+        var validPairSeconds = 0.0
         for index in 1..<samples.count {
             if index.isMultiple(of: 128) {
                 try cooperativeDeadline?.checkpoint()
             }
-            let gap = samples[index].t - samples[index - 1].t
-            guard gap > 0, gap <= HRVSnapshot.maxReadyRRGapSeconds else { return nil }
+            let dt = samples[index].t - samples[index - 1].t
+            guard dt > 0, dt <= HRVSnapshot.maxReadyRRGapSeconds,
+                  (300.0...2_000.0).contains(samples[index].ms),
+                  (300.0...2_000.0).contains(samples[index - 1].ms) else { continue }
+            pairValid[index] = true
+            validPairSeconds += dt
         }
+        // The window must be mostly real adjacent-beat time: dropouts may
+        // pepper it, but valid pairs have to cover at least 70% of the nominal
+        // five minutes or the estimate would rest on too little of the night.
+        guard validPairSeconds >= minimumValidPairCoverageFraction
+                * qualifiedWindowSeconds else { return nil }
         var kept: [(ordinal: Int, value: Double)] = []
         kept.reserveCapacity(samples.count)
+        // Each invalid pair widens the ordinal spacing so that, exactly like a
+        // beat rejected by the artifact filter below, the beats on its two
+        // sides are never treated as physiological neighbors.
+        var adjacencyBreaks = 0
         for (index, sample) in samples.enumerated() {
             if index.isMultiple(of: 128) {
                 try cooperativeDeadline?.checkpoint()
             }
+            if index > 0, !pairValid[index] { adjacencyBreaks += 1 }
             guard (300...2000).contains(sample.ms) else { continue }
             let lower = max(samples.startIndex, index - 2)
             let upper = min(samples.index(before: samples.endIndex), index + 2)
@@ -1788,7 +1848,7 @@ struct SavedSession: Codable, Identifiable {
                     continue
                 }
             }
-            kept.append((ordinal: index, value: sample.ms))
+            kept.append((ordinal: index + adjacencyBreaks, value: sample.ms))
         }
         guard kept.count >= minimumBeatCount,
               Double(kept.count) / Double(samples.count) >= 0.75 else { return nil }
@@ -1864,6 +1924,22 @@ struct SavedSession: Codable, Identifiable {
     private static func minimumQualifiedRRBeatCount(windowSeconds: TimeInterval = 300) -> Int {
         Int(ceil(windowSeconds * HRVSnapshot.minimumReadyBeatsPerSecond))
     }
+
+    /// One qualified HRV window is five minutes of overnight RR signal.
+    static let qualifiedWindowSeconds: TimeInterval = 300
+    /// Windows advance by half a window. RMSSD needs adjacent-beat pairs, not
+    /// wall-clock alignment, so a clean stretch that ends between two
+    /// non-overlapping grid positions still contributes its full evidence.
+    static let qualifiedWindowStrideSeconds: TimeInterval = 150
+    /// Valid adjacent-beat pairs must cover at least this fraction of a
+    /// window's nominal five minutes for its RMSSD to describe the window
+    /// rather than a fragment of it.
+    static let minimumValidPairCoverageFraction = 0.70
+    /// The `windowCount >= 3` trust threshold requires at least two
+    /// non-overlapping windows' worth (600 s) of distinct valid-pair time, so
+    /// half-stride overlap cannot inflate the same physiology into extra
+    /// evidence.
+    static let qualifiedEvidenceMinimumDistinctSeconds: TimeInterval = 600
 
     private static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted()
@@ -38301,6 +38377,15 @@ final class SessionStore: ObservableObject {
             restingHR: candidate.restingHR,
             isNap: candidate.kind == "nap_candidate",
             motionValidated: classification.motionValidated,
+            // 2026-08-29: auto-confirmed nights were the only confirm lane
+            // still minting NO estimate segments on motion-insufficient
+            // nights (device-verified: every recent confirmed sleep had
+            // stageSegments == 0). This preparation already runs on the
+            // deadline-checked utility worker and stays row-budgeted, so it
+            // may pay for HR-only ESTIMATE staging like the user-initiated
+            // and cooperative-backfill lanes; output keeps the estimate id
+            // prefixes and renders only through the labeled-estimate lane.
+            allowHROnlyEstimate: true,
             maximumRows: compactLatestNightMaximumStagingRows,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -38656,7 +38741,13 @@ final class SessionStore: ObservableObject {
                                                             end: candidate.end,
                                                             restingHR: candidate.restingHR,
                                                             isNap: candidate.kind == "nap_candidate",
-                                                            motionValidated: classification.motionValidated)
+                                                            motionValidated: classification.motionValidated,
+                                                            // 2026-08-29: auto-confirm mints the
+                                                            // same labeled HR-only ESTIMATE the
+                                                            // user-initiated confirm lane does —
+                                                            // a dense-HR night without motion no
+                                                            // longer persists stage-less.
+                                                            allowHROnlyEstimate: true)
         let metrics = Self.confirmedSleepWindowMetrics(from: constructionSessions,
                                                        start: candidate.start,
                                                        end: candidate.end,
@@ -41268,7 +41359,10 @@ final class SessionStore: ObservableObject {
         )) ?? []
     }
 
-    private nonisolated static func sleepStageResearchSegments(
+    // Internal (not private, 2026-08-29) so the archive-HR union behavior is
+    // directly testable — same seam pattern as
+    // `fragmentedAggregateHRStagesAreUnsupported`.
+    nonisolated static func sleepStageResearchSegments(
         from sessions: [SavedSession],
         start: Date,
         end: Date,
@@ -41276,6 +41370,7 @@ final class SessionStore: ObservableObject {
         isNap: Bool,
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
         maximumRows: Int,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> [SleepStageSegment] {
@@ -41287,11 +41382,18 @@ final class SessionStore: ObservableObject {
             isNap: isNap,
             motionValidated: motionValidated,
             allowHROnlyEstimate: allowHROnlyEstimate,
+            extraHeartSamples: extraHeartSamples,
             maximumRows: maximumRows,
             cooperativeDeadline: cooperativeDeadline
         )
     }
 
+    // `extraHeartSamples` (2026-08-29): already-fetched drained-archive HR for
+    // the confirmed window, supplied ONLY by the cooperative backfill lane.
+    // The core stays pure over its inputs — it never reads the archive itself.
+    // Session points win timestamp collisions (whole-second keys; strap HR is
+    // 1 Hz with integer-second archive stamps), and the merged total honors
+    // the same `maximumRows` fail-closed budget as session rows.
     private nonisolated static func sleepStageResearchSegmentsCore(
         from sessions: [SavedSession],
         start: Date,
@@ -41300,6 +41402,7 @@ final class SessionStore: ObservableObject {
         isNap: Bool,
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
         maximumRows: Int?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
@@ -41338,6 +41441,30 @@ final class SessionStore: ObservableObject {
                        recoveredMotionEpochs.count > maximumRows {
                         return []
                     }
+                }
+            }
+        }
+        if !extraHeartSamples.isEmpty {
+            // Archive-HR union (2026-08-29): drained history fills session
+            // holes so the density gate can see the whole night. Session
+            // points win second-granularity timestamp collisions; extras
+            // deduplicate against each other under the same keys.
+            var sessionSeconds = Set<Int64>()
+            sessionSeconds.reserveCapacity(samples.count + extraHeartSamples.count)
+            for sample in samples {
+                sessionSeconds.insert(Int64(sample.t.timeIntervalSince1970.rounded()))
+            }
+            for (extraIndex, extra) in extraHeartSamples.enumerated() {
+                if extraIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                guard extra.t >= start, extra.t <= end, extra.bpm > 0,
+                      sessionSeconds.insert(
+                          Int64(extra.t.timeIntervalSince1970.rounded())
+                      ).inserted else { continue }
+                samples.append(extra)
+                if let maximumRows, samples.count > maximumRows {
+                    return []
                 }
             }
         }
@@ -41453,14 +41580,27 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private nonisolated static func sleepStageResearchSampleCount(
+    // `extraHeartSamples` (2026-08-29): mirrors the stage-input archive union
+    // so `shouldRefreshUserAdjustedSleepEvidence`'s candidate-sample trigger
+    // sees the same evidence the stager would — a night whose session holes
+    // drained AFTER confirmation grows here and actually retries. The dedup
+    // rule (whole-second keys, session points win) matches
+    // `sleepStageResearchSegmentsCore` exactly; with no extras the count is
+    // byte-for-byte the historical session-only count. Internal (not
+    // private) so the union count is directly testable.
+    nonisolated static func sleepStageResearchSampleCount(
         from sessions: [SavedSession],
         start: Date,
         end: Date,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> Int {
         try cooperativeDeadline.checkpoint()
         var count = 0
+        var sessionSeconds: Set<Int64> = []
+        if !extraHeartSamples.isEmpty {
+            sessionSeconds.reserveCapacity(extraHeartSamples.count)
+        }
         for (sessionIndex, session) in sessions.enumerated() {
             if sessionIndex.isMultiple(of: 16) {
                 try cooperativeDeadline.checkpoint()
@@ -41479,11 +41619,63 @@ final class SessionStore: ObservableObject {
                    timestamp <= end,
                    point.bpm > 0 {
                     count += 1
+                    if !extraHeartSamples.isEmpty {
+                        sessionSeconds.insert(
+                            Int64(timestamp.timeIntervalSince1970.rounded())
+                        )
+                    }
                 }
             }
         }
+        for (extraIndex, extra) in extraHeartSamples.enumerated() {
+            if extraIndex.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard extra.t >= start, extra.t <= end, extra.bpm > 0,
+                  sessionSeconds.insert(
+                      Int64(extra.t.timeIntervalSince1970.rounded())
+                  ).inserted else { continue }
+            count += 1
+        }
         try cooperativeDeadline.checkpoint()
         return count
+    }
+
+    /// Bounded archive-HR fetch for the cooperative stage-evidence lane
+    /// (2026-08-29). Confirmed windows routinely span multi-hour session
+    /// holes whose HR exists only in the drained `HistoricalArchive`, so
+    /// session points alone could never satisfy the stage engine's density
+    /// gate for those nights — stages starved forever even after the drain
+    /// caught up. This supplies the missing evidence to STAGE INPUT ONLY:
+    /// durations/metrics/coverage stay session-derived, and the integrity
+    /// gate keeps its full authority over what persists.
+    /// - Recency-bounded (last `stageEvidenceArchiveHRRecencyDays`) so the
+    ///   backfill lane never rescans deep history window-by-window.
+    /// - The reader is the catalog-bounded, LRU-cached exact-window scan
+    ///   (`HistoricalArchive.metricHeartRatePoints(start:end:maximumPoints:)`),
+    ///   whose row parser already drops physiology-withheld rows
+    ///   (`metricUsable` + 35–240 bpm) — off-wrist HR==0 can never become
+    ///   stage evidence. Fail-closed: an incomplete or over-budget read is
+    ///   nil and contributes nothing.
+    nonisolated static let stageEvidenceArchiveHRRecencyDays: Double = 7
+    nonisolated static let stageEvidenceArchiveHRMaximumPoints = 100_000
+
+    nonisolated static func archiveStageEvidenceHeartSamples(
+        start: Date,
+        end: Date,
+        now: Date = Date(),
+        reader: (Date, Date, Int) -> HistoricalArchive.HeartRateWindowRead? = {
+            HistoricalArchive.metricHeartRatePoints(
+                start: $0, end: $1, maximumPoints: $2
+            )
+        }
+    ) -> [AtriaSleepWakeResearch.HeartSample] {
+        guard end > start,
+              now.timeIntervalSince(end)
+                <= stageEvidenceArchiveHRRecencyDays * 86_400 else { return [] }
+        guard let read = reader(start, end, stageEvidenceArchiveHRMaximumPoints)
+        else { return [] }
+        return read.points.map { .init(t: $0.t, bpm: $0.bpm) }
     }
 
     private static func readConfirmedSleeps() -> [UserConfirmedSleep] {
@@ -42992,9 +43184,15 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    // `archiveHeartSamples` (2026-08-29): drained-archive HR for this exact
+    // window, fetched once by the cooperative backfill loop. It feeds ONLY
+    // the refresh trigger's candidate-sample count and the stage-evidence
+    // inputs; `sensorCovered`, `duration`, and every persisted metric stay
+    // session-derived exactly as before.
     private nonisolated static func refreshedUserAdjustedSleepEvidenceIfNeeded(
         _ sleep: UserConfirmedSleep,
         sourceSessions: [SavedSession],
+        archiveHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
         reason: String,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> UserConfirmedSleep? {
@@ -43008,6 +43206,7 @@ final class SessionStore: ObservableObject {
             from: sourceSessions,
             start: sleep.start,
             end: sleep.end,
+            extraHeartSamples: archiveHeartSamples,
             cooperativeDeadline: cooperativeDeadline
         )
         let motionProvenance = try Self.recoveredMotionProvenance(
@@ -43057,6 +43256,7 @@ final class SessionStore: ObservableObject {
             // Cooperative backfill lane: allowed to pay for HR-only
             // ESTIMATE staging so stage-less records converge (2026-08-12).
             allowHROnlyEstimate: true,
+            extraHeartSamples: archiveHeartSamples,
             maximumRows: Int.max,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -43194,10 +43394,30 @@ final class SessionStore: ObservableObject {
                                     }
                                 }
                             }
+                            // Archive-HR union (2026-08-29, cooperative lane
+                            // only): a STAGE-LESS record whose session holes
+                            // drained after confirmation gets the drained HR
+                            // as extra stage evidence. Staged records skip
+                            // the fetch — their evidence already converged,
+                            // and skipping keeps this loop from re-running
+                            // the stager every pass. The helper is recency-
+                            // bounded and served by the LRU-cached exact-
+                            // window reader, so repeat passes are cheap.
+                            let archiveHeartSamples: [AtriaSleepWakeResearch.HeartSample]
+                            if sleep.stageSegments?.isEmpty != false {
+                                archiveHeartSamples = Self
+                                    .archiveStageEvidenceHeartSamples(
+                                        start: sleep.start,
+                                        end: sleep.end
+                                    )
+                            } else {
+                                archiveHeartSamples = []
+                            }
                             if let refreshed = try Self
                                 .refreshedUserAdjustedSleepEvidenceIfNeeded(
                                     sleep,
                                     sourceSessions: sourceSessions,
+                                    archiveHeartSamples: archiveHeartSamples,
                                     reason: reason,
                                     cooperativeDeadline: deadline
                                 ) {
@@ -43248,6 +43468,7 @@ final class SessionStore: ObservableObject {
                                     from: sourceSessions,
                                     start: sleep.start,
                                     end: sleep.end,
+                                    extraHeartSamples: archiveHeartSamples,
                                     cooperativeDeadline: deadline
                                 )
                             let provenance = try Self
@@ -43270,6 +43491,7 @@ final class SessionStore: ObservableObject {
                                 // Cooperative backfill lane (2026-08-12):
                                 // may pay for HR-only ESTIMATE staging.
                                 allowHROnlyEstimate: true,
+                                extraHeartSamples: archiveHeartSamples,
                                 maximumRows: Int.max,
                                 cooperativeDeadline: deadline
                             )
@@ -46353,6 +46575,20 @@ final class SessionStore: ObservableObject {
             ).flatMap(Self.splitShortPreludeFromDenseSleepCluster)
         }
         try cooperativeDeadline?.checkpoint()
+        // A cluster that reaches the lane gates and is refused everywhere used
+        // to vanish with no DetectionEvent and no log, leaving "no sleep
+        // candidates proposed at all" undiagnosable on device. Deterministic
+        // replay policies stay silent: a replay re-walks history and must not
+        // rewrite today's user-facing detection ring.
+        let logSkippedCluster: (String, String, Date, Date) -> Void = { reason, detail, windowStart, windowEnd in
+            guard historicalMotionPolicy == .boundedRecent
+                    || historicalMotionPolicy == .fullArchive else { return }
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: reason,
+                                                     detail: detail,
+                                                     windowStart: windowStart,
+                                                     windowEnd: windowEnd))
+        }
         var candidates: [AggregateSleepCandidate] = []
         candidates.reserveCapacity(clusters.count)
         for cluster in clusters {
@@ -46510,13 +46746,74 @@ final class SessionStore: ObservableObject {
                 let clusterDaytimeNapWindow = !clusterOvernightReviewWindow
                     && clusterStartHour >= 11
                     && clusterEndHour <= 20
-                let daytimeNapCandidateReady = clusterDaytimeNapWindow
-                    && span <= AggregateSleepCandidate.napMaximumSpan
+                let napSpanAndDurationReady = span <= AggregateSleepCandidate.napMaximumSpan
                     && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                // Clock-agnostic nap admission. A shifted-schedule wearer's real
+                // nap can sit at ANY clock hour, so the nap lanes cannot key on
+                // the civil daytime band alone. But a short low-HR window outside
+                // that band is also exactly what a fragment of a hole-riddled
+                // night — or of a sleep still in progress — looks like. Such a
+                // window may become a nap only when the evidence itself bounds it
+                // AFTER its end:
+                //   (a) a later session with sustained awake-level HR begins
+                //       within the cluster-join horizon after the window ends, or
+                //   (b) a separate sleep-eligible session starts at least one
+                //       join-gap after the window end (a closer eligible session
+                //       would have been clustered into this window, and a split
+                //       short prelude must not be minted as a nap beside its own
+                //       dense night), or
+                //   (c) the window ended at least 45 minutes ago and no session
+                //       outside this cluster continues past its end within the
+                //       join gap — the recording simply stopped, and nothing
+                //       marks the window as the leading fragment of more sleep.
+                // (c) reads the wall clock, so a just-ended window is deferred,
+                // not lost: the next aggregation pass re-evaluates it.
+                let anyHourNapBounded: Bool = try {
+                    guard !clusterDaytimeNapWindow, napSpanAndDurationReady else {
+                        return false
+                    }
+                    let joinGap: TimeInterval = 2 * 60 * 60
+                    let clusterIDs = Set(cluster.map(\.id))
+                    var awakeHRAfterWindow = false
+                    var continuesPastWindowEnd = false
+                    for (index, other) in sourceSessions.enumerated() {
+                        if index.isMultiple(of: 64) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        guard !clusterIDs.contains(other.id) else { continue }
+                        if other.end > end.addingTimeInterval(60),
+                           other.start < end.addingTimeInterval(joinGap) {
+                            continuesPastWindowEnd = true
+                        }
+                        if other.start >= end.addingTimeInterval(-60),
+                           other.start < end.addingTimeInterval(joinGap),
+                           other.duration >= 10 * 60,
+                           let stats = sessionHRStats[other.id],
+                           stats.roundedAverage >= rest + 15 {
+                            awakeHRAfterWindow = true
+                        }
+                    }
+                    if awakeHRAfterWindow { return true }
+                    for other in eligible where !clusterIDs.contains(other.id) {
+                        if other.start.timeIntervalSince(end) >= joinGap {
+                            return true
+                        }
+                    }
+                    return end.timeIntervalSinceNow <= -45 * 60
+                        && !continuesPastWindowEnd
+                }()
+                // Outside the daytime band, boundedness alone is not enough: the
+                // multi-fragment lane below carries no HR gate of its own, so the
+                // any-hour path additionally requires the low-HR nap envelope.
+                // Daytime-band clusters keep their existing admission unchanged.
+                let anyHourBoundedNapWindow = anyHourNapBounded
+                    && avg <= rest + 12
+                let napClockWindowReady = clusterDaytimeNapWindow || anyHourBoundedNapWindow
+                let napWindowCandidateReady = napClockWindowReady
+                    && napSpanAndDurationReady
                 let shortLowHRNapCandidateReady = cluster.count == 1
-                    && clusterDaytimeNapWindow
-                    && span <= AggregateSleepCandidate.napMaximumSpan
-                    && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                    && napClockWindowReady
+                    && napSpanAndDurationReady
                     && avg <= rest + 12
                     && peak <= rest + 35
                 // A daytime low-HR window can be desk work, reading, or active
@@ -46526,7 +46823,7 @@ final class SessionStore: ObservableObject {
                 // unavailable. Compute the physiology shape here, then apply
                 // the validated-motion requirement once motion provenance has
                 // been resolved below.
-                let napPhysiologyReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady
+                let napPhysiologyReady = napWindowCandidateReady || shortLowHRNapCandidateReady
                 let hrSampleCoverageFraction = min(1, Double(allHR.count) / max(1, totalDuration))
                 var rrSampleCount = 0
                 var qualifiedRRSampleCount = 0
@@ -46617,7 +46914,18 @@ final class SessionStore: ObservableObject {
                         || fragmentedFallbackReady
                         || napPhysiologyReady
                         || denseMorningHROnlyReviewReady
-                        || denseLongHROnlyReviewReady else { return nil }
+                        || denseLongHROnlyReviewReady else {
+                    logSkippedCluster(
+                        "cluster_no_surviving_lane",
+                        "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
+                            + "\(Int(totalDuration / 60)) min captured; no lane fit "
+                            + "(strict 3h, fragmented fallback, nap shape, dense morning "
+                            + "and dense long HR-only were all evaluated and refused)",
+                        start,
+                        end
+                    )
+                    return nil
+                }
                 var motionHintCount = 0
                 var recoveredEpochs: [AtriaRecoveredMotionEpoch] = []
                 for session in cluster {
@@ -46723,6 +47031,20 @@ final class SessionStore: ObservableObject {
                     ? recoveredMotion.lowMotionValidated
                     : (historicalMotion.lowMotionReady || sessionMotionValidated)
                 let napCandidateReady = napPhysiologyReady && motionValidated
+                // Motion offload on this strap can lag hours-to-days behind HR,
+                // so a real nap with unambiguous nap physiology must not die
+                // silently on that lag. Admit it WITHOUT motion validation for
+                // wearer review only, behind a stricter HR bar than the nap
+                // admission floor: average within +12, P90 within +30, and at
+                // least 30 captured minutes versus the 20-minute nap floor. The
+                // candidate keeps motionEvidenceValidated=false, so downstream
+                // surfaces it as review_needed/unconfirmed, and every automatic
+                // confirmation tier rejects kind == "nap_candidate" outright.
+                let hrOnlyNapReviewReady = napPhysiologyReady
+                    && !motionValidated
+                    && avg <= rest + 12
+                    && hrP90 <= rest + 30
+                    && totalDuration >= 30 * 60
                 let motionSource = recoveredMotion.hasRecoveredEpochs
                     ? recoveredMotion.source
                     : (historicalMotion.lowMotionReady
@@ -46790,22 +47112,56 @@ final class SessionStore: ObservableObject {
                     && elevatedSampleFraction < 0.10
                     && elevatedSampleFraction * totalDuration < 20 * 60
                 guard napCandidateReady
+                        || hrOnlyNapReviewReady
                         || motionValidatedMainSleepReady
                         || stableHROnlyMainSleepReady
                         || highSpecificityFragmentedHROnlyMainSleepReady
                         || degradedHROnlyMainSleepReviewReady
                         || denseMorningHROnlyReviewReady
                         || denseLongHROnlyReviewReady else {
+                    if napPhysiologyReady {
+                        logSkippedCluster(
+                            "nap_motion_unvalidated_hr_weak",
+                            "Nap-shaped window \(clusterStartHour)h–\(clusterEndHour)h, "
+                                + "\(Int(totalDuration / 60)) min captured; stillness "
+                                + "unvalidated and HR below the stricter review bar "
+                                + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
+                                + "30 min floor)",
+                            start,
+                            end
+                        )
+                    } else {
+                        logSkippedCluster(
+                            "cluster_no_surviving_lane",
+                            "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
+                                + "\(Int(totalDuration / 60)) min captured; motion and "
+                                + "main-sleep review lanes were all evaluated and refused",
+                            start,
+                            end
+                        )
+                    }
                     return nil
                 }
                 let motionReason = motionValidated
                     ? "historical gravity low-motion validated"
                     : "\(motionClause); historical gravity \(historicalMotion.reason)"
                 let reason: String
-                if napPhysiologyReady && !napCandidateReady {
+                if napPhysiologyReady && !napCandidateReady && !hrOnlyNapReviewReady {
                     // Fail closed: the HR shape is retained in diagnostics but
                     // must not become a user-visible nap review.
+                    logSkippedCluster(
+                        "nap_motion_unvalidated_hr_weak",
+                        "Nap-shaped window \(clusterStartHour)h–\(clusterEndHour)h, "
+                            + "\(Int(totalDuration / 60)) min captured; stillness "
+                            + "unvalidated and HR below the stricter review bar "
+                            + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
+                            + "30 min floor)",
+                        start,
+                        end
+                    )
                     return nil
+                } else if napPhysiologyReady && !napCandidateReady && hrOnlyNapReviewReady {
+                    reason = "HR-only nap candidate; stillness not yet validated; user confirmation required; \(motionReason)"
                 } else if fragmentedFallbackReady && !strictDurationReady {
                     reason = "HR-only interrupted overnight low-HR aggregate; below strict 3h low-HR total but span supports broken sleep fallback; \(motionReason)"
                 } else if shortLowHRNapCandidateReady {
@@ -46821,7 +47177,12 @@ final class SessionStore: ObservableObject {
                 } else {
                     reason = "HR-only overnight review window; user confirmation required; \(motionReason)"
                 }
-                let kind = napCandidateReady ? "nap_candidate" : "overnight_sleep"
+                // An HR-only nap review is still a nap: labeling it
+                // "overnight_sleep" would hand an unvalidated daytime window to
+                // the main-sleep presentation and gating paths.
+                let napReviewCandidate = napCandidateReady
+                    || (napPhysiologyReady && hrOnlyNapReviewReady)
+                let kind = napReviewCandidate ? "nap_candidate" : "overnight_sleep"
                 // Duration honesty (2026-08-04, user-caught): deduct SUSTAINED
                 // validated wake movement from the reported duration so a
                 // candidate can never claim duration == span across a stretch
@@ -46855,7 +47216,7 @@ final class SessionStore: ObservableObject {
                             in: DateInterval(start: start, end: end),
                             minimumDuration: Self.sleepOnsetClampMinimumSustainedUse
                         ),
-                        minimumRetainedDuration: napCandidateReady
+                        minimumRetainedDuration: napReviewCandidate
                             ? AggregateSleepCandidate.napMinimumDuration
                             : AggregateSleepCandidate.strictMinimumDuration
                     )

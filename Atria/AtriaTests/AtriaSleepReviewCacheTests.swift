@@ -318,7 +318,12 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(result, expected)
     }
 
-    func testStaleCachedNapDoesNotSurviveActiveLowHRWithoutValidatedMotion() throws {
+    func testCachedNapWithFreshLowHRButNoMotionStaysReviewNeeded() throws {
+        // 2026-08-29 clock-agnostic nap fix: a fresh HR-only pass above the
+        // stricter nap review bar (avg <= rest+12, P90 <= rest+30, >= 30 min)
+        // legitimately re-proposes the nap for wearer review instead of
+        // erasing it on lagging motion offload. The surfaced night must stay
+        // an unconfirmed review-needed nap — never a confident sleep.
         let cachedNap = napReviewNight()
         let snapshot = SleepHistorySnapshot(nights: [cachedNap], confirmedCount: 0, candidateCount: 1)
         let activeLowHR = daytimeLowHRSession(start: try XCTUnwrap(cachedNap.start),
@@ -333,8 +338,13 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             calendar: calendar
         )
 
-        XCTAssertNil(result,
-                     "a stale cached nap must not outlive a fresh active/low-HR pass without strap motion proof")
+        let night = try XCTUnwrap(result,
+                                  "a fresh HR-only pass above the nap review bar re-proposes the nap for review")
+        XCTAssertEqual(night.source, "nap_candidate")
+        XCTAssertEqual(night.confidence, "review_needed")
+        XCTAssertFalse(night.confirmed, "an HR-only nap must never surface as confirmed")
+        XCTAssertNotEqual(night.motionValidated, true,
+                          "no strap motion proof exists; the night must not claim it")
     }
 
     func testCachedNapSurvivesFreshOverlappingValidatedMotionEvidence() throws {

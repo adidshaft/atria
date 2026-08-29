@@ -150,10 +150,13 @@ final class AtriaDegradedSleepReviewTests: XCTestCase {
     }
 
     func testWeakEvidenceYieldsTheNamedNotQualifiedTerminal() async throws {
-        // A 30-minute low-HR fragment is far below the HR-only sleep tiers:
-        // eligible failure, consulted evidence, no candidate — and the
-        // outcome must say exactly that.
-        let fixture = try makeDegradedFixture(nightHours: 0.5)
+        // A 24-minute low-HR fragment is below the 30-minute HR-only nap
+        // review floor and far below the HR-only sleep tiers: eligible
+        // failure, consulted evidence, no candidate — and the outcome must
+        // say exactly that. (A 30-minute fragment now legitimately surfaces
+        // as a review-only HR-only nap since the 2026-08-29 clock-agnostic
+        // nap fix, so this terminal is exercised just under that floor.)
+        let fixture = try makeDegradedFixture(nightHours: 0.4)
         defer { fixture.cleanUp() }
         let result = await prepare(fixture: fixture)
         guard case .withheld(let failure) = result else {

@@ -1597,10 +1597,13 @@ final class AtriaPerfFixesTests: XCTestCase {
     func testSavedSessionLocalHRVSummaryIsStableAcrossRepeatedReads() {
         let session = localRRSession(hrv: nil)
 
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: windows advance on a 150 s
+        // half-stride, so this 900 s clean stream yields 5 windows (was 3
+        // under 300 s tiling). The RMSSD itself is unchanged.
+        XCTAssertEqual(session.localHRVWindowCount, 5)
         XCTAssertEqual(session.localRMSSD, 40)
         XCTAssertEqual(session.localRMSSD, 40)
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        XCTAssertEqual(session.localHRVWindowCount, 5)
     }
 
     func testSavedSessionLowRateRRProducesThreeRealisticFiveMinuteWindows() {
@@ -1622,7 +1625,9 @@ final class AtriaPerfFixesTests: XCTestCase {
             rrPoints: rrPoints
         )
 
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: the 150 s half-stride places 5
+        // windows on this 900 s low-rate stream (was 3 under 300 s tiling).
+        XCTAssertEqual(session.localHRVWindowCount, 5)
         XCTAssertEqual(session.localRMSSD, 20)
     }
 
@@ -1641,7 +1646,8 @@ final class AtriaPerfFixesTests: XCTestCase {
         let session = localRRSession(hrv: 55)
 
         XCTAssertEqual(session.localRMSSD, 55)
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: 5 half-stride windows (was 3).
+        XCTAssertEqual(session.localHRVWindowCount, 5)
     }
 
     func testLatestLocalRMSSDSourceAfterUpsertKeepsOvernightRecoveryPreference() {
