@@ -174,7 +174,7 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testTheStressSeriesIsMemoisedRatherThanRebuiltEveryRender() throws {
         // glanceItem(for:) runs on every SwiftUI body evaluation. The stress
-        // archive is bounded at 2,880 points (48h), so filtering + sorting it
+        // archive is bounded at 10,080 points (7 days), so filtering + sorting it
         // per render is the exact per-frame recompute AtriaTodayGlanceMemo was
         // added to prevent — six other glance values already use it.
         let source = try todayScreen()

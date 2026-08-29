@@ -264,7 +264,7 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let source = try source("AtriaSettingsView.swift")
 
         XCTAssertTrue(source.contains(
-            "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+            "Saved sensor sessions and health summaries can be backed up or exported. The local seven-day Stress display cache is excluded from both."
         ))
     }
 

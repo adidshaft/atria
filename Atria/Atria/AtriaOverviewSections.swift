@@ -3766,11 +3766,15 @@ struct AtriaMetricDetailSheet: View {
             #endif
         }
         .sheet(item: $openedHistoryDay) { day in
+            let historyModel = AtriaHistoryModel.make(rollups: rollups,
+                                                      workouts: confirmedWorkouts,
+                                                      sleeps: confirmedSleeps)
             AtriaHistoryDayDetailSheet(day: day,
-                                       medians: AtriaHistoryModel.make(rollups: rollups,
-                                                                       workouts: confirmedWorkouts,
-                                                                       sleeps: confirmedSleeps).medianWindow(around: day),
-                                       nights: sleepHistory.confirmedNights(on: day.date))
+                                       medians: historyModel.medianWindow(around: day),
+                                       nights: sleepHistory.confirmedNights(on: day.date),
+                                       allDays: historyModel.days,
+                                       mediansForDay: { historyModel.medianWindow(around: $0) },
+                                       nightsForDay: { sleepHistory.confirmedNights(on: $0.date) })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -3889,7 +3893,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .hrv:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: hrvSummaryForSelectedPeriod,
@@ -3925,7 +3929,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .restingHeartRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: restingHeartRateSummaryForSelectedPeriod,
@@ -3961,7 +3965,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
@@ -3992,7 +3996,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .sleep:
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
@@ -4037,7 +4041,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .strain:
             AtriaMetricDetailTemplate(heroValue: strainHeroValue,
@@ -4061,17 +4065,21 @@ struct AtriaMetricDetailSheet: View {
                                                tint: Metrics.electricStrain)
                 }
             } chart: {
-                if range == .day, showsCurrentPhysiologicalCycleContext {
-                    if let currentCycleStrainProvenance {
-                        AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)
+                // Live-day provenance renders INSIDE the chart slot (2026-08-29):
+                // returning the card instead of chartSlot dropped the D/W/M range
+                // selector and the prev/next chevrons, so a live strain sheet had
+                // no way to reach past days.
+                chartSlot {
+                    if range == .day, showsCurrentPhysiologicalCycleContext {
+                        if let currentCycleStrainProvenance {
+                            AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)
+                        } else {
+                            honestPartialCard(
+                                tint: Metrics.electricStrain,
+                                bodyText: "Strain needs heart-rate evidence from this physiological day."
+                            )
+                        }
                     } else {
-                        honestPartialCard(
-                            tint: Metrics.electricStrain,
-                            bodyText: "Strain needs heart-rate evidence from this physiological day."
-                        )
-                    }
-                } else {
-                    chartSlot {
                         metricChart(title: "Strain",
                                 // Per-day bar: accumulates from 0 each physiological day.
                                 rendersAsDailyBar: true,
@@ -4090,7 +4098,7 @@ struct AtriaMetricDetailSheet: View {
                     }
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .sleepPerformance:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepPerformanceSummary[range], points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
@@ -4115,7 +4123,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .fitnessAge:
             AtriaMetricDetailTemplate(heroValue: fitnessAgeHeroValue,
@@ -4146,7 +4154,7 @@ struct AtriaMetricDetailSheet: View {
                                       bodyText: "Calibrating a 28-day baseline before showing your pace of aging \u{2014} \(preparedHistory.fitnessAgeEntryCount) of 4 weekly checks saved so far.")
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .stress:
             // Copy updated 2026-08-04: a daily stress history DOES exist now
@@ -4177,7 +4185,7 @@ struct AtriaMetricDetailSheet: View {
                                        title: "LAST 30 NIGHTS",
                                        subject: "Sleep efficiency")
                 } about: {
-                    aboutDisclosure
+                    aboutSection
                 }
             } else {
                 honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
@@ -4218,7 +4226,7 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 honestPartialCard(tint: .orange, bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .bloodOxygen:
             // The hero stays empty until a decoder is verified; never render an
@@ -4242,7 +4250,7 @@ struct AtriaMetricDetailSheet: View {
         } chart: {
             honestPartialCard(tint: tint, bodyText: bodyText)
         } about: {
-            aboutDisclosure
+            aboutSection
         }
     }
 
@@ -4716,15 +4724,18 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
-    private var aboutDisclosure: some View {
-        DisclosureGroup {
+    /// Always-visible About block (owner directive 2026-08-29): the textual
+    /// "What it means" / "What to do" copy sits at the bottom of every metric
+    /// detail sheet — previously a collapsed "Learn" DisclosureGroup, which hid
+    /// it behind two taps. Static text, so it costs nothing to keep expanded.
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("About", systemImage: "info.circle")
+                .font(.subheadline.weight(.semibold))
             AtriaMetricMeaningInline(metric: metric,
                                      guidance: guidance,
                                      recoveryEstimate: recoveryEstimate,
                                      sleepGoalHours: sleepGoalHours)
-        } label: {
-            Label("Learn", systemImage: "info.circle")
-                .font(.subheadline.weight(.semibold))
         }
         .padding(14)
         .atriaInsetCard(tint: metric.tint)
@@ -6755,20 +6766,32 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     var body: some View {
         // Real progressive disclosure: the first screen is the WHOOP-like simple
         // view — value, graph, and the metric's own signature visual (hypnogram /
-        // strain gauge / contributor map). The generic contributor rows and the
-        // education copy are collapsed behind an explicit "Show details" tap, so a
-        // metric tap no longer dumps every stat in one long scroll.
+        // strain gauge / contributor map). The generic contributor rows are
+        // collapsed behind an explicit "Show details" tap, so a metric tap no
+        // longer dumps every stat in one long scroll. The textual About copy is
+        // NOT part of that reveal (owner directive 2026-08-29): it renders as an
+        // always-visible section at the bottom of every metric detail sheet.
         VStack(alignment: .leading, spacing: 16) {
             hero
             chart
             betweenHeroAndContributors
-            revealAffordance
-            if showDetails {
-                detailPanel
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            if hasContributors {
+                revealAffordance
+                if showDetails {
+                    detailPanel
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
+            about
         }
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showDetails)
+    }
+
+    /// Static type check, not a runtime one: templates without contributor rows
+    /// pass `EmptyView` for the slot, and with About now bottom-visible the
+    /// reveal would open a header-only panel for them.
+    private var hasContributors: Bool {
+        Contributors.self != EmptyView.self
     }
 
     private var revealAffordance: some View {
@@ -6805,7 +6828,6 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
             }
 
             contributors
-            about
         }
         .padding(16)
         .atriaInsetCard(tint: tint)
