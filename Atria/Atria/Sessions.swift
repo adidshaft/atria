@@ -3729,6 +3729,13 @@ struct AtriaSameDayMainSleepChoice: Identifiable, Equatable {
 struct AtriaDismissedSleepCandidate: Codable, Equatable {
     let start: Date
     let end: Date
+    /// When this tombstone was written (2026-08-29 device forensics: today's
+    /// 05:34-07:17 nap review vanished behind a tombstone and the store could
+    /// not say when — or through which flow — that entry appeared, so the
+    /// outage was chased for hours as a detector regression). Optional and
+    /// additive: entries written by earlier builds decode as nil, older
+    /// builds ignore the extra key, and suppression semantics never read it.
+    var createdAt: Date? = nil
 
     func overlaps(start otherStart: Date, end otherEnd: Date) -> Bool {
         start < otherEnd && end > otherStart
@@ -35971,7 +35978,8 @@ final class SessionStore: ObservableObject {
             // Repair older saved reviews that predate durable candidate
             // settlement. Re-confirming must remove the actionable candidate
             // immediately even though the confirmed record itself is unchanged.
-            addDismissedSleepCandidate(start: start, end: end)
+            addDismissedSleepCandidate(start: start, end: end,
+                                       reason: "reconfirm_settled")
             sleepHistorySnapshot = SleepHistorySnapshot(
                 rollups: historySnapshot.rollups,
                 confirmedSleeps: cachedConfirmedSleeps,
@@ -36061,7 +36069,8 @@ final class SessionStore: ObservableObject {
         // canonical record is durable. A failed write must never dismiss the
         // sole actionable candidate and leave Activity empty.
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
-        addDismissedSleepCandidate(start: start, end: end)
+        addDismissedSleepCandidate(start: start, end: end,
+                                   reason: "confirm_settled")
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed_specific id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
                       confirmed.id,
@@ -40460,7 +40469,8 @@ final class SessionStore: ObservableObject {
         if let settlingCandidateWindow,
            settlingCandidateWindow.end > settlingCandidateWindow.start {
             addDismissedSleepCandidate(start: settlingCandidateWindow.start,
-                                       end: settlingCandidateWindow.end)
+                                       end: settlingCandidateWindow.end,
+                                       reason: "adjust_settled")
         }
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_adjust status=saved id=%@ from_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f stages=%d",
@@ -40547,7 +40557,8 @@ final class SessionStore: ObservableObject {
             publishStressContext:
                 Self.sleepStressContextAuthority(removed) != nil
         ) else { return false }
-        addDismissedSleepCandidate(start: removed.start, end: removed.end)
+        addDismissedSleepCandidate(start: removed.start, end: removed.end,
+                                   reason: "record_deleted")
         refreshSleepSnapshotAfterCandidateSettlement()
         if autoSleepLoggedBanner?.sleepID == id { autoSleepLoggedBanner = nil }
         dashboardRevision &+= 1
@@ -40569,7 +40580,8 @@ final class SessionStore: ObservableObject {
             .filter { Self.dismissalRetractsConfirmedSleep($0, dismissalStart: start, dismissalEnd: end) }
             .map(\.id)
         if night.confirmed, retractableIDs.isEmpty { return false }
-        addDismissedSleepCandidate(start: start, end: end)
+        addDismissedSleepCandidate(start: start, end: end,
+                                   reason: "user_dismissed")
         if !retractableIDs.isEmpty {
             Task { @MainActor [weak self] in
                 _ = await self?.retractConfirmedSleeps(ids: retractableIDs)
@@ -40630,15 +40642,61 @@ final class SessionStore: ObservableObject {
         return retracted
     }
 
-    private func addDismissedSleepCandidate(start: Date, end: Date) {
+    private func addDismissedSleepCandidate(start: Date, end: Date, reason: String) {
         guard end > start else { return }
         dismissedSleepCandidates.removeAll { $0.overlaps(start: start, end: end) }
-        dismissedSleepCandidates.append(AtriaDismissedSleepCandidate(start: start, end: end))
+        dismissedSleepCandidates.append(AtriaDismissedSleepCandidate(start: start,
+                                                                     end: end,
+                                                                     createdAt: Date()))
         AtriaDismissedSleepCandidateStore.save(dismissedSleepCandidates)
         AtriaPendingSleepReviewStore.clear(
             overlappingStart: start,
             end: end
         )
+        // 2026-08-29 device forensics: every tombstone write is named in the
+        // detection ring with its provenance and window. Both of today's nap
+        // reviews were suppressed by tombstones, yet no store or log recorded
+        // when or from which flow they were written — the detection ring only
+        // held detector refusals about an Aug 25 window, so the outage read as
+        // a candidate-pipeline regression for hours. Logging only: suppression
+        // semantics, confirm flows and review products are unchanged.
+        AtriaDebugLog("ATRIADBG sleep_candidate_tombstone reason=%@ start=%@ end=%@",
+                      reason,
+                      isoString(start),
+                      isoString(end))
+        DetectionEventLog.append(DetectionEvent(
+            kind: "sleepCandidateSettled",
+            reason: reason,
+            detail: Self.dismissedSleepTombstoneDetail(reason: reason,
+                                                       start: start,
+                                                       end: end),
+            windowStart: start,
+            windowEnd: end
+        ))
+    }
+
+    /// Human copy for the tombstone provenance ring rows. Unknown reason codes
+    /// fall back to the settled window alone — the detail is built only from
+    /// fields already computed at the write site, never fabricated.
+    private nonisolated static func dismissedSleepTombstoneDetail(reason: String,
+                                                                  start: Date,
+                                                                  end: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        let window = "\(formatter.string(from: start))–\(formatter.string(from: end))"
+        switch reason {
+        case "user_dismissed":
+            return "Marked not sleep: \(window). This window won't be suggested again."
+        case "confirm_settled", "reconfirm_settled":
+            return "Suggestion \(window) settled — you saved it, so it won't be re-proposed."
+        case "adjust_settled":
+            return "Original suggestion \(window) settled after you adjusted and saved it."
+        case "record_deleted":
+            return "Removed sleep \(window) won't be re-suggested."
+        default:
+            return "Sleep suggestion \(window) settled."
+        }
     }
 
     private func clearDismissedSleepCandidates(overlappingStart start: Date, end: Date) {

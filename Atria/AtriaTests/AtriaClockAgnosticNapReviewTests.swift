@@ -201,6 +201,121 @@ final class AtriaClockAgnosticNapReviewTests: XCTestCase {
     }
 }
 
+// MARK: - Shared device-shaped fixtures (extracted 2026-08-29 so the
+// confirmed-sibling regression tests below replay the exact cluster shapes the
+// awake-split tests already pin; the windows and HR series are unchanged).
+
+/// One point per minute; a nil bpm segment is a coverage hole (the minutes
+/// advance, no points are emitted).
+private func atriaSegmentedFixtureSession(start: Date,
+                                          segments: [(minutes: Int, bpm: Int?)]) -> SavedSession {
+    var points: [SavedSession.Point] = []
+    var minute = 0
+    for segment in segments {
+        if let bpm = segment.bpm {
+            for offset in 0..<segment.minutes {
+                points.append(.init(t: Double((minute + offset) * 60), bpm: bpm))
+            }
+        }
+        minute += segment.minutes
+    }
+    return SavedSession(id: UUID(),
+                        start: start,
+                        end: start.addingTimeInterval(Double(minute) * 60),
+                        label: "Test",
+                        points: points)
+}
+
+private func atriaFixtureDate(_ calendar: Calendar,
+                              _ year: Int, _ month: Int, _ day: Int,
+                              _ hour: Int, _ minute: Int) -> Date {
+    DateComponents(calendar: calendar,
+                   timeZone: calendar.timeZone,
+                   year: year,
+                   month: month,
+                   day: day,
+                   hour: hour,
+                   minute: minute).date!
+}
+
+/// The device-shaped chained cluster: evening awake run, overnight sleep,
+/// two mid-morning awake runs around a coverage hole, an early-morning
+/// nap, a sustained 78 bpm blip, a second nap, then clearly-awake HR.
+/// Session fragments mirror the journal's 1-4h chunking, so the awake
+/// runs sit INSIDE fragments that pass per-session eligibility (that is
+/// exactly how the device cluster chained). Minute-level HR carries the
+/// dips real sleep has; a night's 30-min means near rest+15 sit above the
+/// per-minute medians the lanes anchor on.
+private func atriaChainedClusterFixture(calendar: Calendar,
+                                        morningNapSegments: [(minutes: Int, bpm: Int?)])
+    -> [SavedSession] {
+    // 20:30-23:00: quiet evening then a 60-min awake run at rest+31.
+    let s0 = atriaSegmentedFixtureSession(start: atriaFixtureDate(calendar, 2027, 3, 2, 20, 30),
+                                          segments: [(90, 63), (60, 86)])
+    // 23:05-03:15: the overnight sleep block.
+    let s1 = atriaSegmentedFixtureSession(start: atriaFixtureDate(calendar, 2027, 3, 2, 23, 5),
+                                          segments: [(250, 62)])
+    // 03:20-07:30: brief sleep tail, 45-min awake run, 45-min hole,
+    // 30-min awake run, then a 2h nap.
+    let s2 = atriaSegmentedFixtureSession(start: atriaFixtureDate(calendar, 2027, 3, 3, 3, 20),
+                                          segments: [(10, 62), (45, 86), (45, nil),
+                                                     (30, 90), (120, 66)])
+    // 07:35-09:30: sustained 78 bpm (rest+23) blip, then the second nap.
+    let s3 = atriaSegmentedFixtureSession(start: atriaFixtureDate(calendar, 2027, 3, 3, 7, 35),
+                                          segments: morningNapSegments)
+    // 09:35-10:30: clearly awake; ineligible as a sleep fragment, so it
+    // stays outside the cluster and bounds the last nap from the right.
+    let s4 = atriaSegmentedFixtureSession(start: atriaFixtureDate(calendar, 2027, 3, 3, 9, 35),
+                                          segments: [(55, 84)])
+    return [s0, s1, s2, s3, s4]
+}
+
+/// Real-device shape (downsampled): the owner's 2026-08-29 morning cluster
+/// (04:58-10:32 IST) as PER-MINUTE means taken from the actual device
+/// archive — the shape that defeated the first-shipped detector.
+private enum AtriaRealShapedMorningFixture {
+    // 04:58 + 179 minutes (ends 07:57); head awake, first nap, awake blip.
+    static let morningA: [Int] = [
+        81, 81, 78, 82, 79, 79, 90, 73, 79, 76, 78, 86, 98, 82, 87, 98, 82, 83, 106, 103,
+        105, 116, 110, 98, 93, 96, 101, 85, 82, 82, 84, 76, 78, 82, 81, 80, 70, 70, 67, 67,
+        70, 73, 86, 79, 71, 72, 76, 80, 73, 71, 71, 74, 75, 75, 75, 73, 72, 69, 65, 66,
+        68, 68, 68, 72, 70, 77, 70, 73, 68, 70, 67, 68, 68, 69, 66, 68, 68, 69, 67, 67,
+        67, 69, 65, 67, 65, 66, 68, 64, 63, 65, 63, 67, 76, 67, 65, 67, 67, 69, 67, 69,
+        62, 64, 63, 65, 66, 72, 68, 68, 64, 64, 72, 70, 69, 66, 65, 66, 65, 65, 66, 67,
+        71, 65, 62, 67, 65, 67, 66, 65, 64, 65, 68, 66, 61, 63, 67, 65, 69, 63, 76, 86,
+        80, 80, 79, 79, 78, 81, 80, 77, 76, 75, 78, 82, 81, 77, 80, 84, 80, 74, 75, 76,
+        79, 75, 79, 86, 112, 116, 77, 71, 69, 69, 69, 69, 73, 71, 72, 72, 71, 71, 70
+    ]
+    // 07:59 + 154 minutes (ends 10:33); second nap, then the waking tail.
+    static let morningB: [Int] = [
+        69, 67, 69, 66, 66, 66, 67, 65, 65, 63, 67, 65, 62, 64, 66, 66, 65, 66, 66, 66,
+        67, 64, 64, 65, 66, 64, 63, 64, 63, 68, 61, 64, 61, 60, 61, 58, 62, 64, 66, 60,
+        61, 61, 59, 58, 58, 61, 60, 61, 58, 59, 58, 57, 58, 58, 60, 59, 58, 61, 59, 56,
+        57, 57, 55, 57, 57, 56, 57, 57, 58, 63, 60, 57, 58, 58, 60, 58, 55, 62, 64, 61,
+        69, 65, 69, 73, 69, 70, 71, 72, 74, 66, 67, 67, 68, 66, 67, 67, 65, 67, 69, 68,
+        66, 65, 66, 66, 67, 65, 65, 64, 65, 64, 67, 67, 71, 61, 69, 84, 84, 87, 74, 75,
+        82, 86, 82, 83, 83, 83, 68, 65, 62, 62, 62, 65, 73, 84, 74, 83, 96, 95, 102, 97,
+        91, 102, 100, 88, 76, 87, 79, 82, 89, 86, 84, 90, 92, 81
+    ]
+
+    static func sessions(calendar: Calendar) -> [SavedSession] {
+        func minuteSession(start: Date, means: [Int]) -> SavedSession {
+            let points = means.enumerated().map {
+                SavedSession.Point(t: Double($0.offset * 60), bpm: $0.element)
+            }
+            return SavedSession(id: UUID(),
+                                start: start,
+                                end: start.addingTimeInterval(Double(means.count) * 60),
+                                label: "Test",
+                                points: points)
+        }
+        return [
+            minuteSession(start: atriaFixtureDate(calendar, 2027, 3, 3, 4, 58), means: morningA),
+            minuteSession(start: atriaFixtureDate(calendar, 2027, 3, 3, 7, 59), means: morningB)
+        ]
+    }
+}
+
 /// Awake-split retry at the cluster dead-end (2026-08-29 device failure): an
 /// evening sleep plus the next morning's naps chained into ONE ~13-18h cluster
 /// (session gaps never exceeded the join horizon), and the whole cluster was
@@ -232,25 +347,11 @@ final class AtriaAwakeSplitRetryTests: XCTestCase {
                        minute: minute).date!
     }
 
-    /// One point per minute; a nil bpm segment is a coverage hole (the minutes
-    /// advance, no points are emitted).
+    /// One point per minute; a nil bpm segment is a coverage hole. Delegates to
+    /// the shared fixture builder (extracted 2026-08-29, behavior unchanged).
     private func segmentedSession(start: Date,
                                   segments: [(minutes: Int, bpm: Int?)]) -> SavedSession {
-        var points: [SavedSession.Point] = []
-        var minute = 0
-        for segment in segments {
-            if let bpm = segment.bpm {
-                for offset in 0..<segment.minutes {
-                    points.append(.init(t: Double((minute + offset) * 60), bpm: bpm))
-                }
-            }
-            minute += segment.minutes
-        }
-        return SavedSession(id: UUID(),
-                            start: start,
-                            end: start.addingTimeInterval(Double(minute) * 60),
-                            label: "Test",
-                            points: points)
+        atriaSegmentedFixtureSession(start: start, segments: segments)
     }
 
     private func candidates(in sessions: [SavedSession],
@@ -262,35 +363,12 @@ final class AtriaAwakeSplitRetryTests: XCTestCase {
                                               historicalMotionPolicy: .boundedRecent)
     }
 
-    /// The device-shaped chained cluster: evening awake run, overnight sleep,
-    /// two mid-morning awake runs around a coverage hole, an early-morning
-    /// nap, a sustained 78 bpm blip, a second nap, then clearly-awake HR.
-    /// Session fragments mirror the journal's 1-4h chunking, so the awake
-    /// runs sit INSIDE fragments that pass per-session eligibility (that is
-    /// exactly how the device cluster chained). Minute-level HR carries the
-    /// dips real sleep has; a night's 30-min means near rest+15 sit above the
-    /// per-minute medians the lanes anchor on.
+    /// The device-shaped chained cluster (extracted 2026-08-29 to the shared
+    /// fixture above; windows and HR series unchanged).
     private func chainedClusterFixture(morningNapSegments: [(minutes: Int, bpm: Int?)])
         -> [SavedSession] {
-        // 20:30-23:00: quiet evening then a 60-min awake run at rest+31.
-        let s0 = segmentedSession(start: localDate(2027, 3, 2, 20, 30),
-                                  segments: [(90, 63), (60, 86)])
-        // 23:05-03:15: the overnight sleep block.
-        let s1 = segmentedSession(start: localDate(2027, 3, 2, 23, 5),
-                                  segments: [(250, 62)])
-        // 03:20-07:30: brief sleep tail, 45-min awake run, 45-min hole,
-        // 30-min awake run, then a 2h nap.
-        let s2 = segmentedSession(start: localDate(2027, 3, 3, 3, 20),
-                                  segments: [(10, 62), (45, 86), (45, nil),
-                                             (30, 90), (120, 66)])
-        // 07:35-09:30: sustained 78 bpm (rest+23) blip, then the second nap.
-        let s3 = segmentedSession(start: localDate(2027, 3, 3, 7, 35),
-                                  segments: morningNapSegments)
-        // 09:35-10:30: clearly awake; ineligible as a sleep fragment, so it
-        // stays outside the cluster and bounds the last nap from the right.
-        let s4 = segmentedSession(start: localDate(2027, 3, 3, 9, 35),
-                                  segments: [(55, 84)])
-        return [s0, s1, s2, s3, s4]
+        atriaChainedClusterFixture(calendar: localCalendar,
+                                   morningNapSegments: morningNapSegments)
     }
 
     /// Acceptance 1: today's device failure shape must yield a main-sleep
@@ -390,41 +468,11 @@ final class AtriaAwakeSplitRetryTests: XCTestCase {
     /// refused cluster must split at the elevated-dominated runs and yield
     /// both real naps as review candidates.
     func testRealShapedMorningClusterSplitsIntoBothNaps() {
-        // 04:58 + 179 minutes (ends 07:57); head awake, first nap, awake blip.
-        let morningA: [Int] = [
-            81, 81, 78, 82, 79, 79, 90, 73, 79, 76, 78, 86, 98, 82, 87, 98, 82, 83, 106, 103,
-            105, 116, 110, 98, 93, 96, 101, 85, 82, 82, 84, 76, 78, 82, 81, 80, 70, 70, 67, 67,
-            70, 73, 86, 79, 71, 72, 76, 80, 73, 71, 71, 74, 75, 75, 75, 73, 72, 69, 65, 66,
-            68, 68, 68, 72, 70, 77, 70, 73, 68, 70, 67, 68, 68, 69, 66, 68, 68, 69, 67, 67,
-            67, 69, 65, 67, 65, 66, 68, 64, 63, 65, 63, 67, 76, 67, 65, 67, 67, 69, 67, 69,
-            62, 64, 63, 65, 66, 72, 68, 68, 64, 64, 72, 70, 69, 66, 65, 66, 65, 65, 66, 67,
-            71, 65, 62, 67, 65, 67, 66, 65, 64, 65, 68, 66, 61, 63, 67, 65, 69, 63, 76, 86,
-            80, 80, 79, 79, 78, 81, 80, 77, 76, 75, 78, 82, 81, 77, 80, 84, 80, 74, 75, 76,
-            79, 75, 79, 86, 112, 116, 77, 71, 69, 69, 69, 69, 73, 71, 72, 72, 71, 71, 70
-        ]
-        // 07:59 + 154 minutes (ends 10:33); second nap, then the waking tail.
-        let morningB: [Int] = [
-            69, 67, 69, 66, 66, 66, 67, 65, 65, 63, 67, 65, 62, 64, 66, 66, 65, 66, 66, 66,
-            67, 64, 64, 65, 66, 64, 63, 64, 63, 68, 61, 64, 61, 60, 61, 58, 62, 64, 66, 60,
-            61, 61, 59, 58, 58, 61, 60, 61, 58, 59, 58, 57, 58, 58, 60, 59, 58, 61, 59, 56,
-            57, 57, 55, 57, 57, 56, 57, 57, 58, 63, 60, 57, 58, 58, 60, 58, 55, 62, 64, 61,
-            69, 65, 69, 73, 69, 70, 71, 72, 74, 66, 67, 67, 68, 66, 67, 67, 65, 67, 69, 68,
-            66, 65, 66, 66, 67, 65, 65, 64, 65, 64, 67, 67, 71, 61, 69, 84, 84, 87, 74, 75,
-            82, 86, 82, 83, 83, 83, 68, 65, 62, 62, 62, 65, 73, 84, 74, 83, 96, 95, 102, 97,
-            91, 102, 100, 88, 76, 87, 79, 82, 89, 86, 84, 90, 92, 81
-        ]
-        func minuteSession(start: Date, means: [Int]) -> SavedSession {
-            let points = means.enumerated().map {
-                SavedSession.Point(t: Double($0.offset * 60), bpm: $0.element)
-            }
-            return SavedSession(id: UUID(),
-                                start: start,
-                                end: start.addingTimeInterval(Double(means.count) * 60),
-                                label: "Test",
-                                points: points)
-        }
-        let sessionA = minuteSession(start: localDate(2027, 3, 3, 4, 58), means: morningA)
-        let sessionB = minuteSession(start: localDate(2027, 3, 3, 7, 59), means: morningB)
+        // Fixture arrays extracted 2026-08-29 to AtriaRealShapedMorningFixture
+        // (shared with the confirmed-sibling regression class); identical data.
+        let sessions = AtriaRealShapedMorningFixture.sessions(calendar: localCalendar)
+        let sessionA = sessions[0]
+        let sessionB = sessions[1]
 
         let result = candidates(in: [sessionA, sessionB], rest: 57)
         let naps = result.filter { $0.kind == "nap_candidate" }
@@ -469,5 +517,270 @@ final class AtriaAwakeSplitRetryTests: XCTestCase {
         XCTAssertTrue(events.contains {
             $0.reason == "nap_motion_unvalidated_hr_weak" && $0.detail.contains("post_split")
         }, "the refused sub-cluster must be named in the detection ring as a post-split refusal")
+    }
+}
+
+/// 2026-08-29 device regression (owner: "today's sleeps and naps vanished"
+/// after confirming one nap). Ground-truth replay of the pulled archive
+/// contradicted the initial hypothesis: the candidate generator is
+/// confirmation-blind, the awake-split still minted BOTH morning naps after
+/// the confirm, and no confirmed-overlap guard acts at cluster granularity.
+/// The sibling review died solely to an exact-window dismissal tombstone in
+/// atria.sleepReview.dismissedWindows.v1 whose write no store or log had
+/// recorded. These tests pin the properties the replay proved must hold:
+///  - confirming one nap (the record PLUS the confirm tombstone that
+///    confirmSleepHistoryNight actually persists) never suppresses the
+///    non-overlapping sibling's review products,
+///  - no review product ever overlaps the confirmed window (never re-proposed),
+///  - confirming BOTH naps leaves a main-sleep review remainder untouched,
+///  - the no-confirmed-sleep path is unchanged,
+///  - every tombstone write is now named in the detection ring with
+///    provenance and carries a createdAt in the durable store.
+final class AtriaConfirmedSiblingNapReviewTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        AtriaDeviceUseJournal.reset()
+        UserDefaults.standard.removeObject(forKey: DetectionEventLog.storageKey)
+    }
+
+    private var localCalendar: Calendar { Calendar.current }
+
+    private func candidates(in sessions: [SavedSession],
+                            rest: Int) -> [AggregateSleepCandidate] {
+        SessionStore.aggregateSleepCandidates(in: sessions,
+                                              rest: rest,
+                                              maxHR: 190,
+                                              calendar: localCalendar,
+                                              historicalMotionPolicy: .boundedRecent)
+    }
+
+    /// The persisted image of a plain Confirm on a nap review: one
+    /// user-confirmed record over the candidate's exact window PLUS the
+    /// confirm-settlement tombstone for the same window (see
+    /// confirmSleepHistoryNight). Tests must model both, because production
+    /// always writes both.
+    private func confirmSettlement(of window: (start: Date, end: Date),
+                                   isNap: Bool = true)
+        -> (records: [UserConfirmedSleep], tombstones: [AtriaDismissedSleepCandidate]) {
+        let record = UserConfirmedSleep(
+            id: "\(Int(window.start.timeIntervalSince1970))-\(Int(window.end.timeIntervalSince1970))-\(isNap ? "nap_candidate" : "overnight_sleep")",
+            createdAt: window.end,
+            start: window.start,
+            end: window.end,
+            source: isNap ? "nap_candidate" : "overnight_sleep",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 600,
+            avgHR: 64,
+            peakHR: 90,
+            restingHR: 57,
+            hrv: 50,
+            hrvWindowCount: 4,
+            duration: window.end.timeIntervalSince(window.start),
+            span: window.end.timeIntervalSince(window.start),
+            reason: "confirmed-sibling fixture",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: localCalendar.timeZone.identifier)
+        let tombstone = AtriaDismissedSleepCandidate(start: window.start,
+                                                     end: window.end,
+                                                     createdAt: window.end)
+        return ([record], [tombstone])
+    }
+
+    private func morningNaps(in sessions: [SavedSession],
+                             rest: Int) -> [AggregateSleepCandidate] {
+        candidates(in: sessions, rest: rest)
+            .filter { $0.kind == "nap_candidate" }
+            .sorted { $0.start < $1.start }
+    }
+
+    /// (a) Device-shaped cluster + confirmed second nap: the 05:34-07:17-shaped
+    /// first nap IS still produced as a review row and as the review card, and
+    /// no product overlaps the confirmed window.
+    func testConfirmingSecondNapKeepsFirstNapReviewAlive() {
+        let sessions = AtriaRealShapedMorningFixture.sessions(calendar: localCalendar)
+        let naps = morningNaps(in: sessions, rest: 57)
+        XCTAssertGreaterThanOrEqual(naps.count, 2,
+                                    "fixture sanity: the split must mint both morning naps")
+        guard let first = naps.first, let second = naps.last else { return }
+        let settled = confirmSettlement(of: (second.start, second.end))
+
+        let napNights = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: sessions,
+            confirmedSleeps: settled.records,
+            dismissedCandidates: settled.tombstones,
+            rest: 57,
+            maxHR: 190,
+            calendar: localCalendar)
+        XCTAssertTrue(napNights.contains { $0.start == first.start && $0.end == first.end },
+                      "confirming one nap must never suppress the non-overlapping sibling's review row")
+        XCTAssertFalse(napNights.contains { night in
+            guard let start = night.start, let end = night.end else { return false }
+            return start < second.end && end > second.start
+        }, "the confirmed window must never be re-proposed")
+
+        let main = SessionStore.makeSleepReviewNightForCache(
+            snapshot: SleepHistorySnapshot(rollups: [],
+                                           confirmedSleeps: settled.records,
+                                           dismissedCandidates: settled.tombstones),
+            canonicalSessions: sessions,
+            confirmedSleeps: settled.records,
+            dismissedCandidates: settled.tombstones,
+            rest: 57,
+            maxHR: 190,
+            calendar: localCalendar)
+        XCTAssertEqual(main?.start, first.start,
+                       "the one-card review must fall back to the unsettled sibling, not go blank")
+        XCTAssertEqual(main?.end, first.end)
+        XCTAssertEqual(main?.confirmed, false)
+    }
+
+    /// (b) Confirming BOTH naps re-proposes neither, and the chained fixture's
+    /// main-sleep review remainder is unaffected by the naps' settlement.
+    func testConfirmingBothNapsLeavesMainReviewUnaffected() {
+        let sessions = atriaChainedClusterFixture(
+            calendar: localCalendar,
+            morningNapSegments: [(25, 78), (90, 61)])
+        let all = candidates(in: sessions, rest: 55)
+        let naps = all.filter { $0.kind == "nap_candidate" }.sorted { $0.start < $1.start }
+        let mains = all.filter { $0.kind == "overnight_sleep" }
+        XCTAssertGreaterThanOrEqual(naps.count, 2, "fixture sanity: both naps minted")
+        XCTAssertEqual(mains.count, 1, "fixture sanity: one main-sleep review candidate")
+        guard naps.count >= 2, let mainCandidate = mains.first else { return }
+
+        var records: [UserConfirmedSleep] = []
+        var tombstones: [AtriaDismissedSleepCandidate] = []
+        for nap in naps {
+            let settled = confirmSettlement(of: (nap.start, nap.end))
+            records.append(contentsOf: settled.records)
+            tombstones.append(contentsOf: settled.tombstones)
+        }
+
+        let napNights = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: sessions,
+            confirmedSleeps: records,
+            dismissedCandidates: tombstones,
+            rest: 55,
+            maxHR: 190,
+            calendar: localCalendar)
+        XCTAssertFalse(napNights.contains { night in
+            guard let start = night.start, let end = night.end else { return false }
+            return records.contains { $0.start < end && $0.end > start }
+        }, "no confirmed nap may be re-proposed")
+
+        let main = SessionStore.makeSleepReviewNightForCache(
+            snapshot: SleepHistorySnapshot(rollups: [],
+                                           confirmedSleeps: records,
+                                           dismissedCandidates: tombstones),
+            canonicalSessions: sessions,
+            confirmedSleeps: records,
+            dismissedCandidates: tombstones,
+            rest: 55,
+            maxHR: 190,
+            calendar: localCalendar)
+        XCTAssertEqual(main?.start, mainCandidate.start,
+                       "settling both naps must leave the main-sleep review remainder standing")
+        XCTAssertEqual(main?.end, mainCandidate.end)
+        XCTAssertEqual(main?.confirmed, false)
+    }
+
+    /// (c) Regression pin: with no confirmed sleeps and no tombstones, the
+    /// review products are exactly the two minted naps — the pre-existing
+    /// path is unchanged by the tombstone-provenance work.
+    func testNoConfirmedSleepPathIsUnchanged() {
+        let sessions = AtriaRealShapedMorningFixture.sessions(calendar: localCalendar)
+        let naps = morningNaps(in: sessions, rest: 57)
+        XCTAssertGreaterThanOrEqual(naps.count, 2)
+
+        let napNights = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            dismissedCandidates: [],
+            rest: 57,
+            maxHR: 190,
+            calendar: localCalendar)
+        for nap in naps {
+            XCTAssertTrue(napNights.contains { $0.start == nap.start && $0.end == nap.end },
+                          "every review-worthy nap must keep its row when nothing is settled")
+        }
+        let main = SessionStore.makeSleepReviewNightForCache(
+            snapshot: SleepHistorySnapshot(rollups: [],
+                                           confirmedSleeps: [],
+                                           dismissedCandidates: []),
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            dismissedCandidates: [],
+            rest: 57,
+            maxHR: 190,
+            calendar: localCalendar)
+        XCTAssertNotNil(main, "an unsettled day must publish a review card")
+    }
+
+    /// The suppression rule itself, pinned at the unit level with the fixture's
+    /// real windows: a confirm tombstone suppresses only (>= 0.70 overlap of)
+    /// its own window — never the non-overlapping sibling.
+    func testConfirmTombstoneSuppressesOnlyItsOwnWindow() {
+        let sessions = AtriaRealShapedMorningFixture.sessions(calendar: localCalendar)
+        let naps = morningNaps(in: sessions, rest: 57)
+        XCTAssertGreaterThanOrEqual(naps.count, 2)
+        guard let first = naps.first, let second = naps.last else { return }
+        let tombstone = AtriaDismissedSleepCandidate(start: second.start,
+                                                     end: second.end,
+                                                     createdAt: second.end)
+        XCTAssertTrue(tombstone.suppresses(start: second.start, end: second.end))
+        XCTAssertFalse(tombstone.suppresses(start: first.start, end: first.end),
+                       "a settlement tombstone must never reach a non-overlapping sibling")
+    }
+
+    /// The forensic gap that made the device outage undiagnosable: tombstone
+    /// writes were silent. A user dismissal must now be named in the detection
+    /// ring with its provenance and window, and the durable store entry must
+    /// carry createdAt.
+    @MainActor
+    func testUserDismissalTombstoneIsNamedInDetectionRing() {
+        let defaults = UserDefaults.standard
+        let tombstoneKey = "atria.sleepReview.dismissedWindows.v1"
+        let priorTombstones = defaults.data(forKey: tombstoneKey)
+        addTeardownBlock {
+            if let priorTombstones {
+                defaults.set(priorTombstones, forKey: tombstoneKey)
+            } else {
+                defaults.removeObject(forKey: tombstoneKey)
+            }
+        }
+
+        let store = SessionStore()
+        // Past-dated, far from any plausible host state.
+        let start = atriaFixtureDate(localCalendar, 2024, 2, 6, 14, 0)
+        let end = atriaFixtureDate(localCalendar, 2024, 2, 6, 15, 30)
+        let night = SleepHistorySnapshot.Night(
+            id: "confirmed-sibling-dismissal-fixture",
+            day: localCalendar.startOfDay(for: end),
+            start: start,
+            end: end,
+            duration: end.timeIntervalSince(start),
+            restingHR: 57,
+            hrv: nil,
+            respiratoryRate: nil,
+            sleepEfficiency: nil,
+            confidence: "review_needed",
+            source: "nap_candidate",
+            confirmed: false,
+            stageSegments: [])
+        XCTAssertTrue(store.dismissSleepCandidate(night))
+
+        let events = DetectionEventLog.load()
+        XCTAssertTrue(events.contains {
+            $0.kind == "sleepCandidateSettled"
+                && $0.reason == "user_dismissed"
+                && $0.windowStart == start
+                && $0.windowEnd == end
+        }, "a tombstone write must be named in the detection ring with provenance and window")
+
+        let stored = AtriaDismissedSleepCandidateStore.load()
+        XCTAssertTrue(stored.contains { $0.start == start && $0.end == end && $0.createdAt != nil },
+                      "the durable tombstone must record when it was written")
     }
 }
