@@ -10487,6 +10487,14 @@ final class SessionStore: ObservableObject {
         TimeInterval = 30
     private var motionBankOffloadObserver: NSObjectProtocol?
     private var motionCompactStoreObserver: NSObjectProtocol?
+    /// Wire-2 (2026-08-29): timestamp throttle for the compact-motion sleep
+    /// evidence upgrade. Deliberately time-based, never a latch: a skipped
+    /// attempt needs no clearing edge — the next durable compact generation
+    /// after the interval simply retries (the recovery-state defect class
+    /// this codebase keeps refinding is state cleared only by an edge that
+    /// may never run).
+    private var lastCompactMotionSleepEvidenceUpgradeAttempt: Date?
+    private var compactMotionSleepEvidenceUpgradeInFlight = false
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var recoveredThermalStateObserver: NSObjectProtocol?
     private var recoveredPowerStateObserver: NSObjectProtocol?
@@ -23894,6 +23902,15 @@ final class SessionStore: ObservableObject {
                     )
                     self?.scheduleConfirmedWorkoutStepEvidencePublication(
                         reason: "compact_generation_durable"
+                    )
+                    // Wire-2 (2026-08-29): durable compact motion is the
+                    // upgrade trigger the confirmed-sleep chain never had —
+                    // the provenance rebuild used to fire only from
+                    // HR-archive tickets, so motion that arrived after a
+                    // night settled could never validate it. Heavily
+                    // throttled and prechecked inside.
+                    self?.scheduleCompactMotionSleepEvidenceUpgrade(
+                        reason: "compact_motion_durable"
                     )
                 }
             }
@@ -41429,6 +41446,7 @@ final class SessionStore: ObservableObject {
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
         extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        extraMotionEpochs: [AtriaRecoveredMotionEpoch] = [],
         maximumRows: Int,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> [SleepStageSegment] {
@@ -41441,6 +41459,7 @@ final class SessionStore: ObservableObject {
             motionValidated: motionValidated,
             allowHROnlyEstimate: allowHROnlyEstimate,
             extraHeartSamples: extraHeartSamples,
+            extraMotionEpochs: extraMotionEpochs,
             maximumRows: maximumRows,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -41452,6 +41471,10 @@ final class SessionStore: ObservableObject {
     // Session points win timestamp collisions (whole-second keys; strap HR is
     // 1 Hz with integer-second archive stamps), and the merged total honors
     // the same `maximumRows` fail-closed budget as session rows.
+    // `extraMotionEpochs` (2026-08-29): already-projected compact-store motion
+    // epochs for the confirmed window, supplied only when the sessions carry
+    // no overlapping recovered epochs of their own. Same purity rule — the
+    // core never reads the compact store — and the same fail-closed budget.
     private nonisolated static func sleepStageResearchSegmentsCore(
         from sessions: [SavedSession],
         start: Date,
@@ -41461,6 +41484,7 @@ final class SessionStore: ObservableObject {
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
         extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        extraMotionEpochs: [AtriaRecoveredMotionEpoch] = [],
         maximumRows: Int?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
@@ -41522,6 +41546,25 @@ final class SessionStore: ObservableObject {
                       ).inserted else { continue }
                 samples.append(extra)
                 if let maximumRows, samples.count > maximumRows {
+                    return []
+                }
+            }
+        }
+        if !extraMotionEpochs.isEmpty {
+            // Compact-motion union (2026-08-29): epochs projected from the
+            // compact tick store stage a night whose sessions never had
+            // epochs attached (the lifetime archive channel is budget-
+            // starved for recent nights). Supplied only when session epochs
+            // are absent, so no dedup key is needed — but the window filter
+            // and row budget mirror the session-epoch gather exactly.
+            for (epochIndex, epoch) in extraMotionEpochs.enumerated() {
+                if epochIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                guard epoch.end > start, epoch.start < end else { continue }
+                recoveredMotionEpochs.append(epoch)
+                if let maximumRows,
+                   recoveredMotionEpochs.count > maximumRows {
                     return []
                 }
             }
@@ -41814,14 +41857,15 @@ final class SessionStore: ObservableObject {
         _ sleep: UserConfirmedSleep,
         stageSegments: [SleepStageSegment]?,
         motionSource: String? = nil,
-        motionValidated: Bool? = nil
+        motionValidated: Bool? = nil,
+        confidence: String? = nil
     ) -> UserConfirmedSleep {
         return UserConfirmedSleep(id: sleep.id,
                                   createdAt: sleep.createdAt,
                                   start: sleep.start,
                                   end: sleep.end,
                                   source: sleep.source,
-                                  confidence: sleep.confidence,
+                                  confidence: confidence ?? sleep.confidence,
                                   sessions: sleep.sessions,
                                   samples: sleep.samples,
                                   avgHR: sleep.avgHR,
@@ -43242,6 +43286,241 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    /// Compact-store access for the confirmed-sleep provenance/stage lanes
+    /// (2026-08-29). Captured on the actor before the off-main prepare hop.
+    /// The lifetime archive's recovered-motion channel is budget-starved for
+    /// recent nights (oldest-first append against a hard 750k cap plus a
+    /// fail-closed completeness gate), so these lanes source their epochs
+    /// per sleep window from the compact fixed-width store instead. `nil`
+    /// context disables the fallback entirely and preserves the historical
+    /// session-epoch-only behavior byte for byte.
+    struct ConfirmedSleepCompactMotionContext: Sendable {
+        let store: AtriaWhoop4MotionTickCompactStore
+        let strapIdentifier: String
+        let now: Date
+
+        /// Only windows the compact store can actually retain are worth a
+        /// read: retention is `retainedBucketCount` (4) daily shards, so a
+        /// slightly wider recency fence stays cheap and future-proof.
+        static let recencyWindowSeconds: TimeInterval = 14 * 86_400
+        /// Mirrors `LatestNightReadBudget.production.maximumRows`.
+        static let maximumRows = 200_000
+        /// A provenance-sufficient window needs >=20 min at >=80% coverage of
+        /// ~1 Hz rows; anything below this floor cannot qualify, so skip the
+        /// decode without touching row bytes (stat-only precheck).
+        static let minimumRows = 1_024
+        /// Local hard wall for the in-process epoch projection so a
+        /// cancellation-only cooperative deadline can never let the merge
+        /// sort spin unbounded.
+        static let projectionBudgetNanoseconds: UInt64 = 10_000_000_000
+    }
+
+    /// Window-bounded compact-motion evidence: epochs projected through the
+    /// SAME `latestNightEpochFeatures` math the compact settlement lane uses
+    /// (no forked epoch model), plus their provenance over the window.
+    struct CompactWindowMotionEvidence: Sendable {
+        let epochs: [AtriaRecoveredMotionEpoch]
+        let provenance: AtriaRecoveredMotionAnalytics.SleepProvenance
+    }
+
+    /// Reads compact ticks for one sleep window and projects epochs.
+    /// Fail-closed by construction: every store-level shortfall (no strap
+    /// rows, cap overflow, projection failure, insufficient provenance)
+    /// returns nil so the caller behaves exactly as it did before the
+    /// compact channel existed (hr_only). Only cooperative-deadline aborts
+    /// propagate. Internal (not private) so the fallback is directly
+    /// testable against a fixture store.
+    nonisolated static func compactWindowMotionEvidence(
+        start: Date,
+        end: Date,
+        compactMotion: ConfirmedSleepCompactMotionContext,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> CompactWindowMotionEvidence? {
+        try cooperativeDeadline.checkpoint()
+        guard !Thread.isMainThread,
+              end > start,
+              // Bound the epoch projection: sleep windows are physiologic,
+              // and anything wider would also exceed the shard budget below.
+              end.timeIntervalSince(start) <= 24 * 3_600,
+              compactMotion.now.timeIntervalSince(end)
+                <= ConfirmedSleepCompactMotionContext.recencyWindowSeconds
+        else { return nil }
+        guard compactMotion.store.hasStoredRows(
+            start: start,
+            end: end,
+            strapIdentifier: compactMotion.strapIdentifier,
+            minimumRows: ConfirmedSleepCompactMotionContext.minimumRows
+        ) else { return nil }
+        try cooperativeDeadline.checkpoint()
+        let points = compactMotion.store.decodedPoints(
+            start: start,
+            end: end,
+            strapIdentifier: compactMotion.strapIdentifier
+        )
+        try cooperativeDeadline.checkpoint()
+        guard points.count
+                >= ConfirmedSleepCompactMotionContext.minimumRows,
+              points.count
+                <= ConfirmedSleepCompactMotionContext.maximumRows
+        else { return nil }
+        var samples: [AtriaRecoveredMotionProjection.Sample] = []
+        samples.reserveCapacity(points.count)
+        for (index, point) in points.enumerated() {
+            if index.isMultiple(of: 4_096) {
+                try cooperativeDeadline.checkpoint()
+            }
+            // Rows reach the compact store only through the canonical decoder
+            // after durable admission; validation bits mirror the settlement
+            // lane's decode of the same fixed-width records.
+            samples.append(.init(
+                timestamp: Date(timeIntervalSince1970: point.timestamp),
+                sequence: index,
+                x: point.gravityX,
+                y: point.gravityY,
+                z: point.gravityZ,
+                timestampValidated: true,
+                gravityValidated: true
+            ))
+        }
+        let projectionDeadline = DispatchTime.now().uptimeNanoseconds
+            .addingReportingOverflow(
+                ConfirmedSleepCompactMotionContext.projectionBudgetNanoseconds
+            ).partialValue
+        let projected = compactMotion.store.latestNightEpochFeatures(
+            samples: samples,
+            start: start,
+            end: end,
+            deadlineUptimeNanoseconds: projectionDeadline
+        )
+        try cooperativeDeadline.checkpoint()
+        guard case .success(let epochs) = projected, !epochs.isEmpty else {
+            return nil
+        }
+        let provenance = try AtriaRecoveredMotionAnalytics.sleepProvenance(
+            epochs: epochs,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        // The evidence must still clear the production sufficiency gate
+        // before anything upgrades; insufficient reads stay hr_only.
+        guard provenance.measurementSufficient else { return nil }
+        return CompactWindowMotionEvidence(
+            epochs: epochs,
+            provenance: provenance
+        )
+    }
+
+    /// Wire-4 (2026-08-29): the persisted confidence string finally follows
+    /// the `motionValidated` flag it always described. Monotonic upgrade
+    /// only — an hr_only tier becomes its motion-validated sibling when
+    /// validated motion evidence lands; nothing ever downgrades here, and
+    /// `source` is never rewritten (auto_confirmed_sleep_hr_only keys its
+    /// tier in the SOURCE, whose confidence tier — "provisional" — has no
+    /// motion-validated sibling string; its `motionValidated`/`motionSource`
+    /// fields carry the upgrade instead). Both mapped strings keep their
+    /// authorship prefix, so `sleepRecordIsUserAuthored` is unaffected.
+    nonisolated static func upgradedConfirmedSleepConfidence(
+        _ confidence: String,
+        motionValidated: Bool
+    ) -> String {
+        guard motionValidated else { return confidence }
+        switch confidence {
+        case "user_confirmed_hr_only":
+            return "user_confirmed_motion_validated"
+        case "user_adjusted_hr_only":
+            return "user_adjusted_motion_validated"
+        default:
+            return confidence
+        }
+    }
+
+    /// Wire-3 (2026-08-29) eligibility: review-confirmed and auto-confirmed
+    /// detector sources join the motion-arrival upgrade lane. `manual_*`
+    /// stays excluded — a hand-typed window never earns sensor stages (the
+    /// same fence the Night stage classifier applies).
+    nonisolated static func confirmedSleepSourceIsMotionUpgradeEligible(
+        _ source: String
+    ) -> Bool {
+        guard !source.hasPrefix("manual_") else { return false }
+        if source.hasPrefix("user_adjusted_") { return true }
+        return SleepHistorySnapshot.Night.explicitSleepSources
+            .contains(source)
+            || SleepHistorySnapshot.Night.explicitNapSources.contains(source)
+    }
+
+    /// Wire-3 (2026-08-29): compact-motion arrival upgrades a
+    /// review-confirmed or auto-confirmed night in place. Deliberately
+    /// narrower than the user_adjusted evidence refresh: persisted
+    /// metrics, duration and span are NEVER rewritten here — auto and
+    /// review durations were settled by engines with their own wake-
+    /// deduction semantics (2026-08-04), and re-deriving them as
+    /// min(span, coverage) could silently re-credit detected wake. Only
+    /// the stage timeline, the motion provenance fields and the
+    /// hr_only confidence tier may change, and only when the freshly
+    /// minted stages pass the same integrity gate every other stage
+    /// writer uses. Returns nil (fall through to the general backfill
+    /// path, byte-identical historical behavior) on any shortfall.
+    /// Internal (not private) so the upgrade is directly testable.
+    nonisolated static func motionArrivalUpgradedConfirmedSleepIfNeeded(
+        _ sleep: UserConfirmedSleep,
+        sourceSessions: [SavedSession],
+        drainedHeartSamples: [AtriaSleepWakeResearch.HeartSample],
+        compactMotionEvidence: CompactWindowMotionEvidence?,
+        reason: String,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> UserConfirmedSleep? {
+        guard let compactMotionEvidence,
+              Self.confirmedSleepSourceIsMotionUpgradeEligible(sleep.source),
+              !sleep.source.hasPrefix("user_adjusted_") else { return nil }
+        let provenance = compactMotionEvidence.provenance
+        guard provenance.measurementSufficient else { return nil }
+        let motionSource = provenance.source
+        let motionValidated = provenance.lowMotionValidated
+        let needsFieldUpdate = sleep.motionSource != motionSource
+            || sleep.motionValidated != motionValidated
+        let needsStages = sleep.stageSegments?.isEmpty != false
+        guard needsFieldUpdate || needsStages else { return nil }
+        let stages = try Self.sleepStageResearchSegments(
+            from: sourceSessions,
+            start: sleep.start,
+            end: sleep.end,
+            restingHR: sleep.restingHR,
+            isNap: Self.confirmedSleepSourceIsNap(
+                source: sleep.source,
+                duration: sleep.duration
+            ),
+            motionValidated: motionValidated,
+            allowHROnlyEstimate: true,
+            extraHeartSamples: drainedHeartSamples,
+            extraMotionEpochs: compactMotionEvidence.epochs,
+            maximumRows: Int.max,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        guard Self.confirmedSleepStagesCoverSleep(stages, sleep: sleep) else {
+            return nil
+        }
+        let upgraded = Self.copyConfirmedSleep(
+            sleep,
+            stageSegments: stages,
+            motionSource: motionSource,
+            motionValidated: motionValidated,
+            confidence: Self.upgradedConfirmedSleepConfidence(
+                sleep.confidence,
+                motionValidated: motionValidated
+            )
+        )
+        guard upgraded != sleep else { return nil }
+        AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=updated reason=%@ sleep_source=%@ motion_validated=%d segments=%d low_motion_fraction=%.2f mean_intensity=%.3f",
+                      reason,
+                      sleep.source,
+                      motionValidated ? 1 : 0,
+                      stages.count,
+                      provenance.lowMotionCoverageFraction,
+                      provenance.meanMovementIntensity ?? -1)
+        return upgraded
+    }
+
     // `archiveHeartSamples` (2026-08-29): drained-archive HR for this exact
     // window, fetched once by the cooperative backfill loop. It feeds ONLY
     // the refresh trigger's candidate-sample count and the stage-evidence
@@ -43251,9 +43530,28 @@ final class SessionStore: ObservableObject {
         _ sleep: UserConfirmedSleep,
         sourceSessions: [SavedSession],
         archiveHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        // Wire-1/3 (2026-08-29): pre-resolved compact-store motion evidence
+        // for this exact window, fetched once by the backfill loop when the
+        // sessions carry no overlapping epochs. Nil keeps the historical
+        // session-epoch-only behavior byte for byte.
+        compactMotionEvidence: CompactWindowMotionEvidence? = nil,
         reason: String,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> UserConfirmedSleep? {
+        // Wire-3 (2026-08-29): review-confirmed and auto-confirmed sources
+        // take the metrics-preserving motion-arrival upgrade lane; the full
+        // metric/duration re-derivation below remains user_adjusted-only
+        // because those bounds semantics belong to the Adjust sheet.
+        if !sleep.source.hasPrefix("user_adjusted_") {
+            return try Self.motionArrivalUpgradedConfirmedSleepIfNeeded(
+                sleep,
+                sourceSessions: sourceSessions,
+                drainedHeartSamples: archiveHeartSamples,
+                compactMotionEvidence: compactMotionEvidence,
+                reason: reason,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
         let sensorCovered = try Self.confirmedSleepSensorCoverage(
             from: sourceSessions,
             start: sleep.start,
@@ -43267,11 +43565,16 @@ final class SessionStore: ObservableObject {
             extraHeartSamples: archiveHeartSamples,
             cooperativeDeadline: cooperativeDeadline
         )
-        let motionProvenance = try Self.recoveredMotionProvenance(
-            for: sleep,
-            sessions: sourceSessions,
-            cooperativeDeadline: cooperativeDeadline
-        )
+        let motionProvenance: AtriaRecoveredMotionAnalytics.SleepProvenance
+        if let compactMotionEvidence {
+            motionProvenance = compactMotionEvidence.provenance
+        } else {
+            motionProvenance = try Self.recoveredMotionProvenance(
+                for: sleep,
+                sessions: sourceSessions,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
         guard Self.shouldRefreshUserAdjustedSleepEvidence(source: sleep.source,
                                                           existingSamples: sleep.samples,
                                                           candidateSamples: candidateSamples,
@@ -43315,6 +43618,7 @@ final class SessionStore: ObservableObject {
             // ESTIMATE staging so stage-less records converge (2026-08-12).
             allowHROnlyEstimate: true,
             extraHeartSamples: archiveHeartSamples,
+            extraMotionEpochs: compactMotionEvidence?.epochs ?? [],
             maximumRows: Int.max,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -43329,7 +43633,16 @@ final class SessionStore: ObservableObject {
                                            start: sleep.start,
                                            end: sleep.end,
                                            source: sleep.source,
-                                           confidence: sleep.confidence,
+                                           // 2026-08-29 (was `confidence:
+                                           // sleep.confidence`): the hr_only
+                                           // tier upgrades with the validated
+                                           // motion it now carries; authorship
+                                           // prefix is preserved.
+                                           confidence: Self
+                                            .upgradedConfirmedSleepConfidence(
+                                                sleep.confidence,
+                                                motionValidated: motionValidated
+                                            ),
                                            sessions: metrics.sessions,
                                            samples: metrics.samples,
                                            avgHR: metrics.avgHR,
@@ -43395,6 +43708,10 @@ final class SessionStore: ObservableObject {
                 affectedSince.map { session.end > $0 } ?? true
             }
         let sourceSleeps = cachedConfirmedSleeps
+        // Wire-1 (2026-08-29): captured on the actor so the off-main prepare
+        // thread can read window-bounded compact motion for recent sleeps
+        // whose sessions carry no recovered epochs.
+        let compactMotion = confirmedSleepCompactMotionContext()
         guard executionShouldContinue(),
               !sourceSessions.isEmpty,
               !sourceSleeps.isEmpty else {
@@ -43452,6 +43769,32 @@ final class SessionStore: ObservableObject {
                                     }
                                 }
                             }
+                            // Wire-1 (2026-08-29): when the sessions carry no
+                            // epochs, source them from the compact tick store
+                            // for this exact window. The fetch is recency- and
+                            // row-bounded, fail-closed (nil keeps hr_only
+                            // behavior byte-identical), and only sufficiency-
+                            // qualified evidence may count as epoch overlap —
+                            // an insufficient read must never strip stages or
+                            // bypass the preserve gate below.
+                            var compactMotionEvidence:
+                                CompactWindowMotionEvidence?
+                            if !hasRecoveredEpochOverlap,
+                               // A hand-typed window never earns sensor
+                               // stages; don't pay for its decode either.
+                               !sleep.source.hasPrefix("manual_"),
+                               let compactMotion {
+                                compactMotionEvidence = try Self
+                                    .compactWindowMotionEvidence(
+                                        start: sleep.start,
+                                        end: sleep.end,
+                                        compactMotion: compactMotion,
+                                        cooperativeDeadline: deadline
+                                    )
+                                if compactMotionEvidence != nil {
+                                    hasRecoveredEpochOverlap = true
+                                }
+                            }
                             // Archive-HR union (2026-08-29, cooperative lane
                             // only): a STAGE-LESS record whose session holes
                             // drained after confirmation gets the drained HR
@@ -43476,6 +43819,8 @@ final class SessionStore: ObservableObject {
                                     sleep,
                                     sourceSessions: sourceSessions,
                                     archiveHeartSamples: archiveHeartSamples,
+                                    compactMotionEvidence:
+                                        compactMotionEvidence,
                                     reason: reason,
                                     cooperativeDeadline: deadline
                                 ) {
@@ -43529,12 +43874,22 @@ final class SessionStore: ObservableObject {
                                     extraHeartSamples: archiveHeartSamples,
                                     cooperativeDeadline: deadline
                                 )
-                            let provenance = try Self
-                                .recoveredMotionProvenance(
-                                    for: sleep,
-                                    sessions: sourceSessions,
-                                    cooperativeDeadline: deadline
-                                )
+                            let provenance: AtriaRecoveredMotionAnalytics
+                                .SleepProvenance
+                            if let compactMotionEvidence {
+                                // Wire-1 (2026-08-29): sufficiency-qualified
+                                // compact evidence is the provenance
+                                // authority for a window whose sessions
+                                // carry no epochs of their own.
+                                provenance = compactMotionEvidence.provenance
+                            } else {
+                                provenance = try Self
+                                    .recoveredMotionProvenance(
+                                        for: sleep,
+                                        sessions: sourceSessions,
+                                        cooperativeDeadline: deadline
+                                    )
+                            }
                             let stages = try Self.sleepStageResearchSegments(
                                 from: sourceSessions,
                                 start: sleep.start,
@@ -43550,6 +43905,8 @@ final class SessionStore: ObservableObject {
                                 // may pay for HR-only ESTIMATE staging.
                                 allowHROnlyEstimate: true,
                                 extraHeartSamples: archiveHeartSamples,
+                                extraMotionEpochs:
+                                    compactMotionEvidence?.epochs ?? [],
                                 maximumRows: Int.max,
                                 cooperativeDeadline: deadline
                             )
@@ -43573,7 +43930,17 @@ final class SessionStore: ObservableObject {
                                 stageSegments: stages,
                                 motionSource: provenance.source,
                                 motionValidated:
-                                    provenance.lowMotionValidated
+                                    provenance.lowMotionValidated,
+                                // Wire-4 (2026-08-29): the hr_only
+                                // confidence tier follows the flag it
+                                // has always described; monotonic, and
+                                // authorship prefixes are preserved.
+                                confidence: Self
+                                    .upgradedConfirmedSleepConfidence(
+                                        sleep.confidence,
+                                        motionValidated:
+                                            provenance.lowMotionValidated
+                                    )
                             )
                             if regenerated.stageSegments != sleep.stageSegments {
                                 repaired += 1
@@ -43767,6 +44134,134 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    /// Wire-1 (2026-08-29): actor-side capture of the compact-store access
+    /// the provenance/stage lanes hand to their off-main prepare threads.
+    /// Nil (no persisted strap identity) disables the compact fallback and
+    /// keeps every lane byte-identical to its historical behavior.
+    private func confirmedSleepCompactMotionContext()
+        -> ConfirmedSleepCompactMotionContext? {
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return nil }
+        return ConfirmedSleepCompactMotionContext(
+            store: .shared,
+            strapIdentifier: strapIdentifier,
+            now: Date()
+        )
+    }
+
+    /// Wire-2 (2026-08-29) admission planner, pure so the throttle and
+    /// precheck are directly testable. Returns the confirmed-sleep windows
+    /// still worth a compact read, or nil when the trigger must not run:
+    /// throttled (30-min floor), already in flight, an archive projection is
+    /// active (its own chain runs the identical rebuild+backfill with
+    /// archive truth — racing it doubles the work for nothing), or no
+    /// recent record has anything left to upgrade. The coverage window
+    /// mirrors the store's `retainedBucketCount` (4 daily shards).
+    nonisolated static func compactMotionSleepEvidenceUpgradeCandidateWindows(
+        now: Date,
+        lastAttempt: Date?,
+        upgradeInFlight: Bool,
+        recomputeIdle: Bool,
+        confirmedSleeps: [UserConfirmedSleep],
+        minimumInterval: TimeInterval = 30 * 60,
+        coverageWindow: TimeInterval = 4 * 86_400
+    ) -> [DateInterval]? {
+        guard !upgradeInFlight, recomputeIdle else { return nil }
+        if let lastAttempt,
+           now.timeIntervalSince(lastAttempt) < minimumInterval {
+            return nil
+        }
+        let cutoff = now.addingTimeInterval(-coverageWindow)
+        let windows = confirmedSleeps.compactMap {
+            sleep -> DateInterval? in
+            guard sleep.end > cutoff,
+                  sleep.end > sleep.start,
+                  Self.confirmedSleepSourceIsMotionUpgradeEligible(
+                    sleep.source
+                  ),
+                  !sleep.motionValidated
+                    || sleep.stageSegments?.isEmpty != false else {
+                return nil
+            }
+            return DateInterval(start: sleep.start, end: sleep.end)
+        }
+        return windows.isEmpty ? nil : windows
+    }
+
+    /// Wire-2 (2026-08-29): a durable compact-motion generation schedules
+    /// one throttled confirmed-sleep provenance rebuild + stage backfill so
+    /// motion that drains AFTER a night settled can still validate it. All
+    /// heavy work stays in the existing cooperative off-main lanes; this
+    /// method only plans, stats shard files off-main, and re-checks its
+    /// gates after every suspension point.
+    private func scheduleCompactMotionSleepEvidenceUpgrade(reason: String) {
+        guard canonicalMutationAllowed else { return }
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return }
+        let now = Date()
+        guard let windows = Self
+            .compactMotionSleepEvidenceUpgradeCandidateWindows(
+                now: now,
+                lastAttempt: lastCompactMotionSleepEvidenceUpgradeAttempt,
+                upgradeInFlight: compactMotionSleepEvidenceUpgradeInFlight,
+                recomputeIdle: recoveredDataRecompute.phase == .idle,
+                confirmedSleeps: cachedConfirmedSleeps
+            ) else { return }
+        lastCompactMotionSleepEvidenceUpgradeAttempt = now
+        compactMotionSleepEvidenceUpgradeInFlight = true
+        let affectedSince = now.addingTimeInterval(-4 * 86_400)
+        let store = AtriaWhoop4MotionTickCompactStore.shared
+        Task(priority: .utility) { @MainActor [weak self] in
+            // Stat-only shard precheck, off the main actor's hot path.
+            let hasRows = await withCheckedContinuation {
+                (continuation: CheckedContinuation<Bool, Never>) in
+                DispatchQueue.global(qos: .utility).async {
+                    let value = windows.contains {
+                        store.hasStoredRows(
+                            start: $0.start,
+                            end: $0.end,
+                            strapIdentifier: strapIdentifier,
+                            minimumRows:
+                                ConfirmedSleepCompactMotionContext.minimumRows
+                        )
+                    }
+                    continuation.resume(returning: value)
+                }
+            }
+            guard let self else { return }
+            defer { self.compactMotionSleepEvidenceUpgradeInFlight = false }
+            guard hasRows,
+                  self.canonicalMutationAllowed,
+                  self.recoveredDataRecompute.phase == .idle else {
+                AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=skipped reason=%@ has_rows=%d",
+                              reason,
+                              hasRows ? 1 : 0)
+                return
+            }
+            AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=started reason=%@ windows=%d",
+                          reason,
+                          windows.count)
+            guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
+                reason: reason,
+                deferDerivedPublication: false,
+                affectedSince: affectedSince
+            ) else {
+                AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=rebuild_failed reason=%@",
+                              reason)
+                return
+            }
+            let outcome = await self.backfillConfirmedSleepStagesFromSessions(
+                reason: reason,
+                deferDerivedPublication: false,
+                affectedSince: affectedSince
+            )
+            AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=%@ reason=%@ changed=%d",
+                          outcome.succeeded ? "completed" : "backfill_failed",
+                          reason,
+                          outcome.changed ? 1 : 0)
+        }
+    }
+
     /// Rebuilds sensor provenance before stage backfill. Any recovered epoch
     /// gap or active-motion interval removes the old whole-window low-motion
     /// claim. The following backfill pass always regenerates stages for an
@@ -43786,6 +44281,8 @@ final class SessionStore: ObservableObject {
                 affectedSince.map { session.end > $0 } ?? true
             }
         let sourceSleeps = cachedConfirmedSleeps
+        // Wire-1 (2026-08-29): actor-side capture for the off-main prepare.
+        let compactMotion = confirmedSleepCompactMotionContext()
         guard executionShouldContinue() else { return false }
         let preparation: (updated: [UserConfirmedSleep], changed: Int)? =
             await withCheckedContinuation { continuation in
@@ -43810,21 +44307,60 @@ final class SessionStore: ObservableObject {
                                     updated.append(sleep)
                                     continue
                                 }
-                                let provenance = try Self
+                                let sessionProvenance = try Self
                                     .recoveredMotionProvenance(
                                         for: sleep,
                                         sessions: sourceSessions,
                                         cooperativeDeadline: deadline
                                     )
+                                // Wire-1 (2026-08-29): the compact store
+                                // supplies this window's provenance when the
+                                // sessions cannot measure it. Sufficiency-
+                                // gated inside the fetch; a session verdict
+                                // that already measured the window (even a
+                                // failing one) is never overridden.
+                                var provenance = sessionProvenance
+                                var usedCompactEvidence = false
+                                if !sessionProvenance.measurementSufficient,
+                                   // Hand-typed windows never earn sensor
+                                   // validation; the compact channel must
+                                   // not be the first thing to flip a
+                                   // manual record's motion fields.
+                                   !sleep.source.hasPrefix("manual_"),
+                                   let compactMotion,
+                                   let compactEvidence = try Self
+                                    .compactWindowMotionEvidence(
+                                        start: sleep.start,
+                                        end: sleep.end,
+                                        compactMotion: compactMotion,
+                                        cooperativeDeadline: deadline
+                                    ) {
+                                    provenance = compactEvidence.provenance
+                                    usedCompactEvidence = true
+                                }
                                 let motionSource = provenance.source
                                 let motionValidated =
                                     provenance.lowMotionValidated
-                                guard provenance.hasRecoveredEpochs,
-                                      sleep.motionSource != motionSource
+                                let fieldsChanged =
+                                    sleep.motionSource != motionSource
                                         || sleep.motionValidated
                                             != motionValidated
-                                        || sleep.stageSegments?.isEmpty
-                                            == false else {
+                                // Session-epoch nights keep the historical
+                                // always-strip contract (changed epoch timing
+                                // must never leave stale stages). For a
+                                // compact-projected window the stage backfill
+                                // already regenerates every epoch-overlapped
+                                // night each pass, so an unconditional strip
+                                // here would rewrite the store twice per
+                                // projection cycle for already-validated
+                                // nights — strip only when the provenance
+                                // fields actually moved.
+                                let requiresStageRemint = usedCompactEvidence
+                                    ? fieldsChanged
+                                    : sleep.stageSegments?.isEmpty == false
+                                guard provenance.hasRecoveredEpochs,
+                                      fieldsChanged || requiresStageRemint
+                                else {
                                     updated.append(sleep)
                                     continue
                                 }
@@ -43835,7 +44371,14 @@ final class SessionStore: ObservableObject {
                                     start: sleep.start,
                                     end: sleep.end,
                                     source: sleep.source,
-                                    confidence: sleep.confidence,
+                                    // Wire-4 (2026-08-29): the hr_only
+                                    // confidence tier follows the validated
+                                    // flag; monotonic, authorship preserved.
+                                    confidence: Self
+                                        .upgradedConfirmedSleepConfidence(
+                                            sleep.confidence,
+                                            motionValidated: motionValidated
+                                        ),
                                     sessions: sleep.sessions,
                                     samples: sleep.samples,
                                     avgHR: sleep.avgHR,
@@ -43853,7 +44396,12 @@ final class SessionStore: ObservableObject {
                                     eventTimeZoneIdentifier:
                                         sleep.eventTimeZoneIdentifier,
                                     sleepNeedSeconds: sleep.sleepNeedSeconds,
-                                    frozenSleepNeed: sleep.frozenSleepNeed
+                                    frozenSleepNeed: sleep.frozenSleepNeed,
+                                    // 2026-08-29: this rewrite previously
+                                    // dropped the user's main-sleep answer
+                                    // (init defaults it nil), silently
+                                    // re-prompting the day. Preserve it.
+                                    dayPrimaryChoice: sleep.dayPrimaryChoice
                                 ))
                             }
                             try deadline.checkpoint()
