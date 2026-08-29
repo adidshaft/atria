@@ -5121,21 +5121,33 @@ struct AtriaHomeView: View {
             if defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ) {
-                // Say HOW MUCH. The backlog that starved sleep confirmation
-                // grew to 15.5 h over three days behind this exact banner; a
-                // size that is visible cannot silently compound. The ledger
-                // read is memoised on its own generation counter so the render
-                // path stats the file only when the ledger actually changed.
-                let backlog = AtriaHomeRecoverySyncPresentation
-                    .memoisedGapBacklogText(defaults: defaults, now: now)
+                // Say HOW MUCH, and say WHICH KIND. The backlog that starved
+                // sleep confirmation grew to 15.5 h over three days behind this
+                // exact banner; a size that is visible cannot silently
+                // compound. The claim is split by wear verdict: only time the
+                // strap can still hand over counts as "filling", while proven
+                // off-wrist time is named and excluded instead of inflating
+                // the promise. The ledger read is memoised on the ledger
+                // generation plus the recoverability inputs.
+                let summary = AtriaHomeRecoverySyncPresentation
+                    .memoisedGapBacklogSummary(defaults: defaults, now: now)
+                let backlog = summary.recoverableText
+                let offWrist = summary.offWristExcludedText
+                var title = backlog.map { "Synced · filling \($0)" }
+                    ?? (summary.provenUnrecoverableSeconds >= 60
+                        ? "Synced · earlier gap can't be refilled"
+                        : "Synced · filling earlier gaps")
+                if let offWrist { title += " · \(offWrist)" }
                 return Status(
-                    title: backlog.map { "Synced · filling \($0)" }
-                        ?? "Synced · filling earlier gaps",
+                    title: title,
                     symbol: "checkmark.circle.badge.questionmark",
                     accessibilityLabel: "Strap history is synced through now, "
                         + "but an earlier stretch is known to be missing and is "
                         + "still being refetched."
-                        + (backlog.map { " About \($0.replacingOccurrences(of: " of gaps", with: "")) remain." } ?? ""),
+                        + (backlog.map { " About \($0.replacingOccurrences(of: " of gaps", with: "")) remain." } ?? "")
+                        + (AtriaHomeRecoverySyncPresentation.shortDuration(
+                            seconds: summary.offWristExcludedSeconds
+                        ).map { " Another \($0) was off the wrist and is excluded." } ?? ""),
                     compactTitle: "Synced · filling gaps"
                 )
             }
@@ -6067,27 +6079,147 @@ enum AtriaHomeRecoverySyncPresentation {
     /// could never read "Synced" between catch-up slices on a healthy link.
     /// Staleness fails closed: an old observation (link lost, app suspended)
     /// never fabricates a synced claim.
-    private static var gapBacklogMemo: (generation: Int, text: String?)?
+    /// Per-window verdicts folded into the two numbers the status line can
+    /// honestly show. Indeterminate verdicts count as recoverable: missing
+    /// evidence must never shrink the visible backlog (the 15.5 h starvation
+    /// hid exactly this way), only proven off-wrist/dead time is excluded.
+    struct GapBacklogSummary: Equatable {
+        let recoverableSeconds: TimeInterval
+        /// Windows provably beyond recovery (behind the ACK cursor, behind the
+        /// Start-fresh watermark, or terminally stalled).
+        let provenUnrecoverableSeconds: TimeInterval
+        /// Time proven off-wrist at gap-open and never minted as a window.
+        let offWristExcludedSeconds: TimeInterval
 
-    /// Ledger-generation-memoised wrapper so the status render only touches
-    /// the ledger file when a drain actually changed it.
-    static func memoisedGapBacklogText(defaults: UserDefaults,
-                                       now: Date) -> String? {
-        let generation = defaults.integer(
-            forKey: AtriaHistoricalGapLedger.generationKey
-        )
-        if let memo = gapBacklogMemo, memo.generation == generation {
-            return memo.text
-        }
-        let text = gapBacklogText(
-            seconds: unresolvedGapSeconds(
-                windows: AtriaHistoricalGapLedger
-                    .windowsForEvidence(defaults: defaults),
-                now: now
+        /// "1.2h of gaps" — recoverable time only; nil under a minute.
+        var recoverableText: String? {
+            AtriaHomeRecoverySyncPresentation.gapBacklogText(
+                seconds: recoverableSeconds
             )
+        }
+
+        /// "3.1h off wrist excluded" — nil under a minute.
+        var offWristExcludedText: String? {
+            guard let short = AtriaHomeRecoverySyncPresentation
+                .shortDuration(seconds: offWristExcludedSeconds) else { return nil }
+            return "\(short) off wrist excluded"
+        }
+    }
+
+    private struct GapBacklogMemoKey: Equatable {
+        let generation: Int
+        let drainCursorUnix: Double
+        let abandonedThroughUnix: Double
+        let terminallyStalled: Bool
+    }
+
+    private static var gapBacklogMemo: (key: GapBacklogMemoKey,
+                                        recoverableSeconds: TimeInterval,
+                                        provenUnrecoverableSeconds: TimeInterval)?
+
+    /// Memoised on the ledger generation plus the recoverability inputs, so the
+    /// status render only touches the ledger file when a drain actually changed
+    /// it. The off-wrist tally is read fresh — it moves without a ledger write.
+    static func memoisedGapBacklogSummary(defaults: UserDefaults,
+                                          now: Date) -> GapBacklogSummary {
+        let key = GapBacklogMemoKey(
+            generation: defaults.integer(
+                forKey: AtriaHistoricalGapLedger.generationKey
+            ),
+            drainCursorUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+            ),
+            abandonedThroughUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+            ),
+            terminallyStalled: terminallyStalledFromDefaults(defaults: defaults,
+                                                             now: now)
         )
-        gapBacklogMemo = (generation, text)
-        return text
+        let offWrist = AtriaGapWearClassification.OffWristExclusion
+            .excludedSeconds(now: now, defaults: defaults)
+        if let memo = gapBacklogMemo, memo.key == key {
+            return GapBacklogSummary(
+                recoverableSeconds: memo.recoverableSeconds,
+                provenUnrecoverableSeconds: memo.provenUnrecoverableSeconds,
+                offWristExcludedSeconds: offWrist
+            )
+        }
+        let classified = classifiedGapBacklog(
+            windows: AtriaHistoricalGapLedger
+                .windowsForEvidence(defaults: defaults),
+            now: now,
+            drainCursorUnix: key.drainCursorUnix,
+            abandonedThroughUnix: key.abandonedThroughUnix,
+            terminallyStalled: key.terminallyStalled
+        )
+        gapBacklogMemo = (key,
+                          classified.recoverable,
+                          classified.provenUnrecoverable)
+        return GapBacklogSummary(
+            recoverableSeconds: classified.recoverable,
+            provenUnrecoverableSeconds: classified.provenUnrecoverable,
+            offWristExcludedSeconds: offWrist
+        )
+    }
+
+    /// Same persistent stall signals the missed-data banner uses; the render
+    /// path holds no in-memory drain state.
+    private static func terminallyStalledFromDefaults(defaults: UserDefaults,
+                                                      now: Date) -> Bool {
+        AtriaMissedDataBannerPresentation.gapIsTerminallyStalled(
+            backlogPending: defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            sequenceGapParkedTerminal: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
+            ) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+            ),
+            secondsSinceRangeLossRequested: (defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+            ) as? Double).map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+    }
+
+    /// Splits the ledger's missing time by per-window wear/recoverability
+    /// verdicts. Wear evidence is not gathered on this synchronous render path,
+    /// so the wear-side inputs stay nil and the core fails closed to
+    /// `.indeterminate` — which lands in the recoverable bucket. Only windows
+    /// the drain provably cannot refill move to the unrecoverable bucket.
+    static func classifiedGapBacklog(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date,
+        drainCursorUnix: Double,
+        abandonedThroughUnix: Double,
+        terminallyStalled: Bool
+    ) -> (recoverable: TimeInterval, provenUnrecoverable: TimeInterval) {
+        var recoverable: TimeInterval = 0
+        var unrecoverable: TimeInterval = 0
+        for window in windows {
+            let seconds = expectedMissingSeconds(window: window, now: now)
+            guard seconds > 0 else { continue }
+            let verdict = AtriaGapWearClassification.classify(.init(
+                windowStart: window.start,
+                windowEnd: window.end,
+                expectedMissingSeconds: seconds,
+                drainCursorUnix: drainCursorUnix > 0 ? drainCursorUnix : nil,
+                abandonedThroughUnix: abandonedThroughUnix > 0
+                    ? abandonedThroughUnix : nil,
+                terminallyStalled: terminallyStalled
+            ))
+            switch verdict {
+            case .offWrist, .charging, .unrecoverable,
+                 .wornUndrained(recoverable: false),
+                 .appOrRadioDown(recoverable: false):
+                unrecoverable += seconds
+            case .wornUndrained(recoverable: true),
+                 .appOrRadioDown(recoverable: true),
+                 .indeterminate:
+                recoverable += seconds
+            }
+        }
+        return (recoverable, unrecoverable)
     }
 
     /// Total genuinely-missing time across the gap ledger, in seconds.
@@ -6107,21 +6239,35 @@ enum AtriaHomeRecoverySyncPresentation {
         now: Date
     ) -> TimeInterval {
         windows.reduce(0) { total, window in
-            if let bits = window.expectedSecondBits {
-                let missing = bits.reduce(0) { $0 + $1.nonzeroBitCount }
-                return total + TimeInterval(missing)
-            }
-            let end = window.end ?? now
-            guard end > window.start else { return total }
-            return total + end.timeIntervalSince(window.start)
+            total + expectedMissingSeconds(window: window, now: now)
         }
+    }
+
+    /// One window's genuinely-missing seconds: the exact mask when present,
+    /// the envelope duration otherwise (open windows run to `now`).
+    static func expectedMissingSeconds(
+        window: AtriaHistoricalGapLedger.Window,
+        now: Date
+    ) -> TimeInterval {
+        if let bits = window.expectedSecondBits {
+            return TimeInterval(bits.reduce(0) { $0 + $1.nonzeroBitCount })
+        }
+        let end = window.end ?? now
+        guard end > window.start else { return 0 }
+        return end.timeIntervalSince(window.start)
     }
 
     /// "12m of gaps" / "2.3h of gaps" / nil under a minute (not worth a claim).
     static func gapBacklogText(seconds: TimeInterval) -> String? {
+        guard let short = shortDuration(seconds: seconds) else { return nil }
+        return "\(short) of gaps"
+    }
+
+    /// "12m" / "2.3h" / nil under a minute.
+    static func shortDuration(seconds: TimeInterval) -> String? {
         guard seconds >= 60 else { return nil }
-        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m of gaps" }
-        return String(format: "%.1fh of gaps", seconds / 3_600)
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m" }
+        return String(format: "%.1fh", seconds / 3_600)
     }
 
     static func strapReportsCaughtUp(
@@ -6538,7 +6684,9 @@ enum AtriaMissedDataBannerPresentation {
                      backlogPending: Bool = false,
                      consecutiveZeroProgressSlices: Int = 0,
                      secondsSinceRangeLossRequested: TimeInterval? = nil,
-                     sequenceGapParkedTerminal: Bool = false) -> Copy {
+                     sequenceGapParkedTerminal: Bool = false,
+                     ledgerRecoverableSeconds: TimeInterval? = nil,
+                     ledgerProvenUnrecoverableSeconds: TimeInterval? = nil) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
@@ -6565,6 +6713,22 @@ enum AtriaMissedDataBannerPresentation {
             return Copy(
                 title: "Strap can't catch up",
                 subtitle: "No recent progress — start fresh to clear the gap. New data is unaffected.",
+                offersRecovery: false
+            )
+        }
+
+        // Every classified ledger window is provably beyond recovery (served
+        // past the ACK cursor, behind the Start-fresh watermark, or off-wrist)
+        // — a Sync tap cannot refill any of it, so no affordance is dangled.
+        // Fail-open by construction: indeterminate windows count as
+        // recoverable upstream and keep the Sync button, and callers that
+        // gathered no classification pass nil and change nothing.
+        if backlogPending,
+           let recoverable = ledgerRecoverableSeconds, recoverable < 60,
+           (ledgerProvenUnrecoverableSeconds ?? 0) >= 60 {
+            return Copy(
+                title: "Earlier gap can't be refilled",
+                subtitle: "That time is no longer available from the strap. New data is unaffected.",
                 offersRecovery: false
             )
         }
@@ -6728,6 +6892,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let secondsSinceRangeLossRequested: TimeInterval? = rangeLossRequestedAt.map {
             max(0, Date().timeIntervalSince1970 - $0)
         }
+        // Per-window wear/recoverability verdicts (memoised on the ledger
+        // generation) so the Sync affordance reflects only time the strap can
+        // still hand over.
+        let gapSummary = AtriaHomeRecoverySyncPresentation
+            .memoisedGapBacklogSummary(defaults: defaults, now: Date())
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6741,7 +6910,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
             ),
             consecutiveZeroProgressSlices: zeroProgressSlices,
             secondsSinceRangeLossRequested: secondsSinceRangeLossRequested,
-            sequenceGapParkedTerminal: sequenceGapParked
+            sequenceGapParkedTerminal: sequenceGapParked,
+            ledgerRecoverableSeconds: gapSummary.recoverableSeconds,
+            ledgerProvenUnrecoverableSeconds: gapSummary.provenUnrecoverableSeconds
         )
     }
 
