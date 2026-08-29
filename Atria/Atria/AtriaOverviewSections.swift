@@ -137,6 +137,14 @@ private struct AtriaSleepReviewHost: View {
     let store: SessionStore
     let state: AtriaTodaySleepReviewProjectionState
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
+    // When a card settles, the next pending candidate re-arms this single-slot
+    // card IN PLACE, so a tap aimed at the settled card can land on its
+    // sibling's Dismiss (device-traced 2026-08-29: a confirmed nap's sibling
+    // gained an unexplained dismissal tombstone seconds after the confirm).
+    // Actions stay disarmed briefly whenever the displayed candidate changes
+    // while the host is mounted; the first card arms instantly.
+    @State private var armedNightID: String?
+    @State private var actionsArmed = true
 
     private var pending: SleepHistorySnapshot.Night? {
         if let debugFixtureSleepHistory {
@@ -158,6 +166,19 @@ private struct AtriaSleepReviewHost: View {
                                  },
                                  onAdjust: { adjustmentNight = night },
                                  onDismiss: { _ = store.dismissSleepCandidate(night) })
+                .disabled(!actionsArmed)
+                .opacity(actionsArmed ? 1 : 0.55)
+                .task(id: night.id) {
+                    if armedNightID == nil {
+                        armedNightID = night.id
+                        return
+                    }
+                    guard armedNightID != night.id else { return }
+                    armedNightID = night.id
+                    actionsArmed = false
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    actionsArmed = true
+                }
                 .sheet(item: $adjustmentNight) { adjustment in
                     AtriaManualSleepSheet(initialStart: adjustment.start,
                                           initialEnd: adjustment.end,
