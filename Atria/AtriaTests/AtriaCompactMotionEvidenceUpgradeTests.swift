@@ -291,6 +291,257 @@ final class AtriaCompactMotionEvidenceUpgradeTests: XCTestCase {
         ))
     }
 
+    // MARK: - Monotonicity: the 08-29 device clobber
+
+    /// Device regression 2026-08-29: an upgrade committed by one lane was
+    /// replaced minutes later by an hr-estimate image prepared from an older
+    /// snapshot (several lanes run the chain concurrently at launch, and the
+    /// ordinary rebase applies a prepared delta over CURRENT
+    /// unconditionally). The save-level fence must keep the record
+    /// motion-validated.
+    func testStaleContextlessPassCannotDowngradeMotionValidatedRecord() throws {
+        let hrOnlyStageless = makeConfirmedSleep(
+            source: "nap_candidate",
+            confidence: "user_confirmed_hr_only",
+            motionSource: "historical_gravity_recovered_epoch_v1_missing"
+        )
+        // What a context-less pass (failed compact read) lawfully prepares
+        // from that stale base: an allowHROnlyEstimate re-mint.
+        let estimateDowngrade = makeConfirmedSleep(
+            source: "nap_candidate",
+            confidence: "user_confirmed_hr_only",
+            motionSource: "historical_gravity_recovered_epoch_v1_missing",
+            motionValidated: false,
+            stageSegments: [SleepStageSegment(
+                id: "research-hr-estimate-v1-test-0-light",
+                start: nightStart,
+                end: nightEnd,
+                stage: .light
+            )]
+        )
+        // What the durable store holds by the time that stale delta lands:
+        // the committed motion-validated upgrade.
+        let upgraded = makeConfirmedSleep(
+            source: "nap_candidate",
+            confidence: "user_confirmed_motion_validated",
+            motionSource: AtriaRecoveredMotionEpoch.source,
+            motionValidated: true,
+            stageSegments: [SleepStageSegment(
+                id: "research-motion-v2-test-0-light",
+                start: nightStart,
+                end: nightEnd,
+                stage: .light
+            )]
+        )
+        for usesRecoveredRebase in [false, true] {
+            let preparation = try XCTUnwrap(SessionStore.prepareConfirmedSleepSave(
+                base: [hrOnlyStageless],
+                desired: [estimateDowngrade],
+                authoritativeCurrent: [upgraded],
+                previous: [upgraded],
+                dailyMetrics: [],
+                baseNeedHours: 8,
+                calendar: .current,
+                usesRecoveredRebase: usesRecoveredRebase,
+                rebuildsBaselineOffMain: false,
+                baselineSessions: [],
+                previousBaseline: PersonalBaseline(restingHR: nil, hrvEMA: nil),
+                profile: AthleteProfile(age: 35,
+                                        measuredMaxHR: 185,
+                                        maxHRSource: .measured,
+                                        biologicalSex: .male,
+                                        weightKg: 75,
+                                        heightCm: 178,
+                                        updated: nil,
+                                        hasCompletedOnboarding: true),
+                preparationNow: now,
+                shouldContinue: { true }
+            ))
+            let settled = try XCTUnwrap(
+                preparation.settledSleeps.first { $0.id == upgraded.id },
+                "record must survive the merge (rebase \(usesRecoveredRebase))"
+            )
+            XCTAssertTrue(settled.motionValidated,
+                          "stale pass must not clear the verdict (rebase \(usesRecoveredRebase))")
+            XCTAssertEqual(settled.motionSource, AtriaRecoveredMotionEpoch.source)
+            XCTAssertEqual(settled.confidence, "user_confirmed_motion_validated")
+            XCTAssertTrue(
+                (settled.stageSegments ?? []).allSatisfy {
+                    $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+                },
+                "receipt stages must survive (rebase \(usesRecoveredRebase))"
+            )
+            XCTAssertEqual(settled.stageSegments?.isEmpty, false)
+        }
+    }
+
+    func testMonotonicFenceAllowsEditsRemintsAndStripState() throws {
+        let upgraded = makeConfirmedSleep(
+            source: "sleep_window",
+            confidence: "user_confirmed_motion_validated",
+            motionSource: AtriaRecoveredMotionEpoch.source,
+            motionValidated: true,
+            stageSegments: [SleepStageSegment(
+                id: "research-motion-v2-test-0-light",
+                start: nightStart,
+                end: nightEnd,
+                stage: .light
+            )]
+        )
+        // A window edit is real authority: evidence must re-derive.
+        var edited = makeConfirmedSleep(
+            source: "sleep_window",
+            confidence: "user_confirmed_hr_only",
+            motionSource: "user_review",
+            motionValidated: false
+        )
+        edited = UserConfirmedSleep(
+            id: upgraded.id,
+            createdAt: edited.createdAt,
+            start: edited.start.addingTimeInterval(-600),
+            end: edited.end,
+            source: edited.source,
+            confidence: edited.confidence,
+            sessions: edited.sessions,
+            samples: edited.samples,
+            avgHR: edited.avgHR,
+            peakHR: edited.peakHR,
+            restingHR: edited.restingHR,
+            hrv: edited.hrv,
+            hrvWindowCount: edited.hrvWindowCount,
+            respiratoryRate: edited.respiratoryRate,
+            duration: edited.duration,
+            span: edited.span,
+            reason: edited.reason,
+            motionSource: edited.motionSource,
+            motionValidated: edited.motionValidated,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: edited.eventTimeZoneIdentifier
+        )
+        let editResult = try XCTUnwrap(
+            SessionStore.motionEvidenceMonotonicConfirmedSleeps(
+                settled: [edited],
+                authoritativeCurrent: [upgraded]
+            )
+        )
+        XCTAssertEqual(editResult.first?.motionValidated, false,
+                       "a changed window is an edit, never a fenced downgrade")
+        // A motion-receipted re-mint (even with an active/awake verdict) is
+        // fresh motion authority, not a downgrade.
+        let remint = makeConfirmedSleep(
+            source: "sleep_window",
+            confidence: "user_confirmed_motion_validated",
+            motionSource: AtriaRecoveredMotionEpoch.source,
+            motionValidated: false,
+            stageSegments: [SleepStageSegment(
+                id: "research-motion-v2-test-1-awake",
+                start: nightStart,
+                end: nightEnd,
+                stage: .awake
+            )]
+        )
+        let remintResult = try XCTUnwrap(
+            SessionStore.motionEvidenceMonotonicConfirmedSleeps(
+                settled: [remint],
+                authoritativeCurrent: [upgraded]
+            )
+        )
+        XCTAssertEqual(remintResult.first?.motionValidated, false,
+                       "a motion-receipted re-verdict passes through")
+        // The rebuild's strip-for-remint keeps the verdict; untouched.
+        let strip = makeConfirmedSleep(
+            source: "sleep_window",
+            confidence: "user_confirmed_motion_validated",
+            motionSource: AtriaRecoveredMotionEpoch.source,
+            motionValidated: true,
+            stageSegments: nil
+        )
+        let stripResult = try XCTUnwrap(
+            SessionStore.motionEvidenceMonotonicConfirmedSleeps(
+                settled: [strip],
+                authoritativeCurrent: [upgraded]
+            )
+        )
+        XCTAssertNil(stripResult.first?.stageSegments,
+                     "the intentional strip-for-remint state passes through")
+    }
+
+    func testMultipleRecordsUpgradeInOneArrivalPass() throws {
+        try appendQuietNightRows()
+        // Second qualifying window later the same day, disjoint from the
+        // first: 90 minutes starting 2h after the first night ends.
+        let secondStart = nightEnd.addingTimeInterval(2 * 3_600)
+        let secondEnd = secondStart.addingTimeInterval(90 * 60)
+        try appendQuietRows(start: secondStart, end: secondEnd, tickSeed: 40_000)
+        let context = SessionStore.ConfirmedSleepCompactMotionContext(
+            store: store,
+            strapIdentifier: strapIdentifier,
+            now: secondEnd.addingTimeInterval(3_600)
+        )
+        let windows: [(String, Date, Date)] = [
+            ("sleep_window", nightStart, nightEnd),
+            ("nap_candidate", secondStart, secondEnd),
+        ]
+        var upgradedCount = 0
+        for (source, start, end) in windows {
+            let sleep = UserConfirmedSleep(
+                id: "multi-\(source)",
+                createdAt: end,
+                start: start,
+                end: end,
+                source: source,
+                confidence: "user_confirmed_hr_only",
+                sessions: 1,
+                samples: 1_350,
+                avgHR: 59,
+                peakHR: 66,
+                restingHR: 56,
+                hrv: nil,
+                hrvWindowCount: nil,
+                respiratoryRate: nil,
+                duration: end.timeIntervalSince(start),
+                span: end.timeIntervalSince(start),
+                reason: "test",
+                motionSource: "historical_gravity_recovered_epoch_v1_missing",
+                motionValidated: false,
+                stageSegments: nil,
+                eventTimeZoneIdentifier: TimeZone.current.identifier
+            )
+            let session = SavedSession(
+                id: UUID(),
+                start: start,
+                end: end,
+                label: "HR",
+                points: stride(
+                    from: 0.0,
+                    through: end.timeIntervalSince(start),
+                    by: 2.0
+                ).map { SavedSession.Point(t: $0, bpm: 58 + Int($0 / 600) % 4) }
+            )
+            let upgraded = runOffMain {
+                guard let evidence = try SessionStore.compactWindowMotionEvidence(
+                    start: start,
+                    end: end,
+                    compactMotion: context,
+                    cooperativeDeadline: Self.relaxedDeadline()
+                ) else { return UserConfirmedSleep?.none }
+                return try SessionStore.motionArrivalUpgradedConfirmedSleepIfNeeded(
+                    sleep,
+                    sourceSessions: [session],
+                    drainedHeartSamples: [],
+                    compactMotionEvidence: evidence,
+                    reason: "test",
+                    cooperativeDeadline: Self.relaxedDeadline()
+                )
+            }
+            let record = try XCTUnwrap(upgraded ?? nil, "window \(source) must upgrade")
+            XCTAssertTrue(record.motionValidated, source)
+            XCTAssertEqual(record.confidence, "user_confirmed_motion_validated", source)
+            upgradedCount += 1
+        }
+        XCTAssertEqual(upgradedCount, 2)
+    }
+
     // MARK: - Fixture helpers
 
     private static func relaxedDeadline() -> AtriaSleepSettlementDeadline {
@@ -342,9 +593,19 @@ final class AtriaCompactMotionEvidenceUpgradeTests: XCTestCase {
     /// nights the device audit measured (validatedFraction 0.96+, mean
     /// intensity ~0.06).
     private func appendQuietNightRows(strideSeconds: Int = 1) throws {
-        let base = UInt32(nightStart.timeIntervalSince1970.rounded(.down))
-        let total = Int(nightEnd.timeIntervalSince(nightStart))
-        var tick = 0
+        try appendQuietRows(start: nightStart,
+                            end: nightEnd,
+                            tickSeed: 0,
+                            strideSeconds: strideSeconds)
+    }
+
+    private func appendQuietRows(start: Date,
+                                 end: Date,
+                                 tickSeed: Int,
+                                 strideSeconds: Int = 1) throws {
+        let base = UInt32(start.timeIntervalSince1970.rounded(.down))
+        let total = Int(end.timeIntervalSince(start))
+        var tick = tickSeed
         for second in stride(from: 0, through: total, by: strideSeconds) {
             let unix = base + UInt32(second)
             XCTAssertTrue(try store.append(
