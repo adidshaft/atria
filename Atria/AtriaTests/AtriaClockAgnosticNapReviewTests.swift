@@ -207,9 +207,10 @@ final class AtriaClockAgnosticNapReviewTests: XCTestCase {
 /// refused by every lane — napMaximumSpan, maximumAutoConfirmMainSleepSpan and
 /// the span-capped review tiers can none of them accept such a span — so the
 /// real sleep inside it never surfaced. When (and only when) the unsplit
-/// cluster fails everything and its span exceeds what any lane could accept,
-/// the builder cuts it at sustained elevated-HR runs (>= 20 min of per-minute
-/// means at rest+22) and coverage holes > 45 min, then re-evaluates each
+/// cluster fails everything and its span exceeds the nap ceiling, the builder
+/// cuts it at sustained elevated-HR runs (elevated-bounded, >= 15 min at
+/// >= 0.60 elevated fraction over rest+22, alive through rest+15 support
+/// minutes) and coverage holes > 45 min, then re-evaluates each
 /// sub-cluster through the SAME lanes exactly once.
 final class AtriaAwakeSplitRetryTests: XCTestCase {
     override func setUp() {
@@ -377,6 +378,76 @@ final class AtriaAwakeSplitRetryTests: XCTestCase {
         XCTAssertTrue(events.contains { $0.reason == "cluster_no_surviving_lane" })
         XCTAssertFalse(events.contains { $0.detail.contains("post_split") },
                        "no sub-cluster was ever evaluated, so no post_split refusal may exist")
+    }
+
+    /// Real-device shape (downsampled): the owner's 2026-08-29 morning cluster
+    /// (04:58-10:32 IST) as PER-MINUTE means taken from the actual device
+    /// archive. This is the shape that defeated the first-shipped detector:
+    /// span 5.6h (under the original 12h retry gate), and every awake stretch
+    /// broken by isolated support-floor minutes (the 07:17+ blip measures
+    /// 12/18 elevated; the waking tail dips to 74/76 inside 20 elevated
+    /// minutes), so strict consecutive-minute runs never reached 20. The
+    /// refused cluster must split at the elevated-dominated runs and yield
+    /// both real naps as review candidates.
+    func testRealShapedMorningClusterSplitsIntoBothNaps() {
+        // 04:58 + 179 minutes (ends 07:57); head awake, first nap, awake blip.
+        let morningA: [Int] = [
+            81, 81, 78, 82, 79, 79, 90, 73, 79, 76, 78, 86, 98, 82, 87, 98, 82, 83, 106, 103,
+            105, 116, 110, 98, 93, 96, 101, 85, 82, 82, 84, 76, 78, 82, 81, 80, 70, 70, 67, 67,
+            70, 73, 86, 79, 71, 72, 76, 80, 73, 71, 71, 74, 75, 75, 75, 73, 72, 69, 65, 66,
+            68, 68, 68, 72, 70, 77, 70, 73, 68, 70, 67, 68, 68, 69, 66, 68, 68, 69, 67, 67,
+            67, 69, 65, 67, 65, 66, 68, 64, 63, 65, 63, 67, 76, 67, 65, 67, 67, 69, 67, 69,
+            62, 64, 63, 65, 66, 72, 68, 68, 64, 64, 72, 70, 69, 66, 65, 66, 65, 65, 66, 67,
+            71, 65, 62, 67, 65, 67, 66, 65, 64, 65, 68, 66, 61, 63, 67, 65, 69, 63, 76, 86,
+            80, 80, 79, 79, 78, 81, 80, 77, 76, 75, 78, 82, 81, 77, 80, 84, 80, 74, 75, 76,
+            79, 75, 79, 86, 112, 116, 77, 71, 69, 69, 69, 69, 73, 71, 72, 72, 71, 71, 70
+        ]
+        // 07:59 + 154 minutes (ends 10:33); second nap, then the waking tail.
+        let morningB: [Int] = [
+            69, 67, 69, 66, 66, 66, 67, 65, 65, 63, 67, 65, 62, 64, 66, 66, 65, 66, 66, 66,
+            67, 64, 64, 65, 66, 64, 63, 64, 63, 68, 61, 64, 61, 60, 61, 58, 62, 64, 66, 60,
+            61, 61, 59, 58, 58, 61, 60, 61, 58, 59, 58, 57, 58, 58, 60, 59, 58, 61, 59, 56,
+            57, 57, 55, 57, 57, 56, 57, 57, 58, 63, 60, 57, 58, 58, 60, 58, 55, 62, 64, 61,
+            69, 65, 69, 73, 69, 70, 71, 72, 74, 66, 67, 67, 68, 66, 67, 67, 65, 67, 69, 68,
+            66, 65, 66, 66, 67, 65, 65, 64, 65, 64, 67, 67, 71, 61, 69, 84, 84, 87, 74, 75,
+            82, 86, 82, 83, 83, 83, 68, 65, 62, 62, 62, 65, 73, 84, 74, 83, 96, 95, 102, 97,
+            91, 102, 100, 88, 76, 87, 79, 82, 89, 86, 84, 90, 92, 81
+        ]
+        func minuteSession(start: Date, means: [Int]) -> SavedSession {
+            let points = means.enumerated().map {
+                SavedSession.Point(t: Double($0.offset * 60), bpm: $0.element)
+            }
+            return SavedSession(id: UUID(),
+                                start: start,
+                                end: start.addingTimeInterval(Double(means.count) * 60),
+                                label: "Test",
+                                points: points)
+        }
+        let sessionA = minuteSession(start: localDate(2027, 3, 3, 4, 58), means: morningA)
+        let sessionB = minuteSession(start: localDate(2027, 3, 3, 7, 59), means: morningB)
+
+        let result = candidates(in: [sessionA, sessionB], rest: 57)
+        let naps = result.filter { $0.kind == "nap_candidate" }
+        XCTAssertTrue(naps.contains {
+            $0.start <= localDate(2027, 3, 3, 6, 0) && $0.end >= localDate(2027, 3, 3, 7, 0)
+        }, "the first real nap (~05:34-07:17) must surface as a review candidate")
+        XCTAssertTrue(naps.contains {
+            $0.start <= localDate(2027, 3, 3, 8, 30) && $0.end >= localDate(2027, 3, 3, 9, 30)
+        }, "the second real nap (~08:00-09:30) must surface as a review candidate")
+        for candidate in result {
+            XCTAssertEqual(candidate.confidence, .low)
+            XCTAssertFalse(candidate.motionEvidenceValidated)
+            XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+            XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(
+                candidate,
+                baselineRestingIsTrusted: true,
+                baselineRestingIsNearTrusted: true
+            ))
+            XCTAssertGreaterThanOrEqual(candidate.start, localDate(2027, 3, 3, 5, 30),
+                                        "no candidate may claim the 04:58-05:33 awake head")
+            XCTAssertLessThanOrEqual(candidate.end, localDate(2027, 3, 3, 10, 15),
+                                     "no candidate may claim the 10:12+ waking tail")
+        }
     }
 
     /// A sub-cluster that fails its own lanes after the split dies with the

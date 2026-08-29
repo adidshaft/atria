@@ -46597,8 +46597,8 @@ final class SessionStore: ObservableObject {
         // `boundedByAwakeRunAfter` records that the cut immediately after this
         // sub-cluster was a sustained elevated-HR run — positive awake evidence
         // at least as strong as the awake-after-session bound the nap lanes
-        // already accept (>= 20 min of per-minute means at rest+22 versus a
-        // 10-minute session averaging rest+15). `originalSessionIDs` names the
+        // already accept (an elevated-dominated run of rest+22 minute means
+        // versus a 10-minute session averaging rest+15). `originalSessionIDs` names the
         // parent fragments of the failed cluster so they cannot be misread as
         // an independent recording continuing past a sub-window's end.
         struct AwakeSplitContext {
@@ -47317,20 +47317,23 @@ final class SessionStore: ObservableObject {
                 candidates.append(candidate)
                 continue
             }
-            // Awake-split retry (2026-08-29 device dead-end): a whole evening
-            // sleep plus the next morning's naps can chain into one cluster
-            // whose span exceeds every lane's ceiling, so the real sleep inside
-            // it can never surface no matter how strong its evidence is. Only
-            // when the unsplit cluster was refused everywhere AND its span is
-            // beyond what any single lane could ever accept, cut it at
-            // POSITIVE sustained-awake evidence (and at long coverage holes,
-            // which are boundaries, never evidence) and re-evaluate each
-            // sub-cluster through the same lanes exactly once. A cluster any
-            // lane accepts returns above and is never split.
+            // Awake-split retry (2026-08-29 device dead-end): real sleep plus
+            // adjacent awake stretches can chain into one cluster that every
+            // lane refuses whole — the 17h evening-through-morning chain, and
+            // equally the 5.6h morning cluster whose interior awake runs push
+            // its variance and P90 past every review bar. Only when the
+            // unsplit cluster was refused everywhere AND its span exceeds the
+            // nap ceiling (a nap-sized window was already judged at full
+            // fidelity; nothing shorter can hide lane-visible structure), cut
+            // it at POSITIVE sustained-awake evidence (and at long coverage
+            // holes, which are boundaries, never evidence) and re-evaluate
+            // each sub-cluster through the same lanes exactly once. A cluster
+            // any lane accepts returns above and is never split, so this can
+            // only ever add candidates to an outcome that was empty.
             guard let unsplitStart = cluster.first?.start,
                   let unsplitEnd = cluster.last?.end,
                   unsplitEnd.timeIntervalSince(unsplitStart)
-                    > AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan else {
+                    > AggregateSleepCandidate.napMaximumSpan else {
                 continue
             }
             let split = try Self.awakeSplitSubClusters(
@@ -47401,15 +47404,22 @@ final class SessionStore: ObservableObject {
 
     /// Awake-split thresholds. The elevation floor sits at rest+22 — above the
     /// average-HR ceiling of every HR-only review lane's admission shape — so a
-    /// run that clears it could never have been accepted sleep, and sustained
-    /// mid-sleep elevation below it (real REM/arousal minutes) never cuts a
-    /// night apart. Twenty consecutive minutes is the same order as the
-    /// sustained-awake motion deduction floor (10 min) with margin for the
-    /// HR-only channel's weaker specificity. A coverage hole must exceed the
-    /// 45-minute quiet-tail horizon the nap bound already uses before it can
-    /// act as a boundary; a hole is never awake evidence.
+    /// minute that clears it could never have been accepted sleep, and
+    /// sustained mid-sleep elevation below it (real REM/arousal minutes) never
+    /// cuts a night apart on its own. Real awake stretches are NOT wall-to-wall
+    /// elevated at minute resolution (device 2026-08-29: an 18-minute awake
+    /// blip carried isolated 75-78 minutes between 79-86 ones, and the waking
+    /// tail dipped to 74 for single minutes inside 22 elevated ones), so a run
+    /// is bounded by elevated minutes but tolerates interior minutes down to
+    /// the support floor as long as the elevated share stays dominant. A
+    /// support-floor minute is never itself evidence; it can only connect
+    /// elevated minutes. A coverage hole must exceed the 45-minute quiet-tail
+    /// horizon the nap bound already uses before it can act as a boundary; a
+    /// hole is never awake evidence.
     private nonisolated static let awakeSplitElevationOverRestBPM = 22
-    private nonisolated static let awakeSplitMinimumRunMinutes = 20
+    private nonisolated static let awakeSplitSupportOverRestBPM = 15
+    private nonisolated static let awakeSplitMinimumRunMinutes = 15
+    private nonisolated static let awakeSplitMinimumElevatedRunFraction = 0.60
     private nonisolated static let awakeSplitMinimumHoleSeconds: TimeInterval = 45 * 60
     /// Cost bounds: the per-minute timeline is capped at 26 hours and the
     /// session fan-out at 64 fragments; a cluster beyond either bound skips
@@ -47455,23 +47465,46 @@ final class SessionStore: ObservableObject {
             }
         }
         // Cut intervals in minute indices. `awakeRun` distinguishes positive
-        // awake evidence from a mere coverage boundary.
+        // awake evidence from a mere coverage boundary. A run begins and ends
+        // on ELEVATED minutes; a covered support-floor minute keeps the run
+        // alive, and an uncovered minute or one below the support floor closes
+        // it. On close, the cut is the LONGEST elevated-bounded prefix that is
+        // both long enough and elevated-dominated: sparse late elevated
+        // minutes bridged by support must not dilute a genuine dense awake
+        // stretch below the fraction floor (device 2026-08-29: the real
+        // 07:17-07:34 awake blip measured 12/18 elevated, but stray elevated
+        // minutes through 07:43 stretched the raw run to 15/27 and lost it).
         var cuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
         let elevationFloor = Double(rest + awakeSplitElevationOverRestBPM)
+        let supportFloor = Double(rest + awakeSplitSupportOverRestBPM)
         var runStart: Int?
+        var runElevatedMinutes: [Int] = []
+        runElevatedMinutes.reserveCapacity(minuteCount)
         var holeStart: Int?
         for minute in 0...minuteCount {
             if minute.isMultiple(of: 256) {
                 try cooperativeDeadline?.checkpoint()
             }
             let covered = minute < minuteCount && minuteSamples[minute] > 0
-            let elevated = covered
-                && minuteSum[minute] / Double(minuteSamples[minute]) >= elevationFloor
-            if elevated {
-                if runStart == nil { runStart = minute }
-            } else if let started = runStart {
-                if minute - started >= awakeSplitMinimumRunMinutes {
-                    cuts.append((started, minute, true))
+            let mean = covered
+                ? minuteSum[minute] / Double(minuteSamples[minute]) : 0
+            if covered, mean >= elevationFloor {
+                if runStart == nil {
+                    runStart = minute
+                    runElevatedMinutes.removeAll(keepingCapacity: true)
+                }
+                runElevatedMinutes.append(minute)
+            } else if !covered || mean < supportFloor, let started = runStart {
+                for index in stride(from: runElevatedMinutes.count - 1,
+                                    through: 0,
+                                    by: -1) {
+                    let length = runElevatedMinutes[index] + 1 - started
+                    guard length >= awakeSplitMinimumRunMinutes else { break }
+                    if Double(index + 1) / Double(length)
+                        >= awakeSplitMinimumElevatedRunFraction {
+                        cuts.append((started, runElevatedMinutes[index] + 1, true))
+                        break
+                    }
                 }
                 runStart = nil
             }
@@ -47485,7 +47518,14 @@ final class SessionStore: ObservableObject {
                 holeStart = nil
             }
         }
-        guard !cuts.isEmpty else { return ([], [:]) }
+        // A hole is only a boundary, never evidence — and a refused chain of
+        // quiet fragments whose ONLY cut points are evidence gaps must stay
+        // refused: splitting it would manufacture lane-sized windows out of
+        // nothing but missing data (pinned: a one-hour daytime evidence gap
+        // between two quiet fragments is not a storage-only rollover). Holes
+        // participate as boundaries only when the cluster also carries at
+        // least one positive sustained-awake run.
+        guard cuts.contains(where: { $0.awakeRun }) else { return ([], [:]) }
         cuts.sort { $0.startMinute < $1.startMinute }
         var mergedCuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
         for cut in cuts {
