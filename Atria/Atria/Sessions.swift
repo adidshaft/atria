@@ -10492,8 +10492,11 @@ final class SessionStore: ObservableObject {
     /// attempt needs no clearing edge — the next durable compact generation
     /// after the interval simply retries (the recovery-state defect class
     /// this codebase keeps refinding is state cleared only by an edge that
-    /// may never run).
-    private var lastCompactMotionSleepEvidenceUpgradeAttempt: Date?
+    /// may never run). Starts ARMED at construction: the launch chain
+    /// (deferred_session_load) already runs the identical rebuild+backfill
+    /// with compact context, and a same-launch arrival pass preparing from
+    /// a pre-upgrade snapshot was one leg of the 08-29 device oscillation.
+    private var lastCompactMotionSleepEvidenceUpgradeAttempt: Date? = Date()
     private var compactMotionSleepEvidenceUpgradeInFlight = false
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var recoveredThermalStateObserver: NSObjectProtocol?
@@ -42713,6 +42716,100 @@ final class SessionStore: ObservableObject {
         return min(noSleepRollover, settlementEdge)
     }
 
+    /// 2026-08-29 device regression (nap 08-29 07:46-10:11): one lane logged
+    /// and prepared a motion-validated upgrade, yet minutes later the durable
+    /// record read hr-only with estimate stages again. Several lanes run the
+    /// provenance/stage chain concurrently at launch (deferred session load,
+    /// the archive projection, the compact-arrival trigger), each preparing
+    /// from its own snapshot; the ordinary rebase applies a prepared delta
+    /// over CURRENT unconditionally, so a pass whose snapshot predates the
+    /// upgrade — or whose compact read failed while the upgrade's evidence
+    /// lives only in the compact store, never on the sessions — can lawfully
+    /// write an hr-estimate image over validated motion evidence.
+    ///
+    /// This fence makes motion evidence MONOTONIC at the single save choke
+    /// point (mirroring the pending-store keptMotionValidated no-downgrade
+    /// rule): a record that is currently motion-validated with receipt
+    /// stages keeps that evidence unless the incoming record either changed
+    /// the window/source (a real edit — evidence must re-derive) or itself
+    /// carries motion-receipt stages (a re-mint from a pass that could see
+    /// motion). Context-less and stale passes therefore converge upward
+    /// instead of oscillating. Internal (not private) so the no-downgrade
+    /// rule is directly testable.
+    nonisolated static func motionEvidenceMonotonicConfirmedSleeps(
+        settled: [UserConfirmedSleep],
+        authoritativeCurrent: [UserConfirmedSleep],
+        shouldContinue: @escaping @Sendable () -> Bool = { true }
+    ) -> [UserConfirmedSleep]? {
+        guard shouldContinue() else { return nil }
+        var upgradedByID: [String: UserConfirmedSleep] = [:]
+        for (index, record) in authoritativeCurrent.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard record.motionValidated,
+                  let stages = record.stageSegments,
+                  !stages.isEmpty,
+                  stages.allSatisfy({
+                      $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+                  }) else { continue }
+            upgradedByID[record.id] = record
+        }
+        guard !upgradedByID.isEmpty else { return settled }
+        var result: [UserConfirmedSleep] = []
+        result.reserveCapacity(settled.count)
+        for (index, record) in settled.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard let upgraded = upgradedByID[record.id],
+                  record.start == upgraded.start,
+                  record.end == upgraded.end,
+                  record.source == upgraded.source,
+                  // A downgrade loses the verdict AND the receipt. A record
+                  // that keeps motionValidated (e.g. the rebuild's
+                  // intentional strip-for-remint) or that carries fresh
+                  // motion-receipt stages (a re-mint, possibly with a new
+                  // active/awake verdict) passes through untouched.
+                  !record.motionValidated,
+                  (record.stageSegments ?? []).allSatisfy({
+                      !$0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+                  }) else {
+                result.append(record)
+                continue
+            }
+            AtriaDebugLog("ATRIADBG sleep_motion_monotonic_fence status=restored id=%@ source=%@ kept_confidence=%@ kept_segments=%d rejected_segments=%d",
+                          record.id,
+                          record.source,
+                          upgraded.confidence,
+                          upgraded.stageSegments?.count ?? 0,
+                          record.stageSegments?.count ?? 0)
+            result.append(UserConfirmedSleep(
+                id: record.id,
+                createdAt: record.createdAt,
+                start: record.start,
+                end: record.end,
+                source: record.source,
+                confidence: upgraded.confidence,
+                sessions: record.sessions,
+                samples: record.samples,
+                avgHR: record.avgHR,
+                peakHR: record.peakHR,
+                restingHR: record.restingHR,
+                hrv: record.hrv,
+                hrvWindowCount: record.hrvWindowCount,
+                respiratoryRate: record.respiratoryRate,
+                duration: record.duration,
+                span: record.span,
+                reason: record.reason,
+                motionSource: upgraded.motionSource,
+                motionValidated: upgraded.motionValidated,
+                stageSegments: upgraded.stageSegments,
+                eventTimeZoneIdentifier: record.eventTimeZoneIdentifier,
+                sleepNeedSeconds: record.sleepNeedSeconds,
+                frozenSleepNeed: record.frozenSleepNeed,
+                dayPrimaryChoice: record.dayPrimaryChoice
+            ))
+        }
+        return shouldContinue() ? result : nil
+    }
+
     nonisolated static func prepareConfirmedSleepSave(
         base: [UserConfirmedSleep],
         desired: [UserConfirmedSleep],
@@ -42747,8 +42844,15 @@ final class SessionStore: ObservableObject {
             )
         }
         guard let rebasedUnnormalized = rebasedRaw,
+              // 2026-08-29: motion evidence is monotonic across concurrent
+              // lanes — see motionEvidenceMonotonicConfirmedSleeps.
+              let monotonicRebase = motionEvidenceMonotonicConfirmedSleeps(
+                settled: rebasedUnnormalized,
+                authoritativeCurrent: authoritativeCurrent,
+                shouldContinue: shouldContinue
+              ),
               let rebased = normalizingDayPrimaryChoices(
-                in: rebasedUnnormalized,
+                in: monotonicRebase,
                 calendar: calendar,
                 shouldContinue: shouldContinue
               ) else { return nil }
@@ -43358,11 +43462,21 @@ final class SessionStore: ObservableObject {
             strapIdentifier: compactMotion.strapIdentifier
         )
         try cooperativeDeadline.checkpoint()
+        // Decline telemetry (2026-08-29 device follow-up): everything past
+        // the stat precheck concerns a recent window with real rows, so a
+        // decline here is exactly the "wired but did not upgrade" question a
+        // prefs pull cannot answer. Bounded volume: at most one line per
+        // recent confirmed sleep per pass.
         guard points.count
                 >= ConfirmedSleepCompactMotionContext.minimumRows,
               points.count
                 <= ConfirmedSleepCompactMotionContext.maximumRows
-        else { return nil }
+        else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=row_bounds start=%.0f rows=%d",
+                          start.timeIntervalSince1970,
+                          points.count)
+            return nil
+        }
         var samples: [AtriaRecoveredMotionProjection.Sample] = []
         samples.reserveCapacity(points.count)
         for (index, point) in points.enumerated() {
@@ -43394,6 +43508,9 @@ final class SessionStore: ObservableObject {
         )
         try cooperativeDeadline.checkpoint()
         guard case .success(let epochs) = projected, !epochs.isEmpty else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=projection_failed start=%.0f rows=%d",
+                          start.timeIntervalSince1970,
+                          points.count)
             return nil
         }
         let provenance = try AtriaRecoveredMotionAnalytics.sleepProvenance(
@@ -43404,7 +43521,15 @@ final class SessionStore: ObservableObject {
         )
         // The evidence must still clear the production sufficiency gate
         // before anything upgrades; insufficient reads stay hr_only.
-        guard provenance.measurementSufficient else { return nil }
+        guard provenance.measurementSufficient else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=insufficient start=%.0f rows=%d validated_fraction=%.3f max_gap_s=%.0f low_motion_fraction=%.3f",
+                          start.timeIntervalSince1970,
+                          points.count,
+                          provenance.validatedCoverageFraction,
+                          provenance.maximumGapSeconds,
+                          provenance.lowMotionCoverageFraction)
+            return nil
+        }
         return CompactWindowMotionEvidence(
             epochs: epochs,
             provenance: provenance
@@ -43470,9 +43595,19 @@ final class SessionStore: ObservableObject {
         reason: String,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> UserConfirmedSleep? {
-        guard let compactMotionEvidence,
-              Self.confirmedSleepSourceIsMotionUpgradeEligible(sleep.source),
+        guard Self.confirmedSleepSourceIsMotionUpgradeEligible(sleep.source),
               !sleep.source.hasPrefix("user_adjusted_") else { return nil }
+        guard let compactMotionEvidence else {
+            // Decline telemetry (2026-08-29): only for records still hungry
+            // for an upgrade — a validated+staged record declining is the
+            // steady state and must not spam the ring buffer.
+            if !sleep.motionValidated || sleep.stageSegments?.isEmpty != false {
+                AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=declined reason=no_compact_evidence sleep_source=%@ start=%.0f",
+                              sleep.source,
+                              sleep.start.timeIntervalSince1970)
+            }
+            return nil
+        }
         let provenance = compactMotionEvidence.provenance
         guard provenance.measurementSufficient else { return nil }
         let motionSource = provenance.source
@@ -43498,6 +43633,10 @@ final class SessionStore: ObservableObject {
             cooperativeDeadline: cooperativeDeadline
         )
         guard Self.confirmedSleepStagesCoverSleep(stages, sleep: sleep) else {
+            AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=declined reason=stage_coverage sleep_source=%@ start=%.0f segments=%d",
+                          sleep.source,
+                          sleep.start.timeIntervalSince1970,
+                          stages.count)
             return nil
         }
         let upgraded = Self.copyConfirmedSleep(
@@ -43574,6 +43713,17 @@ final class SessionStore: ObservableObject {
                 sessions: sourceSessions,
                 cooperativeDeadline: cooperativeDeadline
             )
+        }
+        // 2026-08-29 monotonicity: once a record earned validated motion,
+        // its evidence may live ONLY in the compact store (never on the
+        // sessions), so a pass whose compact read failed sees "no epochs"
+        // for a genuinely motion-backed night. Re-staging it here via the
+        // sample-growth trigger would replace receipt stages with estimate
+        // provenance — the oscillation the 08-29 device pull showed. A
+        // motion-validated record therefore refreshes only when this pass
+        // can actually see motion; hr-only records keep the old behavior.
+        if sleep.motionValidated, !motionProvenance.hasRecoveredEpochs {
+            return nil
         }
         guard Self.shouldRefreshUserAdjustedSleepEvidence(source: sleep.source,
                                                           existingSamples: sleep.samples,
@@ -43863,6 +44013,26 @@ final class SessionStore: ObservableObject {
                                         .shouldPreserveConfirmedSleepStageSegments(
                                             sleep
                                         )) {
+                                updated.append(sleep)
+                                continue
+                            }
+                            // 2026-08-29 monotonicity: a motion-validated
+                            // record whose stages are absent (the rebuild's
+                            // strip-for-remint) or motion-receipted may only
+                            // be re-staged by a pass that can see motion
+                            // evidence. Without this, a failed compact read
+                            // here mints allowHROnlyEstimate stages and
+                            // flips the verdict hr-only — the device
+                            // oscillation. Legacy validated records with
+                            // un-receipted stages keep their hygiene path.
+                            if sleep.motionValidated,
+                               !hasRecoveredEpochOverlap,
+                               sleep.stageSegments?.isEmpty != false
+                                || sleep.stageSegments?.allSatisfy({
+                                    $0.id.hasPrefix(
+                                        SleepStageSegment.motionReceiptIDPrefix
+                                    )
+                                }) == true {
                                 updated.append(sleep)
                                 continue
                             }
