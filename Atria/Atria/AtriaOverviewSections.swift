@@ -3397,17 +3397,25 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
     let sleepGoalHours: Double
     let referenceDate: Date
     let calendar: Calendar
+    /// Closed physiological cycles' strain keyed by predominant civil day
+    /// (2026-08-30, SessionStore.physiologicalCycleStrainByDisplayDay).
+    /// Overrides the civil rollup VALUE for matching strain chart days so a
+    /// shifted sleep schedule is not shredded across two civil bars; days
+    /// absent here keep the civil value (no claim of cycle precision).
+    let cycleStrainByDisplayDay: [Date: Double]
 
     init(rollups: [DailyRollupStoreEntry],
          rollupsRevision: Int?,
          baseline: AtriaBaselineTargetSnapshot,
          sleepGoalHours: Double,
+         cycleStrainByDisplayDay: [Date: Double] = [:],
          referenceDate: Date = Date(),
          calendar: Calendar = .current) {
         self.rollupsRevision = rollupsRevision
         self.rollups = rollups.map(Rollup.init)
         self.baseline = Baseline(baseline)
         self.sleepGoalHours = sleepGoalHours
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
         self.referenceDate = calendar.startOfDay(for: referenceDate)
         self.calendar = calendar
     }
@@ -3418,6 +3426,7 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
             rollups: rollups,
             baseline: baseline,
             sleepGoalHours: sleepGoalHours,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
             referenceDate: calendar.startOfDay(for: date),
             calendar: calendar
         )
@@ -3427,12 +3436,14 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
                  rollups: [Rollup],
                  baseline: Baseline,
                  sleepGoalHours: Double,
+                 cycleStrainByDisplayDay: [Date: Double],
                  referenceDate: Date,
                  calendar: Calendar) {
         self.rollupsRevision = rollupsRevision
         self.rollups = rollups
         self.baseline = baseline
         self.sleepGoalHours = sleepGoalHours
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
         self.referenceDate = referenceDate
         self.calendar = calendar
     }
@@ -3633,6 +3644,9 @@ struct AtriaMetricDetailSheet: View {
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
          strapMotionAvailability: AtriaStrapMotionAvailability? = nil,
          provenance: AtriaMetricProvenance? = nil,
+         // Cycle-truth strain series (2026-08-30). Default [:] keeps every
+         // caller without it byte-identical: absent days chart civil values.
+         cycleStrainByDisplayDay: [Date: Double] = [:],
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -3676,7 +3690,8 @@ struct AtriaMetricDetailSheet: View {
             rollups: rollups,
             rollupsRevision: rollupsRevision,
             baseline: baseline,
-            sleepGoalHours: sleepGoalHours
+            sleepGoalHours: sleepGoalHours,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay
         )
     }
 
@@ -7998,15 +8013,28 @@ private struct AtriaPreparedMetricHistory: Sendable {
                     persistedQuality: item.strainEvidenceQuality
                 ).quality == .exact
             }
+            // Cycle-truth value swap (2026-08-30): a day covered by the
+            // closed-cycle series charts that cycle strain (wake-to-wake,
+            // labelled by predominant civil day) instead of the civil-sliced
+            // rollup value, so a shifted sleeper's pre-wake load stays with
+            // its own physiological day. The exact-trend GATE above still
+            // runs on the civil row's coverage/quality — the series swaps a
+            // value, it never draws a bar the rollup evidence would withhold,
+            // and days absent from the series keep the civil value with no
+            // claim of cycle precision.
+            func strainTrendValue(_ item: AtriaMetricDetailPreparationInput.Rollup) -> Double? {
+                input.cycleStrainByDisplayDay[calendar.startOfDay(for: item.day)]
+                    ?? item.strain
+            }
             let strainPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 guard strainEntersExactTrend(item) else { return nil }
-                return item.strain.map {
+                return strainTrendValue(item).map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
             }
             let priorStrainPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 guard strainEntersExactTrend(item) else { return nil }
-                return item.strain.map {
+                return strainTrendValue(item).map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
             }
@@ -8015,7 +8043,8 @@ private struct AtriaPreparedMetricHistory: Sendable {
             strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, from: previousInterval, to: interval, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
-            latestStrainByRange[range] = filtered.last(where: { strainEntersExactTrend($0) })?.strain
+            latestStrainByRange[range] = filtered.last(where: { strainEntersExactTrend($0) })
+                .flatMap { strainTrendValue($0) }
 
             let sleepPerformancePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }

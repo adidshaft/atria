@@ -423,7 +423,12 @@ struct AtriaTodayScreen: View {
                                        maxHeartRate: sessionProjectionStore.state.maxHeartRate,
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
-                                       provenance: provenance(for: detail))
+                                       provenance: provenance(for: detail),
+                                       // Read, not observed: republished in
+                                       // lockstep with dailyRollupHistory, whose
+                                       // revision already invalidates this sheet.
+                                       cycleStrainByDisplayDay:
+                                        store.physiologicalCycleStrainByDisplayDay)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
