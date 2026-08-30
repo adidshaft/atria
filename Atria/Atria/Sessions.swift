@@ -9697,6 +9697,10 @@ final class SessionStore: ObservableObject {
         let preparedAt: Date
         let activeCycleStart: Date
         let activeCycleStrain: Double?
+        /// Closed-cycle strain keyed by predominant civil day (2026-08-30);
+        /// display-only, feeds the strain detail chart. See
+        /// `physiologicalCycleStrainByDisplayDayCancellable`.
+        let cycleStrainByDisplayDay: [Date: Double]
     }
 
     struct DailyRespiratoryRatePreparation: Equatable {
@@ -9929,6 +9933,15 @@ final class SessionStore: ObservableObject {
     /// body evaluation, including the ones driven by live-pulse updates that
     /// never touch the rollups at all.
     private(set) var dailyRollupHistoryRevision = 0
+    /// Closed-cycle strain keyed by predominant civil day (2026-08-30) — the
+    /// strain detail chart's cycle-truth series. Deliberately NOT @Published:
+    /// it is reassigned in lockstep with the rollup history it was prepared
+    /// with and read (not observed) at the metric detail sheet's construction
+    /// sites, so it invalidates with `dailyRollupHistoryRevision` and never
+    /// adds its own render churn.
+    /// Not persisted: recomputed with every rollup preparation from the same
+    /// evidence, and display-only (rollup store keys stay civil).
+    private(set) var physiologicalCycleStrainByDisplayDay: [Date: Double] = [:]
     @Published private(set) var todayHRZoneMinutesSnapshot = TodayHRZoneMinutes.empty
     private let healthKitExporter = HealthKitExporter()
     private var dailyRollupStore = DailyRollupStore(loadPersisted: false)
@@ -12765,6 +12778,11 @@ final class SessionStore: ObservableObject {
             strain: preparation.activeCycleStrain,
             calendar: calendar
         )
+        // Cycle-truth strain series (2026-08-30): publish the closed-cycle
+        // series prepared from the same evidence as these entries. Kept in
+        // lockstep with the rollup history so a detail sheet never pairs new
+        // civil rows with a stale cycle series or vice versa.
+        physiologicalCycleStrainByDisplayDay = preparation.cycleStrainByDisplayDay
         let didChangeRollups = !preparation.invalidatedDays.isEmpty
             || Self.preparedDailyRollupsNeedPersistence(cycleAlignedEntries,
                                                         existing: existingRollups,
@@ -12860,6 +12878,119 @@ final class SessionStore: ObservableObject {
                                     skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                     recoverySummary: metric.recoverySummary)
         }
+    }
+
+    /// The strain detail chart's interactive D/W/M horizon (a period plus its
+    /// prior-period ghost/comparison), with margin. Cycle-keyed bars only need
+    /// to cover what the range selector can show; deeper ranges (3M+) keep
+    /// their civil rollup rows, bounding this walk's cost.
+    nonisolated static let cycleStrainDisplayDayWindow = 66
+
+    /// Physiological-cycle strain keyed by each CLOSED cycle's predominant
+    /// civil day, for the strain detail chart (2026-08-30). The rollup store
+    /// stays civil-keyed (7/28/90-day windows, ACWR and monotony depend on
+    /// those keys); this series exists only so a shifted sleep schedule
+    /// (e.g. main sleep mid-afternoon) does not shred one wake-to-wake day's
+    /// load across two civil bars. Rules:
+    /// - Only cycles whose START boundary is a confirmed main sleep enter.
+    ///   A day whose cycles lack confirmed boundaries is absent here and the
+    ///   chart renders its civil value — never a fabricated "cycle" bar.
+    /// - The OPEN cycle is excluded; the hero's live value owns it
+    ///   (`replacingCurrentCyclePoint` in the detail sheet).
+    /// - Each cycle labels its predominant civil day, exactly the
+    ///   `AtriaStepsWeekChart.predominantCivilDay` precedent (an exact-midnight
+    ///   split keeps the earlier day). Two cycles sharing a day SUM — in TRIMP
+    ///   space, before the one saturating 0–21 display map (GAP-09 rule).
+    /// - Per-cycle load reuses the hero's own window-bounded machinery
+    ///   (`homeSavedAggregateCancellable`: includedLoadIntervals + the same
+    ///   TRIMP integration), never a forked formula.
+    nonisolated static func physiologicalCycleStrainByDisplayDayCancellable(
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        confirmedWorkouts: [UserConfirmedWorkout],
+        archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
+        rest: Int,
+        maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex,
+        openCycleStart: Date,
+        now: Date,
+        dayWindow: Int = SessionStore.cycleStrainDisplayDayWindow,
+        calendar: Calendar = .current,
+        shouldContinue: @escaping @Sendable () -> Bool = { true }
+    ) -> [Date: Double]? {
+        guard shouldContinue() else { return nil }
+        guard !confirmedSleeps.isEmpty else { return [:] }
+        let sleepIntervals = confirmedSleeps.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        // Sort the archive once so each cycle slices its points by binary
+        // search instead of rescanning the whole array (the repo's HR
+        // tail-facade CPU trap was exactly a per-call full-archive rescan).
+        var sortedArchive = archiveHeartRatePoints
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &sortedArchive,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.t < $1.t }
+        ) else { return nil }
+        func archiveSlice(_ interval: DateInterval) -> [HistoricalArchive.HeartRatePoint] {
+            var low = 0
+            var high = sortedArchive.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sortedArchive[mid].t < interval.start { low = mid + 1 } else { high = mid }
+            }
+            let start = low
+            high = sortedArchive.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sortedArchive[mid].t < interval.end { low = mid + 1 } else { high = mid }
+            }
+            return start < low ? Array(sortedArchive[start..<low]) : []
+        }
+        let today = calendar.startOfDay(for: now)
+        var seenCycleStarts = Set<Date>()
+        var trimpByDisplayDay: [Date: Double] = [:]
+        for offset in 0...max(0, dayWindow) {
+            guard shouldContinue() else { return nil }
+            guard let displayDay = calendar.date(byAdding: .day,
+                                                 value: -offset,
+                                                 to: today) else { continue }
+            let cycle = AtriaHistoricalPhysiologicalCycle.resolve(
+                displayDay: displayDay,
+                confirmedSleeps: confirmedSleeps,
+                calendar: calendar
+            )
+            // Confirmed wake boundary only; the open cycle stays the hero's.
+            guard case .mainSleep = cycle.startBoundary,
+                  cycle.interval.end <= now,
+                  cycle.interval.start < openCycleStart,
+                  cycle.interval.duration > 0,
+                  seenCycleStarts.insert(cycle.interval.start).inserted else { continue }
+            guard let aggregate = homeSavedAggregateCancellable(
+                from: canonicalSessions,
+                archiveHeartRatePoints: archiveSlice(cycle.interval),
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                calendar: calendar,
+                now: cycle.interval.end,
+                cycleStart: cycle.interval.start,
+                excludedLoadIntervals: sleepIntervals,
+                confirmedWorkouts: confirmedWorkouts,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            // No evidence in the cycle -> no entry; the chart falls back to
+            // the civil rollup row rather than drawing a fabricated zero.
+            guard aggregate.hasSavedToday else { continue }
+            let day = AtriaStepsWeekChart.predominantCivilDay(
+                windowStart: cycle.interval.start,
+                windowEnd: cycle.interval.end,
+                calendar: calendar
+            )
+            trimpByDisplayDay[day, default: 0] += aggregate.savedTodayTRIMP
+        }
+        guard shouldContinue() else { return nil }
+        return trimpByDisplayDay.mapValues { Metrics.strain(fromTRIMP: $0) }
     }
 
     nonisolated static func preparedDailyRollupsNeedPersistence(_ prepared: [DailyRollupStoreEntry],
@@ -13021,8 +13152,9 @@ final class SessionStore: ObservableObject {
         let cycle = AtriaPhysiologicalCycle.current(now: preparedAt,
                                                     confirmedSleeps: confirmedSleeps,
                                                     calendar: calendar)
+        let canonicalForCycle = makeCanonicalSessions(from: sessions)
         let physiologicalAggregate = homeSavedAggregate(
-            from: makeCanonicalSessions(from: sessions),
+            from: canonicalForCycle,
             archiveHeartRatePoints: archiveHeartRatePoints,
             rest: rest,
             maxHR: maxHR,
@@ -13059,6 +13191,21 @@ final class SessionStore: ObservableObject {
                                                                                        calendar: calendar),
                                                   calendar: calendar)
         let respiratoryRows = entries.filter { $0.respiratoryRate != nil }.count
+        // Closed-cycle strain series (2026-08-30): same evidence set as the
+        // active-cycle row above, computed here (off-render, revision-gated by
+        // the preparation pipeline) — never during a body evaluation.
+        let cycleStrainByDisplayDay = physiologicalCycleStrainByDisplayDayCancellable(
+            canonicalSessions: canonicalForCycle,
+            confirmedSleeps: confirmedSleeps,
+            confirmedWorkouts: confirmedWorkouts,
+            archiveHeartRatePoints: archiveHeartRatePoints,
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: biologicalSex,
+            openCycleStart: cycle.start,
+            now: preparedAt,
+            calendar: calendar
+        ) ?? [:]
         return DailyMetricRollupPreparation(metrics: cycleAlignedMetrics,
                                             rollupEntries: entries,
                                             invalidatedDays: invalidatedDays,
@@ -13067,7 +13214,8 @@ final class SessionStore: ObservableObject {
                                             sessionsCount: sessions.count,
                                             preparedAt: preparedAt,
                                             activeCycleStart: cycle.start,
-                                            activeCycleStrain: activeCycleStrain)
+                                            activeCycleStrain: activeCycleStrain,
+                                            cycleStrainByDisplayDay: cycleStrainByDisplayDay)
     }
 
     private nonisolated static func makeDailyMetricRollupPreparationCancellable(
@@ -13187,6 +13335,23 @@ final class SessionStore: ObservableObject {
             if index.isMultiple(of: 64), !shouldContinue() { return nil }
             if entry.respiratoryRate != nil { respiratoryRows += 1 }
         }
+        // Closed-cycle strain series (2026-08-30): same evidence set as the
+        // active-cycle row above, computed inside the cancellable preparation
+        // (off-render, revision-gated) — never during a body evaluation.
+        guard let cycleStrainByDisplayDay =
+                physiologicalCycleStrainByDisplayDayCancellable(
+                    canonicalSessions: canonical,
+                    confirmedSleeps: confirmedSleeps,
+                    confirmedWorkouts: confirmedWorkouts,
+                    archiveHeartRatePoints: archiveHeartRatePoints,
+                    rest: rest,
+                    maxHR: maxHR,
+                    biologicalSex: biologicalSex,
+                    openCycleStart: cycle.start,
+                    now: preparedAt,
+                    calendar: calendar,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
         return shouldContinue() ? .init(
             metrics: cycleAlignedMetrics,
             rollupEntries: entries,
@@ -13196,7 +13361,8 @@ final class SessionStore: ObservableObject {
             sessionsCount: sessions.count,
             preparedAt: preparedAt,
             activeCycleStart: cycle.start,
-            activeCycleStrain: activeCycleStrain
+            activeCycleStrain: activeCycleStrain,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay
         ) : nil
     }
 
@@ -13598,8 +13764,15 @@ final class SessionStore: ObservableObject {
         let cycleStart = AtriaPhysiologicalCycle.current(now: now,
                                                          confirmedSleeps: cachedConfirmedSleeps,
                                                          calendar: .current).start
+        // Mirror of the strain path's excludedLoadIntervals (2026-08-30): the
+        // hero strain subtracts confirmed sleeps via includedLoadIntervals, so
+        // the zone split must subtract the same windows or a fallback cycle
+        // books the night as restMinutes while strain says zero.
+        let excludedLoadIntervals = cachedConfirmedSleeps.map {
+            DateInterval(start: $0.start, end: $0.end)
+        }
         let delay: TimeInterval = deferred ? 0.12 : 0
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, now, cycleStart, revision, executionShouldContinue] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, now, cycleStart, excludedLoadIntervals, revision, executionShouldContinue] in
             guard executionShouldContinue() else {
                 DispatchQueue.main.async { completion?(false) }
                 return
@@ -13615,6 +13788,7 @@ final class SessionStore: ObservableObject {
                     maxHR: maxHR,
                     now: now,
                     cycleStart: cycleStart,
+                    excludedLoadIntervals: excludedLoadIntervals,
                     shouldContinue: executionShouldContinue
                 )
             }
@@ -19627,12 +19801,18 @@ final class SessionStore: ObservableObject {
     /// `savedTodayTRIMP` (walks `sessions` newest-first, stopping at the
     /// first session that isn't today). Excludes logged strength-log
     /// intervals from each session the same way `trimp(rest:max:)` and
-    /// `timeInZone(maxHR:)` do, so the zone split matches the strain figure.
+    /// `timeInZone(maxHR:)` do, and subtracts `excludedLoadIntervals`
+    /// (confirmed sleeps at the store call site) the same way the strain
+    /// aggregate's `includedLoadIntervals` does — so the zone split matches
+    /// the strain figure. Without that subtraction (pre 2026-08-30) a
+    /// fallback cycle that still contained a confirmed sleep counted the
+    /// sleeping hours as `restMinutes` while strain excluded them.
     nonisolated static func makeTodayHRZoneMinutes(sessions: [SavedSession],
                                                    rest: Int,
                                                    maxHR: Int,
                                                    now: Date = Date(),
                                                    cycleStart: Date? = nil,
+                                                   excludedLoadIntervals: [DateInterval] = [],
                                                    calendar: Calendar = .current) -> TodayHRZoneMinutes {
         makeTodayHRZoneMinutesCancellable(
             sessions: sessions,
@@ -19640,6 +19820,7 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             now: now,
             cycleStart: cycleStart,
+            excludedLoadIntervals: excludedLoadIntervals,
             calendar: calendar,
             shouldContinue: { true }
         ) ?? .empty
@@ -19651,6 +19832,7 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         now: Date = Date(),
         cycleStart: Date? = nil,
+        excludedLoadIntervals: [DateInterval] = [],
         calendar: Calendar = .current,
         shouldContinue: @escaping @Sendable () -> Bool
     ) -> TodayHRZoneMinutes? {
@@ -19676,6 +19858,19 @@ final class SessionStore: ObservableObject {
             hasSamples = true
             var clippedExclusions: [ExcludedInterval] = []
             for interval in session.excludedIntervals ?? [] {
+                guard shouldContinue() else { return nil }
+                let start = max(interval.start, dayStart)
+                let end = min(interval.end, dayEnd)
+                if end > start {
+                    clippedExclusions.append(.init(start: start, end: end))
+                }
+            }
+            // Confirmed-sleep exclusion (2026-08-30): union the caller's load
+            // exclusions into the clipped set so a sleep interval that sits
+            // inside a fallback cycle never accrues as restMinutes. Same clip
+            // bounds as the strength-log exclusions above; empty by default,
+            // so callers that pass nothing are byte-identical.
+            for interval in excludedLoadIntervals {
                 guard shouldContinue() else { return nil }
                 let start = max(interval.start, dayStart)
                 let end = min(interval.end, dayEnd)

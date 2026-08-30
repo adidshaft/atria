@@ -385,11 +385,19 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             calendar.isDate($0.dayStart, inSameDayAs: dayStart)
         }
         // A current wake-to-wake v24 projection is more specific than a civil
-        // archive day. Prefer its exact boundary instead of mixing two
-        // differently bounded subtotals and selecting whichever is larger.
-        let matching = physiologicalMatching.isEmpty
-            ? civilMatching
-            : physiologicalMatching
+        // archive day. Under a physiological open window ONLY a receipt with
+        // that exact wake boundary may speak for the cycle (2026-08-30): the
+        // old empty-match fallthrough to `civilMatching` let a stale civil
+        // archive row masquerade as the open cycle after a wake rollover, so
+        // "today" showed a differently-bounded subtotal as if it were this
+        // cycle's. With no physiological match the archive branches below see
+        // nothing and the resolver reaches its existing honest states (live
+        // evidence, prior-cycle disclosure, or `.noCurrentCycleReceipt`).
+        // Civil-day callers (no `physiologicalDayStart`, e.g. history rows)
+        // keep the civil match byte-identical.
+        let matching = usesPhysiologicalOpenWindow
+            ? physiologicalMatching
+            : civilMatching
         let completeCounts = Set(matching.compactMap { candidate -> Int? in
             guard candidate.state == .available || candidate.state == .knownEmpty else {
                 return nil

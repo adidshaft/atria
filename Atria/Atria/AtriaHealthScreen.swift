@@ -988,7 +988,12 @@ struct AtriaHealthScreen: View {
                                    maxHeartRate: vitals.maxHeartRate,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary,
-                                   strapMotionAvailability: ble.strapMotionAvailability)
+                                   strapMotionAvailability: ble.strapMotionAvailability,
+                                   // Read, not observed: republished in lockstep
+                                   // with dailyRollupHistory, whose revision
+                                   // already invalidates this sheet.
+                                   cycleStrainByDisplayDay:
+                                    store.physiologicalCycleStrainByDisplayDay)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
