@@ -1212,6 +1212,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             workoutSteps: nil,
             workoutStepsAreEstimated: nil,
             workoutStepsCapturedAt: nil,
+            segments: nil,
             profile: profile,
             eventTimeZoneIdentifier: "UTC"
         )
