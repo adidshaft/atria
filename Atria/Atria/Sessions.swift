@@ -34686,7 +34686,17 @@ final class SessionStore: ObservableObject {
                         rest: rest,
                         maxHR: maxHR,
                         calendar: calendar,
-                        cooperativeDeadline: cooperativeDeadline
+                        cooperativeDeadline: cooperativeDeadline,
+                        // 2026-08-30: candidate bounds may be narrowed by
+                        // compact motion quiescence before review surfaces
+                        // them; identity was already captured above.
+                        compactMotion: persistedStrapIdentifier.map {
+                            SessionStore.ConfirmedSleepCompactMotionContext(
+                                store: .shared,
+                                strapIdentifier: $0,
+                                now: preparedAt
+                            )
+                        }
                 )
                 freshlyQualified = projection.main
                 try cooperativeDeadline.checkpoint()
@@ -34856,7 +34866,13 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         cooperativeDeadline: AtriaSleepSettlementDeadline,
         mainStageInvocationCounter:
-            AtriaSleepReviewStageInvocationCounter? = nil
+            AtriaSleepReviewStageInvocationCounter? = nil,
+        // 2026-08-30 quiescence refinement: candidate-window compact-motion
+        // evidence, nil for byte-identical legacy behavior. Unlike the
+        // `.boundedRecent` JSONL decode this policy exists to avoid, the
+        // compact tick read is stat-prechecked, recency/row-bounded and
+        // budget-walled — the same channel the settlement lane trusts.
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> (
         main: SleepHistorySnapshot.Night?,
         naps: [SleepHistorySnapshot.Night]
@@ -34874,7 +34890,8 @@ final class SessionStore: ObservableObject {
             // leased and receipt-bound.
             historicalMotionPolicy: .attachedCompactOnly,
             cooperativeDeadline: cooperativeDeadline,
-            includeResumedReviewCandidates: true
+            includeResumedReviewCandidates: true,
+            compactMotion: compactMotion
         )
         try cooperativeDeadline.checkpoint()
         let authorities = try boundedSleepReviewAuthorities(
@@ -37963,7 +37980,16 @@ final class SessionStore: ObservableObject {
                         dismissedCandidates: dismissedCandidates,
                         rest: rest,
                         maxHR: maxHR,
-                        cooperativeDeadline: deadline
+                        cooperativeDeadline: deadline,
+                        // 2026-08-30: durable pending review must offer the
+                        // same quiescence-refined bounds the live card shows.
+                        compactMotion: strapIdentifier.map {
+                            SessionStore.ConfirmedSleepCompactMotionContext(
+                                store: .shared,
+                                strapIdentifier: $0,
+                                now: now
+                            )
+                        }
                     )
                 night = projection.main
                 if let main = projection.main {
@@ -44310,13 +44336,9 @@ final class SessionStore: ObservableObject {
     /// keeps every lane byte-identical to its historical behavior.
     private func confirmedSleepCompactMotionContext()
         -> ConfirmedSleepCompactMotionContext? {
-        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
-            .persistedStrapIdentifiers().first else { return nil }
-        return ConfirmedSleepCompactMotionContext(
-            store: .shared,
-            strapIdentifier: strapIdentifier,
-            now: Date()
-        )
+        // 2026-08-30: shares the identity-sourcing rule with the
+        // candidate-time quiescence context.
+        Self.sleepCandidateCompactMotionContext()
     }
 
     /// Wire-2 (2026-08-29) admission planner, pure so the throttle and
@@ -47102,6 +47124,318 @@ final class SessionStore: ObservableObject {
         return clamped > start ? clamped : start
     }
 
+    // MARK: - Motion-quiescence candidate bound refinement (2026-08-30)
+
+    /// 2026-08-30 motion-quiescence bound refinement (owner-caught): the
+    /// review proposal claimed a 02:01 sleep onset for a night whose motion
+    /// shards showed a brief 02:00–02:30 lull, sustained restlessness from
+    /// 02:45 to 04:10 (per-15-min mean |ΔG| 0.13–0.45 versus ≤0.08 asleep),
+    /// and true settling only from ~04:15 (owner correction: 04:37). HR sat
+    /// near baseline through the restlessness, so every HR lane bridged the
+    /// early lull into the claimed onset; motion flatly contradicts that
+    /// bridge. Narrowing a proposal toward measured quiet is honest;
+    /// widening never is, so this refinement only ever moves the start
+    /// later and the end earlier. Thresholds are anchored to the epoch
+    /// projection's existing grammar, not invented:
+    /// - Quiet epoch: movementIntensity <= 0.18, the exact
+    ///   `lowMotionIntensity` ceiling `lowMotionQualified` and
+    ///   `lowMotionValidated` already trust.
+    /// - Support epoch: <= 2x that ceiling. ONE isolated support epoch
+    ///   flanked by quiet is a rollover/position shift (normal in-sleep
+    ///   movement) and must not break a quiet run; consecutive support is
+    ///   restlessness and does.
+    /// - Sustained quiet floor (20 min): the shortest stretch this codebase
+    ///   classifies as sleep anywhere (nap floor, provenance floor).
+    /// - Established-sleep floor (60 min): a wearer continuously quiet for
+    ///   a full overnight hour is asleep with near-certainty (onset latency
+    ///   norms are 10–20 min; motionless waking rest rarely holds an hour),
+    ///   so any later movement is MID-SLEEP wake owned by the
+    ///   sustained-awake duration deduction; the boundary scan stops there
+    ///   and can never eat established sleep. Device-calibrated 2026-08-30:
+    ///   the defect night's pre-onset lull measured 47 continuous quiet
+    ///   minutes (02:03–02:50) before the restlessness, so a 45-min floor
+    ///   would have locked the false onset it exists to reject.
+    /// - Sustained elevated evidence (>= 20 min span holding >= 10 min of
+    ///   measured movement): double the 10-minute sustained-awake deduction
+    ///   floor, because moving a claimed boundary is stronger surgery than
+    ///   deducting minutes. Only such a block may clear an unestablished
+    ///   quiet anchor — exactly the lull-then-85-minutes-restless trap.
+    /// - Minimum trim (5 min): epoch quantization/seam jitter at an
+    ///   already-truthful boundary must not perturb the proposal.
+    nonisolated static let sleepQuiescenceQuietIntensityCeiling = 0.18
+    nonisolated static let sleepQuiescenceSupportIntensityCeiling = 0.36
+    nonisolated static let sleepQuiescenceSustainedQuietFloor: TimeInterval = 20 * 60
+    nonisolated static let sleepQuiescenceEstablishedSleepFloor: TimeInterval = 60 * 60
+    nonisolated static let sleepQuiescenceElevatedSpanFloor: TimeInterval = 20 * 60
+    nonisolated static let sleepQuiescenceElevatedCoverageFloor: TimeInterval = 10 * 60
+    nonisolated static let sleepQuiescenceQuietSeamTolerance: TimeInterval = 90
+    nonisolated static let sleepQuiescenceElevatedMergeTolerance: TimeInterval = 5 * 60
+    nonisolated static let sleepQuiescenceMinimumTrim: TimeInterval = 5 * 60
+
+    /// Pure interval scan over validated motion epochs. Fail-closed by
+    /// construction: no epochs, no qualifying quiet run, or an anchor within
+    /// jitter of the existing bound all return the bounds unchanged, and the
+    /// result never widens the window. The caller — not this scan — owns
+    /// evidence sufficiency gating, the LATER-onset merge with the
+    /// device-use clamp, and the post-refinement duration-floor check.
+    nonisolated static func motionQuiescenceRefinedBounds(
+        start: Date,
+        end: Date,
+        epochs: [AtriaRecoveredMotionEpoch],
+        cooperativeDeadline: AtriaSleepSettlementDeadline? = nil
+    ) throws -> (start: Date, end: Date) {
+        guard end > start, !epochs.isEmpty else { return (start, end) }
+        struct Measured {
+            let start: TimeInterval
+            let end: TimeInterval
+            let intensity: Double
+        }
+        var measured: [Measured] = []
+        measured.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            // A validation bit without a finite intensity is provenance
+            // metadata, not a usable time-series measurement (the same rule
+            // `sleepProvenance` applies).
+            guard epoch.measurementValidated,
+                  let intensity = epoch.movementIntensity,
+                  intensity.isFinite,
+                  epoch.end > start,
+                  epoch.start < end else { continue }
+            measured.append(Measured(
+                start: max(epoch.start, start).timeIntervalSince1970,
+                end: min(epoch.end, end).timeIntervalSince1970,
+                intensity: intensity
+            ))
+        }
+        guard !measured.isEmpty else { return (start, end) }
+        try cooperativeDeadline?.checkpoint()
+        measured.sort { $0.start < $1.start }
+        try cooperativeDeadline?.checkpoint()
+
+        // Isolated-support absorption: a lone support-level epoch flanked by
+        // raw-quiet neighbors counts as quiet; everything else is non-quiet.
+        func quietLabels(_ ordered: [Measured]) throws -> [Bool] {
+            var labels = [Bool](repeating: false, count: ordered.count)
+            for (index, epoch) in ordered.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                if epoch.intensity <= Self.sleepQuiescenceQuietIntensityCeiling {
+                    labels[index] = true
+                } else if epoch.intensity
+                            <= Self.sleepQuiescenceSupportIntensityCeiling {
+                    let previousQuiet = index > 0
+                        && ordered[index - 1].intensity
+                            <= Self.sleepQuiescenceQuietIntensityCeiling
+                    let nextQuiet = index + 1 < ordered.count
+                        && ordered[index + 1].intensity
+                            <= Self.sleepQuiescenceQuietIntensityCeiling
+                    labels[index] = previousQuiet && nextQuiet
+                }
+            }
+            return labels
+        }
+
+        struct Run {
+            var start: TimeInterval
+            var end: TimeInterval
+            var covered: TimeInterval
+        }
+        enum BoundaryEvent {
+            case quiet(Run)
+            case elevated(Run)
+        }
+
+        // Qualifying quiet runs and elevated blocks over one direction's
+        // ordering; the two boundary scanners below share this construction.
+        func boundaryEvents(
+            _ ordered: [Measured]
+        ) throws -> [BoundaryEvent] {
+            let labels = try quietLabels(ordered)
+            var quietRuns: [Run] = []
+            var elevatedBlocks: [Run] = []
+            var currentQuiet: Run?
+            var currentElevated: Run?
+            for (index, epoch) in ordered.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let length = max(0, epoch.end - epoch.start)
+                if labels[index] {
+                    if var run = currentQuiet,
+                       epoch.start - run.end
+                        <= Self.sleepQuiescenceQuietSeamTolerance {
+                        run.end = max(run.end, epoch.end)
+                        run.covered += length
+                        currentQuiet = run
+                    } else {
+                        if let run = currentQuiet { quietRuns.append(run) }
+                        currentQuiet = Run(start: epoch.start,
+                                           end: epoch.end,
+                                           covered: length)
+                    }
+                } else {
+                    // Any non-quiet epoch ends the quiet run: consecutive
+                    // support is restlessness, elevated is movement. Brief
+                    // interleaved quiet does NOT end an elevated block — a
+                    // restless wearer stills for moments; only a gap wider
+                    // than the merge tolerance separates two blocks, and the
+                    // coverage floor below keeps sparse chains disqualified.
+                    if let run = currentQuiet { quietRuns.append(run) }
+                    currentQuiet = nil
+                    if var block = currentElevated,
+                       epoch.start - block.end
+                        <= Self.sleepQuiescenceElevatedMergeTolerance {
+                        block.end = max(block.end, epoch.end)
+                        block.covered += length
+                        currentElevated = block
+                    } else {
+                        if let block = currentElevated {
+                            elevatedBlocks.append(block)
+                        }
+                        currentElevated = Run(start: epoch.start,
+                                              end: epoch.end,
+                                              covered: length)
+                    }
+                }
+            }
+            if let run = currentQuiet { quietRuns.append(run) }
+            if let block = currentElevated { elevatedBlocks.append(block) }
+
+            var events: [BoundaryEvent] = []
+            events.reserveCapacity(quietRuns.count + elevatedBlocks.count)
+            for run in quietRuns
+            where run.covered >= Self.sleepQuiescenceSustainedQuietFloor {
+                events.append(.quiet(run))
+            }
+            for block in elevatedBlocks
+            where block.end - block.start
+                    >= Self.sleepQuiescenceElevatedSpanFloor
+                && block.covered
+                    >= Self.sleepQuiescenceElevatedCoverageFloor {
+                events.append(.elevated(block))
+            }
+            func eventStart(_ event: BoundaryEvent) -> TimeInterval {
+                switch event {
+                case .quiet(let run), .elevated(let run): return run.start
+                }
+            }
+            events.sort { eventStart($0) < eventStart($1) }
+            return events
+        }
+
+        // START rule: clamp forward to the first sustained quiet run that
+        // survives to sleep establishment. An unestablished quiet anchor is
+        // cleared by later sustained restlessness (the lull-then-restless
+        // trap); once a run reaches the establishment floor the scan stops,
+        // so the clamp can never eat established sleep.
+        func leadingQuietAnchor(
+            _ events: [BoundaryEvent]
+        ) -> TimeInterval? {
+            var anchor: TimeInterval?
+            for event in events {
+                switch event {
+                case .quiet(let run):
+                    if anchor == nil { anchor = run.start }
+                    if run.covered
+                        >= Self.sleepQuiescenceEstablishedSleepFloor {
+                        // Established sleep: everything later is mid-sleep
+                        // territory owned by the wake-duration deduction,
+                        // never by a boundary move.
+                        return anchor
+                    }
+                case .elevated:
+                    // Sustained restlessness before sleep was established:
+                    // the earlier lull was settling, not onset.
+                    anchor = nil
+                }
+            }
+            return anchor
+        }
+
+        // END rule (deliberately asymmetric, mirrored timeline): trim ONLY
+        // past trailing sustained-elevated evidence — the first qualifying
+        // event walking back from the end must be an elevated block, and
+        // the end then re-anchors at the next sustained quiet run. Any
+        // sustained quiet run nearer the end (a mid-night wake deeper in,
+        // or a post-wake return to sleep) means the proposed end already
+        // sits on sleep: identity. Device-calibrated 2026-08-30: the
+        // defect night's tail (07:28–07:45) held scattered sub-floor
+        // stirring — normal light morning sleep — and its 07:45 end was
+        // CORRECT; a symmetric establishment scan would have eaten it, and
+        // would equally have eaten a sub-establishment return-to-sleep tail
+        // after a mid-night wake (the 2026-08-04 wake-exclusion fixture).
+        func trailingTrimAnchor(
+            _ events: [BoundaryEvent]
+        ) -> TimeInterval? {
+            var sawSustainedElevated = false
+            for event in events {
+                switch event {
+                case .quiet(let run):
+                    return sawSustainedElevated ? run.start : nil
+                case .elevated:
+                    sawSustainedElevated = true
+                }
+            }
+            return nil
+        }
+
+        var refinedStart = start
+        if let anchor = leadingQuietAnchor(try boundaryEvents(measured)),
+           anchor - start.timeIntervalSince1970
+               >= Self.sleepQuiescenceMinimumTrim {
+            refinedStart = Date(timeIntervalSince1970: anchor)
+        }
+        var mirrored: [Measured] = []
+        mirrored.reserveCapacity(measured.count)
+        for (index, epoch) in measured.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            mirrored.append(Measured(start: -epoch.end,
+                                     end: -epoch.start,
+                                     intensity: epoch.intensity))
+        }
+        mirrored.reverse()
+        var refinedEnd = end
+        if let mirroredAnchor = trailingTrimAnchor(
+            try boundaryEvents(mirrored)
+        ) {
+            let anchorEnd = -mirroredAnchor
+            if end.timeIntervalSince1970 - anchorEnd
+                >= Self.sleepQuiescenceMinimumTrim {
+                refinedEnd = Date(timeIntervalSince1970: anchorEnd)
+            }
+        }
+        // Never widen, never cross the far bound. A fully-restless window
+        // can leave refinedStart >= refinedEnd; the caller's floor check
+        // owns discarding that candidate with a named reason.
+        refinedStart = min(max(refinedStart, start), end)
+        refinedEnd = max(min(refinedEnd, end), start)
+        return (refinedStart, refinedEnd)
+    }
+
+    /// Compact-store access for CANDIDATE-time quiescence refinement
+    /// (2026-08-30), identity-sourced exactly like the confirmed-sleep
+    /// lanes' context. Static so off-main projection work items can capture
+    /// or build it without actor hops; the identity read is a UserDefaults
+    /// lookup. Nil (no persisted strap) disables the compact fallback and
+    /// keeps candidate bounds byte-identical to history.
+    nonisolated static func sleepCandidateCompactMotionContext(
+        now: Date = Date()
+    ) -> ConfirmedSleepCompactMotionContext? {
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return nil }
+        return ConfirmedSleepCompactMotionContext(
+            store: .shared,
+            strapIdentifier: strapIdentifier,
+            now: now
+        )
+    }
+
     nonisolated static func aggregateSleepCandidates(
         in sourceSessions: [SavedSession],
         rest: Int,
@@ -47128,7 +47462,8 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         historicalMotionPolicy: HistoricalSleepMotionPolicy,
         cooperativeDeadline: AtriaSleepSettlementDeadline,
-        includeResumedReviewCandidates: Bool = false
+        includeResumedReviewCandidates: Bool = false,
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> [AggregateSleepCandidate] {
         try aggregateSleepCandidatesCore(
             in: sourceSessions,
@@ -47137,7 +47472,8 @@ final class SessionStore: ObservableObject {
             calendar: calendar,
             historicalMotionPolicy: historicalMotionPolicy,
             cooperativeDeadline: cooperativeDeadline,
-            includeResumedReviewCandidates: includeResumedReviewCandidates
+            includeResumedReviewCandidates: includeResumedReviewCandidates,
+            compactMotion: compactMotion
         )
     }
 
@@ -47148,7 +47484,10 @@ final class SessionStore: ObservableObject {
         calendar: Calendar,
         historicalMotionPolicy: HistoricalSleepMotionPolicy,
         cooperativeDeadline: AtriaSleepSettlementDeadline?,
-        includeResumedReviewCandidates: Bool
+        includeResumedReviewCandidates: Bool,
+        // 2026-08-30 quiescence refinement: optional, default-nil compact
+        // evidence channel. Nil keeps every legacy caller byte-identical.
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> [AggregateSleepCandidate] {
         try cooperativeDeadline?.checkpoint()
         var fullArchiveMotionSnapshot: HistoricalArchive.MotionArchiveSnapshot?
@@ -48040,14 +48379,117 @@ final class SessionStore: ObservableObject {
                         forKey: "atria.debug.sleepOnsetClamp.v1"
                     )
                 }
+                // 2026-08-30 motion-quiescence refinement (owner-caught
+                // 02:01-proposed vs ~04:37 real onset; see
+                // `motionQuiescenceRefinedBounds`). Evidence order: session-
+                // attached epochs when window provenance is measurement-
+                // sufficient (deterministic — they are part of the session
+                // input, so they refine under every policy, `.sessionOnly`
+                // included); otherwise a recency/row-bounded compact tick
+                // read (itself sufficiency-gated and fail-closed nil),
+                // which `.sessionOnly` replay excludes exactly as it
+                // excludes the device-use journal above. No evidence keeps
+                // today's bounds byte-identical. The refinement only ever
+                // narrows: the start moves later (the LATER of the
+                // device-use clamp and the quiescence onset wins), the end
+                // moves earlier.
+                var quiescenceEpochs: [AtriaRecoveredMotionEpoch]?
+                if recoveredMotion.measurementSufficient {
+                    quiescenceEpochs = recoveredEpochs
+                } else if historicalMotionPolicy != .sessionOnly,
+                          let compactMotion,
+                          let cooperativeDeadline,
+                          let compactEvidence = try Self
+                            .compactWindowMotionEvidence(
+                                start: start,
+                                end: end,
+                                compactMotion: compactMotion,
+                                cooperativeDeadline: cooperativeDeadline
+                            ) {
+                    quiescenceEpochs = compactEvidence.epochs
+                }
+                var refinedStart = clampedStart
+                var refinedEnd = end
+                if let quiescenceEpochs {
+                    let refined = try Self.motionQuiescenceRefinedBounds(
+                        start: start,
+                        end: end,
+                        epochs: quiescenceEpochs,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                    refinedStart = max(clampedStart, refined.start)
+                    refinedEnd = min(end, refined.end)
+                }
+                let quiescenceApplied = refinedStart > clampedStart
+                    || refinedEnd < end
+                // Trimmed lead/tail time must never count toward credited
+                // sleep. Both are wall-clock deductions from the captured
+                // total, matching the device-use clamp's accounting; over-
+                // deducting across a coverage hole under-credits, which is
+                // the fail-closed direction.
+                let leadingTrimSeconds = max(
+                    0, refinedStart.timeIntervalSince(start)
+                )
+                let trailingTrimSeconds = max(
+                    0, end.timeIntervalSince(refinedEnd)
+                )
+                var netMotionAwakeSeconds = motionAwakeSeconds
+                var refinedReason = reason
+                if quiescenceApplied {
+                    // Duration floors re-check AFTER refinement: a candidate
+                    // this clamp shrinks below its admission floor dies with
+                    // a named reason — it must never propose a sliver.
+                    let refinedFloor = napReviewCandidate
+                        ? AggregateSleepCandidate.napMinimumDuration
+                        : AggregateSleepCandidate.strictMinimumDuration
+                    let refinedSpan = refinedEnd.timeIntervalSince(refinedStart)
+                    guard refinedSpan >= refinedFloor else {
+                        AtriaDebugLog("ATRIADBG sleep_candidate_onset_refined status=discarded reason=refined_below_duration_floor start=%.0f end=%.0f refined_span_min=%d floor_min=%d",
+                                      start.timeIntervalSince1970,
+                                      end.timeIntervalSince1970,
+                                      Int(max(0, refinedSpan) / 60),
+                                      Int(refinedFloor / 60))
+                        logSkippedCluster(
+                            "sleep_candidate_quiescence_below_floor",
+                            "Motion-quiescence refinement left "
+                                + "\(Int(max(0, refinedSpan) / 60)) min, below the "
+                                + "\(Int(refinedFloor / 60))-min floor; sustained "
+                                + "restlessness contradicted the HR-shaped window"
+                                + skipDetailSuffix,
+                            start,
+                            end
+                        )
+                        return nil
+                    }
+                    // Wake deducted against the ORIGINAL window would
+                    // double-count the trimmed restlessness; re-measure
+                    // inside the refined bounds, from the same evidence that
+                    // moved them.
+                    netMotionAwakeSeconds = try cooperativeSustainedAwakeSeconds(
+                        epochs: quiescenceEpochs ?? recoveredEpochs,
+                        start: refinedStart,
+                        end: refinedEnd,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                    let startDeltaMinutes = Int(
+                        max(0, refinedStart.timeIntervalSince(clampedStart)) / 60
+                    )
+                    let endDeltaMinutes = Int(trailingTrimSeconds / 60)
+                    AtriaDebugLog("ATRIADBG sleep_candidate_onset_refined start_delta_min=%d end_delta_min=%d reason=motion_quiescence",
+                                  startDeltaMinutes,
+                                  endDeltaMinutes)
+                    refinedReason += "; bounds refined to sustained motion "
+                        + "quiescence (onset +\(startDeltaMinutes) min, "
+                        + "end -\(endDeltaMinutes) min)"
+                }
                 return AggregateSleepCandidate(kind: kind,
                                                day: day,
                                                eventTimeZoneIdentifier: eventTimeZoneIdentifier,
                                                sessions: cluster.count,
-                                               start: clampedStart,
-                                               end: end,
-                                               duration: max(0, totalDuration - motionAwakeSeconds - onsetClampSeconds),
-                                               span: end.timeIntervalSince(clampedStart),
+                                               start: refinedStart,
+                                               end: refinedEnd,
+                                               duration: max(0, totalDuration - netMotionAwakeSeconds - leadingTrimSeconds - trailingTrimSeconds),
+                                               span: refinedEnd.timeIntervalSince(refinedStart),
                                                maxGap: maxGap,
                                                samples: allHR.count,
                                                hrObservedCoverageFraction: hrObservedCoverageFraction,
@@ -48061,7 +48503,7 @@ final class SessionStore: ObservableObject {
                                                baselineRestingHR: rest,
                                                restingHR: resting,
                                                confidence: confidence,
-                                               reason: reason,
+                                               reason: refinedReason,
                                                motionHintCount: motionHintCount,
                                                motionHintKinds: motionHintKinds,
                                                motionEvidenceSource: motionSource,
