@@ -3249,6 +3249,14 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     /// recomputation but must never be claimed to be frozen history.
     var muscularLoadReceipt: AtriaStrengthLog.MuscularLoadReceipt? = nil
     var excludedIntervals: [ExcludedInterval]? = nil
+    /// User-declared in-workout activity switches (2026-08-30), in order,
+    /// seeded with the original type at session start. Nil for never-switched
+    /// and legacy workouts (synthesized optional decode keeps them readable;
+    /// synthesized encode omits the key so their bytes are unchanged). The
+    /// scalar `activityType` above remains the dominant-segment authority
+    /// every existing reader already uses; per-segment stats are DERIVED from
+    /// samples at display time, never stored as a second schema.
+    var segments: [WorkoutSegment]? = nil
     var reviewSource: String? = nil
     /// Stable identity of the detector suggestion the user explicitly labelled.
     /// Nil for manual/live workouts and legacy records.
@@ -9069,6 +9077,9 @@ final class SessionStore: ObservableObject {
         let workoutSteps: Int?
         let workoutStepsAreEstimated: Bool?
         let workoutStepsCapturedAt: Date?
+        /// User-declared switch timeline carried verbatim from the live
+        /// workout intent to the confirmed record. Nil for single-type saves.
+        let segments: [WorkoutSegment]?
         let profile: AthleteProfile
         let eventTimeZoneIdentifier: String
     }
@@ -31363,6 +31374,7 @@ final class SessionStore: ObservableObject {
         reviewSource: String? = nil,
         reviewCandidateID: String? = nil,
         settlingCandidateWindow: (start: Date, end: Date)? = nil,
+        segments: [WorkoutSegment]? = nil,
         workoutSteps: Int? = nil,
         workoutStepsAreEstimated: Bool? = nil,
         workoutStepsCapturedAt: Date? = nil
@@ -31393,6 +31405,7 @@ final class SessionStore: ObservableObject {
                 workoutSteps: workoutSteps,
                 workoutStepsAreEstimated: workoutStepsAreEstimated,
                 workoutStepsCapturedAt: workoutStepsCapturedAt,
+                segments: segments,
                 profile: currentProfile,
                 eventTimeZoneIdentifier: TimeZone.current.identifier
             )
@@ -31895,7 +31908,8 @@ final class SessionStore: ObservableObject {
                     settlingCandidateWindow: request.settlingCandidateWindow,
                     workoutSteps: request.workoutSteps,
                     workoutStepsAreEstimated: request.workoutStepsAreEstimated,
-                    workoutStepsCapturedAt: request.workoutStepsCapturedAt
+                    workoutStepsCapturedAt: request.workoutStepsCapturedAt,
+                    segments: request.segments
                 )
             }
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_too_few_samples source=%@ start=%@ end=%@ samples=%d metric_promotions=0",
@@ -31982,6 +31996,7 @@ final class SessionStore: ObservableObject {
             strengthSets: request.strengthSets.isEmpty ? nil : request.strengthSets,
             muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: request.strengthSets),
             excludedIntervals: request.excludedIntervals.isEmpty ? nil : request.excludedIntervals,
+            segments: request.segments,
             reviewSource: cleanedReview,
             reviewCandidateID: cleanedReviewCandidateID,
             activityCalibrationEvidence: prepared.activityCalibrationEvidence,
@@ -32459,7 +32474,8 @@ final class SessionStore: ObservableObject {
         settlingCandidateWindow: (start: Date, end: Date)?,
         workoutSteps: Int?,
         workoutStepsAreEstimated: Bool?,
-        workoutStepsCapturedAt: Date?
+        workoutStepsCapturedAt: Date?,
+        segments: [WorkoutSegment]? = nil
     ) async -> UserConfirmedWorkout? {
         let workoutSource = "live_workout_window"
         let id = confirmedWorkoutID(start: start, end: end, source: workoutSource)
@@ -32545,6 +32561,7 @@ final class SessionStore: ObservableObject {
             strengthSets: strengthSets.isEmpty ? nil : strengthSets,
             muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: strengthSets),
             excludedIntervals: excludedIntervals.isEmpty ? nil : excludedIntervals,
+            segments: segments,
             reviewSource: review,
             reviewCandidateID: candidateID,
             activityCalibrationEvidence: activityCalibrationEvidence,
@@ -32639,6 +32656,9 @@ final class SessionStore: ObservableObject {
         // must never drop them, or a later profile change silently rewrites
         // the workout's zone ranges.
         merged.zoneBoundaries = workout.zoneBoundaries
+        // The user's declared switch timeline is identity, like the sets and
+        // pauses above: a later evidence merge must never drop it.
+        merged.segments = workout.segments
         merged.workoutSteps = workout.workoutSteps
         merged.workoutStepsAreEstimated = workout.workoutStepsAreEstimated
         merged.workoutStepsCapturedAt = workout.workoutStepsCapturedAt
@@ -32706,6 +32726,9 @@ final class SessionStore: ObservableObject {
         upgraded.strengthSets = existing.strengthSets
         upgraded.muscularLoadReceipt = existing.muscularLoadReceipt
         upgraded.excludedIntervals = existing.excludedIntervals
+        // Declared switch timeline is a user-edited identity field; the
+        // stronger recompute cannot know it and must not erase it.
+        upgraded.segments = existing.segments ?? recomputed.segments
         upgraded.reviewSource = existing.reviewSource
         upgraded.reviewCandidateID = existing.reviewCandidateID
         // Freshly computed effort-derived metrics replace the weaker placeholders.
@@ -33434,6 +33457,7 @@ final class SessionStore: ObservableObject {
         // GAP-03: a rename must never drop the frozen zone boundaries (and a
         // relabel of a strength workout must never drop its muscular receipt).
         renamed.zoneBoundaries = old.zoneBoundaries
+        renamed.segments = old.segments
         renamed.workoutSteps = old.workoutSteps
         renamed.workoutStepsAreEstimated = old.workoutStepsAreEstimated
         renamed.workoutStepsCapturedAt = old.workoutStepsCapturedAt
@@ -33650,6 +33674,7 @@ final class SessionStore: ObservableObject {
             strengthSets: old.strengthSets,
             muscularLoadReceipt: old.muscularLoadReceipt,
             excludedIntervals: old.excludedIntervals,
+            segments: old.segments,
             reviewSource: old.reviewSource,
             reviewCandidateID: old.reviewCandidateID,
             activityCalibrationEvidence: old.activityCalibrationEvidence,
@@ -33881,6 +33906,10 @@ final class SessionStore: ObservableObject {
                     strengthSets: old.strengthSets,
                     muscularLoadReceipt: old.muscularLoadReceipt,
                     excludedIntervals: old.excludedIntervals,
+                    // Declared switch timestamps are absolute; a window edit
+                    // narrows/extends the bounds they are clamped to at
+                    // display time, it does not invalidate the declarations.
+                    segments: old.segments,
                     reviewSource: old.reviewSource,
                     reviewCandidateID: old.reviewCandidateID,
                     activityCalibrationEvidence: old.activityCalibrationEvidence == nil
@@ -33961,6 +33990,7 @@ final class SessionStore: ObservableObject {
                 strengthSets: old.strengthSets,
                 muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
+                segments: old.segments,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
                 activityCalibrationEvidence: old.activityCalibrationEvidence == nil
@@ -34009,6 +34039,7 @@ final class SessionStore: ObservableObject {
                 strengthSets: old.strengthSets,
                 muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
+                segments: old.segments,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
                 activityCalibrationEvidence: old.activityCalibrationEvidence,

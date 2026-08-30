@@ -1577,6 +1577,7 @@ struct AtriaHomeView: View {
                                      lowerTargetZone: session.lowerTargetZone,
                                      upperTargetZone: session.upperTargetZone,
                                      activityType: workoutActivityTypeBinding,
+                                     segments: session.segments,
                                      targetChoice: workoutTargetChoiceBinding,
                                      strengthHistory: liveWorkoutStrengthHistory,
                                      loggedSets: $liveWorkoutLoggedSets,
@@ -1991,7 +1992,13 @@ struct AtriaHomeView: View {
         Binding {
             workoutSession?.activityType ?? .other
         } set: { newType in
-            workoutSession?.activityType = newType
+            guard var session = workoutSession,
+                  session.activityType != newType else { return }
+            // Timestamped, user-declared switch: the first switch seeds the
+            // ORIGINAL type at session start, then the new type is appended
+            // at Date(). One session, one start, one TRIMP accumulator.
+            session.recordActivitySwitch(to: newType, at: Date())
+            workoutSession = session
             persistPendingWorkoutProgress()
             if let session = workoutSession, newType.supportsRouteRecording {
                 workoutRouteRecorder.start(activityType: newType, startedAt: session.start)
@@ -2347,7 +2354,8 @@ struct AtriaHomeView: View {
                                   stepAccountingIsComplete: session.stepAccountingIsComplete,
                                   startingDayStrain: session.startingDayStrain,
                                   calculationContext: session.calculationContext,
-                                  persistenceRevision: workoutPersistenceRevision)
+                                  persistenceRevision: workoutPersistenceRevision,
+                                  segments: session.segments)
         AtriaPendingWorkoutIntentStore.shared.enqueueProgress(intent) { saved in
             guard !saved else { return }
             let current = AtriaPendingWorkoutIntent.load()
@@ -2482,6 +2490,7 @@ struct AtriaHomeView: View {
         session.pauseStartedStepCount = pending.pauseStartedStepCount
         session.stepAccountingIsComplete = pending.stepAccountingIsComplete
         session.calculationContext = pending.calculationContext ?? session.calculationContext
+        session.segments = pending.segments ?? session.segments
         workoutSession = session
         liveWorkoutLoggedSets = pending.strengthSets
         liveWorkoutExcludedIntervals = pending.excludedIntervals
@@ -2519,7 +2528,8 @@ struct AtriaHomeView: View {
                                               pauseStartedStepCount: pending.pauseStartedStepCount,
                                               stepAccountingIsComplete: pending.stepAccountingIsComplete,
                                               startingDayStrain: pending.startingDayStrain,
-                                              calculationContext: pending.calculationContext)
+                                              calculationContext: pending.calculationContext,
+                                              segments: pending.segments)
         workoutPersistenceRevision = pending.persistenceRevision
         // Restored open workout: re-adopt the persisted motion ownership
         // lease (idempotent for the same start; a repeated lifecycle callback
@@ -2551,6 +2561,16 @@ struct AtriaHomeView: View {
         let rest = calculationContext?.restingHeartRate
             ?? store.baseline.restingInt
             ?? model.heroStore.state.restingHeartRate
+        // Recovery is also a finalize: with a switch timeline present the
+        // scalar resolves to the dominant declared segment, exactly as the
+        // in-app End path does. No timeline -> the checkpointed scalar.
+        let recoveredActivityType = WorkoutSegment.dominantActivityType(
+            segments: pending.segments,
+            sessionStart: pending.startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: pending.finalizedExcludedIntervals()
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? pending.resolvedActivityType
         if let confirmed = await store.confirmWorkoutWindowForUIAsync(start: pending.startedAt,
                                                                 end: endedAt,
                                                                 rest: rest,
@@ -2558,9 +2578,10 @@ struct AtriaHomeView: View {
                                                                     ?? store.profile.maxHR,
                                                                 source: "pending_live_workout_recovery",
                                                                 preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                                activityType: pending.resolvedActivityType == .other ? nil : pending.activityType,
+                                                                activityType: recoveredActivityType == .other ? nil : recoveredActivityType.rawValue,
                                                                 strengthSets: pending.strengthSets,
                                                                 excludedIntervals: pending.finalizedExcludedIntervals(),
+                                                                segments: pending.segments,
                                                                 workoutSteps: pending.completedStepCount,
                                                                 workoutStepsAreEstimated: pending.completedStepsAreEstimated,
                                                                 workoutStepsCapturedAt: pending.completedStepsCapturedAt) {
@@ -3798,11 +3819,39 @@ struct AtriaHomeView: View {
         // A missing dense strap boundary stays unavailable; phone motion is
         // never promoted into a wrist-derived workout total.
         let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence)
+        // Stale-label seam (2026-08-30): the HUD's onStop closure passes the
+        // activity type captured at its last render. Finalize reads the OWNING
+        // session instead, so a switch racing the End tap can never save under
+        // the older label; with a switch timeline present, the persisted
+        // scalar is the DOMINANT segment (longest moving duration, tie: last).
+        let liveSession = workoutSession?.start == startedAt ? workoutSession : nil
+        let sessionSegments = liveSession?.segments
+        // Same freshness rule for the pause ledger: prefer the owning state
+        // over the closure-captured copy when this End belongs to the live
+        // session, so a pause closed after the HUD's last render still counts.
+        var dominantExclusions = liveSession != nil
+            ? liveWorkoutExcludedIntervals
+            : excludedIntervals
+        if let pauseStartedAt = liveWorkoutPauseStartedAt {
+            // Mirror finalizedExcludedIntervals(): an open pause ends at End.
+            let pauseStart = max(startedAt, pauseStartedAt)
+            if endedAt > pauseStart {
+                dominantExclusions.append(ExcludedInterval(start: pauseStart, end: endedAt))
+            }
+        }
+        let finalActivityType = WorkoutSegment.dominantActivityType(
+            segments: sessionSegments,
+            sessionStart: startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: dominantExclusions
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? liveSession?.activityType
+            ?? activityType
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
             endedAt: endedAt,
-            activityType: activityType.rawValue,
+            activityType: finalActivityType.rawValue,
             strengthSets: strengthSets,
             excludedIntervals: excludedIntervals,
             pauseStartedAt: liveWorkoutPauseStartedAt,
@@ -3820,7 +3869,8 @@ struct AtriaHomeView: View {
             completedStepsCapturedAt: stepEvidence?.capturedAt,
             startingDayStrain: workoutSession?.startingDayStrain ?? 0,
             calculationContext: workoutSession?.calculationContext,
-            persistenceRevision: .max
+            persistenceRevision: .max,
+            segments: sessionSegments
         )
         // Persist the user's intent before touching the live journal or UI. If
         // any later write fails, launch recovery can rebuild this exact window.
@@ -3853,7 +3903,16 @@ struct AtriaHomeView: View {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(50))
         let routeDraft: AtriaWorkoutRouteRecorder.Draft?
-        if finalIntent.resolvedActivityType.supportsRouteRecording {
+        // A dominant non-route type must not discard a route the user really
+        // recorded in an outdoor segment: any route-capable declared segment
+        // keeps the recorded route, matching the switcher's park-don't-erase
+        // contract.
+        let recordedRouteEligible = finalIntent.resolvedActivityType.supportsRouteRecording
+            || (finalIntent.segments ?? []).contains {
+                AtriaWorkoutActivityType(rawValue: $0.activityType)?
+                    .supportsRouteRecording == true
+            }
+        if recordedRouteEligible {
             routeDraft = workoutRouteRecorder.stop(at: endedAt)
         } else {
             workoutRouteRecorder.cancel()
@@ -3887,6 +3946,7 @@ struct AtriaHomeView: View {
                                                             : finalIntent.activityType,
                                                         strengthSets: finalIntent.strengthSets,
                                                         excludedIntervals: finalizedExcludedIntervals,
+                                                        segments: finalIntent.segments,
                                                         workoutSteps: finalIntent.completedStepCount,
                                                         workoutStepsAreEstimated: finalIntent.completedStepsAreEstimated,
                                                         workoutStepsCapturedAt: finalIntent.completedStepsCapturedAt)

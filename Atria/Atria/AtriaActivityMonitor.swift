@@ -3614,6 +3614,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// store publish while the sheet is open was a hang, and a completed workout's
     /// overlapping samples never change (2026-07-08).
     @State private var tracePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+    /// Derived per-segment attribution for multi-activity workouts
+    /// (2026-08-30). Empty unless the user actually switched mid-workout, so
+    /// legacy single-type sheets pay nothing.
+    @State private var segmentSlices: [AtriaWorkoutSegmentAttribution.Slice] = []
     /// WHOOP-style in-activity chart switcher (2026-08-05 user directive):
     /// one card, segmented Heart rate / Stress.
     private enum TraceChartMode: String, CaseIterable, Identifiable {
@@ -3948,6 +3952,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
                     routeCard
                     strengthSetSummaryCard
+                    AtriaWorkoutSegmentStripCard(slices: segmentSlices)
 
                     if let saveError {
                         Label(saveError, systemImage: "exclamationmark.triangle.fill")
@@ -4112,6 +4117,26 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 if sharePresentationGate.completeRoutePreparation() {
                     showShareSheet = true
                 }
+            }
+            // Per-segment attribution is derived, never stored: real samples in
+            // real bounds. Only workouts with a declared switch timeline pay
+            // for the one-shot session scan.
+            .task(id: workout.id) {
+                let snapshot = AtriaWorkoutSegmentAttribution.SourceSnapshot(
+                    workout: workout,
+                    sessions: store.sessions,
+                    fallbackRestingHR: store.baseline.restingInt,
+                    fallbackMaxHR: store.profile.maxHR
+                )
+                guard snapshot.hasSwitchTimeline else {
+                    segmentSlices = []
+                    return
+                }
+                let slices = await Task.detached(priority: .userInitiated) {
+                    snapshot.derive()
+                }.value
+                guard !Task.isCancelled else { return }
+                segmentSlices = slices
             }
             // The editor opens on the controls and route without touching the
             // potentially large saved-session archive. Prepare the trace only
