@@ -290,7 +290,9 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let sharing = String(content[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(flow.contains(".frame(maxWidth: 260)"))
-        XCTAssertTrue(flow.contains(".font(.system(size: 28, weight: .bold, design: .rounded))"))
+        // 2026-09-02: the hand-set 28pt title became the shared page-title token
+        // (.title rounded bold — 28pt by default, and it scales with Dynamic Type).
+        XCTAssertTrue(flow.contains(".font(AtriaDesignTokens.Typography.pageTitle)"))
         // 2026-07-30: the fixed-height expectation pills were replaced by a compact
         // vertical "what to expect" timeline; the ring maxWidth + title font above
         // still assert the compact visual hierarchy this test guards.
