@@ -2856,12 +2856,19 @@ private struct AtriaVitalsLiveSignalCard: View {
                     // in the info sheet and the accessibility value, not in
                     // four places per viewport. Unscored states keep one
                     // short truthful blocker.
-                    Text(stressPresentation.numericScore != nil
-                            ? stressState.label
-                            : stressPresentation.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    // Declutter (2026-09-02): while the strap is disconnected the
+                    // empty canvas directly below already says "Strap
+                    // disconnected · Reconnect…", so the header's "Waiting for a
+                    // fresh strap signal" was the same fact twice in one
+                    // viewport. Every other unscored state keeps its blocker.
+                    if !(projection.presentation == .empty && !isConnected) {
+                        Text(stressPresentation.numericScore != nil
+                                ? stressState.label
+                                : stressPresentation.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 8)
                 Text(stressPresentation.numericScore.map {
