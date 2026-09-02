@@ -5611,7 +5611,17 @@ struct AtriaMetricDetailSheet: View {
             baseNeedHours: sleepBaseNeedHours,
             yesterdayStrain: yesterdayStrainForLatestNight
         )
-        return performance.map { "\($0)% of need" } ?? "Need unavailable"
+        // Device 2026-09-02: a week of fragmented nights pinned the debt adder
+        // at its maximum and the need at the 10 h ceiling, so "100% of need"
+        // read as a need that never changes. The ledger behind "Show details"
+        // already says "Capped"; the hero now says it where the number is.
+        let capped = sleepHistory.sleepNeedComponents(
+            for: latest,
+            baseNeedHours: sleepBaseNeedHours,
+            yesterdayStrain: yesterdayStrainForLatestNight
+        )?.isClamped ?? false
+        return performance.map { capped ? "\($0)% of need \u{00b7} need capped" : "\($0)% of need" }
+            ?? "Need unavailable"
     }
 
     private var strainContributorRows: [AtriaMetricContributorRow] {
