@@ -45,7 +45,11 @@ struct AtriaPriorCycleDisclosure: Equatable, Sendable {
 }
 
 enum AtriaCurrentDayPresentation {
-    static let awaitingCurrentSleepDetail = "Awaiting current sleep"
+    /// One phrase for one fact (2026-09-02 uniformity pass): Vitals already
+    /// said "No sleep this cycle" for this state while Today and the widget
+    /// said "Awaiting current sleep". The identifier keeps its settlement
+    /// meaning; only the surface wording is now shared.
+    static let awaitingCurrentSleepDetail = "No sleep this cycle"
 
     /// How long past the anchoring wake the live cycle may still be the primary
     /// value once the civil date has turned over. A normal waking day is 16-18 h;

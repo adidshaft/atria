@@ -23,7 +23,7 @@ import SwiftUI
 /// actionable states (`processing`/`reviewReady`). The terminal `.saved` title
 /// + freshness stamp are RELOCATED to the ring hero's accessibility summary
 /// (see `accessibilitySummary` in AtriaTodayScreen), and `waitingForData` is
-/// carried by the sleep chip's "Awaiting current sleep" detail — all four
+/// carried by the sleep chip's "No sleep this cycle" detail — all four
 /// states stay modeled here so nothing about the truth changed, only where
 /// each state is said.
 enum AtriaSleepSettlementState: Equatable {
