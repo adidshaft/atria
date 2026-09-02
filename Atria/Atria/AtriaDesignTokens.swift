@@ -85,6 +85,12 @@ enum AtriaDesignTokens {
         /// none scaled with Dynamic Type. `.title` (28pt default) rounded
         /// bold keeps the hierarchy and scales.
         static let pageTitle = Font.system(.title, design: .rounded, weight: .bold)
+        /// Card hero value: the one big number a card leads with (a night's
+        /// duration, a metric's value, a count). MEASURED 2026-09-02: the same
+        /// night duration was 30pt on the overview card and 34pt on the
+        /// Activity night card. `.largeTitle` (34pt default) rounded bold,
+        /// paired with `.monospacedDigit()` at the site; scales with type.
+        static let cardHeroValue = Font.system(.largeTitle, design: .rounded, weight: .bold)
 
         /// Smallest fixed-size text the app sets. Below 11pt SwiftUI's
         /// `.caption2` no longer has a Dynamic Type peer, and 8-9pt labels

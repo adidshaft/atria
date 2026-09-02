@@ -56788,7 +56788,7 @@ struct HistoryView: View {
                 }
                 Spacer(minLength: 12)
                 Text("\(snapshot.sessions.count)")
-                    .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+                    .font(AtriaDesignTokens.Typography.cardHeroValue.monospacedDigit())
             }
 
             HStack(spacing: 12) {
