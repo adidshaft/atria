@@ -3400,6 +3400,11 @@ private struct AtriaTodayRingDayBrowser: View {
             .disabled(selectedIndex == 0)
             .accessibilityLabel("Next day")
         }
+        // Owner 2026-09-02: centred, the pager's right arrow ran under the
+        // share button that overlays the hero's top-trailing corner. The
+        // pager sits at the leading edge; the action cluster keeps the
+        // trailing corner to itself.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var historicalRing: some View {
