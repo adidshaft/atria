@@ -985,7 +985,7 @@ struct AtriaDetectedActivitiesSection: View {
         if !state.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Detected activities",
-                                        subtitle: "Heart-rate windows Atria noticed but has not counted. Confirm what happened, or dismiss.")
+                                        subtitle: "Heart-rate windows Atria noticed but has not counted.")
                 if state.candidates.isEmpty {
                     Text("No unconfirmed detections right now")
                         .font(.footnote)
