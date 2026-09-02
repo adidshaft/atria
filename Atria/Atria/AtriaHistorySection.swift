@@ -340,7 +340,12 @@ struct AtriaHistorySection: View, Equatable {
                 }
                 .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens the full detections list")
-                AtriaHistoryStatChip(label: "Baseline", value: "\(model.baselineReady)/\(model.baselineTarget)", tint: Metrics.electricGreen)
+                // Green is the achievement hue; "0/14" in green read as done
+                // (2026-09-02 Trends screenshot). The chip earns green only
+                // once the baseline is trusted, and stays neutral while it builds.
+                AtriaHistoryStatChip(label: "Baseline",
+                                     value: "\(model.baselineReady)/\(model.baselineTarget)",
+                                     tint: model.baselineReady >= model.baselineTarget ? Metrics.electricGreen : .secondary)
             }
         }
         .padding(16)
