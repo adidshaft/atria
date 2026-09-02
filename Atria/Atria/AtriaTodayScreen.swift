@@ -460,7 +460,8 @@ struct AtriaTodayScreen: View {
         }
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: weeklyReport,
-                                   rollups: highlightRollups)
+                                   rollups: highlightRollups,
+                                   sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }

@@ -1614,8 +1614,13 @@ struct AtriaWeeklyReportSheet: View {
     /// fabricating any points. Existing callers that only have one report keep
     /// the current-week experience.
     var rollups: [DailyRollupStoreEntry] = []
+    /// Qualified sleep windows for the monthly report's consistency score.
+    /// Empty means the monthly sheet says "Schedule building" rather than
+    /// guessing from bedtime-only rollups.
+    var sleepNights: [SleepHistorySnapshot.Night] = []
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
+    @State private var showMonthlyReport = false
     @State private var weekOffset = 0
     @State private var selectedTrend: WeeklyTrend = .recovery
 
@@ -1712,6 +1717,15 @@ struct AtriaWeeklyReportSheet: View {
             .navigationTitle("Weekly report")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    // The monthly report engine (MonthlyReport) lost its only
+                    // surface when the unreachable Overview tree was deleted
+                    // (76737dd3). It lives here now, one tap from the weekly
+                    // view it extends.
+                    Button("Month") { showMonthlyReport = true }
+                        .font(.body.weight(.semibold))
+                        .accessibilityHint("Opens the monthly report")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .font(.body.weight(.semibold))
@@ -1719,6 +1733,11 @@ struct AtriaWeeklyReportSheet: View {
             }
             .sheet(isPresented: $showShareSheet) {
                 AtriaWeeklyShareSheet(snapshot: makeWeeklyShareSnapshot())
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showMonthlyReport) {
+                AtriaMonthlyReportSheet(rollups: rollups, sleepNights: sleepNights)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
@@ -2029,6 +2048,213 @@ struct AtriaWeeklyReportSheet: View {
 }
 
 
+
+/// Calendar-month report: the same honest stat rows as the weekly sheet,
+/// over the month, with a prior-month comparison. Below
+/// `MonthlyReport.minimumDaysForStats` days of data every stat is withheld
+/// and the hero says so — never a guess (2026-09-02; the engine had no
+/// surface since the Overview tree was removed).
+struct AtriaMonthlyReportSheet: View {
+    var rollups: [DailyRollupStoreEntry] = []
+    var sleepNights: [SleepHistorySnapshot.Night] = []
+    var now: Date = Date()
+    @Environment(\.dismiss) private var dismiss
+    @State private var monthOffset = 0
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar
+    }
+
+    private var anchor: Date {
+        calendar.date(byAdding: .month, value: -monthOffset, to: now) ?? now
+    }
+
+    private var report: MonthlyReport {
+        MonthlyReport(rollups: rollups, sleepNights: sleepNights, now: anchor, calendar: calendar)
+    }
+
+    private var canNavigateToPreviousMonth: Bool {
+        guard let previous = calendar.date(byAdding: .month, value: -1, to: anchor),
+              let start = calendar.dateInterval(of: .month, for: previous)?.start else { return false }
+        return rollups.contains { $0.day < calendar.dateInterval(of: .month, for: anchor)!.start && $0.day >= start }
+            || rollups.contains { $0.day < start }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(heroText)
+                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            .lineLimit(3)
+                            .minimumScaleFactor(0.8)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(monthText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        if report.isBuilding {
+                            Text("\(report.daysWithData) of \(MonthlyReport.minimumDaysForStats) days with data")
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        monthNavigator
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .cyan)
+
+                    if !report.isBuilding {
+                        kicker("Month averages")
+                        VStack(spacing: 10) {
+                            AtriaWeeklyReportStatRow(title: "Recovery average",
+                                                     value: report.recoveryAvg.map { "\($0)%" } ?? "--",
+                                                     detail: deltaText(report.recoveryDeltaVsPriorMonth, unit: "%"),
+                                                     systemImage: "heart.fill",
+                                                     tint: Metrics.electricGreen)
+                            AtriaWeeklyReportStatRow(title: "Sleep performance",
+                                                     value: report.sleepPerformanceAvg.map { "\($0)%" } ?? "--",
+                                                     detail: deltaText(report.sleepPerformanceDeltaVsPriorMonth, unit: "%"),
+                                                     systemImage: "bed.double.fill",
+                                                     tint: Metrics.electricSleep)
+                            AtriaWeeklyReportStatRow(title: "Resting HR",
+                                                     value: report.rhrAvg.map { "\($0) bpm" } ?? "--",
+                                                     detail: deltaText(report.rhrDeltaVsPriorMonth, unit: " bpm"),
+                                                     systemImage: "heart.circle.fill",
+                                                     tint: Metrics.electricRHR)
+                            AtriaWeeklyReportStatRow(title: "HRV",
+                                                     value: report.hrvAvgMs.map { "\(Int($0.rounded())) ms" } ?? "--",
+                                                     detail: deltaText(report.hrvDeltaVsPriorMonthMs.map { Int($0.rounded()) }, unit: " ms"),
+                                                     systemImage: "waveform.path.ecg",
+                                                     tint: Metrics.electricHRV)
+                        }
+
+                        kicker("Load")
+                        VStack(spacing: 10) {
+                            AtriaWeeklyReportStatRow(title: "Total strain",
+                                                     value: report.totalStrain.map { String(format: "%.0f", $0) } ?? "--",
+                                                     detail: "Daily strain summed across the month",
+                                                     systemImage: "flame.fill",
+                                                     tint: Metrics.electricStrain)
+                            AtriaWeeklyReportStatRow(title: "Hardest week",
+                                                     value: report.hardestWeek.map { "Week of \(Self.dayFormatter.string(from: $0.weekStart))" } ?? "--",
+                                                     detail: report.hardestWeek?.totalStrain.map { String(format: "%.0f strain that week", $0) } ?? "No strain recorded",
+                                                     systemImage: "calendar",
+                                                     tint: Metrics.electricStrain)
+                        }
+
+                        kicker("Schedule")
+                        AtriaWeeklyReportStatRow(title: "Sleep consistency",
+                                                 value: report.consistencyScore.map { "\($0)%" } ?? "--",
+                                                 detail: report.consistencyScore == nil
+                                                    ? "Schedule building · needs qualified nights"
+                                                    : "Bed and wake regularity across the month",
+                                                 systemImage: "moon.zzz.fill",
+                                                 tint: Metrics.electricSleep)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 18)
+            }
+            .navigationTitle("Monthly report")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(.body.weight(.semibold))
+                }
+            }
+        }
+    }
+
+    private var heroText: String {
+        guard !report.isBuilding else { return "Building this month's picture" }
+        var clauses: [String] = []
+        if let delta = report.recoveryDeltaVsPriorMonth {
+            if delta >= 3 { clauses.append("Recovery climbed") }
+            else if delta <= -3 { clauses.append("Recovery dipped") }
+            else { clauses.append("Recovery held steady") }
+        } else {
+            clauses.append("Recovery on the board")
+        }
+        if let strain = report.totalStrain, strain > 0 {
+            clauses.append(String(format: "with %.0f strain across the month", strain))
+        }
+        if let sleep = report.sleepPerformanceAvg {
+            if sleep >= 85 { clauses.append("while sleep met need most nights") }
+            else if sleep >= 70 { clauses.append("while sleep hovered near need") }
+            else { clauses.append("while sleep ran short") }
+        }
+        return clauses.joined(separator: " ")
+    }
+
+    private var monthText: String {
+        Self.monthFormatter.string(from: anchor)
+    }
+
+    private func deltaText(_ delta: Int?, unit: String) -> String {
+        guard let delta else { return "No prior month to compare" }
+        if delta == 0 { return "Same as last month" }
+        return "\(delta > 0 ? "+" : "")\(delta)\(unit) vs last month"
+    }
+
+    private var monthNavigator: some View {
+        HStack(spacing: 4) {
+            Button {
+                guard canNavigateToPreviousMonth else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { monthOffset += 1 }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canNavigateToPreviousMonth)
+            .accessibilityLabel("Previous month")
+
+            Spacer(minLength: 0)
+            Text(monthOffset == 0 ? "Current month" : "\(monthOffset) month\(monthOffset == 1 ? "" : "s") ago")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+
+            Button {
+                guard monthOffset > 0 else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { monthOffset -= 1 }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(monthOffset == 0)
+            .accessibilityLabel("Next month")
+        }
+    }
+
+    private func kicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+        return formatter
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter
+    }()
+}
 
 private struct AtriaWeeklyReportStatRow: View {
     let title: String
