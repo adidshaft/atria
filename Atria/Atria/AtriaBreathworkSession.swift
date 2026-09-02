@@ -148,7 +148,8 @@ struct AtriaBreathworkSession: View {
         }
 
         var rmssdText: String? {
-            rmssdDelta.map { "RMSSD \($0 >= 0 ? "+" : "")\($0) ms" }
+            // 2026-09-02: the wearer knows this number as HRV; RMSSD is the engine's name.
+            rmssdDelta.map { "HRV \($0 >= 0 ? "+" : "")\($0) ms" }
         }
     }
 
