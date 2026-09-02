@@ -715,6 +715,12 @@ struct AtriaTriRing: View, Equatable {
             && !metric.suppressesDetail
     }
 
+    // Large type (2026-09-02, XXXL screenshot): "No sleep this cycle"
+    // truncated to "No sleep this c…" at the one-line contract's 0.6 floor.
+    // The contract stays through Extra Large; from XX-Large up, where the
+    // values already wrap, the caption may take a second line too.
+    @Environment(\.dynamicTypeSize) private var legendDynamicTypeSize
+
     private func legendChip(metric: AtriaTriRingMetric, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -786,7 +792,7 @@ struct AtriaTriRing: View, Equatable {
                     Text(showsLegendDetail(metric) ? metric.detail : " ")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                         .minimumScaleFactor(0.6)
                         .allowsTightening(true)
                         .accessibilityHidden(!showsLegendDetail(metric))
