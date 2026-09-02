@@ -1268,7 +1268,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private(set) var tachogram: [RRSample] = []
-    @Published var hrvQuality = "waiting for beat-to-beat samples"
+    // "waiting for beat-to-beat samples" truncated to "waiting for beat-to-b…"
+    // on the Vitals HRV tile (2026-09-02 screenshot); the shorter form says
+    // the same thing and fits the tile at the default text size.
+    @Published var hrvQuality = "no beat-to-beat yet"
     @Published var rrContinuityState = "learning"
     private(set) var rrContinuityDetail = "RR continuity waiting"
     private(set) var rrContinuityFraction = 0.0
@@ -26539,7 +26542,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             hrv = 0
             assignIfChanged(\.hrvSnapshot, nil)
             tachogram.removeAll(keepingCapacity: true)
-            assignIfChanged(\.hrvQuality, "waiting for beat-to-beat samples")
+            assignIfChanged(\.hrvQuality, "no beat-to-beat yet")
             assignIfChanged(\.isRecording, true)
             let startedAtUTC = ISO8601DateFormatter().string(from: captureStart)
             let context = [
@@ -26825,7 +26828,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                    value: summaryLogValue)
         } else {
             ready = false
-            summary = String(format: "Still learning · saved %.0fs · waiting for beat-to-beat samples",
+            summary = String(format: "Still learning · saved %.0fs · no beat-to-beat yet",
                              captureElapsedSeconds)
             let reason = finalAbortReason ?? "no_realtime_rr"
             let cleanElapsed = Date().timeIntervalSince(captureCleanWindowStart)
