@@ -4093,7 +4093,9 @@ struct AtriaHeartRateExplorer: View {
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
-                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        // Reading value (2026-09-02): the card hero token
+                        // scales with Dynamic Type; the hand-set 38pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)

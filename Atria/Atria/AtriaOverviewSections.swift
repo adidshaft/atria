@@ -7226,7 +7226,9 @@ private struct AtriaRecoveryScoreHero: View {
                 }
                 VStack(spacing: 2) {
                     Text(score.map { "\(Int($0.rounded()))%" } ?? "--")
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        // Ring centre value (2026-09-02): the card hero token
+                        // scales with Dynamic Type; the hand-set 40pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
                         .lineLimit(1)
