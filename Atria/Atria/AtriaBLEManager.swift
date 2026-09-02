@@ -1137,7 +1137,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .unknown:
             // The Settings row is already labeled "Generation" (2026-09-02 audit):
             // the value no longer repeats the label, and reads as a value.
-            return "Unknown · heart rate only until the layout is checked"
+            return "Unknown · heart rate only until the strap is checked"
         }
     }
 
