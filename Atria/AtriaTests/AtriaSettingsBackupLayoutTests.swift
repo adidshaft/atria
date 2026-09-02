@@ -18,7 +18,10 @@ final class AtriaSettingsBackupLayoutTests: XCTestCase {
         let buttons = String(settings[start.lowerBound...].prefix(2_600))
         XCTAssertEqual(buttons.components(separatedBy: ".frame(maxWidth: .infinity)").count - 1, 3,
                        "all three labels stretch to their column")
-        XCTAssertTrue(settings.contains("LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],"))
+        // Large type (2026-09-02): two columns wrapped "Back / up now" at
+        // XXXL; from XX-Large up the grid takes one column.
+        XCTAssertTrue(settings.contains("@Environment(\\.dynamicTypeSize) private var settingsDynamicTypeSize"))
+        XCTAssertTrue(settings.contains("LazyVGrid(columns: settingsDynamicTypeSize >= .xxLarge\n                            ? [GridItem(.flexible())]\n                            : [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],"))
         XCTAssertFalse(settings.contains("VStack(alignment: .leading, spacing: 8) { backupActionButtons }"))
     }
 

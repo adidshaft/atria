@@ -101,6 +101,9 @@ enum AtriaManualHistorySyncFeedback: Equatable {
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
+    // Large type (2026-09-02 XXXL screenshot): the two-column backup grid
+    // wrapped "Back / up now"; from XX-Large up the actions take one column.
+    @Environment(\.dynamicTypeSize) private var settingsDynamicTypeSize
     @ViewBuilder private var backupActionButtons: some View {
             if let onWriteBackup {
                 Button {
@@ -1254,7 +1257,9 @@ struct AtriaSettingsView: View {
             // stacked at the left (later screenshot the same day).
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { backupActionButtons }
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],
+                LazyVGrid(columns: settingsDynamicTypeSize >= .xxLarge
+                            ? [GridItem(.flexible())]
+                            : [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],
                           spacing: 8) { backupActionButtons }
             }
             .labelStyle(.titleAndIcon)

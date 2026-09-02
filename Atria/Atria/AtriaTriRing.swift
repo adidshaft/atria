@@ -524,11 +524,25 @@ struct AtriaTriRing: View, Equatable {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilitySummary)
 
-            HStack(spacing: 8) {
-                ForEach(slots, id: \.slot) { content in
-                    legendChip(metric: content.metric,
-                               action: action(for: content.slot))
-                        .disabled(!isInteractive(content.slot))
+            // Large type (2026-09-02 XXXL screenshots): three chips in a row
+            // truncated "Rec…" in the onboarding preview's 260pt card and
+            // cramped Today's row. From XX-Large up the chips stack as
+            // full-width rows; each already stretches to its container.
+            if legendDynamicTypeSize >= .xxLarge {
+                VStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
                 }
             }
         }
