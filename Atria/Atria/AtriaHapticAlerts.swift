@@ -353,6 +353,10 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
 /// wiring. Rows come from `AtriaNotificationCategory`, so every category the
 /// scheduler can post has a toggle and an honest one-line description here.
 struct AtriaNotificationSettingsCard: View {
+    // Large type (2026-09-02 XXXL screenshot): the delivery-posture row
+    // squeezed its sentence into a narrow column beside "Enable alerts".
+    // From XX-Large up the action sits under the sentence instead.
+    @Environment(\.dynamicTypeSize) private var noticeDynamicTypeSize
     @State private var settings = AtriaNotificationSettings.load()
     @State private var prominence: AtriaNotificationProminence?
 
@@ -403,34 +407,60 @@ struct AtriaNotificationSettingsCard: View {
     /// system-denied state was invisible here: 17 enabled toggles while
     /// nothing ever popped up (owner report 2026-08-28).
     private func prominenceRow(_ state: AtriaNotificationProminence) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: state == .full ? "bell.fill" : "bell.slash")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(state == .full ? Color.blue : Color.orange)
-            Text(state.settingsStatusText)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            if state.canRequestUpgradeInApp {
-                Button("Enable alerts") {
-                    LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderless)
-            } else if state == .denied {
-                Button("Open Settings") {
-                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
-                        UIApplication.shared.open(url)
+        Group {
+            if noticeDynamicTypeSize >= .xxLarge {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        prominenceGlyph(state)
+                        prominenceText(state)
                     }
+                    prominenceAction(state)
                 }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderless)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    prominenceGlyph(state)
+                    prominenceText(state)
+                    Spacer(minLength: 4)
+                    prominenceAction(state)
+                }
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: state == .full ? .blue : .orange)
+    }
+
+    private func prominenceGlyph(_ state: AtriaNotificationProminence) -> some View {
+        Image(systemName: state == .full ? "bell.fill" : "bell.slash")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(state == .full ? Color.blue : Color.orange)
+    }
+
+    private func prominenceText(_ state: AtriaNotificationProminence) -> some View {
+        Text(state.settingsStatusText)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func prominenceAction(_ state: AtriaNotificationProminence) -> some View {
+        if state.canRequestUpgradeInApp {
+            Button("Enable alerts") {
+                LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+        } else if state == .denied {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+        }
     }
 
     private var masterToggle: some View {
@@ -533,7 +563,9 @@ enum AtriaPendingNotificationCancellation {
 
 enum AtriaAlertSettingsGrid {
     static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
-        dynamicTypeSize.isAccessibilitySize ? 1 : 2
+        // 2026-09-02 XXXL screenshot: two columns hyphenated "Recov-ery" at
+        // the largest standard size, which is not an accessibility size.
+        dynamicTypeSize >= .xxLarge ? 1 : 2
     }
 
     static func columns(for dynamicTypeSize: DynamicTypeSize) -> [GridItem] {
