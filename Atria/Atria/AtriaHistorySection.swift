@@ -1030,16 +1030,18 @@ struct AtriaDetectedActivitiesSection: View {
                 .font(.caption2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            if candidate.confidence == .medium {
-                Text("Medium confidence: sustained strap-HR evidence; confirm the activity type")
+            // Confidence reads as a tier and the detector's own reason
+            // (2026-09-02): the medium sentence restated the Confirm button
+            // beneath it, and the tier now carries the card's hue.
+            HStack(spacing: 6) {
+                Text(candidate.confidence == .medium ? "Medium confidence" : "Low confidence")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(candidate.confidence == .medium ? Color.cyan : Color.secondary)
+                Text(Self.reasonText(candidate.reason))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else {
-                Text("Low confidence: \(Self.reasonText(candidate.reason))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
 
             HStack(spacing: 10) {

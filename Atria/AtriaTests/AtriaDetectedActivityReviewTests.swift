@@ -1474,10 +1474,14 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                        "the review flow must not upgrade an HR-only effort into a found workout")
         XCTAssertTrue(section.contains("Coverage \\(candidate.streamCoveragePercent)% · Avg \\(candidate.avgHR) · Peak \\(candidate.peakHR) bpm"),
                       "rows show the real evidence: coverage, average and peak HR")
-        XCTAssertTrue(section.contains("if candidate.confidence == .medium"),
-                      "medium-confidence rows must state that activity type still needs confirmation")
-        XCTAssertTrue(section.contains("Low confidence: \\(Self.reasonText(candidate.reason))"),
-                      "low-confidence rows must say why, using the pipeline's own reason code")
+        // 2026-09-02: the tier is a label and the reason rides beside it; the
+        // old medium sentence restated the Confirm button beneath it.
+        XCTAssertTrue(section.contains("Text(candidate.confidence == .medium ? \"Medium confidence\" : \"Low confidence\")"),
+                      "rows state their confidence tier")
+        XCTAssertTrue(section.contains("Text(Self.reasonText(candidate.reason))"),
+                      "rows say why, using the pipeline's own reason code")
+        XCTAssertFalse(section.contains("confirm the activity type"),
+                       "the instruction lives on the Confirm button, not in prose")
         XCTAssertTrue(section.contains(".accessibilityElement(children: .combine)"),
                       "confidence and evidence must be included in the row's accessibility output")
         for fabricated in ["strain", "calorie", "kcal", "steps"] {
