@@ -205,7 +205,7 @@ enum DetectionReasonCopy {
         // 2026-09-02: every remaining sleep-skip code the pipeline emits, each
         // a plain restatement of that event's own detail sentence.
         "candidate_not_settled": "Sleep candidate still settling — nearby quiet spells may join it",
-        "daytime_quiescence_no_strap": "Motion-quiet check is waiting for a strap identity",
+        "daytime_quiescence_no_strap": "Motion-quiet check needs a paired strap first",
         "daytime_quiescence_insufficient_motion": "Too little motion data in the last 26 h for the motion-quiet check",
         "daytime_quiescence_hr_read_incomplete": "Motion-quiet check could not read the full heart-rate window",
         "daytime_quiescence_no_candidate": "Motion-quiet check found no reviewable daytime sleep",
