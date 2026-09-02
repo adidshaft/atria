@@ -2354,7 +2354,8 @@ struct AtriaMonthlyReportSheet: View {
                         VStack(spacing: 10) {
                             AtriaWeeklyReportStatRow(title: "Total strain",
                                                      value: report.totalStrain.map { String(format: "%.0f", $0) } ?? "--",
-                                                     detail: "Daily strain summed across the month",
+                                                     detail: MonthlyReport.strainDetailText(dailyAverage: report.strainDailyAverage,
+                                                                                            delta: report.strainDailyAverageDeltaVsPriorMonth),
                                                      systemImage: "flame.fill",
                                                      tint: Metrics.electricStrain)
                             AtriaWeeklyReportStatRow(title: "Hardest week",
