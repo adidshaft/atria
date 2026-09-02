@@ -59,7 +59,12 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let source = try source("AtriaJournalTab.swift")
 
         XCTAssertFalse(source.contains("Unlocks after roughly 2–3 weeks of detailed answers."))
-        XCTAssertTrue(source.contains("Text(\"About 2–3 weeks of answers\")"))
+        // 2026-09-02: the "About 2–3 weeks" sentence became a progress track
+        // fed by the real answered-day count — a number in place of prose.
+        XCTAssertFalse(source.contains("About 2–3 weeks of answers"))
+        XCTAssertTrue(source.contains("Text(progressCaption)"))
+        XCTAssertTrue(source.contains("answeredDayCount: projection.answeredDayCount"),
+                      "the Patterns empty state must show the user's real answered days")
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))
         XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Check-in done\" : \"Check-in paused\")"))
         XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Review answers\" : \"Answer skipped questions\")"))

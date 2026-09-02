@@ -2911,6 +2911,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 ContentUnavailableView(stressEmptyTitle,
                                        systemImage: stressEmptySystemImage,
                                        description: Text(stressEmptyDescription))
+                    .accessibilityHint(stressEmptyAccessibilityHint)
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
@@ -2954,10 +2955,19 @@ private struct AtriaVitalsLiveSignalCard: View {
         isConnected ? "waveform.path.ecg" : "bolt.horizontal.circle"
     }
 
+    // Declutter (2026-09-02, same rule as the 2026-08-20 R6 pass): one short
+    // line on the surface; the provenance sentence moves to the accessibility
+    // hint rather than being deleted.
     private var stressEmptyDescription: String {
-        return isConnected
-            ? "Keep wearing your strap. A complete five-minute cardiac window produces the first 0–3 estimate; HR-only estimates are labeled lower confidence."
-            : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
+        isConnected
+            ? "First estimate after a five-minute cardiac window."
+            : "Reconnect to resume live readings."
+    }
+
+    private var stressEmptyAccessibilityHint: String {
+        isConnected
+            ? "Keep wearing your strap. HR-only estimates are labeled lower confidence."
+            : "Recent measured readings remain visible when available."
     }
 
     private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
