@@ -2871,17 +2871,23 @@ private struct AtriaVitalsLiveSignalCard: View {
                     }
                 }
                 Spacer(minLength: 8)
-                Text(stressPresentation.numericScore.map {
-                    "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
-                } ?? AtriaCompactMetricPresentation.noValue)
-                    .font(.system(.title2, design: .rounded, weight: .black))
-                    .monospacedDigit()
-                    // Live value: digits roll to the new reading instead of
-                    // snapping, so a refresh reads as movement, not a flicker.
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
-                               value: stressPresentation.numericScore)
-                    .foregroundStyle(stressState.level?.tint ?? .secondary)
+                // Same declutter as the subtitle (2026-09-02): with the strap
+                // disconnected and nothing scored, the canvas below already
+                // says so; a "--" beside the chevron was a third placeholder
+                // for one fact. The chevron stays as the tap affordance.
+                if !(projection.presentation == .empty && !isConnected) {
+                    Text(stressPresentation.numericScore.map {
+                        "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
+                    } ?? AtriaCompactMetricPresentation.noValue)
+                        .font(.system(.title2, design: .rounded, weight: .black))
+                        .monospacedDigit()
+                        // Live value: digits roll to the new reading instead of
+                        // snapping, so a refresh reads as movement, not a flicker.
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                                   value: stressPresentation.numericScore)
+                        .foregroundStyle(stressState.level?.tint ?? .secondary)
+                }
                 if onOpenStressDetail != nil {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
