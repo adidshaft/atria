@@ -101,6 +101,58 @@ enum AtriaManualHistorySyncFeedback: Equatable {
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
+    @ViewBuilder private var backupActionButtons: some View {
+            if let onWriteBackup {
+                Button {
+                    startBackup(using: onWriteBackup)
+                } label: {
+                    HStack(spacing: 6) {
+                        if backupOperationInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Label(backupOperationInProgress ? "Working…" : "Back up now",
+                              systemImage: "arrow.down.doc.fill")
+                    }
+                }
+                .atriaCardAction(prominent: false, tint: .blue)
+                .disabled(backupOperationInProgress)
+            }
+            if let onVerifyBackup {
+                Button {
+                    guard !backupOperationInProgress else { return }
+                    backupOperationInProgress = true
+                    backupActionMessage = nil
+                    Task { @MainActor in
+                        let status = await onVerifyBackup()
+                        backupStatus = status
+                        backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
+                        backupFeedbackTone = status.current ? .success : .failure
+                        backupOperationInProgress = false
+                    }
+                } label: {
+                    // Icon-only actions beside "Back up now" left sighted
+                    // users guessing what the seal and tray did
+                    // (2026-09-02 Settings audit); the words were only in
+                    // the accessibility labels.
+                    Label("Verify", systemImage: "checkmark.seal")
+                        .accessibilityLabel("Verify backup")
+                }
+                .atriaCardAction(prominent: false, tint: .green)
+                .disabled(backupOperationInProgress)
+            }
+            if onRestoreBackup != nil {
+                Button {
+                    backupImportPresented = true
+                } label: {
+                    Label("Restore", systemImage: "tray.and.arrow.down")
+                        .accessibilityLabel("Restore backup from Files")
+                }
+                .atriaCardAction(prominent: false, tint: .orange)
+                .disabled(backupOperationInProgress)
+            }
+    }
+
     /// One user-facing boundary for local storage ownership. The backup and raw
     /// export paths preserve durable session evidence and summaries; short-lived
     /// derived timelines remain display state rather than a second health archive.
@@ -822,7 +874,9 @@ struct AtriaSettingsView: View {
                 maxHRSuggestionRow(maxHRSuggestion)
             }
             LabeledContent("Max heart rate") {
-                Text("\(draft.maxHR) bpm").monospacedDigit().foregroundStyle(.pink)
+                // A profile value, not a metric: every sibling value in this list
+                // is plain, and pink read as an alert (2026-09-02 Settings audit).
+                Text("\(draft.maxHR) bpm").monospacedDigit()
             }
             Picker("Set from", selection: $draft.maxHRSource) {
                 ForEach(AthleteProfile.HRMaxSource.allCases) { source in
@@ -1190,52 +1244,12 @@ struct AtriaSettingsView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                if let onWriteBackup {
-                    Button {
-                        startBackup(using: onWriteBackup)
-                    } label: {
-                        HStack(spacing: 6) {
-                            if backupOperationInProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Label(backupOperationInProgress ? "Working…" : "Back up now",
-                                  systemImage: "arrow.down.doc.fill")
-                        }
-                    }
-                    .atriaCardAction(prominent: false, tint: .blue)
-                    .disabled(backupOperationInProgress)
-                }
-                if let onVerifyBackup {
-                    Button {
-                        guard !backupOperationInProgress else { return }
-                        backupOperationInProgress = true
-                        backupActionMessage = nil
-                        Task { @MainActor in
-                            let status = await onVerifyBackup()
-                            backupStatus = status
-                            backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
-                            backupFeedbackTone = status.current ? .success : .failure
-                            backupOperationInProgress = false
-                        }
-                    } label: {
-                        Image(systemName: "checkmark.seal")
-                            .accessibilityLabel("Verify backup")
-                    }
-                    .atriaCardAction(prominent: false, tint: .green)
-                    .disabled(backupOperationInProgress)
-                }
-                if onRestoreBackup != nil {
-                    Button {
-                        backupImportPresented = true
-                    } label: {
-                        Image(systemName: "tray.and.arrow.down")
-                            .accessibilityLabel("Restore backup from Files")
-                    }
-                    .atriaCardAction(prominent: false, tint: .orange)
-                    .disabled(backupOperationInProgress)
-                }
+            // Three labeled actions do not always fit one row (2026-09-02
+            // screenshot: "Back up now" wrapped, "Restore" clipped). Fit them
+            // side by side when there is room, otherwise stack them.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { backupActionButtons }
+                VStack(alignment: .leading, spacing: 8) { backupActionButtons }
             }
             .labelStyle(.titleAndIcon)
 
