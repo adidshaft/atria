@@ -5349,7 +5349,9 @@ struct AtriaMetricDetailSheet: View {
 
     private var sleepTrendEmptyTitle: String {
         switch range {
-        case .day: "Today's sleep is ready"
+        // "Ready" only when a night exists; the hero shows "--" otherwise and
+        // the title must not contradict it (2026-09-02).
+        case .day: sleepHistory.latestMainSleep == nil ? "No sleep saved yet" : "Today's sleep is ready"
         case .week: "This week's trend is building"
         case .month: "This month's trend is building"
         default: "This trend is building"
@@ -5359,7 +5361,9 @@ struct AtriaMetricDetailSheet: View {
     private var sleepTrendEmptyExplanation: String {
         switch range {
         case .day:
-            "Your latest sleep is available above. A daily trend point appears after this night is saved to history."
+            sleepHistory.latestMainSleep == nil
+                ? "Save a night and it appears here as today's point."
+                : "Your latest sleep is available above. A daily trend point appears after this night is saved to history."
         case .week:
             "Your latest sleep is available above. Save more nights this week to see a meaningful weekly trend."
         case .month:
@@ -6941,7 +6945,12 @@ private struct AtriaRecoveryScoreHero: View {
                     .padding(.horizontal, 11).padding(.vertical, 6)
                     .background(tint.opacity(0.12), in: Capsule(style: .continuous))
             } else {
-                Text("Today's score is ready · comparison is still building")
+                // The ring above already says "--" / Learning when there is no
+                // score; claiming "Today's score is ready" beneath it
+                // contradicted the number (2026-09-02 fixture screenshot).
+                Text(score == nil
+                     ? "Comparison builds after your first scored night"
+                     : "Today's score is ready · comparison is still building")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
         }
