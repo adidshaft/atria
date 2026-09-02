@@ -1325,7 +1325,8 @@ struct AtriaTodayScreen: View {
             || Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsAICoachLocalFixture(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments) {
-            return Self.debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments))
+            return Self.debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments),
+                                              warning: Self.debugShowsNorthStarWarnings(arguments: ProcessInfo.processInfo.arguments))
         }
         #endif
         return sessionProjectionStore.state.dailyRollupHistory
@@ -1353,7 +1354,18 @@ struct AtriaTodayScreen: View {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
         let valueIndex = arguments.index(after: fixtureIndex)
         return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "north-star-highlights"
+            && (arguments[valueIndex] == "north-star-highlights"
+                || arguments[valueIndex] == "north-star-warnings")
+    }
+
+    /// `north-star-warnings` (2026-09-02): the same rollups with the latest
+    /// morning's resting HR and HRV above the prior week, so the two warning
+    /// highlights render for screenshots; the sleep-need streak is off so
+    /// both fit in the top two.
+    private static func debugShowsNorthStarWarnings(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex) && arguments[valueIndex] == "north-star-warnings"
     }
 
     private static func debugShowsWeeklyReport(arguments: [String]) -> Bool {
@@ -1389,7 +1401,8 @@ struct AtriaTodayScreen: View {
             && arguments[valueIndex] == "recovery-detail-nutrition"
     }
 
-    private static func debugHighlightRollups(includeNutrition: Bool = false) -> [DailyRollupStoreEntry] {
+    private static func debugHighlightRollups(includeNutrition: Bool = false,
+                                              warning: Bool = false) -> [DailyRollupStoreEntry] {
         let calendar = Calendar(identifier: .gregorian)
         // Keep the fixture anchored to the current week. WeeklyReport's
         // navigation deliberately uses its generated-at date, so fixed future
@@ -1401,10 +1414,10 @@ struct AtriaTodayScreen: View {
         for offset in recoveries.indices {
             let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
             let recovery = recoveries[offset]
-            let rmssdSource = Double(58 - min(offset, 6))
-            let restingHeartRate = offset == 0 ? 52 : 58 + (offset % 2)
+            let rmssdSource = warning && offset == 0 ? 66 : Double(58 - min(offset, 6))
+            let restingHeartRate = offset == 0 ? (warning ? 62 : 52) : 58 + (offset % 2)
             let sleepSeconds: TimeInterval = 8 * 60 * 60
-            let sleepPerformance = offset < 3 ? 104 : 92
+            let sleepPerformance = offset < 3 && !warning ? 104 : 92
             let bedtimeMinutes = 22 * 60 + 20
             let strain = 10 + Double(offset) * 0.4
             rollups.append(DailyRollupStoreEntry(day: day,

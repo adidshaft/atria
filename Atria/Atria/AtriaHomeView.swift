@@ -2871,7 +2871,7 @@ struct AtriaHomeView: View {
         let requestedOverviewSegment = Self.debugLaunchOverviewSegmentArgument(arguments: arguments)
         let metricDetailFixtures = ["recovery-detail", "recovery-detail-nutrition", "hrv-detail", "rhr-detail", "respiratory-detail", "sleep-detail", "strain-detail"]
         let shouldOpenMetricDetailFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { metricDetailFixtures.contains($0) } ?? false
-        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights"]
+        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights", "north-star-warnings"]
         let shouldShowOverviewFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { overviewContentFixtures.contains($0) } ?? false
         let shouldOpenShareSheet = arguments.contains("--atria-open-share-sheet")
         let shouldOpenCustomizeSheet = arguments.contains("--atria-open-customize")
