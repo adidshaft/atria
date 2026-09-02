@@ -13,6 +13,12 @@ struct WeeklyPlanTarget: Codable, Equatable, Identifiable {
     let detail: String
     let goal: Double
     let current: Double
+    /// Non-nil while the target has too little history to be real (the
+    /// bedtime target needs `WeeklyPlan.minimumBedtimeNights` recorded
+    /// bedtimes). Optional so plans saved before 2026-09-02 still decode.
+    var learningNightsRemaining: Int? = nil
+
+    var isLearning: Bool { learningNightsRemaining != nil }
 
     var progress: Double {
         guard goal > 0 else { return 0 }
@@ -105,10 +111,26 @@ struct WeeklyPlan: Codable, Equatable {
         recent.insert(entry, at: index)
     }
 
+    /// Fewer recorded bedtimes than this and there is no rhythm to base a
+    /// target on. The old fallback quietly used 23:00 and still captioned it
+    /// "Based on your recent bedtime rhythm" (2026-09-02 fresh-install
+    /// screenshot: "Lights out by 11:20 PM · 4 nights" with zero nights).
+    static let minimumBedtimeNights = 3
+
     private static func bedtimeTarget(recent28: [DailyRollupStoreEntry],
                                       currentWeek: [DailyRollupStoreEntry]) -> WeeklyPlanTarget {
         let bedtimeMinutes = recent28.compactMap(\.bedtimeMinutes)
-        let median = medianMinute(bedtimeMinutes) ?? 23 * 60
+        guard bedtimeMinutes.count >= minimumBedtimeNights,
+              let median = circularMedianMinute(bedtimeMinutes) else {
+            let recorded = bedtimeMinutes.count
+            return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.bedtimeConsistency.rawValue,
+                                    kind: .bedtimeConsistency,
+                                    title: "Lights-out target",
+                                    detail: "Needs \(minimumBedtimeNights) recorded bedtimes (\(recorded) so far)",
+                                    goal: 4,
+                                    current: 0,
+                                    learningNightsRemaining: max(0, minimumBedtimeNights - recorded))
+        }
         let target = (median + 20) % 1_440
         let current = Double(currentWeek.filter { entry in
             guard let minute = entry.bedtimeMinutes else { return false }
@@ -153,24 +175,35 @@ struct WeeklyPlan: Codable, Equatable {
                                 current: current)
     }
 
-    private static func medianMinute(_ minutes: [Int]) -> Int? {
+    /// The recorded bedtime with the smallest total distance round the clock
+    /// to every other one — always a real night's minute, and the same answer
+    /// whichever side of midnight or noon the nights fall. The previous median
+    /// added 24h to anything before noon, which put an afternoon sleeper's
+    /// 11:28 and 12:08 a day apart (the same defect as issue #41).
+    static func circularMedianMinute(_ minutes: [Int]) -> Int? {
         guard !minutes.isEmpty else { return nil }
-        let normalized = minutes.map { minute -> Int in
-            let wrapped = ((minute % 1_440) + 1_440) % 1_440
-            return wrapped < 720 ? wrapped + 1_440 : wrapped
-        }.sorted()
-        return normalized[normalized.count / 2] % 1_440
+        let wrapped = minutes.map { (($0 % 1_440) + 1_440) % 1_440 }
+        var best: (minute: Int, cost: Int)?
+        for candidate in wrapped.sorted() {
+            let cost = wrapped.reduce(0) { $0 + circularMinuteDistance($1, candidate) }
+            if let current = best, current.cost <= cost { continue }
+            best = (candidate, cost)
+        }
+        return best?.minute
     }
 
-    private static func minuteIsNoLater(_ minute: Int, than target: Int) -> Bool {
-        let normalized = normalizeBedtimeMinute(minute)
-        let normalizedTarget = normalizeBedtimeMinute(target)
-        return normalized <= normalizedTarget
+    static func circularMinuteDistance(_ a: Int, _ b: Int) -> Int {
+        let d = (((a - b) % 1_440) + 1_440) % 1_440
+        return min(d, 1_440 - d)
     }
 
-    private static func normalizeBedtimeMinute(_ minute: Int) -> Int {
-        let wrapped = ((minute % 1_440) + 1_440) % 1_440
-        return wrapped < 720 ? wrapped + 1_440 : wrapped
+    /// "No later than the target" means within the twelve hours that end at
+    /// the target, on the clock — so 11:28 counts against a 13:35 target and
+    /// 23:00 counts against 00:20, without assuming when the day begins.
+    static func minuteIsNoLater(_ minute: Int, than target: Int) -> Bool {
+        var delta = (((minute - target) % 1_440) + 1_440) % 1_440
+        if delta > 720 { delta -= 1_440 }
+        return delta <= 0
     }
 
     private static func formatClockMinute(_ minute: Int) -> String {
@@ -223,6 +256,10 @@ final class WeeklyPlanStore {
                               generatedAt: saved.generatedAt,
                               targets: saved.targets.map { target in
                                   guard let fresh = freshByKind[target.kind] else { return target }
+                                  // A saved "learning" target is not a commitment
+                                  // for the week; the moment enough bedtimes exist
+                                  // the real target replaces it.
+                                  if target.isLearning { return fresh }
                                   return WeeklyPlanTarget(id: target.id,
                                                           kind: target.kind,
                                                           title: target.title,
