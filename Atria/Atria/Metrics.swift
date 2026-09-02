@@ -123,6 +123,13 @@ enum Metrics {
         let tint: Color
 
         var id: Int { index }
+        /// Compact zone text for a pill: "Below Z1" at rest, else "Z3 Aerobic",
+        /// the live-workout grammar. The Today pill used to print
+        /// "Zone Z0" (phone 2026-09-02): the word and the letter said the
+        /// same thing twice.
+        var compactLabel: String { index == 0 ? "Below Z1" : "\(shortLabel) \(name)" }
+        /// The same zone for VoiceOver, in words.
+        var spokenLabel: String { index == 0 ? "Below zone 1" : "Zone \(index), \(name)" }
     }
 
     static func heartRateZone(bpm: Int, rest: Int, max: Int) -> HeartRateZone? {
