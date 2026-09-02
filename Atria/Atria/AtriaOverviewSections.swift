@@ -1892,24 +1892,33 @@ struct AtriaWeeklyReportSheet: View {
         return rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
     }
 
-    private var selectedTrendPoints: [(day: Date, value: Double)] {
+    /// Each bar carries its own tint from the app's colour authorities
+    /// (2026-09-02): recovery through the zone palette, strain in its single
+    /// cool hue (recovery owns the green/amber/red axis), sleep by percent of
+    /// the night's own need when the rollup carries it — never fixed hours.
+    private var selectedTrendPoints: [(day: Date, value: Double, tint: Color)] {
         switch selectedTrend {
         case .recovery:
             if !displayedWeekRollups.isEmpty {
                 return displayedWeekRollups.compactMap { entry in
-                    entry.recovery.map { (entry.day, Double($0)) }
+                    entry.recovery.map { (entry.day, Double($0), Metrics.recoveryColor($0)) }
                 }
             }
             return (displayedReport.recoverySeries ?? []).compactMap { day in
-                day.recovery.map { (day.day, Double($0)) }
+                day.recovery.map { (day.day, Double($0), Metrics.recoveryColor($0)) }
             }
         case .strain:
             return displayedWeekRollups.compactMap { entry in
-                entry.strain.map { (entry.day, $0) }
+                entry.strain.map { (entry.day, $0, Metrics.strainColor($0)) }
             }
         case .sleep:
             return displayedWeekRollups.compactMap { entry in
-                entry.sleepSeconds.map { (entry.day, $0 / 3_600) }
+                entry.sleepSeconds.map { seconds in
+                    (entry.day,
+                     seconds / 3_600,
+                     entry.sleepPerformance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
+                        ?? Metrics.electricSleep)
+                }
             }
         }
     }
@@ -1922,19 +1931,11 @@ struct AtriaWeeklyReportSheet: View {
         }
     }
 
-    private func selectedTrendColor(_ value: Double) -> Color {
-        switch selectedTrend {
-        case .recovery: return Metrics.recoveryColor(Int(value.rounded()))
-        case .strain: return value >= 13 ? .red : (value >= 8 ? .yellow : .green)
-        case .sleep: return value >= 7.5 ? .green : (value >= 6.5 ? .yellow : .red)
-        }
-    }
-
     private var selectedTrendThresholdLabel: String {
         switch selectedTrend {
         case .recovery: return "Green 67–100 · yellow 34–66 · red 0–33"
-        case .strain: return "Green <8 · yellow 8–12.9 · red 13+"
-        case .sleep: return "Green 7.5h+ · yellow 6.5–7.4h · red <6.5h"
+        case .strain: return "One hue · bar height is the day's strain"
+        case .sleep: return "By % of sleep need · green 85–110 · yellow 70–84 · red <70"
         }
     }
 
@@ -1964,7 +1965,7 @@ struct AtriaWeeklyReportSheet: View {
                         BarMark(x: .value("Day", point.day, unit: .day),
                                 y: .value(selectedTrend.rawValue, point.value),
                                 width: .fixed(18))
-                            .foregroundStyle(selectedTrendColor(point.value))
+                            .foregroundStyle(point.tint)
                             .cornerRadius(4)
                     }
                 }
