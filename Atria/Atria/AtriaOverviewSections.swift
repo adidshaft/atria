@@ -7542,9 +7542,14 @@ private struct AtriaRecoveryContributorMap: View {
                     }
                 }
 
-                Text("Baseline sits in the middle. Factors to the right supported recovery; factors to the left pulled it down.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // The legend explains the diverging rows below; with no rows
+                // it was a second paragraph about a chart that is not there
+                // (2026-09-02 fixture screenshot). The empty notice speaks alone.
+                if !contributors.isEmpty {
+                    Text("Baseline sits in the middle. Factors to the right supported recovery; factors to the left pulled it down.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if contributors.isEmpty {
