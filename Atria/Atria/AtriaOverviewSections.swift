@@ -1466,7 +1466,10 @@ enum AtriaLiveSignalTruth {
         case .connecting, .scanning:
             return "Finding"
         case .disconnected:
-            return "Off"
+            // 2026-09-02: "Off" read as something the wearer switched off,
+            // and sat one word away from "Bluetooth off". The strap is
+            // simply not connected.
+            return "Not connected"
         case .poweredOff:
             return "Bluetooth off"
         }
