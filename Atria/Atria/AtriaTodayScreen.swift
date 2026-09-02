@@ -1325,6 +1325,7 @@ struct AtriaTodayScreen: View {
     private var highlightRollups: [DailyRollupStoreEntry] {
         #if DEBUG
         if Self.debugShowsNorthStarHighlights(arguments: ProcessInfo.processInfo.arguments)
+            || Self.debugShowsDetailHistory(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsAICoachLocalFixture(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments) {
@@ -1365,6 +1366,14 @@ struct AtriaTodayScreen: View {
     /// morning's resting HR and HRV above the prior week, so the two warning
     /// highlights render for screenshots; the sleep-need streak is off so
     /// both fit in the top two.
+    /// `rhr-detail-history` (2026-09-02): the resting-HR sheet over the
+    /// fixture rollups, so trailing Week/Month windows have a picture.
+    private static func debugShowsDetailHistory(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex) && arguments[valueIndex] == "rhr-detail-history"
+    }
+
     private static func debugShowsNorthStarWarnings(arguments: [String]) -> Bool {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
         let valueIndex = arguments.index(after: fixtureIndex)
@@ -1454,7 +1463,7 @@ struct AtriaTodayScreen: View {
         case "strain-detail": return .strain
         case "recovery-detail", "recovery-detail-nutrition": return .recovery
         case "hrv-detail", "chart-options": return .hrv
-        case "rhr-detail": return .restingHeartRate
+        case "rhr-detail", "rhr-detail-history": return .restingHeartRate
         case "respiratory-detail": return .respiratoryRate
         case "sleep-detail": return .sleep
         default: return nil

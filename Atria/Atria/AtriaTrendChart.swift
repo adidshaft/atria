@@ -1831,18 +1831,19 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
                 end: calendar.date(byAdding: .day, value: 1, to: start)
                     ?? start.addingTimeInterval(86_400)
             )
-        case .week:
-            return calendar.dateInterval(of: .weekOfYear, for: anchor)
-                ?? DateInterval(
-                    start: calendar.startOfDay(for: anchor),
-                    duration: 7 * 86_400
-                )
-        case .month:
-            return calendar.dateInterval(of: .month, for: anchor)
-                ?? DateInterval(
-                    start: calendar.startOfDay(for: anchor),
-                    duration: 30 * 86_400
-                )
+        case .week, .month:
+            // Owner 2026-09-02: Week and Month were the calendar week and
+            // calendar month containing the anchor, so on Wednesday the 2nd
+            // the Week chart held two days and the Month chart two days,
+            // with twenty days of wear on the phone. The segment labels
+            // promise "7 days" and "30 days": trailing windows ending on
+            // the anchor day, like the longer ranges already were.
+            let dayStart = calendar.startOfDay(for: anchor)
+            let end = calendar.date(byAdding: .day, value: 1, to: dayStart)
+                ?? dayStart.addingTimeInterval(86_400)
+            let start = calendar.date(byAdding: .day, value: -(days - 1), to: dayStart)
+                ?? dayStart.addingTimeInterval(-Double(days - 1) * 86_400)
+            return DateInterval(start: start, end: end)
         case .quarter, .sixMonths, .year, .all:
             let start = cutoffDate(now: anchor, calendar: calendar)
             let end = calendar.date(byAdding: .day, value: 1,
@@ -1860,8 +1861,10 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         let component: Calendar.Component
         switch self {
         case .day: component = .day
-        case .week: component = .weekOfYear
-        case .month: component = .month
+        // Trailing windows step by their own length (2026-09-02).
+        case .week, .month:
+            return calendar.date(byAdding: .day, value: offset * days, to: anchor)
+                ?? anchor
         case .quarter: component = .quarter
         case .sixMonths: component = .month
         case .year: component = .year
@@ -1884,7 +1887,8 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         case .day:
             formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
             return formatter.string(from: interval.start)
-        case .week:
+        case .week, .month:
+            // A trailing window is a date range, never a month name.
             let end = interval.end.addingTimeInterval(-1)
             let startMonth = calendar.component(.month, from: interval.start)
             let endMonth = calendar.component(.month, from: end)
@@ -1894,9 +1898,6 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
             let startText = formatter.string(from: interval.start)
             formatter.setLocalizedDateFormatFromTemplate("d MMM")
             return "\(startText)–\(formatter.string(from: end))"
-        case .month:
-            formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
-            return formatter.string(from: interval.start)
         default:
             formatter.setLocalizedDateFormatFromTemplate("d MMM yyyy")
             return formatter.string(from: interval.start)
