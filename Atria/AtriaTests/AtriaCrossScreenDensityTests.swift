@@ -62,7 +62,9 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         // 2026-09-02: the "About 2–3 weeks" sentence became a progress track
         // fed by the real answered-day count — a number in place of prose.
         XCTAssertFalse(source.contains("About 2–3 weeks of answers"))
-        XCTAssertTrue(source.contains("Text(progressCaption)"))
+        // 2026-09-02: the inline track became the shared AtriaLearningProgressTrack;
+        // the caption still comes from the same real answered-day count.
+        XCTAssertTrue(source.contains("caption: progressCaption)"))
         XCTAssertTrue(source.contains("answeredDayCount: projection.answeredDayCount"),
                       "the Patterns empty state must show the user's real answered days")
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))

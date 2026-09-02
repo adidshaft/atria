@@ -278,10 +278,6 @@ struct AtriaBehaviorImpactBuildingState: View {
     // once the night count is met, and in the accessibility label always.
     private static let neededNights = AtriaBehaviorImpact.minimumLoggedDays
 
-    private var progressFraction: CGFloat {
-        CGFloat(min(model.loggedNights, Self.neededNights)) / CGFloat(Self.neededNights)
-    }
-
     private var progressCaption: String {
         model.loggedNights >= Self.neededNights
             ? "\(model.loggedNights) logged nights · no behavior clears p < 0.10 yet"
@@ -300,20 +296,9 @@ struct AtriaBehaviorImpactBuildingState: View {
                 Text(headline)
                     .font(.subheadline.weight(.bold))
                 if model.scoredNights > 0 {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule(style: .continuous)
-                                .fill(.quaternary.opacity(0.5))
-                            Capsule(style: .continuous)
-                                .fill(Metrics.electricGreen.opacity(0.75))
-                                .frame(width: max(progressFraction > 0 ? 6 : 0,
-                                                  geo.size.width * progressFraction))
-                        }
-                    }
-                    .frame(height: 5)
-                    Text(progressCaption)
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    AtriaLearningProgressTrack(current: model.loggedNights,
+                                               target: Self.neededNights,
+                                               caption: progressCaption)
                 }
                 Text(detailText)
                     .font(.caption)

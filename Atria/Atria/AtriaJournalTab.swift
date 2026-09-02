@@ -507,10 +507,6 @@ private struct AtriaJournalTypedInsightsSection: View {
 
     private static let neededDays = AtriaJournalInsights.minimumSplitTotalDays
 
-    private var progressFraction: CGFloat {
-        CGFloat(min(answeredDayCount, Self.neededDays)) / CGFloat(Self.neededDays)
-    }
-
     private var progressCaption: String {
         answeredDayCount >= Self.neededDays
             ? "\(answeredDayCount) days answered · no clear pattern yet"
@@ -546,20 +542,9 @@ private struct AtriaJournalTypedInsightsSection: View {
                         // engine's real minimum, filled by the user's real
                         // answered days, so the state shows how close a
                         // pattern is rather than describing the wait.
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                Capsule(style: .continuous)
-                                    .fill(.quaternary.opacity(0.5))
-                                Capsule(style: .continuous)
-                                    .fill(Metrics.electricGreen.opacity(0.75))
-                                    .frame(width: max(progressFraction > 0 ? 6 : 0,
-                                                      geo.size.width * progressFraction))
-                            }
-                        }
-                        .frame(height: 5)
-                        Text(progressCaption)
-                            .font(.caption2.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        AtriaLearningProgressTrack(current: answeredDayCount,
+                                                   target: Self.neededDays,
+                                                   caption: progressCaption)
                     }
                     Spacer(minLength: 0)
                 }

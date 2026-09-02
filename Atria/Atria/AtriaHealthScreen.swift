@@ -3447,6 +3447,10 @@ private struct AtriaSleepConsistencyStrip: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
+                } else {
+                    Text("Learning")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -3525,11 +3529,15 @@ private struct AtriaSleepConsistencyStrip: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text(consistency.footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Learning state as a track, not a sentence (2026-09-02): the
+                // engine's real minimum, filled by real qualified nights. The
+                // full sentence stays in the accessibility label below.
+                AtriaLearningProgressTrack(
+                    current: consistency.qualifiedNightCount,
+                    target: AtriaSleepConsistency.minimumQualifiedNights,
+                    caption: "\(consistency.qualifiedNightCount) of \(AtriaSleepConsistency.minimumQualifiedNights) qualified nights",
+                    tint: Metrics.electricSleep)
+                .padding(.top, 2)
             }
         }
         .padding(12)
