@@ -1029,6 +1029,14 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
     }
 
     func testPreservedJuly27PhysicalWalkProducesBoundedReadyReview() throws {
+        // The replayed artifacts live under the gitignored `evidence/` tree
+        // (private device data, tracked only when explicitly staged). On a
+        // checkout without them this test failed with "no such file" on every
+        // run and was mistaken for a detection regression (2026-09-02). A
+        // missing artifact is a skip, not a failure; the assertions below are
+        // unchanged wherever the evidence exists.
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: july27Gate5EvidenceURL.path),
+                          "July-27 gate-5 evidence is not present on this machine")
         let session = try july27Gate5ActiveJournal()
         var sessions = try JSONDecoder().decode(
             [SavedSession].self,
