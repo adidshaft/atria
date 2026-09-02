@@ -1125,17 +1125,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     var strapGenerationDetail: String {
         switch strapModel {
         case .strapMG:
-            return "Generation: WHOOP MG, explicit metadata"
+            return "WHOOP MG · explicit metadata"
         case .strap5:
-            return "Generation: WHOOP 5.0, explicit metadata"
+            return "WHOOP 5.0 · explicit metadata"
         case .strap4:
-            return "Generation: WHOOP 4.0, explicit metadata"
+            return "WHOOP 4.0 · explicit metadata"
         case .strap4Class:
-            return "Generation: unverified; 4.0-class protocol"
+            return "Unverified · 4.0-class protocol"
         case .strap3:
-            return "Generation: WHOOP 3.0, explicit metadata"
+            return "WHOOP 3.0 · explicit metadata"
         case .unknown:
-            return "Generation: unknown; heart rate only until layout is checked"
+            // The Settings row is already labeled "Generation" (2026-09-02 audit):
+            // the value no longer repeats the label, and reads as a value.
+            return "Unknown · heart rate only until the layout is checked"
         }
     }
 

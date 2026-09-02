@@ -342,7 +342,6 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
         ))
         .font(.caption.weight(.semibold))
         .toggleStyle(.switch)
-        .tint(.purple)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .purple)
@@ -438,7 +437,6 @@ struct AtriaNotificationSettingsCard: View {
         Toggle("Allow notifications", isOn: masterBinding)
             .font(.subheadline.weight(.semibold))
             .toggleStyle(.switch)
-            .tint(.blue)
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
             .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
@@ -456,7 +454,6 @@ struct AtriaNotificationSettingsCard: View {
             }
         }
         .toggleStyle(.switch)
-        .tint(.blue)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
