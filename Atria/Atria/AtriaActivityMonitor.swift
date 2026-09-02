@@ -2669,6 +2669,12 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
+        // Chart honesty (2026-08-03 rule, applied 2026-09-02): an empty window
+        // used to draw a 60–120 bpm scale and a 6 AM tick around "No HR
+        // recorded" — an axis for readings that do not exist. No points, no
+        // axis; the message stands alone.
+        .chartYAxis(points.isEmpty ? .hidden : .automatic)
+        .chartXAxis(points.isEmpty ? .hidden : .automatic)
         // Clip the plot area (and its translucent AreaMark fill) to the rounded
         // plot surface, matching the Stress chart — without this the gradient
         // fill and trace bleed past the graph edges.
@@ -2762,6 +2768,9 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
+        // No readings, no axis (see the heart-rate chart above).
+        .chartYAxis(points.isEmpty ? .hidden : .automatic)
+        .chartXAxis(points.isEmpty ? .hidden : .automatic)
         .atriaGraphPlotSurface()
         .frame(height: 154)
         .chartOverlay { proxy in
