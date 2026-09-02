@@ -633,7 +633,7 @@ struct AtriaHomeView: View {
                 }
             }
             .padding(16)
-            .atriaGlassCard(cornerRadius: 24, emphasis: .strong)
+            .atriaGlassCard(emphasis: .strong)
             .accessibilityElement(children: .contain)
         }
 
@@ -4720,6 +4720,20 @@ struct AtriaHomeView: View {
                 .frame(maxWidth: .infinity)
             }
             .navigationTitle(title)
+            // MEASURED 2026-09-02: the tab hosting paints an opaque system
+            // background behind every tab (pure white in light, pure black in
+            // dark), so the AtriaBackdropLayer under the TabView was never
+            // visible — light-mode white cards sat on a white field (tile 255,
+            // gap 255, margin 255) and the navy dark field never showed; a
+            // clear `.containerBackground(for: .navigation)` did not get past
+            // it either. Drawing the backdrop as the scroll surface's own
+            // background puts it above that layer, inside each tab. This is
+            // what the 2026-07-05 backdrop tuning could not reach.
+            .background {
+                AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
@@ -8775,7 +8789,7 @@ private struct AtriaWorkoutReviewFlow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: 28, tint: .orange)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.card, tint: .orange)
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 10)

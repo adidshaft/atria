@@ -345,7 +345,7 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
         .tint(.purple)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .atriaInsetCard(cornerRadius: 14, tint: .purple)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .purple)
     }
 }
 
@@ -431,7 +431,7 @@ struct AtriaNotificationSettingsCard: View {
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .atriaInsetCard(cornerRadius: 14, tint: state == .full ? .blue : .orange)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: state == .full ? .blue : .orange)
     }
 
     private var masterToggle: some View {
@@ -441,7 +441,7 @@ struct AtriaNotificationSettingsCard: View {
             .tint(.blue)
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
-            .atriaInsetCard(cornerRadius: 14, tint: .blue)
+            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
     }
 
     private func categoryRow(_ category: AtriaNotificationCategory) -> some View {
@@ -459,7 +459,7 @@ struct AtriaNotificationSettingsCard: View {
         .tint(.blue)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .atriaInsetCard(cornerRadius: 14, tint: .blue)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
         .accessibilityLabel("\(category.displayName). \(category.honestDescription)")
     }
 

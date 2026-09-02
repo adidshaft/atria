@@ -3525,7 +3525,7 @@ struct AtriaTodayCompactRingRail: View {
         .padding(.leading, 12)
         .padding(.trailing, 8)
         .padding(.vertical, 7)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .glassEffect(.regular, in: .rect(cornerRadius: AtriaDesignTokens.Radius.tile))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Collapsed Today rings. \(accessibilitySummary)")
     }

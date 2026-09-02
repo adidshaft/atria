@@ -764,7 +764,7 @@ private struct AtriaJournalCheckInDeck: View {
         // Each card needs its own opaque surface — the deck stacks the next
         // card behind the current one in a ZStack, and without a background
         // here the "peeking" card would show straight through the front card.
-        .atriaInsetCard(cornerRadius: 20, tint: .cyan)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .cyan)
     }
 
     @ViewBuilder
@@ -1268,7 +1268,7 @@ private struct AtriaJournalFollowUpSheet: View {
                 }
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity)
-                .background(.quaternary.opacity(0.34), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .background(.quaternary.opacity(0.34), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous))
             case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
                 EmptyView()
             }

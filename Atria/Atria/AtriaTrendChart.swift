@@ -208,7 +208,7 @@ struct AtriaTrendChartCard: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
-                    .atriaInsetCard(cornerRadius: 18, tint: metric.tint)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: metric.tint)
                 }
 
                 if let summary = prepared.summary {
@@ -218,7 +218,7 @@ struct AtriaTrendChartCard: View {
         }
         .padding(16)
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showMoreInsights)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         // Metric/range controls already animate their own selection chrome. A
         // broad implicit animation here also animated every Chart mark and the
         // full report subtree, making data switches noticeably more expensive.
@@ -905,7 +905,7 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
             // balance map below is the single owner of that pair.
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: readout.tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value).")
     }
@@ -1003,7 +1003,7 @@ private struct AtriaTrendRangeDock: View, Equatable {
             }
         }
         .padding(9)
-        .atriaInsetCard(cornerRadius: 18, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
         .accessibilityElement(children: .contain)
     }
 

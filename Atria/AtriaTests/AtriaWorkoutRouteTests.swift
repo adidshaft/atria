@@ -166,7 +166,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(hud.contains("metricProjection.activeCalories"))
         XCTAssertTrue(hud.contains("Text(zoneText)"))
         XCTAssertTrue(hud.contains(".accessibilityLabel(\"Heart rate"))
-        XCTAssertTrue(hud.contains(".atriaWorkoutGlassSurface(cornerRadius: 24"),
+        // 2026-09-02 radius-scale pass: the literal 24 became the card token
+        // (the pin is about the native glass surface, not the number).
+        XCTAssertTrue(hud.contains(".atriaWorkoutGlassSurface(cornerRadius: AtriaDesignTokens.Radius.card"),
                       "The pinned map overlay should use the native Liquid Glass surface")
     }
 

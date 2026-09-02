@@ -3698,9 +3698,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     private var heartRateTraceCard: some View {
         let points = tracePoints
         if isPreparingTrace {
-            ProgressView()
-                .controlSize(.small)
-                .frame(maxWidth: .infinity, minHeight: 36)
+            // Same 150pt slot the trace chart below renders into, so the card
+            // does not grow by 114pt the moment the first points arrive.
+            AtriaSkeletonBlock(height: 150)
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Preparing heart-rate trace")
         } else if !points.isEmpty || hasWorkoutStressEvidence {
             VStack(alignment: .leading, spacing: 8) {

@@ -424,9 +424,7 @@ struct AtriaStepCalibrationSequenceCard: View {
                     .foregroundStyle(stage.kind == .rest ? .cyan : .indigo)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Stage \(plan.completedStageCount + 1) of \(plan.totalStageCount)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
+                        .atriaEyebrow()
                     Text(stage.label)
                         .font(.title3.weight(.bold))
                 }

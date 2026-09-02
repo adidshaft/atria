@@ -430,7 +430,7 @@ private struct AtriaCustomizePreview: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: 20, tint: config.accent.color)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: config.accent.color)
     }
 
     private var sleepMetric: AtriaTriRingMetric {

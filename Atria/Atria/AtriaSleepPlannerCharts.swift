@@ -269,7 +269,7 @@ struct AtriaSleepNeedLedgerCard: View {
         GeometryReader { proxy in
             ForEach(AtriaSleepNeedLedgerPresentation.axisTicks, id: \.label) { tick in
                 Text(tick.label)
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .font(.caption2.weight(.medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .fixedSize()
                     .position(x: min(max(proxy.size.width * tick.fraction, 10),

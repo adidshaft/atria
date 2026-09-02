@@ -814,7 +814,7 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
                     if let date = value.as(Date.self) {
                         AxisValueLabel {
                             Text(date, format: .dateTime.weekday(.narrow))
-                                .font(.system(size: 8, weight: .medium))
+                                .font(.caption2.weight(.medium))
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -2763,6 +2763,7 @@ enum AtriaVitalsStressTimelineCopy {
 /// canvas. It avoids an extra full-width card while making the requested
 /// Stress / Heart Rate comparison discoverable.
 private struct AtriaVitalsLiveSignalCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isConnected: Bool
     let live: AtriaVitalsPulsePresentationState
     let miniTimelineSeries: AtriaHeartRateChartSeries
@@ -2868,6 +2869,11 @@ private struct AtriaVitalsLiveSignalCard: View {
                 } ?? AtriaCompactMetricPresentation.noValue)
                     .font(.system(.title2, design: .rounded, weight: .black))
                     .monospacedDigit()
+                    // Live value: digits roll to the new reading instead of
+                    // snapping, so a refresh reads as movement, not a flicker.
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                               value: stressPresentation.numericScore)
                     .foregroundStyle(stressState.level?.tint ?? .secondary)
                 if onOpenStressDetail != nil {
                     Image(systemName: "chevron.right")
@@ -2960,7 +2966,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(tint)
             Text(label)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -2974,7 +2980,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(Metrics.electricSleep)
             Text("Sleep")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -3408,6 +3414,9 @@ private struct AtriaPulseStatRail: View {
                 .allowsTightening(true)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                           value: value)
                 // A not-ready value renders NEUTRAL, never in the metric's hue.
                 // These tints are red and pink, so an empty heart-rate row was
                 // showing three red "--" side by side, which reads as an error
@@ -4872,7 +4881,7 @@ struct AtriaSleepStageSummary: View, Equatable {
                     // Theme unification (2026-08-29): a provenance note, not a
                     // warning — neutral capsule, .secondary text.
                     Text("Low confidence")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -4927,7 +4936,7 @@ struct AtriaSleepStageSummary: View, Equatable {
                                 .frame(width: 6, height: 6)
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(entry.stage.label)
-                                    .font(.system(size: 9, weight: .bold))
+                                    .font(.caption2.weight(.bold))
                                     .foregroundStyle(.secondary)
                                 Text("\(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes)) · \(entry.percent)%")
                                     .font(.caption2.weight(.semibold).monospacedDigit())

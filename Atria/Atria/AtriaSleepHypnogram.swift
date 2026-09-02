@@ -447,9 +447,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.sm) {
                 Text(sectionTitle)
-                    .font(.caption2.weight(.semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer(minLength: 0)
                 Text(provenanceText)
                     .font(.caption2.weight(.semibold))

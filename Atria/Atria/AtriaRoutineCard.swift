@@ -473,7 +473,7 @@ private struct AtriaRoutineTargetRow: View, Equatable {
             .frame(width: 22, height: 22)
 
             Text(label)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)

@@ -139,3 +139,97 @@ final class AtriaSleepConsistencyEngineTests: XCTestCase {
         XCTAssertFalse(today.contains("Needs 2 nights"))
     }
 }
+
+/// Issue #41 — the centre must live on the 24h clock. A fixed noon cut split
+/// an afternoon sleeper's nights across two days and the arithmetic mean of a
+/// bimodal set named a bedtime nobody had. These pin the circular engine.
+final class AtriaSleepConsistencyCircularClockTests: XCTestCase {
+    private let newYork = TimeZone(identifier: "America/New_York")!
+
+    private func night(_ id: String, day: Int, bedHour: Int, bedMinute: Int, hours: Double = 6) -> UserConfirmedSleep {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = newYork
+        let start = DateComponents(calendar: calendar, timeZone: newYork,
+                                   year: 2026, month: 8, day: day,
+                                   hour: bedHour, minute: bedMinute).date!
+        return UserConfirmedSleep(id: id, createdAt: start, start: start,
+                                  end: start.addingTimeInterval(hours * 3_600),
+                                  source: "manual_sleep", confidence: "manual_user_entered",
+                                  sessions: 1, samples: 100, avgHR: 52, peakHR: 60, restingHR: 50,
+                                  hrv: 60, hrvWindowCount: 4, duration: hours * 3_600, span: hours * 3_600,
+                                  reason: "test", motionSource: "manual", motionValidated: false,
+                                  stageSegments: nil, eventTimeZoneIdentifier: "America/New_York")
+    }
+
+    private func result(_ sleeps: [UserConfirmedSleep]) -> AtriaSleepConsistency {
+        AtriaSleepConsistency.result(from: SleepHistorySnapshot(rollups: [], confirmedSleeps: sleeps).nights)
+    }
+
+    func testAfternoonMainSleepGetsAnAfternoonCentreAndAPlottableAxis() {
+        // The owner's real shape: main sleep starting early afternoon.
+        let sleeps = [(13, 15), (13, 55), (12, 40), (14, 5), (13, 30)].enumerated().map { index, time in
+            night("pm-\(index)", day: index + 1, bedHour: time.0, bedMinute: time.1)
+        }
+        let result = result(sleeps)
+
+        let typical = try! XCTUnwrap(result.typicalBedtimeMinutes)
+        XCTAssertTrue((12 * 60 + 40...14 * 60 + 5).contains(typical),
+                      "the centre must sit inside the cluster, got \(AtriaSleepConsistency.clockText(typical))")
+        XCTAssertGreaterThanOrEqual(result.combinedPercent ?? 0, 70,
+                                    "a 85-minute-wide cluster is a steady schedule, not 0%")
+        XCTAssertEqual(result.scheduleAxisStartMinutes, 8 * 60,
+                       "axis starts five hours before the centre, on the hour")
+        for deviation in result.deviations {
+            XCTAssertGreaterThanOrEqual(deviation.bedtimeMinutes, result.scheduleAxisStartMinutes)
+            XCTAssertLessThanOrEqual(deviation.wakeMinutes, result.scheduleAxisStartMinutes + 18 * 60,
+                                     "every qualified night must fit the strip's 18h axis")
+        }
+    }
+
+    func testNightsFortyMinutesApartAcrossNoonAreNotADayApart() {
+        // 11:28 and 12:08 used to land 23.3 hours apart.
+        let sleeps = [(11, 28), (12, 8), (11, 50), (12, 20), (11, 40)].enumerated().map { index, time in
+            night("noon-\(index)", day: index + 1, bedHour: time.0, bedMinute: time.1)
+        }
+        let result = result(sleeps)
+
+        let typical = try! XCTUnwrap(result.typicalBedtimeMinutes)
+        XCTAssertTrue((11 * 60 + 28...12 * 60 + 20).contains(typical))
+        XCTAssertGreaterThanOrEqual(result.combinedPercent ?? 0, 80)
+        XCTAssertLessThanOrEqual(result.bedtimeVariationMinutes ?? 999, 30,
+                                 "a 52-minute-wide cluster deviates by minutes, not hours")
+    }
+
+    func testBimodalBedtimesWithholdTheTypicalTimeInsteadOfNamingTheGap() {
+        // Three afternoon nights and three night nights, twelve hours apart.
+        let sleeps = [(13, 5), (13, 20), (13, 10), (1, 5), (1, 20), (1, 10)].enumerated().map { index, time in
+            night("bi-\(index)", day: index + 1, bedHour: time.0, bedMinute: time.1)
+        }
+        let result = result(sleeps)
+
+        XCTAssertNotNil(result.combinedPercent, "six qualified nights still score")
+        XCTAssertNil(result.typicalBedtimeMinutes, "no single centre exists — do not invent one")
+        XCTAssertNil(result.typicalWakeTimeMinutes)
+        XCTAssertNil(result.typicalWindowText)
+        XCTAssertTrue(result.footnote.contains("more than one cluster"), result.footnote)
+        XCTAssertEqual(result.deviations.count, 6)
+    }
+
+    func testEveningSleeperKeepsTheEighteenHundredAxisAndLinearDeviations() {
+        let sleeps = [(23, 0), (23, 30), (22, 45), (23, 10), (23, 20)].enumerated().map { index, time in
+            night("pm-\(index)", day: index + 1, bedHour: time.0, bedMinute: time.1, hours: 7)
+        }
+        let result = result(sleeps)
+
+        XCTAssertEqual(result.scheduleAxisStartMinutes, 18 * 60)
+        let typical = try! XCTUnwrap(result.typicalBedtimeMinutes)
+        XCTAssertTrue((22 * 60 + 45...23 * 60 + 30).contains(typical))
+        for deviation in result.deviations {
+            XCTAssertEqual(deviation.bedtimeDeviationMinutes, abs(deviation.bedtimeMinutes - typical),
+                           "inside one cluster the circular distance is the plain distance")
+        }
+        XCTAssertEqual(AtriaSleepConsistency.axisHourText(18 * 60), "6 PM")
+        XCTAssertEqual(AtriaSleepConsistency.axisHourText(24 * 60), "12 AM")
+        XCTAssertEqual(AtriaSleepConsistency.axisHourText(8 * 60), "8 AM")
+    }
+}

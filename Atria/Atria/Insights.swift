@@ -740,7 +740,7 @@ struct TimeInZoneView: View {
                         Text(row.zone.name)
                             .font(.caption)
                         Text(boundaries?.rangeText(for: row.zone) ?? "Legacy range")
-                            .font(.system(size: 9, weight: .medium).monospacedDigit())
+                            .font(.caption2.weight(.medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: 88, alignment: .leading)

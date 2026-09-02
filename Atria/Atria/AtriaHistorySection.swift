@@ -344,7 +344,7 @@ struct AtriaHistorySection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var rhythmWindow: [AtriaHistoryDay] {
@@ -385,7 +385,7 @@ struct AtriaHistorySection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     /// Newest-first list of the last few detection events. Purely a read of
@@ -418,13 +418,13 @@ struct AtriaHistorySection: View, Equatable {
                     .foregroundStyle(.primary)
                     // Same chrome as the sibling card's footer one scroll away.
                     .padding(12)
-                    .atriaInsetCard(cornerRadius: 16, tint: Color.secondary.opacity(0.08))
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.secondary.opacity(0.08))
                 }
                 .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var recentRowsCard: some View {
@@ -460,13 +460,13 @@ struct AtriaHistorySection: View, Equatable {
                     }
                     .foregroundStyle(.primary)
                     .padding(12)
-                    .atriaInsetCard(cornerRadius: 16, tint: Color.secondary.opacity(0.08))
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.secondary.opacity(0.08))
                 }
                 .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var emptyStateCard: some View {
@@ -479,7 +479,7 @@ struct AtriaHistorySection: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -501,7 +501,7 @@ private struct AtriaHistoryStatChip: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
     }
 }
 
@@ -578,7 +578,7 @@ struct AtriaHistoryDayRow: View, Equatable {
                 .foregroundStyle(.tertiary)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
     }
 
     /// At most two chips render inline (UX audit 2026-07-07): an active day
@@ -664,7 +664,7 @@ struct AtriaDetectionRow: View, Equatable {
             Spacer(minLength: 8)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint.opacity(0.4))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint.opacity(0.4))
     }
 }
 
@@ -995,7 +995,7 @@ struct AtriaDetectedActivitiesSection: View {
                 }
             }
             .padding(16)
-            .atriaCard(cornerRadius: 24, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
@@ -1058,7 +1058,7 @@ struct AtriaDetectedActivitiesSection: View {
         }
         .accessibilityElement(children: .combine)
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: Color.cyan.opacity(0.4))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.cyan.opacity(0.4))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Activity candidate, \(Self.timeRangeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap heart rate. Coverage \(candidate.streamCoveragePercent) percent, average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. Confirm the type before it counts.")
     }
@@ -1106,7 +1106,7 @@ struct AtriaDetectedActivitiesSection: View {
                         .tint(.cyan)
                     }
                     .padding(10)
-                    .atriaInsetCard(cornerRadius: 14, tint: Color.secondary.opacity(0.2))
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: Color.secondary.opacity(0.2))
                 }
                 Text("Restoring lets Atria offer the window for review again. Nothing is saved until you confirm it.")
                     .font(.caption2)
@@ -1323,7 +1323,7 @@ private struct AtriaHistoryStatRow: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
     }
 }
 

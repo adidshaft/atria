@@ -2859,7 +2859,7 @@ struct AtriaLiveWorkoutView: View {
             }
         }
         .padding(12)
-        .atriaWorkoutContentSurface(cornerRadius: 22, tint: isPaused ? .orange : .mint)
+        .atriaWorkoutContentSurface(cornerRadius: AtriaDesignTokens.Radius.tile, tint: isPaused ? .orange : .mint)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(showsSetLoggingControls
                             ? "Workout actions. \(loggedSets.count) sets logged. \(isPaused ? "Paused" : "Recording")."
@@ -3692,7 +3692,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .atriaWorkoutGlassSurface(cornerRadius: 24, tint: zone.color)
+        .atriaWorkoutGlassSurface(cornerRadius: AtriaDesignTokens.Radius.card, tint: zone.color)
         .accessibilityElement(children: .contain)
     }
 
@@ -3815,7 +3815,7 @@ private struct AtriaLiveWorkoutHeartBlock: View {
             }
         }
         .padding(14)
-        .atriaWorkoutContentSurface(cornerRadius: 22, tint: zone.color)
+        .atriaWorkoutContentSurface(cornerRadius: AtriaDesignTokens.Radius.tile, tint: zone.color)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Heart rate \(heartRate) beats per minute. Zone \(zone.rawValue), \(zone.name), \(zoneBandText(zone)).")
     }

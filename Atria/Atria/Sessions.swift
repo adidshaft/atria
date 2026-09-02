@@ -28961,9 +28961,15 @@ final class SessionStore: ObservableObject {
                                         value: -AtriaMaxHRSuggestionEngine.lookbackDays,
                                         to: calendar.startOfDay(for: now))
             ?? now.addingTimeInterval(TimeInterval(-AtriaMaxHRSuggestionEngine.lookbackDays * 24 * 60 * 60))
+        // Sustained peaks, not the single highest sample: the suggestion is a
+        // learning input to zones and strain, so it must not learn from an
+        // optical spike (see AtriaMaxHRSuggestionEngine.sustainedSeconds).
         let peaks = canonicalSessions()
             .filter { $0.start >= windowStart && $0.start <= now }
-            .map(\.peak)
+            .compactMap { session in
+                AtriaMaxHRSuggestionEngine.sustainedPeak(
+                    points: session.points.map { (t: $0.t, bpm: $0.bpm) })
+            }
         return AtriaMaxHRSuggestionEngine.suggestion(sessionPeaks: peaks,
                                                      currentMaxHR: profile.maxHR,
                                                      dismissed: AtriaMaxHRSuggestionEngine.loadDismissal(),
@@ -56519,7 +56525,7 @@ struct HistoryView: View {
                                                description: Text("Finish a session to save it here."))
                             .frame(maxWidth: .infinity)
                             .padding(20)
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     } else {
                         historySection(title: "Daily rollups", subtitle: "Recent saved evidence") {
                             LazyVStack(spacing: 12) {
@@ -56732,7 +56738,7 @@ struct HistoryView: View {
             }
         }
         .padding(14)
-        .atriaCard(cornerRadius: 18, emphasis: .soft)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(fact.timeline.label), compact verified historical session")
     }
@@ -56780,7 +56786,7 @@ struct HistoryView: View {
             }
         }
         .padding(18)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func historySection<Content: View>(title: String,
@@ -56799,7 +56805,7 @@ struct HistoryView: View {
             content()
         }
         .padding(18)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func historySessionRow(_ row: HistorySessionRowSnapshot) -> some View {
@@ -56825,7 +56831,7 @@ struct HistoryView: View {
             }
         }
         .padding(16)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
     }
 
     private func historySessionPill(_ label: String, value: String, tint: Color) -> some View {
@@ -57031,7 +57037,7 @@ private struct HistorySleepReviewCTA: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         // Keep Adjust and Confirm as independent VoiceOver actions. Combining
         // this interactive card turns both buttons into one static element.
         .accessibilityElement(children: .contain)
@@ -58846,10 +58852,72 @@ struct AtriaSleepConsistency: Equatable {
     let wakeTimeRegularity: Int?
     let combinedPercent: Int?
     let qualifiedNightCount: Int
+    /// Withheld (nil) while qualified when the bedtimes do not share one
+    /// centre — see `minimumResultantLengthForTypical`. A centre that nobody
+    /// sleeps at is not a typical bedtime.
     let typicalBedtimeMinutes: Int?
     let typicalWakeTimeMinutes: Int?
     let deviations: [NightDeviation]
     let recommendedWindow: RecommendedWindow?
+    /// Where the schedule visual's 18h axis starts, in civil minutes. Every
+    /// anchored minute in `deviations`, the typical times and the recommended
+    /// window unwrap from this point, so the strip draws them without a
+    /// parallel calculation. It follows the circular centre of the bedtimes
+    /// (five hours before it, on the hour): 18:00 for a 23:00 sleeper — the
+    /// old fixed axis — and 08:00 for someone whose main sleep starts at
+    /// 13:15, whose nights the fixed axis used to drop or draw a day late.
+    var scheduleAxisStartMinutes: Int = 18 * 60
+
+    /// Circular statistics on the 24h clock. Civil times live on a circle, so
+    /// a straight mean of minutes is only right when every night sits on the
+    /// same side of an arbitrary cut. The old noon cut placed 11:28 and 12:08
+    /// — forty minutes apart — 23.3 hours apart, and reported a "typical
+    /// bedtime" the owner had never gone to bed at (issue #41). The resultant
+    /// length `r` (1 = identical times, 0 = evenly scattered) says whether one
+    /// centre is meaningful at all.
+    struct CircularClock: Equatable {
+        let meanMinutes: Int
+        let resultantLength: Double
+
+        init?(minutes: [Int]) {
+            guard !minutes.isEmpty else { return nil }
+            var x = 0.0
+            var y = 0.0
+            for minute in minutes {
+                let theta = Double(minute) / 1_440 * 2 * Double.pi
+                x += cos(theta)
+                y += sin(theta)
+            }
+            x /= Double(minutes.count)
+            y /= Double(minutes.count)
+            var angle = atan2(y, x)
+            if angle < 0 { angle += 2 * Double.pi }
+            var mean = Int((angle / (2 * Double.pi) * 1_440).rounded())
+            if mean >= 1_440 { mean -= 1_440 }
+            meanMinutes = mean
+            resultantLength = (x * x + y * y).squareRoot()
+        }
+
+        /// Shortest way round the clock between two civil times.
+        static func distance(_ a: Int, _ b: Int) -> Int {
+            let d = (((a - b) % 1_440) + 1_440) % 1_440
+            return min(d, 1_440 - d)
+        }
+    }
+
+    /// Below this resultant length the nights do not share one centre (two
+    /// clusters, or scatter wider than about 4.5h circular std). Naming a mean
+    /// would fabricate a time nobody sleeps at, so the typical time is withheld
+    /// and the copy says so — the same fail-closed rule as
+    /// `minimumQualifiedNights`.
+    static let minimumResultantLengthForTypical = 0.5
+
+    /// "Usually 11:05 PM – 6:40 AM", or nil when either lane has no single
+    /// typical time. Consumers show the honest absence rather than "--" pairs.
+    var typicalWindowText: String? {
+        guard let typicalBedtimeMinutes, let typicalWakeTimeMinutes else { return nil }
+        return "\(Self.clockText(typicalBedtimeMinutes)) – \(Self.clockText(typicalWakeTimeMinutes))"
+    }
 
     /// The newest qualified night — every consumer highlights the same row.
     var latestNight: NightDeviation? {
@@ -58869,6 +58937,9 @@ struct AtriaSleepConsistency: Equatable {
     var footnote: String {
         guard let combinedPercent else {
             return "Needs \(Self.minimumQualifiedNights) qualified main-sleep nights (\(qualifiedNightCount) so far)."
+        }
+        if typicalBedtimeMinutes == nil || typicalWakeTimeMinutes == nil {
+            return "Bed or wake times fall into more than one cluster, so there is no single typical window yet."
         }
         if combinedPercent >= 85 { return "Very steady bed and wake timing." }
         if combinedPercent >= 70 { return "Mostly steady bed and wake timing." }
@@ -58896,15 +58967,17 @@ struct AtriaSleepConsistency: Equatable {
                 let endParts = calendar.dateComponents([.hour, .minute], from: end)
                 let bedtime = (startParts.hour ?? 0) * 60 + (startParts.minute ?? 0)
                 let wake = (endParts.hour ?? 0) * 60 + (endParts.minute ?? 0)
-                // Anchor both timings at the night that starts in the evening.
-                return (night.id,
-                        night.day,
-                        bedtime < 12 * 60 ? bedtime + 24 * 60 : bedtime,
-                        wake < 12 * 60 ? wake + 24 * 60 : wake)
+                // Raw civil clock minutes (0..<1440). Anchoring happens below,
+                // once the bedtimes' own centre is known — a fixed noon cut
+                // assumed sleep starts in the evening and split any
+                // afternoon-sleeping owner's nights across two days.
+                return (night.id, night.day, bedtime, wake)
             }
             .prefix(14)
 
-        guard timings.count >= minimumQualifiedNights else {
+        guard timings.count >= minimumQualifiedNights,
+              let bedClock = CircularClock(minutes: timings.map(\.bedtime)),
+              let wakeClock = CircularClock(minutes: timings.map(\.wake)) else {
             return Self(bedtimeRegularity: nil,
                         wakeTimeRegularity: nil,
                         combinedPercent: nil,
@@ -58914,42 +58987,71 @@ struct AtriaSleepConsistency: Equatable {
                         deviations: [],
                         recommendedWindow: nil)
         }
-        let bedtimes = timings.map(\.bedtime)
-        let wakes = timings.map(\.wake)
-        let typicalBedtime = Int((Double(bedtimes.reduce(0, +)) / Double(bedtimes.count)).rounded())
-        let typicalWake = Int((Double(wakes.reduce(0, +)) / Double(wakes.count)).rounded())
-        let deviations = timings.map {
-            NightDeviation(id: $0.id,
-                           day: $0.day,
-                           bedtimeMinutes: $0.bedtime,
-                           wakeMinutes: $0.wake,
-                           bedtimeDeviationMinutes: abs($0.bedtime - typicalBedtime),
-                           wakeDeviationMinutes: abs($0.wake - typicalWake))
+
+        // One axis for everything drawn or quoted: it starts five hours before
+        // the bedtimes' circular centre, on the hour, and every civil time
+        // unwraps forward from there. For a 23:00 sleeper that is 18:00 — the
+        // axis the strip always used — so evening schedules are unchanged.
+        let axisStart = ((((bedClock.meanMinutes - 5 * 60) % 1_440) + 1_440) % 1_440) / 60 * 60
+        func anchored(_ minute: Int) -> Int {
+            minute >= axisStart ? minute : minute + 1_440
         }
-        func regularity(_ values: [Int], typical: Int) -> Int {
-            let meanDeviation = Double(values.reduce(0) { $0 + abs($1 - typical) }) / Double(values.count)
+        let anchoredTimings = timings.map { timing -> (id: String, day: Date, bedtime: Int, wake: Int) in
+            let bedtime = anchored(timing.bedtime)
+            let civilDuration = (((timing.wake - timing.bedtime) % 1_440) + 1_440) % 1_440
+            return (timing.id, timing.day, bedtime, bedtime + civilDuration)
+        }
+        let typicalBedtime = anchored(bedClock.meanMinutes)
+        let typicalWake = typicalBedtime
+            + (((wakeClock.meanMinutes - bedClock.meanMinutes) % 1_440) + 1_440) % 1_440
+
+        // Deviations are the shortest way round the clock from each lane's
+        // centre, so a 23:50 night and a 00:20 night are 30 minutes apart
+        // whichever side of midnight the centre falls.
+        let deviations = anchoredTimings.map { timing in
+            NightDeviation(id: timing.id,
+                           day: timing.day,
+                           bedtimeMinutes: timing.bedtime,
+                           wakeMinutes: timing.wake,
+                           bedtimeDeviationMinutes: CircularClock.distance(timing.bedtime, typicalBedtime),
+                           wakeDeviationMinutes: CircularClock.distance(timing.wake, typicalWake))
+        }
+        func regularity(_ deviationMinutes: [Int]) -> Int {
+            let meanDeviation = Double(deviationMinutes.reduce(0, +)) / Double(deviationMinutes.count)
             return min(max(100 - Int((meanDeviation / 120 * 60).rounded()), 0), 100)
         }
-        let bedtimeRegularity = regularity(bedtimes, typical: typicalBedtime)
-        let wakeRegularity = regularity(wakes, typical: typicalWake)
+        let bedtimeRegularity = regularity(deviations.map(\.bedtimeDeviationMinutes))
+        let wakeRegularity = regularity(deviations.map(\.wakeDeviationMinutes))
         // Same shape as the planner's live nudge: median qualified wake time
         // minus the configured target. Exposed as data so the schedule visual
         // never maintains a parallel calculation.
         let recommendedWindow = targetSleepHours.map { target -> RecommendedWindow in
-            let sortedWakes = wakes.sorted()
+            let sortedWakes = anchoredTimings.map(\.wake).sorted()
             let medianWake = sortedWakes[sortedWakes.count / 2]
             let targetMinutes = Int((min(max(target, 6), 10) * 60).rounded())
             return RecommendedWindow(bedtimeMinutes: medianWake - targetMinutes,
                                      wakeMinutes: medianWake)
         }
+        let hasTypicalBedtime = bedClock.resultantLength >= minimumResultantLengthForTypical
+        let hasTypicalWake = wakeClock.resultantLength >= minimumResultantLengthForTypical
         return Self(bedtimeRegularity: bedtimeRegularity,
                     wakeTimeRegularity: wakeRegularity,
                     combinedPercent: Int((Double(bedtimeRegularity + wakeRegularity) / 2).rounded()),
                     qualifiedNightCount: timings.count,
-                    typicalBedtimeMinutes: typicalBedtime,
-                    typicalWakeTimeMinutes: typicalWake,
+                    typicalBedtimeMinutes: hasTypicalBedtime ? typicalBedtime : nil,
+                    typicalWakeTimeMinutes: hasTypicalWake ? typicalWake : nil,
                     deviations: deviations,
-                    recommendedWindow: recommendedWindow)
+                    recommendedWindow: recommendedWindow,
+                    scheduleAxisStartMinutes: axisStart)
+    }
+
+    /// Axis tick label for the schedule strip: "6 PM", "12 AM".
+    static func axisHourText(_ minute: Int) -> String {
+        let normalized = ((minute % 1_440) + 1_440) % 1_440
+        let hour24 = normalized / 60
+        let suffix = hour24 >= 12 ? "PM" : "AM"
+        let hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12
+        return "\(hour12) \(suffix)"
     }
 
     static func clockText(_ minute: Int?) -> String {
@@ -58978,7 +59080,7 @@ private struct HistoryQuickStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
     }
 }
 
@@ -59059,7 +59161,7 @@ private struct HistoryActivityRhythmCard: View {
             }
         }
         .padding(10)
-        .atriaInsetCard(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .white)
     }
 
     private var sequenceSummary: String {
@@ -59172,10 +59274,10 @@ private struct HistoryPillBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
+        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
             .fill(colorScheme == .dark ? tint.opacity(0.10) : tint.opacity(0.08))
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                     .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), lineWidth: 1)
             }
     }
@@ -59304,7 +59406,7 @@ private struct HistoryVerifiedStepDayRow: View {
                 .font(.headline.weight(.bold).monospacedDigit())
         }
         .padding(10)
-        .atriaInsetCard(cornerRadius: 16,
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset,
                         tint: presentation.completeness == .complete ? .green : .orange)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(day.dayStart.formatted(date: .abbreviated, time: .omitted)). \(presentation.accessibilityText)")
@@ -59534,7 +59636,7 @@ private struct TrendWindowFocusCard: View {
             }
         }
         .padding(14)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(summary.days)-day trend. \(stateText). Coverage \(summary.coverageDays) of \(summary.requiredCoverageDays) days. Recovery \(summary.avgRecovery.map { "\($0) percent" } ?? "building"). HRV \(summary.avgHRV.map { "\($0) milliseconds" } ?? "building").")
     }
@@ -59560,7 +59662,7 @@ private struct TrendFocusMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -59609,9 +59711,9 @@ private struct TrendWindowChip: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .background(selected ? Color.primary.opacity(0.08) : Color.secondary.opacity(0.05),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(selected ? Color.primary.opacity(0.14) : Color.secondary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityLabel("\(chip.label), \(chip.coverageText) days, \(chip.confidence)")
@@ -59837,7 +59939,7 @@ struct SessionDetail: View {
                     }
                     .frame(height: 220)
                     .padding()
-                    .atriaCard(cornerRadius: 22, emphasis: .soft)
+                    .atriaCard(emphasis: .soft)
                     .atriaInspectableGraph(sessionHeartRateGraph)
 
                     HStack(spacing: 0) {
@@ -59852,21 +59954,21 @@ struct SessionDetail: View {
                         .frame(maxWidth: .infinity)
                     }
                     .padding()
-                    .atriaCard(cornerRadius: 22, emphasis: .soft)
+                    .atriaCard(emphasis: .soft)
 
                     if summary.metricsComplete {
                         TimeInZoneView(rows: summary.zoneRows,
                                        total: summary.zoneTotal,
                                        boundaries: summary.zoneBoundaries)
                             .padding()
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     } else {
                         Label(summary.coverageText, systemImage: "exclamationmark.circle")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     }
                 }
                 .padding()

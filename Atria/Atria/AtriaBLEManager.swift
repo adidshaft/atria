@@ -48743,7 +48743,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         )
         let resolvedServiceOwnerEdge =
             "service_owner_resolved_\(strapDiscoveryOwner.rawValue)"
+        // Fence the breadcrumb too: a retired source's discovery callback
+        // must not stamp its edge onto the CURRENT generation's trace.
         Task { @MainActor in
+            guard self.acceptsBLECallback(
+                source: callbackSource,
+                peripheral: peripheral
+            ) else { return }
             self.recordProtectedV9BringUpEdge(resolvedServiceOwnerEdge)
         }
         for service in peripheral.services ?? [] {
@@ -48994,6 +49000,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             let resolvedCharacteristicOwnerEdge =
                 "characteristic_owner_resolved_\(strapDiscoveryOwner.rawValue)"
             Task { @MainActor in
+                guard self.acceptsBLECallback(
+                    source: callbackSource,
+                    peripheral: peripheral
+                ) else { return }
                 self.recordProtectedV9BringUpEdge(resolvedCharacteristicOwnerEdge)
             }
         }

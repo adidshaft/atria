@@ -69,6 +69,23 @@ enum AtriaDesignTokens {
         /// Large digits set at default tracking read as loose, separate
         /// glyphs; pair this with `metricValue` on hero numbers.
         static let valueTracking: CGFloat = -0.5
+
+        /// Eyebrow: the small uppercase label that heads a card section
+        /// ("LOGGED CONTEXT", "TONIGHT'S WINDOW"). Uppercase set at default
+        /// tracking clumps; a little positive tracking is what makes small
+        /// caps read as a quiet label rather than a shout. MEASURED 2026-09-02:
+        /// 13 sites hand-set caption/caption2 x semibold/bold with no tracking
+        /// while the chart-grammar eyebrows next to them were tracked, so the
+        /// same element read two ways on one screen. Apply via `.atriaEyebrow()`.
+        static let eyebrow = Font.caption2.weight(.semibold)
+        static let eyebrowTracking: CGFloat = 0.8
+
+        /// Smallest fixed-size text the app sets. Below 11pt SwiftUI's
+        /// `.caption2` no longer has a Dynamic Type peer, and 8-9pt labels
+        /// neither scale for larger-text users nor stay legible on a wrist-
+        /// sized tile. Chart-internal axis labels are the one exception (they
+        /// are geometry-constrained); everything else should use `.caption2`.
+        static let minimumLabel = Font.caption2
     }
 
     /// One motion rhythm. `.snappy` was already the house curve (56 call sites),
@@ -98,9 +115,17 @@ enum AtriaDesignTokens {
                     Color(red: 0.016, green: 0.021, blue: 0.030)
                 ]
             }
+            // MEASURED 2026-09-02 (light Vitals screenshot): this gradient used
+            // to end in secondarySystemGroupedBackground — pure white — so every
+            // white card in the lower half of a screen sat on a white field:
+            // tile interior 255, gap between tiles 255, field 255. Cards only
+            // exist if the field is not their color. The field now stays a cool
+            // off-white end to end (the same navy family as the dark backdrop
+            // and the elevation shadow), so the white cards read as cards on
+            // every screen, not just near the top-left.
             return [
                 Color(uiColor: .systemGroupedBackground),
-                Color(uiColor: .secondarySystemGroupedBackground)
+                Color(red: 0.925, green: 0.930, blue: 0.955)
             ]
         }
 
@@ -108,6 +133,15 @@ enum AtriaDesignTokens {
             isDark
                 ? Color(red: 0.018, green: 0.023, blue: 0.032)
                 : Color(uiColor: .systemGroupedBackground)
+        }
+
+        /// Light-mode card elevation. A pure-black shadow on a cool near-white
+        /// canvas reads as a gray smudge; tinting it toward the same deep navy
+        /// the dark backdrop is built from keeps the shadow inside the palette
+        /// and makes the lift read as ambient light, not dirt. Dark mode
+        /// separates surfaces by value, so it casts nothing.
+        static func elevationShadow(isDark: Bool) -> Color {
+            isDark ? .clear : Color(red: 0.07, green: 0.11, blue: 0.20).opacity(0.08)
         }
 
         // The isDark/emphasis params are retained for call-site stability; the
