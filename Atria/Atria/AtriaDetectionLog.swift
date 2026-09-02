@@ -141,7 +141,27 @@ enum DetectionReasonCopy {
         if let reason = event.reason, let mapped = byReasonCode[reason] {
             return mapped
         }
-        return byKind[event.kind] ?? event.detail
+        return byKind[event.kind] ?? sanitizedDetail(event.detail)
+    }
+
+    /// The raw detail is a pipeline sentence that also carries provenance
+    /// tokens such as "(source: foreground_edge)" for the developer log.
+    /// Those tokens explain nothing to a reader of the Vitals sleep card or
+    /// the History list, so the fallback drops them and keeps the sentence
+    /// (2026-09-02). Nothing is added — only the token is removed.
+    static func sanitizedDetail(_ detail: String) -> String {
+        var text = detail
+        while let open = text.range(of: "(source:") {
+            let close = text[open.lowerBound...].firstIndex(of: ")").map { text.index(after: $0) }
+                ?? text.endIndex
+            text.removeSubrange(open.lowerBound..<close)
+        }
+        text = text.replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = text.last, last == "," || last == "-" || last == "\u{2014}" || last == " " {
+            text.removeLast()
+        }
+        return text.isEmpty ? detail : text
     }
 
     private static let byReasonCode: [String: String] = [
@@ -157,7 +177,22 @@ enum DetectionReasonCopy {
         "window_ended_over_24h_ago": "Old workout candidate ignored — more than a day ago",
         "candidate_not_review_worthy": "Activity seen but not strong enough to count yet",
         "wake_boundary_no_wake_detected": "Still tracking — no clear wake-up detected yet",
-        "wake_boundary_overlaps_saved": "Sleep already logged for that window"
+        "wake_boundary_overlaps_saved": "Sleep already logged for that window",
+        // 2026-09-02: every remaining sleep-skip code the pipeline emits, each
+        // a plain restatement of that event's own detail sentence.
+        "candidate_not_settled": "Sleep candidate still settling — nearby quiet spells may join it",
+        "daytime_quiescence_no_strap": "Motion-quiet check is waiting for a strap identity",
+        "daytime_quiescence_insufficient_motion": "Too little motion data in the last 26 h for the motion-quiet check",
+        "daytime_quiescence_hr_read_incomplete": "Motion-quiet check could not read the full heart-rate window",
+        "daytime_quiescence_no_candidate": "Motion-quiet check found no reviewable daytime sleep",
+        "daytime_quiescence_slot_held": "Another sleep suggestion is already waiting for review",
+        "review_only_classification": "Sleep evidence needs your review before it counts",
+        "wake_boundary_review_only_classification": "Wake-up evidence needs your review before it counts",
+        "compact_materialization_stale_or_missing": "Sleep physiology is being rebuilt for the current classification",
+        "compact_wake_materialization_stale_or_missing": "Wake physiology is being rebuilt for the current classification",
+        "baseline_trust_changed": "Sleep candidate no longer clears the current evidence gates",
+        "wake_boundary_dismissed": "Wake-boundary suggestion matches one you dismissed",
+        "save_time_dismissal_suppressed": "Auto-confirmation dropped after a dismissal mid-save"
     ]
 
     private static let byKind: [String: String] = [
