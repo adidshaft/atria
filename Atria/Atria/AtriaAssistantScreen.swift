@@ -87,15 +87,23 @@ struct AtriaAssistantScreen: View {
     #endif
 
     private var introBubble: some View {
-        Label {
-            Text("Ask Atria")
-                .font(.headline.weight(.bold))
-        } icon: {
-            Image(systemName: "lock.shield.fill")
-                .foregroundStyle(.cyan)
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                Text("Ask Atria")
+                    .font(.headline.weight(.bold))
+            } icon: {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundStyle(.cyan)
+            }
+            // The on-device promise was a VoiceOver-only hint (2026-09-02);
+            // sighted readers saw a shield with no words behind it. One
+            // caption says it for everyone.
+            Text("Quick answers come from your data on this phone, not generated text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Quick answers use on-device data and Atria calculations, not generated text.")
     }
 
     private func exchangeBubbles(_ exchange: Exchange) -> some View {
