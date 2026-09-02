@@ -334,10 +334,7 @@ final class WeeklyPlanStore {
                                                                                    now: now,
                                                                                    calendar: calendar)
                 .map { ($0.kind, $0) })
-            return WeeklyPlan(isoYear: saved.isoYear,
-                              isoWeek: saved.isoWeek,
-                              generatedAt: saved.generatedAt,
-                              targets: saved.targets.map { target in
+            let rebuilt: [WeeklyPlanTarget] = saved.targets.map { target in
                                   guard let fresh = freshByKind[target.kind] else { return target }
                                   // A saved "learning" target is not a commitment
                                   // for the week; the moment enough bedtimes exist
@@ -354,8 +351,18 @@ final class WeeklyPlanStore {
                                                           title: target.title,
                                                           detail: target.detail,
                                                           goal: target.goal,
-                                                          current: fresh.current)
-                              })
+                                                          current: fresh.current,
+                                                          targetMinute: target.targetMinute)
+                              }
+            // Actionable rows keep the saved week's order; a row that became
+            // idle mid-week (learning or withheld) moves below them, as at
+            // generation (phone 2026-09-02: the withheld bedtime row sat
+            // above "1 workout of 10+ strain").
+            let idle = rebuilt.filter { $0.isLearning || $0.isWithheld }
+            return WeeklyPlan(isoYear: saved.isoYear,
+                              isoWeek: saved.isoWeek,
+                              generatedAt: saved.generatedAt,
+                              targets: rebuilt.filter { !($0.isLearning || $0.isWithheld) } + idle)
         }
         let plan = WeeklyPlan(rollups: rollups, now: now, calendar: calendar)
         save(plan)

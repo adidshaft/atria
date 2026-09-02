@@ -78,6 +78,16 @@ final class AtriaWeeklyPlanScatteredBedtimeTests: XCTestCase {
         let plan = reader.currentPlan(rollups: rollups(scattered), now: now, calendar: calendar)
         let target = try XCTUnwrap(plan.targets.first { $0.kind == .bedtimeConsistency })
         XCTAssertTrue(target.isWithheld, "the saved time is re-minted as withheld")
+        // The saved week's order is kept for actionable rows, but a row that
+        // became idle mid-week moves below them (phone 2026-09-02: the
+        // withheld row sat above "1 workout of 10+ strain").
+        let bedtimeIndex = try XCTUnwrap(plan.targets.firstIndex { $0.kind == .bedtimeConsistency })
+        for (index, row) in plan.targets.enumerated() where !row.isLearning && !row.isWithheld {
+            XCTAssertLessThan(index, bedtimeIndex, "\(row.kind) stays above the withheld row")
+        }
+        XCTAssertEqual(plan.targets.filter { !$0.isLearning && !$0.isWithheld }.map(\.kind),
+                       minted.targets.filter { !$0.isLearning && !$0.isWithheld && $0.kind != .bedtimeConsistency }.map(\.kind),
+                       "actionable rows keep their saved relative order")
     }
 
     func testWithheldTargetDecodesFromAPlanSavedWithoutTheField() throws {
