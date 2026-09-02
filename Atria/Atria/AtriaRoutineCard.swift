@@ -103,6 +103,8 @@ enum AtriaRoutineComputer {
             .map { calendar.startOfDay(for: $0.day) })
 
         let recent28 = recentEntries(rollups, calendar: calendar, onOrBefore: today, count: 28)
+        // nil until enough bedtimes exist — the card then says "Learning"
+        // instead of the fabricated 23:00 it used to fall back to.
         let bedtimeTarget = bedtimeTargetMinute(recentRollups: recent28)
 
         let components = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: now)
@@ -160,14 +162,15 @@ enum AtriaRoutineComputer {
                                  today: Date,
                                  rollupsByDay: [Date: DailyRollupStoreEntry],
                                  loggedJournalDays: Set<Date>,
-                                 bedtimeTargetMinute: Int,
+                                 bedtimeTargetMinute: Int?,
                                  calendar: Calendar) -> AtriaRoutineDayState {
         let normalizedDay = calendar.startOfDay(for: day)
         guard normalizedDay <= today else { return .upcoming }
         switch kind {
         case .bedtime:
-            guard let entry = rollupsByDay[normalizedDay], let minutes = entry.bedtimeMinutes else { return .noData }
-            return minuteIsNoLater(minutes, than: bedtimeTargetMinute) ? .kept : .missed
+            guard let bedtimeTargetMinute,
+                  let entry = rollupsByDay[normalizedDay], let minutes = entry.bedtimeMinutes else { return .noData }
+            return WeeklyPlan.minuteIsNoLater(minutes, than: bedtimeTargetMinute) ? .kept : .missed
         case .workout:
             guard let entry = rollupsByDay[normalizedDay], let strain = entry.strain else { return .noData }
             return strain >= workoutStrainThreshold ? .kept : .missed
@@ -198,9 +201,9 @@ enum AtriaRoutineComputer {
         }
     }
 
-    private static func subtitle(for kind: AtriaRoutineTarget.Kind, bedtimeTargetMinute: Int) -> String {
+    private static func subtitle(for kind: AtriaRoutineTarget.Kind, bedtimeTargetMinute: Int?) -> String {
         switch kind {
-        case .bedtime: return "By \(formatClockMinute(bedtimeTargetMinute))"
+        case .bedtime: return bedtimeTargetMinute.map { "By \(formatClockMinute($0))" } ?? "Learning"
         case .workout: return "\u{2265} \(Int(workoutStrainThreshold)) strain"
         case .journal: return "Any tag logged"
         }
@@ -240,28 +243,15 @@ enum AtriaRoutineComputer {
         recent.insert(entry, at: index)
     }
 
-    private static func bedtimeTargetMinute(recentRollups: [DailyRollupStoreEntry]) -> Int {
+    /// Same rhythm the weekly plan uses (one authority): a circular median of
+    /// the recent bedtimes plus grace, or nil until enough nights exist. The
+    /// card used to keep its own copy of the plan's noon-cut median, so both
+    /// carried issue #41's defect for afternoon sleepers.
+    private static func bedtimeTargetMinute(recentRollups: [DailyRollupStoreEntry]) -> Int? {
         let minutes = recentRollups.compactMap(\.bedtimeMinutes)
-        let median = medianMinute(minutes) ?? 23 * 60
+        guard minutes.count >= WeeklyPlan.minimumBedtimeNights,
+              let median = WeeklyPlan.circularMedianMinute(minutes) else { return nil }
         return (median + bedtimeGraceMinutes) % 1_440
-    }
-
-    private static func medianMinute(_ minutes: [Int]) -> Int? {
-        guard !minutes.isEmpty else { return nil }
-        let normalized = minutes.map { minute -> Int in
-            let wrapped = ((minute % 1_440) + 1_440) % 1_440
-            return wrapped < 720 ? wrapped + 1_440 : wrapped
-        }.sorted()
-        return normalized[normalized.count / 2] % 1_440
-    }
-
-    private static func minuteIsNoLater(_ minute: Int, than target: Int) -> Bool {
-        normalizeBedtimeMinute(minute) <= normalizeBedtimeMinute(target)
-    }
-
-    private static func normalizeBedtimeMinute(_ minute: Int) -> Int {
-        let wrapped = ((minute % 1_440) + 1_440) % 1_440
-        return wrapped < 720 ? wrapped + 1_440 : wrapped
     }
 
     private static func formatClockMinute(_ minute: Int) -> String {

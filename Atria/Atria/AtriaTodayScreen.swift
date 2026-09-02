@@ -4207,9 +4207,11 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 6)
-                    Text(target.progressText)
+                    // "Learning" is the canonical not-ready word; a learning
+                    // target has no count to show, only the gauge at zero.
+                    Text(target.isLearning ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
+                        .foregroundStyle(target.isLearning ? .secondary : tint)
                         .lineLimit(1)
                 }
 
