@@ -1696,14 +1696,16 @@ struct AtriaWeeklyReportSheet: View {
                                                  detail: recoveryDeltaText,
                                                  systemImage: "heart.fill",
                                                  tint: .green)
+                        // Prior-week deltas on all three rows (2026-09-02):
+                        // the recovery row compared while these two described.
                         AtriaWeeklyReportStatRow(title: "Strain average",
                                                  value: strainAverageText,
-                                                 detail: "Daily strain across the week",
+                                                 detail: WeeklyReport.strainDeltaText(displayedReport.strainDeltaVsPriorWeek),
                                                  systemImage: "flame.fill",
                                                  tint: Metrics.electricStrain)
                         AtriaWeeklyReportStatRow(title: "Sleep average",
                                                  value: sleepAverageText,
-                                                 detail: "Nightly duration across the week",
+                                                 detail: WeeklyReport.sleepDeltaText(displayedReport.sleepDeltaVsPriorWeekSeconds),
                                                  systemImage: "bed.double.fill",
                                                  tint: Metrics.electricSleep)
                     }
