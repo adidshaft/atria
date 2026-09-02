@@ -170,7 +170,9 @@ struct AtriaCustomizeSheet: View {
                     .accessibilityLabel("Reorder metric cards")
             }
         } footer: {
-            Text("Tap Edit and drag by the handle. VoiceOver also offers Move Up and Move Down actions.")
+            // 2026-09-02: the VoiceOver sentence told sighted readers about
+            // rotor actions VoiceOver users already find; one instruction stays.
+            Text("Tap Edit, then drag rows by the handle.")
         }
     }
 
