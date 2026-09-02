@@ -42,14 +42,19 @@ enum AtriaHighlights {
         guard prior.count >= 3 else { return nil }
         let average = Double(prior.reduce(0, +)) / Double(prior.count)
         guard Double(latest) <= average - 2 else { return nil }
+        // The reading and its distance from the prior week ride in the row
+        // (phone 2026-09-02: "Resting HR lower than usual" said neither the
+        // number nor how far). Rounded to whole beats; the gate above
+        // guarantees at least two.
+        let below = Int((average - Double(latest)).rounded())
         return AtriaHighlight(id: "lower-rhr",
                               systemImage: "heart.fill",
                               // Spelled out (2026-08-04): "↓ RHR" read as
                               // jargon on a first-open row; the arrow glyph
                               // also spoke poorly. WHOOP writes the metric
                               // name in prose on equivalent rows.
-                              valuePhrase: "Resting HR",
-                              sentence: "lower than usual",
+                              valuePhrase: "Resting HR \(latest)",
+                              sentence: "\(below) bpm below usual",
                               tint: Metrics.electricGreen,
                               metric: .restingHeartRate)
     }
