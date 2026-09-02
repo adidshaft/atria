@@ -1147,7 +1147,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, "return \"Beat-to-beat settling\"")
         assert_contains(self, hero, "return \"pending\"")
         assert_not_contains(self, hero, "return \"not yet\"")
-        assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
+        # 2026-09-02: the default HRV quality string was shortened so it no
+        # longer truncates on the Vitals HRV tile; same meaning, fewer words.
+        assert_contains(self, ble, "@Published var hrvQuality = \"no beat-to-beat yet\"")
 
         top_chrome = home[home.index("private struct AtriaHomeTopChrome: View"):]
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
