@@ -1708,12 +1708,18 @@ struct AtriaHealthScreen: View {
 
             Spacer(minLength: 8)
 
-            Text(statusValue(live: live))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(statusTint(live: live))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(statusTint(live: live).opacity(0.12), in: Capsule(style: .continuous))
+            // A "--" pill beside the title said nothing (2026-09-02 screenshot):
+            // the scope pill only earns its place once there is evidence to
+            // scope — "Current cycle" or "Last known". Before that the tiles
+            // below already carry their own not-ready reasons.
+            if currentMetricProjection(live: live).hasEvidence {
+                Text(statusValue(live: live))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(statusTint(live: live))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(statusTint(live: live).opacity(0.12), in: Capsule(style: .continuous))
+            }
         }
     }
 
