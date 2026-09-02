@@ -574,10 +574,14 @@ struct AtriaTriRing: View, Equatable {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
+            // Large type (2026-09-02, XXXL screenshot): "Save sleep to score"
+            // truncated to "Save sleep to s…" at the 0.75 floor. From
+            // XX-Large up the state may take a second line inside the ring.
             Text(centerState)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .multilineTextAlignment(.center)
+                .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                 .minimumScaleFactor(0.75)
             if let centerDelta {
                 Text(centerDelta)
