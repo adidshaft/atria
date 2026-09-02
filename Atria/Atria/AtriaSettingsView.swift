@@ -2365,7 +2365,9 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     }
                 }
 
-                Text("Uses RHR, lnRMSSD, zone 2+, and sleep consistency. These bands only tune guidance colors.")
+                // 2026-09-02: "lnRMSSD" is the engine's log-HRV; the footer names the
+                // metrics as the app shows them.
+                Text("Uses resting HR, HRV, zone 2+ minutes, and sleep consistency. These bands only tune guidance colors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
