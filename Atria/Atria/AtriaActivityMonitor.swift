@@ -2552,7 +2552,11 @@ struct AtriaActivityMonitorTab: View {
                 Spacer(minLength: 8)
                 Text(timelineSignalValueText)
                     .font(.subheadline.weight(.black).monospacedDigit())
-                    .foregroundStyle(selectedSignal == .stress ? Metrics.electricStress : Color.red)
+                    // A "--" placeholder in the metric's red read as an alert
+                    // (2026-09-02); only a real reading wears the hue.
+                    .foregroundStyle(timelineSignalValueText.hasPrefix("--")
+                                     ? Color.secondary
+                                     : (selectedSignal == .stress ? Metrics.electricStress : Color.red))
                     .lineLimit(1)
             }
 
