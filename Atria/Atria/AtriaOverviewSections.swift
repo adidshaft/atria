@@ -416,7 +416,7 @@ private struct AtriaSleepReviewCard: View {
                     Text(rangeText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(reviewDynamicTypeSize >= .xxLarge ? 2 : 1)
                         .minimumScaleFactor(0.85)
                     if !subtitleText.isEmpty {
                         Text(subtitleText)
