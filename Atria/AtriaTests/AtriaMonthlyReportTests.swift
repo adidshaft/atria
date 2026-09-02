@@ -99,4 +99,19 @@ final class AtriaMonthlyReportTests: XCTestCase {
         XCTAssertEqual(AtriaMonthlyReportSheet.strainIntensity(40), 1.0, accuracy: 0.0001, "clamped")
         XCTAssertGreaterThan(AtriaMonthlyReportSheet.strainIntensity(14), AtriaMonthlyReportSheet.strainIntensity(7))
     }
+
+    /// 2026-09-02: the third strip completes the ring trio — sleep by day,
+    /// tinted by percent of the night's own need through the ring's zone
+    /// function; hollow without a figure; omitted until one night has one.
+    func testSheetCarriesASleepByDayStripByPercentOfNeed() throws {
+        let appDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Atria")
+        let overview = try String(contentsOf: appDirectory.appendingPathComponent("AtriaOverviewSections.swift"),
+                                  encoding: .utf8)
+        XCTAssertTrue(overview.contains("if sleepDayCount > 0 {\n                        kicker(\"Sleep by day\")"))
+        XCTAssertTrue(overview.contains(".fill(AtriaTriRing.zoneTint(.sleep, percent: Double(percent)).opacity(0.9))"),
+                      "the same zone function as the ring, keyed on percent of need")
+        XCTAssertTrue(overview.contains("if let sleep = entry.sleepPerformance, sleepByDay[key] == nil"),
+                      "cells come from the rollup's own performance figure only")
+    }
 }
