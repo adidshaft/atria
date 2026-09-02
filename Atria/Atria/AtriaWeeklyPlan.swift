@@ -27,6 +27,12 @@ struct WeeklyPlanTarget: Codable, Equatable, Identifiable {
     /// instead of standing as "Lights out by 1:21 AM" for an afternoon
     /// sleeper (device, W36). Optional so earlier plans still decode.
     var targetMinute: Int? = nil
+    /// Set when the target was withheld rather than minted: the recorded
+    /// bedtimes form no cluster to name a time from (device 2026-09-02:
+    /// 24 bedtimes split between afternoon and pre-dawn minted "Lights out
+    /// by 6:35 AM", a time only 3 of them sat near). Renders as Learning.
+    var withheldReason: String? = nil
+    var isWithheld: Bool { withheldReason != nil }
 
     var isLearning: Bool { learningNightsRemaining != nil }
 
@@ -100,7 +106,9 @@ struct WeeklyPlan: Codable, Equatable {
                 // Actionable targets first; a learning row has nothing to do
                 // yet and should not push the one real target off the card
                 // (on a fresh install two learning rows sat above it).
-                if first.isLearning != second.isLearning { return !first.isLearning }
+                let firstIdle = first.isLearning || first.isWithheld
+                let secondIdle = second.isLearning || second.isWithheld
+                if firstIdle != secondIdle { return !firstIdle }
                 let firstGap = first.goal - first.current
                 let secondGap = second.goal - second.current
                 if firstGap == secondGap { return first.id < second.id }
@@ -145,6 +153,10 @@ struct WeeklyPlan: Codable, Equatable {
     /// "Based on your recent bedtime rhythm" (2026-09-02 fresh-install
     /// screenshot: "Lights out by 11:20 PM · 4 nights" with zero nights).
     static let minimumBedtimeNights = 3
+    /// A bedtime target needs a rhythm: at least half of the recorded
+    /// bedtimes (and never fewer than `minimumBedtimeNights`) within this
+    /// many minutes of the circular median, on either side.
+    static let bedtimeClusterWindowMinutes = 90
     /// Trusted RHR mornings needed before the RHR-range target is real.
     static let minimumTrustedRHRDays = 3
 
@@ -162,6 +174,18 @@ struct WeeklyPlan: Codable, Equatable {
                                     current: 0,
                                     learningNightsRemaining: max(0, minimumBedtimeNights - recorded),
                                     learningNightsNeeded: minimumBedtimeNights)
+        }
+        let clustered = bedtimeMinutes.filter {
+            circularMinuteDistance($0, median) <= bedtimeClusterWindowMinutes
+        }.count
+        guard clustered >= minimumBedtimeNights, clustered * 2 >= bedtimeMinutes.count else {
+            return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.bedtimeConsistency.rawValue,
+                                    kind: .bedtimeConsistency,
+                                    title: "Lights-out target",
+                                    detail: "No steady bedtime in the last 28 nights",
+                                    goal: 4,
+                                    current: 0,
+                                    withheldReason: "scattered_bedtimes")
         }
         let target = (median + 20) % 1_440
         let current = Double(currentWeek.filter { entry in
@@ -245,7 +269,9 @@ struct WeeklyPlan: Codable, Equatable {
     static func savedBedtimeTargetIsStale(_ saved: WeeklyPlanTarget, fresh: WeeklyPlanTarget) -> Bool {
         guard saved.kind == .bedtimeConsistency, !saved.isLearning else { return false }
         guard let savedMinute = saved.targetMinute else { return true }
-        guard let freshMinute = fresh.targetMinute else { return false }
+        // A fresh answer with no time at all (withheld: the bedtimes no
+        // longer cluster) outranks a saved time the clock would not mint now.
+        guard let freshMinute = fresh.targetMinute else { return fresh.isWithheld }
         return circularMinuteDistance(savedMinute, freshMinute) > 180
     }
 
@@ -316,7 +342,7 @@ final class WeeklyPlanStore {
                                   // A saved "learning" target is not a commitment
                                   // for the week; the moment enough bedtimes exist
                                   // the real target replaces it.
-                                  if target.isLearning { return fresh }
+                                  if target.isLearning || target.isWithheld { return fresh }
                                   // A saved bedtime target that the current clock
                                   // arithmetic would never mint is a defect, not a
                                   // commitment: no stored minute (pre-2026-09-02
