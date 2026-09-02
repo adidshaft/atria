@@ -845,6 +845,12 @@ struct AtriaShareCardView: View {
         return trimmed.isEmpty ? "--" : trimmed
     }
 
+    /// Uppercases only the first letter; acronyms and the rest stay as written.
+    static func sentenceCased(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.uppercased() + text.dropFirst()
+    }
+
     private func statChip(_ stat: AtriaShareSnapshot.Stat) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -853,7 +859,10 @@ struct AtriaShareCardView: View {
                     .tracking(1.4)
                     .foregroundStyle(foreground.opacity(0.50))
                     .textCase(.uppercase)
-                Text(stat.detail)
+                // Details arrive from three vocabularies ("no sleep yet",
+                // "learning", "No sleep this cycle"); on one designed card
+                // they read as one voice (2026-09-02 share-sheet screenshot).
+                Text(Self.sentenceCased(stat.detail))
                     .font(.system(size: format == .story ? 11 : 10, weight: .medium, design: .rounded))
                     .foregroundStyle(foreground.opacity(0.50))
                     .lineLimit(1)
