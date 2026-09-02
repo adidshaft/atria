@@ -1271,7 +1271,10 @@ private struct AtriaJournalFollowUpSheet: View {
                     .accessibilityLabel("One fewer drink")
 
                     Text("\(drinks)")
-                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        // The stepper's count is a card hero value (2026-09-02):
+                        // the shared token scales with Dynamic Type; the
+                        // hand-set 48pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
                         .frame(maxWidth: .infinity)
