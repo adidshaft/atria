@@ -16,6 +16,11 @@ final class AtriaDetailHeroLearningTrackTests: XCTestCase {
         XCTAssertTrue(overview.contains("AtriaLearningProgressTrack(current: heroLearning.current,"))
         XCTAssertEqual(overview.components(separatedBy: "? learningNights(baseline.").count - 1, 2,
                        "HRV and RHR pass their baseline sample counts")
+        // Respiratory (2026-09-02, same fire's follow-on): its band needs three
+        // nights, so its track counts to the band's own minimum, not fourteen.
+        XCTAssertTrue(overview.contains("? learningNights(respiratoryQualifiedNightCount,\n                                                         cap: Self.respiratoryBandMinimumNights)"))
+        XCTAssertTrue(overview.contains("stats.count >= Self.respiratoryBandMinimumNights,"),
+                      "the band and the track share one minimum")
         XCTAssertFalse(overview.contains("learningNightsState("),
                        "the text pill is superseded by the track")
         XCTAssertTrue(overview.contains("caption: \"\\(recorded) of \\(cap) nights\""))

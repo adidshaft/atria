@@ -4346,7 +4346,11 @@ struct AtriaMetricDetailSheet: View {
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
                                       heroState: respiratoryBand == nil ? "Learning" : "Typical",
-                                      tint: metric.tint) {
+                                      tint: metric.tint,
+                                      heroLearning: respiratoryBand == nil
+                                        ? learningNights(respiratoryQualifiedNightCount,
+                                                         cap: Self.respiratoryBandMinimumNights)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "lungs.fill",
                                               name: "Respiratory rate",
@@ -5913,9 +5917,17 @@ struct AtriaMetricDetailSheet: View {
                                        tint: .pink)
     }
 
+    /// Nights of overnight respiration a typical range needs before it is
+    /// drawn; the hero's learning track counts toward the same number.
+    private static let respiratoryBandMinimumNights = 3
+
+    private var respiratoryQualifiedNightCount: Int {
+        sleepHistory.respiratoryBaselineStats?.count ?? 0
+    }
+
     private var respiratoryBand: AtriaDetailBaselineBand? {
         guard let stats = sleepHistory.respiratoryBaselineStats,
-              stats.count >= 3,
+              stats.count >= Self.respiratoryBandMinimumNights,
               stats.sd > 0 else { return nil }
         return AtriaDetailBaselineBand(lower: stats.mean - 1.5 * stats.sd,
                                        upper: stats.mean + 1.5 * stats.sd,
@@ -5951,8 +5963,8 @@ struct AtriaMetricDetailSheet: View {
     /// The 14-night baseline progress as the shared learning track under the
     /// hero (2026-09-02; supersedes the text pill "Learning · night 3 of 14"
     /// from the 2026-07-07 handoff with the same real count as a visual).
-    private func learningNights(_ samples: Int) -> AtriaMetricDetailHeroLearning {
-        let cap = PersonalBaseline.trustedMinimumSamples
+    private func learningNights(_ samples: Int,
+                                cap: Int = PersonalBaseline.trustedMinimumSamples) -> AtriaMetricDetailHeroLearning {
         let recorded = min(max(samples, 0), cap)
         return .init(current: recorded, target: cap, caption: "\(recorded) of \(cap) nights")
     }
