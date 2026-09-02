@@ -2550,14 +2550,16 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Text(timelineSignalValueText)
-                    .font(.subheadline.weight(.black).monospacedDigit())
-                    // A "--" placeholder in the metric's red read as an alert
-                    // (2026-09-02); only a real reading wears the hue.
-                    .foregroundStyle(timelineSignalValueText.hasPrefix("--")
-                                     ? Color.secondary
-                                     : (selectedSignal == .stress ? Metrics.electricStress : Color.red))
-                    .lineLimit(1)
+                // A "--" value only ever accompanies an empty trace, and the
+                // canvas below already states why it is empty; printing the
+                // placeholder too was the same fact twice (2026-09-02). The
+                // window label on the left keeps the row's meaning.
+                if !timelineSignalValueText.hasPrefix("--") {
+                    Text(timelineSignalValueText)
+                        .font(.subheadline.weight(.black).monospacedDigit())
+                        .foregroundStyle(selectedSignal == .stress ? Metrics.electricStress : Color.red)
+                        .lineLimit(1)
+                }
             }
 
             // Activity spans (Sleep / Strength / …) sit in a dedicated band ABOVE
