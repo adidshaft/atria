@@ -2847,12 +2847,20 @@ struct AtriaActivityMonitorTab: View {
             // terminal empty/blocker message so the trace surface stays clean.
             ZStack(alignment: .topLeading) {
                 if let emptyMessage {
-                    Text(emptyMessage)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .frame(width: max(0, frame.width - 24))
-                        .position(x: frame.midX, y: frame.midY + 8)
+                    // Empty-plot glyph (2026-09-02): the message sat alone in
+                    // a plot-sized blank; the dimmed signal glyph says which
+                    // trace is missing before the sentence is read.
+                    VStack(spacing: 6) {
+                        Image(systemName: selectedSignal == .heartRate ? "waveform.path.ecg" : "waveform.path")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                        Text(emptyMessage)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: max(0, frame.width - 24))
+                    .position(x: frame.midX, y: frame.midY + 8)
                 }
             }
             .allowsHitTesting(false)
