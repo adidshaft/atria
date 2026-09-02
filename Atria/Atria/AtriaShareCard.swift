@@ -122,8 +122,28 @@ struct AtriaShareSnapshot: Equatable, Hashable {
     let strain: Ring
     let stats: [Stat]
 
+    /// A value the owner would actually post: a real reading, never a
+    /// placeholder or a not-ready word. Nobody puts "--" or "Learning" on a
+    /// story (2026-09-02 owner directive).
+    static func valueIsShareable(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "--" else { return false }
+        return !["learning", "building"].contains(trimmed.lowercased())
+    }
+
     var defaultStats: [Stat] {
-        stats.filter { !$0.value.isEmpty && $0.value != "--" && $0.value != "Learning" && $0.value != "Building" }
+        stats.filter { Self.valueIsShareable($0.value) }
+    }
+
+    /// Rings carrying a real reading, in the card's hero priority order.
+    var shareableRings: [Ring] {
+        [recovery, sleep, strain].filter { Self.valueIsShareable($0.value) }
+    }
+
+    /// False until at least one ring or stat has a reading; the share sheet
+    /// then shows an honest empty state instead of a card of dashes.
+    var hasShareableContent: Bool {
+        !shareableRings.isEmpty || !defaultStats.isEmpty
     }
 }
 
@@ -324,6 +344,12 @@ struct AtriaWeeklyShareSnapshot: Equatable, Hashable {
     let bestDay: String
     let hardestDay: String
     let note: String?
+
+    /// A week worth posting has at least one real number on it.
+    var hasShareableContent: Bool {
+        [recoveryAverage, sleepConsistency, bestDay, hardestDay]
+            .contains(where: AtriaShareSnapshot.valueIsShareable)
+    }
 }
 
 enum AtriaShareFormat: String, CaseIterable, Identifiable {
@@ -643,7 +669,7 @@ struct AtriaShareCardView: View {
                                     title: "Sleep",
                                     value: displayValue(snapshot.sleep.value),
                                     detail: snapshot.sleep.detail)
-        ]
+        ].filter { AtriaShareSnapshot.valueIsShareable($0.value) }
     }
 
     var body: some View {
@@ -741,13 +767,15 @@ struct AtriaShareCardView: View {
         VStack(spacing: 9) {
             ZStack {
                 ring(ringData, diameter: diameter, lineWidth: lineWidth)
-                Text(ringData.value)
-                    .font(.system(size: diameter * 0.26, weight: .light, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(foreground)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.5)
-                    .frame(width: diameter * 0.72)
+                if AtriaShareSnapshot.valueIsShareable(ringData.value) {
+                    Text(ringData.value)
+                        .font(.system(size: diameter * 0.26, weight: .light, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(foreground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .frame(width: diameter * 0.72)
+                }
             }
             .frame(width: diameter, height: diameter)
             Text(label)
@@ -764,20 +792,22 @@ struct AtriaShareCardView: View {
             ring(snapshot.sleep, diameter: format == .story ? 218 : 220, lineWidth: format == .story ? 14 : 14)
             ring(snapshot.recovery, diameter: format == .story ? 178 : 182, lineWidth: format == .story ? 11 : 12)
             ring(snapshot.strain, diameter: format == .story ? 144 : 148, lineWidth: format == .story ? 9 : 10)
-            VStack(spacing: 9) {
-                Text(recoveryHeroValue)
-                    .font(.system(size: format == .story ? 52 : 40, weight: .light, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(foreground)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.58)
-                Text("recovery")
-                    .font(.system(size: format == .story ? 12 : 10, weight: .medium, design: .rounded))
-                    .tracking(3.0)
-                    .textCase(.uppercase)
-                    .foregroundStyle(foreground.opacity(0.48))
+            if let hero = concentricHero {
+                VStack(spacing: 9) {
+                    Text(hero.value)
+                        .font(.system(size: format == .story ? 52 : 40, weight: .light, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(foreground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.58)
+                    Text(hero.label)
+                        .font(.system(size: format == .story ? 12 : 10, weight: .medium, design: .rounded))
+                        .tracking(3.0)
+                        .textCase(.uppercase)
+                        .foregroundStyle(foreground.opacity(0.48))
+                }
+                .frame(width: format == .story ? 188 : 120)
             }
-            .frame(width: format == .story ? 188 : 120)
         }
     }
 
@@ -819,6 +849,19 @@ struct AtriaShareCardView: View {
 
     private var recoveryHeroValue: String {
         displayValue(snapshot.recovery.value)
+    }
+
+    /// The centre reads the first ring with a real value (recovery, else
+    /// sleep, else strain); a day with none draws the tracks alone rather
+    /// than "--" under a "recovery" label.
+    private var concentricHero: (value: String, label: String)? {
+        let candidates: [(AtriaShareSnapshot.Ring, String)] = [
+            (snapshot.recovery, "recovery"), (snapshot.sleep, "sleep"), (snapshot.strain, "strain")
+        ]
+        for (ring, label) in candidates where AtriaShareSnapshot.valueIsShareable(ring.value) {
+            return (ring.value.trimmingCharacters(in: .whitespacesAndNewlines), label)
+        }
+        return nil
     }
 
     private var recoveryEvidenceLine: String {
@@ -1394,9 +1437,9 @@ struct AtriaWeeklyShareCardView: View {
                     .frame(width: weeklyHeroSize, height: weeklyHeroSize)
 
                 VStack(spacing: format == .story ? 10 : 6) {
-                    weeklyStat("Sleep routine", snapshot.sleepConsistency, "bedtime consistency")
-                    weeklyStat("Best day", snapshot.bestDay, "highest recovery")
-                    weeklyStat("Hardest day", snapshot.hardestDay, "highest strain")
+                    ForEach(weeklyStatRows, id: \.title) { row in
+                        weeklyStat(row.title, row.value, row.detail)
+                    }
                 }
                 .frame(maxWidth: format == .story ? 306 : 320)
 
@@ -1449,20 +1492,33 @@ struct AtriaWeeklyShareCardView: View {
                     .foregroundStyle(foreground.opacity(0.68))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
-                Text(snapshot.recoveryAverage)
-                    .font(.system(size: format == .story ? 56 : 42, weight: .black, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(foreground)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.60)
-                Text(snapshot.recoveryDelta)
-                    .font(.system(size: format == .story ? 13 : 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(accent)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                if AtriaShareSnapshot.valueIsShareable(snapshot.recoveryAverage) {
+                    Text(snapshot.recoveryAverage)
+                        .font(.system(size: format == .story ? 56 : 42, weight: .black, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(foreground)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.60)
+                }
+                if !snapshot.recoveryDelta.isEmpty {
+                    Text(snapshot.recoveryDelta)
+                        .font(.system(size: format == .story ? 13 : 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
             }
             .frame(width: format == .story ? 180 : 104)
         }
+    }
+
+    /// Only rows with a real number make the card; a "--" row is not a stat.
+    private var weeklyStatRows: [(title: String, value: String, detail: String)] {
+        [
+            ("Sleep routine", snapshot.sleepConsistency, "bedtime consistency"),
+            ("Best day", snapshot.bestDay, "highest recovery"),
+            ("Hardest day", snapshot.hardestDay, "highest strain")
+        ].filter { AtriaShareSnapshot.valueIsShareable($0.value) }
     }
 
     private var recoveryFill: Double {
@@ -1533,7 +1589,7 @@ struct AtriaShareSheet: View {
     }
 
     var body: some View {
-        shareComposer
+        composerOrEmptyState
             .background(Color.black.ignoresSafeArea())
             .task(id: selectedPhotoItem) {
                 guard let selectedPhotoItem,
@@ -1570,6 +1626,16 @@ struct AtriaShareSheet: View {
                 cameraPreparationTask?.cancel()
             }
         .presentationDetents([.large])
+    }
+
+    @ViewBuilder
+    private var composerOrEmptyState: some View {
+        if snapshot.hasShareableContent {
+            shareComposer
+        } else {
+            AtriaShareEmptyStateView(message: "Your card fills in after your first scored sleep or workout.",
+                                     dismiss: { dismiss() })
+        }
     }
 
     private var shareComposer: some View {
@@ -2333,7 +2399,7 @@ struct AtriaWeeklyShareSheet: View {
     @State private var exportGeneration: UInt64 = 0
     @State private var exportTask: Task<Void, Never>?
 
-    var body: some View {
+    private var weeklyComposer: some View {
         VStack(spacing: 0) {
             topControls
                 .frame(height: AtriaShareComposerLayout.topControlsHeight)
@@ -2356,6 +2422,20 @@ struct AtriaWeeklyShareSheet: View {
                 .padding(.vertical, 4)
                 .frame(height: AtriaShareComposerLayout.styleRailHeight)
         }
+    }
+
+    @ViewBuilder
+    private var composerOrEmptyState: some View {
+        if snapshot.hasShareableContent {
+            weeklyComposer
+        } else {
+            AtriaShareEmptyStateView(message: "Your week fills in after its first scored days.",
+                                     dismiss: { dismiss() })
+        }
+    }
+
+    var body: some View {
+        composerOrEmptyState
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.ignoresSafeArea())
         .accessibilityLabel("Weekly share preview")
@@ -2513,6 +2593,48 @@ struct AtriaWeeklyShareSheet: View {
     private func completeShare(_ payload: AtriaShareActivityPayload) {
         if sharePayload?.id == payload.id { sharePayload = nil }
         Task { await AtriaShareCardRenderer.releaseTemporaryExport(at: payload.url) }
+    }
+}
+
+/// What a share sheet shows when nothing real exists yet: a plain statement
+/// and a way out, never a composer full of placeholders.
+struct AtriaShareEmptyStateView: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
+                        .font(.callout.weight(.semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(AtriaGlassIconButtonStyle(tint: .white, size: 38))
+                .accessibilityLabel("Cancel")
+                Spacer(minLength: 12)
+            }
+            .padding(.horizontal, 16)
+            .frame(height: AtriaShareComposerLayout.topControlsHeight)
+
+            Spacer(minLength: 0)
+            VStack(spacing: 10) {
+                Image(systemName: "sparkles.rectangle.stack")
+                    .font(.system(size: 34, weight: .light))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .accessibilityHidden(true)
+                Text("Nothing to share yet")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.62))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 36)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

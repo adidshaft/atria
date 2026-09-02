@@ -2033,7 +2033,7 @@ struct AtriaWeeklyReportSheet: View {
         AtriaWeeklyShareSnapshot(date: displayedReport.generatedAt,
                                  title: "My week on Atria",
                                  recoveryAverage: recoveryAverageText,
-                                 recoveryDelta: recoveryDeltaText,
+                                 recoveryDelta: displayedReport.recoveryDeltaVsPriorWeek == nil ? "" : recoveryDeltaText,
                                  sleepConsistency: consistencyText,
                                  bestDay: dayText(displayedReport.bestDay),
                                  hardestDay: dayText(displayedReport.hardestDay),
