@@ -21,6 +21,12 @@ struct WeeklyPlanTarget: Codable, Equatable, Identifiable {
     /// target so the row can print "1 of 3 nights" without reaching back
     /// into plan constants (2026-09-02). Optional for the same decode reason.
     var learningNightsNeeded: Int? = nil
+    /// The bedtime target's clock minute, stored with the target (2026-09-02)
+    /// so a saved plan can be checked against a fresh one: a target minted by
+    /// the old noon-cut median has no stored minute and is replaced mid-week
+    /// instead of standing as "Lights out by 1:21 AM" for an afternoon
+    /// sleeper (device, W36). Optional so earlier plans still decode.
+    var targetMinute: Int? = nil
 
     var isLearning: Bool { learningNightsRemaining != nil }
 
@@ -167,7 +173,8 @@ struct WeeklyPlan: Codable, Equatable {
                                 title: "Lights out by \(formatClockMinute(target)) · 4 nights",
                                 detail: "Based on your recent bedtime rhythm",
                                 goal: 4,
-                                current: current)
+                                current: current,
+                                targetMinute: target)
     }
 
     private static func workoutTarget(recent28: [DailyRollupStoreEntry],
@@ -229,6 +236,17 @@ struct WeeklyPlan: Codable, Equatable {
             best = (candidate, cost)
         }
         return best?.minute
+    }
+
+    /// True when a saved bedtime target should yield to the freshly computed
+    /// one mid-week: it carries no clock minute (minted before minutes were
+    /// stored, by the noon-cut median) or sits more than three hours from the
+    /// fresh minute on the clock. Learning targets are handled before this.
+    static func savedBedtimeTargetIsStale(_ saved: WeeklyPlanTarget, fresh: WeeklyPlanTarget) -> Bool {
+        guard saved.kind == .bedtimeConsistency, !saved.isLearning else { return false }
+        guard let savedMinute = saved.targetMinute else { return true }
+        guard let freshMinute = fresh.targetMinute else { return false }
+        return circularMinuteDistance(savedMinute, freshMinute) > 180
     }
 
     static func circularMinuteDistance(_ a: Int, _ b: Int) -> Int {
@@ -299,6 +317,12 @@ final class WeeklyPlanStore {
                                   // for the week; the moment enough bedtimes exist
                                   // the real target replaces it.
                                   if target.isLearning { return fresh }
+                                  // A saved bedtime target that the current clock
+                                  // arithmetic would never mint is a defect, not a
+                                  // commitment: no stored minute (pre-2026-09-02
+                                  // noon-cut median) or more than three hours from
+                                  // the fresh answer on the clock. Re-mint it.
+                                  if WeeklyPlan.savedBedtimeTargetIsStale(target, fresh: fresh) { return fresh }
                                   return WeeklyPlanTarget(id: target.id,
                                                           kind: target.kind,
                                                           title: target.title,
