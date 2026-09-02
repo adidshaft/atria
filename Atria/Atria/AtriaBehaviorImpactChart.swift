@@ -269,8 +269,23 @@ struct AtriaBehaviorImpactBuildingState: View {
             return "\(model.scoredNights) scored \(model.scoredNights == 1 ? "night" : "nights") in the window, "
                 + "none with a behavior logged."
         }
-        return "\(model.loggedNights) of \(model.scoredNights) scored nights carry a behavior log. "
-            + "No behavior has cleared ≥5 nights and p < 0.10 yet."
+        return "\(model.loggedNights) of \(model.scoredNights) scored nights carry a behavior log."
+    }
+
+    // The gate's first condition (≥ minimumLoggedDays logged nights) as a
+    // track instead of a second sentence (2026-09-02, same treatment as the
+    // Journal Patterns state). The p < 0.10 condition stays in the caption
+    // once the night count is met, and in the accessibility label always.
+    private static let neededNights = AtriaBehaviorImpact.minimumLoggedDays
+
+    private var progressFraction: CGFloat {
+        CGFloat(min(model.loggedNights, Self.neededNights)) / CGFloat(Self.neededNights)
+    }
+
+    private var progressCaption: String {
+        model.loggedNights >= Self.neededNights
+            ? "\(model.loggedNights) logged nights · no behavior clears p < 0.10 yet"
+            : "\(model.loggedNights) of \(Self.neededNights) logged nights"
     }
 
     var body: some View {
@@ -281,9 +296,25 @@ struct AtriaBehaviorImpactBuildingState: View {
                 .frame(width: 34, height: 34)
                 .background(.quaternary.opacity(0.3),
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(headline)
                     .font(.subheadline.weight(.bold))
+                if model.scoredNights > 0 {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule(style: .continuous)
+                                .fill(.quaternary.opacity(0.5))
+                            Capsule(style: .continuous)
+                                .fill(Metrics.electricGreen.opacity(0.75))
+                                .frame(width: max(progressFraction > 0 ? 6 : 0,
+                                                  geo.size.width * progressFraction))
+                        }
+                    }
+                    .frame(height: 5)
+                    Text(progressCaption)
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 Text(detailText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -298,5 +329,6 @@ struct AtriaBehaviorImpactBuildingState: View {
                 .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(headline). \(progressCaption). \(detailText) A behavior clears the gate at \(Self.neededNights) logged nights and p below 0.10.")
     }
 }
