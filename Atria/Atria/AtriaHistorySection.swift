@@ -661,7 +661,9 @@ struct AtriaDetectionRow: View, Equatable {
                 Text(DetectionReasonCopy.text(for: event))
                     .font(.caption.weight(.semibold))
                     .lineLimit(2)
-                Text(event.date.formatted(.relative(presentation: .named)))
+                Text((event.repeatCount ?? 1) > 1
+                     ? "\(event.date.formatted(.relative(presentation: .named))) \u{00b7} \u{00d7}\(event.repeatCount ?? 1)"
+                     : event.date.formatted(.relative(presentation: .named)))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
