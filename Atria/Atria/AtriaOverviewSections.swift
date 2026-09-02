@@ -4273,10 +4273,11 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: hrvSummaryForSelectedPeriod,
                                                                 points: hrvAutoPointsForSelectedPeriod,
                                                                 unit: "ms"),
-                                      heroState: hrvBand == nil
-                                        ? learningNightsState(baseline.hrvSampleCount)
-                                        : "Typical",
-                                      tint: metric.tint) {
+                                      heroState: hrvBand == nil ? "Learning" : "Typical",
+                                      tint: metric.tint,
+                                      heroLearning: hrvBand == nil
+                                        ? learningNights(baseline.hrvSampleCount)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
                                               name: "HRV",
@@ -4309,10 +4310,11 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: restingHeartRateSummaryForSelectedPeriod,
                                                                 points: restingHeartRateAutoPointsForSelectedPeriod,
                                                                 unit: "bpm"),
-                                      heroState: restingBand == nil
-                                        ? learningNightsState(baseline.restingSampleCount)
-                                        : "Typical",
-                                      tint: metric.tint) {
+                                      heroState: restingBand == nil ? "Learning" : "Typical",
+                                      tint: metric.tint,
+                                      heroLearning: restingBand == nil
+                                        ? learningNights(baseline.restingSampleCount)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
                                               name: "Resting HR",
@@ -5946,10 +5948,13 @@ struct AtriaMetricDetailSheet: View {
     /// progress ("Learning \u{00b7} night 3 of 14") once a night is recorded,
     /// so a bare "Learning" never hides how far along calibration is
     /// (2026-07-07, design handoff).
-    private func learningNightsState(_ samples: Int) -> String {
-        guard samples > 0 else { return "Learning" }
+    /// The 14-night baseline progress as the shared learning track under the
+    /// hero (2026-09-02; supersedes the text pill "Learning · night 3 of 14"
+    /// from the 2026-07-07 handoff with the same real count as a visual).
+    private func learningNights(_ samples: Int) -> AtriaMetricDetailHeroLearning {
         let cap = PersonalBaseline.trustedMinimumSamples
-        return "Learning \u{00b7} night \(min(samples, cap)) of \(cap)"
+        let recorded = min(max(samples, 0), cap)
+        return .init(current: recorded, target: cap, caption: "\(recorded) of \(cap) nights")
     }
 
     private func metricChart(title: String,
@@ -7189,11 +7194,22 @@ private struct AtriaStrainScoreHero: View {
     }
 }
 
+/// A learning hero's real progress toward its baseline minimum, shown on
+/// the shared track under the state word (2026-09-02) — the same shape the
+/// Sleep schedule and Journal learning states use. File-scope rather than
+/// nested: a type nested in a generic view is distinct per specialization.
+private struct AtriaMetricDetailHeroLearning: Equatable {
+    let current: Int
+    let target: Int
+    let caption: String
+}
+
 private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, ChartContent: View, About: View>: View {
     let heroValue: String
     let heroState: String
     let tint: Color
     let heroStyle: AtriaMetricDetailHeroStyle
+    var heroLearning: AtriaMetricDetailHeroLearning? = nil
     let betweenHeroAndContributors: BetweenHero
     let contributors: Contributors
     let chart: ChartContent
@@ -7205,6 +7221,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          heroState: String,
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
+         heroLearning: AtriaMetricDetailHeroLearning? = nil,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
          @ViewBuilder about: () -> About) where BetweenHero == EmptyView {
@@ -7212,6 +7229,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.heroState = heroState
         self.tint = tint
         self.heroStyle = heroStyle
+        self.heroLearning = heroLearning
         self.betweenHeroAndContributors = EmptyView()
         self.contributors = contributors()
         self.chart = chart()
@@ -7222,6 +7240,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          heroState: String,
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
+         heroLearning: AtriaMetricDetailHeroLearning? = nil,
          @ViewBuilder betweenHeroAndContributors: () -> BetweenHero,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
@@ -7230,6 +7249,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.heroState = heroState
         self.tint = tint
         self.heroStyle = heroStyle
+        self.heroLearning = heroLearning
         self.betweenHeroAndContributors = betweenHeroAndContributors()
         self.contributors = contributors()
         self.chart = chart()
@@ -7337,12 +7357,20 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
+                if let heroLearning {
+                    AtriaLearningProgressTrack(current: heroLearning.current,
+                                               target: heroLearning.target,
+                                               caption: heroLearning.caption,
+                                               tint: heroTint)
+                        .padding(.top, 2)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .atriaInsetCard(tint: tint)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(heroValue), \(heroState)")
+            .accessibilityLabel(heroLearning.map { "\(heroValue), \(heroState), \($0.caption)" }
+                                ?? "\(heroValue), \(heroState)")
         case .recoveryRing(let score, let baselineComparison):
             AtriaRecoveryScoreHero(score: score,
                                    state: heroState,
