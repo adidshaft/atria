@@ -7297,15 +7297,19 @@ private struct AtriaStrainScoreHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 1) {
-                Text(displayValue)
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .monospacedDigit().foregroundStyle(score == nil ? Color.secondary : tint)
+        // Strain hero anatomy (2026-09-02): the same left-aligned value and
+        // state as the Resting HR, HRV, respiratory and sleep heroes, on the
+        // shared value component, with the target gauge beneath. It was a
+        // centred hand-set 48pt while its three siblings sat left at 56pt.
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+                AtriaMetricHeroValueText(text: displayValue, tint: score == nil ? Color.secondary : tint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
                 Text(state)
-                    .font(.caption.weight(.semibold))
+                    .font(AtriaDesignTokens.Typography.metricLabel)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
