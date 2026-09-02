@@ -1035,7 +1035,7 @@ struct AtriaTodayScreen: View {
             let tint = fill.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) } ?? .secondary
             return AtriaTriRingMetric(title: "Sleep",
                                       value: value,
-                                      detail: performance.map { "\($0)% of need" } ?? "Saved day",
+                                      detail: performance.map { "\($0)% of need" } ?? "need not scored",
                                       systemImage: "moon.fill",
                                       tint: tint,
                                       fill: fill,
@@ -1047,9 +1047,12 @@ struct AtriaTodayScreen: View {
             let tint: Color = percent.map {
                 $0 < 34 ? .red : ($0 < 67 ? .yellow : .green)
             } ?? .secondary
+            // Past-day legends (2026-09-02): "Saved day" under a real value
+            // said nothing. Recovery reads its own state word, strain its
+            // band, and the overnight metrics say which night they belong to.
             return AtriaTriRingMetric(title: "Recovery",
                                       value: percent.map { "\($0)%" } ?? noValue,
-                                      detail: percent == nil ? "No saved score" : "Saved day",
+                                      detail: percent.map { recoveryState(percent: $0) } ?? "No saved score",
                                       systemImage: "heart.fill",
                                       tint: tint,
                                       fill: percent.map { min(max(Double($0) / 100.0, 0), 1) })
@@ -1057,7 +1060,7 @@ struct AtriaTodayScreen: View {
             let strain = entry?.strain
             return AtriaTriRingMetric(title: "Strain",
                                       value: strain.map { String(format: "%.1f", $0) } ?? noValue,
-                                      detail: strain == nil ? "No saved value" : "Saved day",
+                                      detail: strain.map { Metrics.strainBandName($0) } ?? "No saved value",
                                       systemImage: "flame.fill",
                                       tint: Metrics.electricStrain,
                                       fill: strain.map { min(max($0 / 21.0, 0), 1) })
@@ -1065,7 +1068,7 @@ struct AtriaTodayScreen: View {
             let ms = entry?.lnRMSSD.map { Int(exp($0).rounded()) }
             return AtriaTriRingMetric(title: "HRV",
                                       value: ms.map { "\($0)" } ?? noValue,
-                                      detail: ms == nil ? "No saved value" : "Saved day",
+                                      detail: ms == nil ? "No saved value" : "that night",
                                       systemImage: "waveform.path.ecg",
                                       tint: Metrics.electricHRV,
                                       fill: nil)
@@ -1073,7 +1076,7 @@ struct AtriaTodayScreen: View {
             let rhr = entry?.rhr
             return AtriaTriRingMetric(title: "RHR",
                                       value: rhr.map { "\($0)" } ?? noValue,
-                                      detail: rhr == nil ? "No saved value" : "Saved day",
+                                      detail: rhr == nil ? "No saved value" : "that night",
                                       systemImage: "heart.circle",
                                       tint: .red,
                                       fill: nil)
