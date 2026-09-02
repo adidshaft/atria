@@ -4228,15 +4228,17 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 6)
-                    // "Learning" is the canonical not-ready word; a learning
-                    // target has no count to show, only the gauge at zero.
-                    Text(target.isLearning ? "Learning" : target.progressText)
+                    // A learning target shows what it has counted so far
+                    // ("1 of 3 nights") on the same gauge, the shape every
+                    // other learning state uses (2026-09-02); "Learning"
+                    // stays the word VoiceOver hears and the fallback text.
+                    Text(target.isLearning ? (target.learningProgressText ?? "Learning") : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
                         .foregroundStyle(target.isLearning ? .secondary : tint)
                         .lineLimit(1)
                 }
 
-                Gauge(value: target.progress) {
+                Gauge(value: target.isLearning ? target.learningProgress : target.progress) {
                     EmptyView()
                 }
                 .gaugeStyle(.accessoryLinearCapacity)
@@ -4246,7 +4248,9 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
         }
         .frame(minHeight: 42)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(target.title). \(target.progressText). \(target.detail).")
+        .accessibilityLabel(target.isLearning
+                            ? "\(target.title). Learning, \(target.learningProgressText ?? "no count yet"). \(target.detail)."
+                            : "\(target.title). \(target.progressText). \(target.detail).")
     }
 }
 
