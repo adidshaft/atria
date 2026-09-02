@@ -1165,7 +1165,9 @@ struct AtriaHealthScreen: View {
                                     // AtriaMetricIdentity authority defines —
                                     // not its own cyan.
                                     tint: Metrics.electricSleep,
-                                    footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
+                                    // With no sleep the footnote names the state, like its
+                                    // Sufficiency sibling — not the method (2026-09-02).
+                                    footnote: currentSleep?.sleepEfficiencyFootnote ?? "Needs a confirmed sleep")
                 }
                 .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens sleep efficiency detail")
