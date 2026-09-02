@@ -132,4 +132,22 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
             "let current = latestRollup?.sleepPerformance"
         ))
     }
+
+    /// 2026-09-02: the shared authority must withhold strain exactly when the
+    /// Today tile does — while the hero's confidence says the value is not
+    /// computable — instead of passing a raw 0.0 to the detail hero.
+    func testCurrentCycleStrainIsWithheldWhileNotComputable() {
+        let learning = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: nil, recoveryDetail: "", restingHeartRateText: "--",
+            hrvValue: "--", hrvDetail: "", strain: 0, strainDetail: "Learning · no strap HR yet")))
+        XCTAssertNil(learning.strain, "no usable heart rate → no strain, not 0.0")
+        XCTAssertNil(AtriaHealthMetricAuthority.strainTrendTruth(learning).heroLowerBound)
+
+        let partial = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: nil, recoveryDetail: "", restingHeartRateText: "--",
+            hrvValue: "--", hrvDetail: "", strain: 4.2, strainDetail: "Partial · 40% tracked",
+            strainIsPartial: true)))
+        XCTAssertEqual(partial.strain, 4.2, "a partial floor is a real measurement and stays")
+        XCTAssertTrue(AtriaHealthMetricAuthority.strainTrendTruth(partial).isPartial)
+    }
 }

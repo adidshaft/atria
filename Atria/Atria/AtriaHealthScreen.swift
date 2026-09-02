@@ -433,7 +433,14 @@ enum AtriaHealthMetricAuthority {
                     ? specificDetail(current.hrvDetail,
                                      fallback: "Needs quiet rest or sleep")
                     : current.hrvDetail,
-                strain: current.strain,
+                // The Today tile withholds strain while the hero's confidence
+                // says "learning"/"standby" (no usable heart rate yet); the
+                // authority copied the raw 0.0 instead, so the detail hero
+                // printed "0.0 · Saved day" beside a tile reading "-- · HR
+                // pending" (2026-09-02). One rule, shared with the tile.
+                strain: AtriaCompactMetricPresentation.StrainEvidence
+                    .parse(confidence: current.strainDetail).isComputable
+                    ? current.strain : nil,
                 strainDetail: current.strainDetail,
                 strainIsPartial: current.strainIsPartial,
                 wearCoverageFraction: current.wearCoverageFraction,
