@@ -3987,14 +3987,14 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
         // qualifier of the live pulse, so it rides inside the same pill as
         // "72 bpm · Z3" instead of claiming its own row space. A zone needs a
         // pulse — without one it would only repeat what the pill already says.
-        AtriaTodayLivePill(title: pulse.heartRateZone.map { "Live · Zone \($0.shortLabel)" } ?? "Live",
+        AtriaTodayLivePill(title: pulse.heartRateZone.map { "Live · \($0.compactLabel)" } ?? "Live",
                            value: liveStatusText,
                            systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
                            tint: pulse.heartRateZone?.tint
                                ?? (pulse.heartRate > 0 ? .green : .secondary))
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")")
+            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")")
     }
 
     private var liveStatusText: String {
