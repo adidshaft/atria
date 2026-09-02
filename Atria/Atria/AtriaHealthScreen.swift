@@ -1783,7 +1783,25 @@ struct AtriaHealthScreen: View {
     }
 
     private func restingHeartRateDetail(live: AtriaHealthMonitorLiveProjection) -> String {
-        currentMetricProjection(live: live).restingHeartRateDetail
+        let projection = currentMetricProjection(live: live)
+        // 2026-09-02: with a reading, "current cycle" said nothing. Against
+        // at least three baseline mornings (the highlight rule's own gate)
+        // the caption reads the distance from usual; otherwise it falls back.
+        if let value = projection.restingHeartRate,
+           let stats = vitalsStore.state.baseline.restingStats,
+           let caption = Self.restingHeartRateDeltaCaption(value: value, mean: stats.mean, count: stats.count) {
+            return caption
+        }
+        return projection.restingHeartRateDetail
+    }
+
+    /// "2 below usual", "same as usual", "3 above usual"; nil below three
+    /// baseline mornings so a thin baseline never poses as "usual".
+    static func restingHeartRateDeltaCaption(value: Int, mean: Double, count: Int) -> String? {
+        guard count >= 3 else { return nil }
+        let delta = Int((Double(value) - mean).rounded())
+        if delta == 0 { return "same as usual" }
+        return delta < 0 ? "\(-delta) below usual" : "\(delta) above usual"
     }
 
     private func hrvValue(live: AtriaHealthMonitorLiveProjection) -> String {
