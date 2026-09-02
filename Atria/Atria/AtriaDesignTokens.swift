@@ -79,6 +79,12 @@ enum AtriaDesignTokens {
         /// same element read two ways on one screen. Apply via `.atriaEyebrow()`.
         static let eyebrow = Font.caption2.weight(.semibold)
         static let eyebrowTracking: CGFloat = 0.8
+        /// Page title: the headline of an onboarding page or a full-screen
+        /// step. MEASURED 2026-09-02: six pages set it by hand at 28pt or
+        /// 30pt, so consecutive pages in one swipe sequence changed size, and
+        /// none scaled with Dynamic Type. `.title` (28pt default) rounded
+        /// bold keeps the hierarchy and scales.
+        static let pageTitle = Font.system(.title, design: .rounded, weight: .bold)
 
         /// Smallest fixed-size text the app sets. Below 11pt SwiftUI's
         /// `.caption2` no longer has a Dynamic Type peer, and 8-9pt labels

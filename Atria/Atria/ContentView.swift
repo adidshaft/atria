@@ -208,7 +208,7 @@ struct AtriaOnboardingSharingChoiceStep: View {
                             }
                             .accessibilityHidden(true)
                         Text("Help improve Atria")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                         Text("Anonymous data only. No identity or location. Review the bundle before sharing.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
