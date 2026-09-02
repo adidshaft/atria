@@ -378,6 +378,14 @@ private struct AtriaCustomizePreview: View {
     let config: AtriaHomeLayoutConfig
 
     var body: some View {
+        // The miniature is illustrative ("Example data"), scaled to 60% in
+        // a fixed frame. At large type (2026-09-02 XXXL screenshot) its
+        // stacked legend and glance grid overflowed the frame and each
+        // other; the miniature keeps a standard text size at every setting.
+        previewContent.dynamicTypeSize(.large)
+    }
+
+    private var previewContent: some View {
         VStack(spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Layout preview")
