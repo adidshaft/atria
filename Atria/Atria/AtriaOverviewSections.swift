@@ -1667,7 +1667,11 @@ struct AtriaWeeklyReportSheet: View {
                         // again as an eyebrow told the reader nothing they had
                         // not just read.
                         Text(heroText)
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            // Report headline (2026-09-02): the page's own
+                            // title under an inline nav bar, so it takes the
+                            // page-title token and scales with Dynamic Type;
+                            // it was a fixed 26pt on both report sheets.
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                             .lineLimit(3)
                             .minimumScaleFactor(0.8)
                             .fixedSize(horizontal: false, vertical: true)
@@ -2280,7 +2284,11 @@ struct AtriaMonthlyReportSheet: View {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(heroText)
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            // Report headline (2026-09-02): the page's own
+                            // title under an inline nav bar, so it takes the
+                            // page-title token and scales with Dynamic Type;
+                            // it was a fixed 26pt on both report sheets.
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                             .lineLimit(3)
                             .minimumScaleFactor(0.8)
                             .fixedSize(horizontal: false, vertical: true)
