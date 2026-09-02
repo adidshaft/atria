@@ -370,10 +370,12 @@ private struct AtriaSleepReviewCard: View {
         if night.source == AtriaDaytimeQuiescentSleepDetector.sourceName {
             return "Motion-quiet estimate · confirm to save"
         }
+        // 2026-09-02: "HR/RR" named the beat-to-beat channel in engineering
+        // shorthand; the wearer reads it as a heart-rate estimate.
         if night.motionValidated != true {
             return isNap
-                ? "HR/RR estimate · motion unverified · saves as a nap"
-                : "HR/RR estimate · motion unverified"
+                ? "Heart-rate estimate · motion unverified · saves as a nap"
+                : "Heart-rate estimate · motion unverified"
         }
         return isNap ? "Saves as a separate nap" : ""
     }
