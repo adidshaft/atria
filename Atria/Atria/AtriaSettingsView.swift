@@ -114,6 +114,7 @@ struct AtriaSettingsView: View {
                         Label(backupOperationInProgress ? "Working…" : "Back up now",
                               systemImage: "arrow.down.doc.fill")
                     }
+                    .frame(maxWidth: .infinity)
                 }
                 .atriaCardAction(prominent: false, tint: .blue)
                 .disabled(backupOperationInProgress)
@@ -137,6 +138,7 @@ struct AtriaSettingsView: View {
                     // the accessibility labels.
                     Label("Verify", systemImage: "checkmark.seal")
                         .accessibilityLabel("Verify backup")
+                        .frame(maxWidth: .infinity)
                 }
                 .atriaCardAction(prominent: false, tint: .green)
                 .disabled(backupOperationInProgress)
@@ -147,6 +149,7 @@ struct AtriaSettingsView: View {
                 } label: {
                     Label("Restore", systemImage: "tray.and.arrow.down")
                         .accessibilityLabel("Restore backup from Files")
+                        .frame(maxWidth: .infinity)
                 }
                 .atriaCardAction(prominent: false, tint: .orange)
                 .disabled(backupOperationInProgress)
@@ -1246,10 +1249,13 @@ struct AtriaSettingsView: View {
 
             // Three labeled actions do not always fit one row (2026-09-02
             // screenshot: "Back up now" wrapped, "Restore" clipped). Fit them
-            // side by side when there is room, otherwise stack them.
+            // side by side when there is room; otherwise a two-column grid of
+            // equal-width buttons, not three capsules of different widths
+            // stacked at the left (later screenshot the same day).
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { backupActionButtons }
-                VStack(alignment: .leading, spacing: 8) { backupActionButtons }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],
+                          spacing: 8) { backupActionButtons }
             }
             .labelStyle(.titleAndIcon)
 
