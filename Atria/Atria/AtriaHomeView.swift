@@ -6674,6 +6674,12 @@ enum AtriaMissedDataBannerPresentation {
         /// honest). False when the gap is effectively lost — the view then hides
         /// the futile sync button and offers only dismissal / start-fresh.
         let offersRecovery: Bool
+        /// True for the oversized pre-Atria backlog: a DECISION the owner must
+        /// make (start fresh vs sync it all), so the banner shows the whole
+        /// sentence and two labeled actions instead of a status icon (device
+        /// 2026-09-02: the copy recommended "Start fresh" while the row offered
+        /// only a sync glyph and a snooze, with the sentence cut at one line).
+        var isDecision: Bool = false
     }
 
     /// ~5 min still bankable on the strap is the floor for calling catch-up
@@ -6873,12 +6879,19 @@ private struct AtriaMissedDataBanner: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            compactIcon
-            copyBlock
-            Spacer(minLength: 0)
-            compactState
-            dismissButton
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                compactIcon
+                copyBlock
+                Spacer(minLength: 0)
+                if !bannerCopy.isDecision {
+                    compactState
+                }
+                dismissButton
+            }
+            if bannerCopy.isDecision {
+                decisionActions
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -6886,6 +6899,21 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(bannerCopy.title). \(bannerCopy.subtitle).")
+    }
+
+    /// The oversized-backlog decision, spelled out: the recommended clean
+    /// slate first (its confirm dialog explains what is lost), the slow full
+    /// sync second. Both reuse the existing wiring; nothing new is minted.
+    private var decisionActions: some View {
+        HStack(spacing: 10) {
+            Button("Start fresh", action: onStartFresh)
+                .atriaCardAction(tint: .cyan)
+            Button("Sync all", action: handleSyncTap)
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel(protectsLiveStream
+                                    ? "Sync all history; live tracking stays uninterrupted"
+                                    : "Sync all history from before Atria")
+        }
     }
 
     private var compactIcon: some View {
@@ -6928,7 +6956,8 @@ private struct AtriaMissedDataBanner: View, Equatable {
                 subtitle: "Syncing it all is slow and delays sleep and step "
                     + "accuracy. Start fresh keeps live tracking and lets "
                     + "today work now — recommended for a newly paired strap.",
-                offersRecovery: true
+                offersRecovery: true,
+                isDecision: true
             )
         }
         let defaults = UserDefaults.standard
@@ -7022,12 +7051,13 @@ private struct AtriaMissedDataBanner: View, Equatable {
         VStack(alignment: .leading, spacing: 2) {
             Text(bannerCopy.title)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                // A status row stays one line; a decision gets its sentence.
+                .lineLimit(bannerCopy.isDecision ? 2 : 1)
                 .minimumScaleFactor(0.82)
             Text(syncTapFeedback ?? bannerCopy.subtitle)
                 .font(.caption)
                 .foregroundStyle(syncTapFeedback == nil ? Color.secondary : Color.cyan)
-                .lineLimit(1)
+                .lineLimit(bannerCopy.isDecision ? 4 : 1)
                 .minimumScaleFactor(0.82)
                 .task(id: syncTapFeedback) {
                     // Auto-clear the tap confirmation so the row returns to its
