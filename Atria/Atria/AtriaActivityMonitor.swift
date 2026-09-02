@@ -1873,15 +1873,17 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private var activityLoadingState: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Loading activity…")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        // Row-shaped placeholders instead of a spinner line: the sections that
+        // are coming are cards of roughly this height, so the list keeps its
+        // footprint and nothing jumps when they land (2026-09-02, same
+        // skeleton grammar as the metric-detail and HR-trace placeholders).
+        VStack(spacing: 10) {
+            AtriaSkeletonBlock(height: 64, cornerRadius: AtriaDesignTokens.Radius.tile)
+            AtriaSkeletonBlock(height: 64, cornerRadius: AtriaDesignTokens.Radius.tile)
         }
         .frame(maxWidth: .infinity, minHeight: 56)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading activity")
     }
 
     /// An empty day is the most common state on this tab, and it used to be a
