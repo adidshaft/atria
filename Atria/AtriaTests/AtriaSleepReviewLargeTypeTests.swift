@@ -16,5 +16,9 @@ final class AtriaSleepReviewLargeTypeTests: XCTestCase {
         XCTAssertTrue(card.contains("if reviewDynamicTypeSize >= .xxLarge {\n                        Text(\"Confirm\")"))
         XCTAssertTrue(card.contains("Label(\"Confirm\", systemImage: \"checkmark.circle\")"), "the icon stays at standard sizes")
         XCTAssertTrue(card.contains(".accessibilityLabel(isNap ? \"Confirm nap\" : \"Confirm sleep\")"))
+        // The header's time range clipped to "12:00 AM - 7:18…" at XXXL too;
+        // it follows the same rule.
+        let range = try XCTUnwrap(card.range(of: "Text(rangeText)"))
+        XCTAssertTrue(String(card[range.lowerBound...].prefix(300)).contains(".lineLimit(reviewDynamicTypeSize >= .xxLarge ? 2 : 1)"))
     }
 }
