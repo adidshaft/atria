@@ -1602,13 +1602,17 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 6)
-                    Text(target.progressText)
+                    // Learning and withheld targets are not ready: the same
+                    // words and empty gauge as the Today row (2026-09-02).
+                    Text(target.isLearning ? (target.learningProgressText ?? "Learning")
+                         : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
+                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
                         .lineLimit(1)
                 }
 
-                Gauge(value: target.progress) {
+                Gauge(value: target.isLearning ? target.learningProgress
+                      : target.isWithheld ? 0 : target.progress) {
                     EmptyView()
                 }
                 .gaugeStyle(.accessoryLinearCapacity)

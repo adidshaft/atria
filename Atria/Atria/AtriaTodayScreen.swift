@@ -4232,13 +4232,17 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
                     // ("1 of 3 nights") on the same gauge, the shape every
                     // other learning state uses (2026-09-02); "Learning"
                     // stays the word VoiceOver hears and the fallback text.
-                    Text(target.isLearning ? (target.learningProgressText ?? "Learning") : target.progressText)
+                    // A withheld target (no bedtime rhythm to name a time
+                    // from) is not ready either: "Learning", empty gauge.
+                    Text(target.isLearning ? (target.learningProgressText ?? "Learning")
+                         : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(target.isLearning ? .secondary : tint)
+                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
                         .lineLimit(1)
                 }
 
-                Gauge(value: target.isLearning ? target.learningProgress : target.progress) {
+                Gauge(value: target.isLearning ? target.learningProgress
+                      : target.isWithheld ? 0 : target.progress) {
                     EmptyView()
                 }
                 .gaugeStyle(.accessoryLinearCapacity)
@@ -4250,6 +4254,7 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(target.isLearning
                             ? "\(target.title). Learning, \(target.learningProgressText ?? "no count yet"). \(target.detail)."
+                            : target.isWithheld ? "\(target.title). Learning. \(target.detail)."
                             : "\(target.title). \(target.progressText). \(target.detail).")
     }
 }

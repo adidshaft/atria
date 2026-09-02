@@ -42,7 +42,7 @@ final class AtriaWeeklyPlanLearningProgressTests: XCTestCase {
         let today = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaTodayScreen.swift"), encoding: .utf8)
-        XCTAssertTrue(today.contains("Text(target.isLearning ? (target.learningProgressText ?? \"Learning\") : target.progressText)"))
-        XCTAssertTrue(today.contains("Gauge(value: target.isLearning ? target.learningProgress : target.progress)"))
+        XCTAssertTrue(today.contains("Text(target.isLearning ? (target.learningProgressText ?? \"Learning\")\n                         : target.isWithheld ? \"Learning\" : target.progressText)"))
+        XCTAssertTrue(today.contains("Gauge(value: target.isLearning ? target.learningProgress\n                      : target.isWithheld ? 0 : target.progress)"))
     }
 }
