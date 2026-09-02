@@ -880,3 +880,40 @@ struct AtriaTextSelector<Item: Hashable>: View {
         .accessibilityElement(children: .contain)
     }
 }
+
+/// The "not yet" state's honest progress: the engine's real minimum as the
+/// track, the user's real count as the fill, one monospaced caption. One look
+/// for Journal Patterns, Behavior impact and the Sleep schedule (2026-09-02),
+/// so a learning state shows how close it is instead of describing the wait.
+struct AtriaLearningProgressTrack: View {
+    let current: Int
+    let target: Int
+    let caption: String
+    var tint: Color = Metrics.electricGreen
+
+    private var fraction: CGFloat {
+        guard target > 0 else { return 0 }
+        return CGFloat(min(max(current, 0), target)) / CGFloat(target)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.quaternary.opacity(0.5))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.75))
+                        .frame(width: max(fraction > 0 ? 6 : 0, geo.size.width * fraction))
+                }
+            }
+            .frame(height: 5)
+            Text(caption)
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(caption)
+    }
+}
+
