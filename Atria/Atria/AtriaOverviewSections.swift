@@ -425,7 +425,7 @@ private struct AtriaSleepReviewCard: View {
 
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(night.durationText)
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -2549,7 +2549,7 @@ struct AtriaStrapStepsDetailSheet: View {
                         Spacer(minLength: 8)
 
                         Text(presentation.valueText)
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(AtriaDesignTokens.Typography.cardHeroValue)
                             .monospacedDigit()
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: presentation.valueText)

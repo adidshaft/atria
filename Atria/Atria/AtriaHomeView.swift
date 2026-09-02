@@ -9440,7 +9440,7 @@ private struct AtriaStandByMetric: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.cardHeroValue)
                 .monospacedDigit()
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),

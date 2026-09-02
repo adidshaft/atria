@@ -5461,7 +5461,7 @@ struct AtriaSleepActivityReviewSheet: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(Self.hoursMinutes(night.duration))
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.cardHeroValue)
                 .monospacedDigit()
             if let start = night.start, let end = night.end {
                 // stageDisplayLabel: an HR-only night that renders estimated

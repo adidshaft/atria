@@ -4072,7 +4072,7 @@ struct AtriaHeartRateExplorer: View {
         VStack(alignment: .leading, spacing: 3) {
             if selectionMode == .range, let summary = selectedRangeSummary {
                 Text("\(summary.average) bpm")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(AtriaDesignTokens.Typography.cardHeroValue)
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
