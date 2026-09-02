@@ -17,8 +17,27 @@ struct WeeklyPlanTarget: Codable, Equatable, Identifiable {
     /// bedtime target needs `WeeklyPlan.minimumBedtimeNights` recorded
     /// bedtimes). Optional so plans saved before 2026-09-02 still decode.
     var learningNightsRemaining: Int? = nil
+    /// The minimum the learning state is counting toward, stored with the
+    /// target so the row can print "1 of 3 nights" without reaching back
+    /// into plan constants (2026-09-02). Optional for the same decode reason.
+    var learningNightsNeeded: Int? = nil
 
     var isLearning: Bool { learningNightsRemaining != nil }
+
+    /// Learning shown as a count on the gauge, the same shape every other
+    /// learning state uses, instead of the word alone. nil when not learning
+    /// or when the minimum was not recorded with the target.
+    var learningProgressText: String? {
+        guard let remaining = learningNightsRemaining, let needed = learningNightsNeeded, needed > 0 else { return nil }
+        let recorded = min(needed, max(0, needed - remaining))
+        let unit = kind == .rhrInRange ? "mornings" : "nights"
+        return "\(recorded) of \(needed) \(unit)"
+    }
+
+    var learningProgress: Double {
+        guard let remaining = learningNightsRemaining, let needed = learningNightsNeeded, needed > 0 else { return 0 }
+        return Double(min(needed, max(0, needed - remaining))) / Double(needed)
+    }
 
     var progress: Double {
         guard goal > 0 else { return 0 }
@@ -135,7 +154,8 @@ struct WeeklyPlan: Codable, Equatable {
                                     detail: "Needs \(minimumBedtimeNights) recorded bedtimes (\(recorded) so far)",
                                     goal: 4,
                                     current: 0,
-                                    learningNightsRemaining: max(0, minimumBedtimeNights - recorded))
+                                    learningNightsRemaining: max(0, minimumBedtimeNights - recorded),
+                                    learningNightsNeeded: minimumBedtimeNights)
         }
         let target = (median + 20) % 1_440
         let current = Double(currentWeek.filter { entry in
@@ -182,7 +202,8 @@ struct WeeklyPlan: Codable, Equatable {
                                     detail: "Needs \(minimumTrustedRHRDays) mornings with a trusted RHR (\(trustedDays) so far)",
                                     goal: 4,
                                     current: 0,
-                                    learningNightsRemaining: minimumTrustedRHRDays - trustedDays)
+                                    learningNightsRemaining: minimumTrustedRHRDays - trustedDays,
+                                    learningNightsNeeded: minimumTrustedRHRDays)
         }
         let goal = trustedDays >= 7 ? 7.0 : 4.0
         return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.rhrInRange.rawValue,
