@@ -25,6 +25,11 @@ struct DetectionEvent: Codable, Equatable, Identifiable {
     /// older builds decode without them and stay read-only.
     var windowStart: Date? = nil
     var windowEnd: Date? = nil
+    /// How many times this exact skip (kind, reason, window) has been logged
+    /// (2026-09-02, device: two week-old candidates re-evaluated hourly filled
+    /// all 20 slots and evicted the night's own events). Optional so events
+    /// logged by older builds decode; nil reads as 1.
+    var repeatCount: Int? = nil
 
     init(kind: String, reason: String? = nil, date: Date = Date(), detail: String,
          windowStart: Date? = nil, windowEnd: Date? = nil) {
@@ -58,7 +63,14 @@ enum DetectionEventLog {
     /// without wiring a `@Published` through the whole tree. Never throws.
     static func append(_ event: DetectionEvent, store: UserDefaults = .standard) {
         var events = load(store: store)
-        if shouldCoalesceSleepSkipRetry(event, with: events) {
+        var event = event
+        // The same skip for the same window, logged again hours later, is one
+        // fact repeating: keep one row at the newest date with a count, so a
+        // stale candidate cannot flood the ring however often it is retried.
+        if let index = identicalWindowSkipIndex(for: event, in: events) {
+            event.repeatCount = (events[index].repeatCount ?? 1) + 1
+            events.remove(at: index)
+        } else if shouldCoalesceSleepSkipRetry(event, with: events) {
             return
         }
         events.insert(event, at: 0)
@@ -68,6 +80,18 @@ enum DetectionEventLog {
         guard let data = try? JSONEncoder().encode(events) else { return }
         store.set(data, forKey: storageKey)
         store.set(store.integer(forKey: revisionKey) + 1, forKey: revisionKey)
+    }
+
+    private static func identicalWindowSkipIndex(for event: DetectionEvent,
+                                                 in events: [DetectionEvent]) -> Int? {
+        guard event.kind == "sleepCandidateSkipped",
+              let start = event.windowStart, let end = event.windowEnd else { return nil }
+        return events.firstIndex { prior in
+            prior.kind == event.kind
+                && prior.reason == event.reason
+                && prior.windowStart == start
+                && prior.windowEnd == end
+        }
     }
 
     private static func shouldCoalesceSleepSkipRetry(_ event: DetectionEvent,
