@@ -321,6 +321,10 @@ private struct AtriaAutoSleepLoggedBanner: View {
 
 
 private struct AtriaSleepReviewCard: View {
+    // Large type (2026-09-02, XXXL screenshot): "Confirm" shrank to "Con…"
+    // beside its icon at a third of the card width. From XX-Large up the
+    // decorative icon goes and the word stays; the spoken label is unchanged.
+    @Environment(\.dynamicTypeSize) private var reviewDynamicTypeSize
     let night: SleepHistorySnapshot.Night
     let onConfirm: () async -> Bool
     let onAdjust: () -> Void
@@ -474,10 +478,17 @@ private struct AtriaSleepReviewCard: View {
                 // "Confirm" alone — the card title already names what is
                 // being confirmed, and the full phrase cropped at a third of
                 // the card width (UX audit follow-up).
-                Label("Confirm", systemImage: "checkmark.circle")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 28)
+                Group {
+                    if reviewDynamicTypeSize >= .xxLarge {
+                        Text("Confirm")
+                    } else {
+                        Label("Confirm", systemImage: "checkmark.circle")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(tint: Metrics.electricSleep)
             .disabled(isConfirming)
