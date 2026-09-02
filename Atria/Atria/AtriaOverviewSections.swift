@@ -2081,6 +2081,7 @@ struct AtriaMonthlyReportSheet: View {
         let day: Date
         let recovery: Int?
         let strain: Double?
+        let sleepPerformance: Int?
     }
 
     /// One cell per calendar day of the displayed month. A day's recovery and
@@ -2089,17 +2090,22 @@ struct AtriaMonthlyReportSheet: View {
         guard let interval = calendar.dateInterval(of: .month, for: anchor) else { return [] }
         var recoveryByDay: [Date: Int] = [:]
         var strainByDay: [Date: Double] = [:]
+        var sleepByDay: [Date: Int] = [:]
         for entry in rollups {
             let key = calendar.startOfDay(for: entry.day)
             if let recovery = entry.recovery, recoveryByDay[key] == nil { recoveryByDay[key] = recovery }
             if let strain = entry.strain, strainByDay[key] == nil { strainByDay[key] = strain }
+            if let sleep = entry.sleepPerformance, sleepByDay[key] == nil { sleepByDay[key] = sleep }
         }
         var cells: [MonthDayCell] = []
         var day = interval.start
         var index = 1
         while day < interval.end {
             let key = calendar.startOfDay(for: day)
-            cells.append(MonthDayCell(id: index, day: day, recovery: recoveryByDay[key], strain: strainByDay[key]))
+            cells.append(MonthDayCell(id: index, day: day,
+                                      recovery: recoveryByDay[key],
+                                      strain: strainByDay[key],
+                                      sleepPerformance: sleepByDay[key]))
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
             index += 1
@@ -2113,6 +2119,10 @@ struct AtriaMonthlyReportSheet: View {
 
     private var strainDayCount: Int {
         monthDayCells.filter { $0.strain != nil }.count
+    }
+
+    private var sleepDayCount: Int {
+        monthDayCells.filter { $0.sleepPerformance != nil }.count
     }
 
     /// Days of the month that have happened: the whole month for a past
@@ -2183,6 +2193,36 @@ struct AtriaMonthlyReportSheet: View {
         .accessibilityLabel("Strain by day, \(strainDayCount) of \(elapsedDayCount) days with strain")
     }
 
+    /// Sleep by day (2026-09-02): each night's performance as a percent of
+    /// its own need, tinted through the same sleep zone function the ring
+    /// uses. Nights without a performance figure stay hollow; the block is
+    /// omitted until one night has one. Completes the ring trio at a glance.
+    private var sleepByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let percent = cell.sleepPerformance {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(AtriaTriRing.zoneTint(.sleep, percent: Double(percent)).opacity(0.9))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            monthDayLabels(count: cells.count)
+            Text("\(sleepDayCount) of \(elapsedDayCount) nights with sleep")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricSleep)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sleep by day, \(sleepDayCount) of \(elapsedDayCount) nights with sleep")
+    }
+
     /// Fill intensity for a strain cell: linear over the 0–21 scale with a
     /// floor so a light day is still visibly a day, never a hollow cell.
     static func strainIntensity(_ strain: Double) -> Double {
@@ -2241,6 +2281,11 @@ struct AtriaMonthlyReportSheet: View {
                     if strainDayCount > 0 {
                         kicker("Strain by day")
                         strainByDayStrip
+                    }
+
+                    if sleepDayCount > 0 {
+                        kicker("Sleep by day")
+                        sleepByDayStrip
                     }
 
                     if !report.isBuilding {
