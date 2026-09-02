@@ -86,7 +86,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
     var honestDescription: String {
         switch self {
         case .recoveryReady:
-            return "When a baseline-qualified recovery estimate is ready."
+            return "When a trusted recovery score is ready."
         case .strainTarget:
             return "When today's measured strain reaches its target."
         case .sleepReview:
