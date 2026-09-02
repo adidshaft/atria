@@ -1534,7 +1534,7 @@ struct AtriaWeeklyPlanCard: View, Equatable {
             }
         }
         .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: Metrics.electricStrain)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: Metrics.electricStrain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
     }
@@ -1649,7 +1649,7 @@ struct AtriaWeeklyReportSheet: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
-                    .atriaInsetCard(cornerRadius: 18, tint: .cyan)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .cyan)
 
                     // Grouped stat rows (UX audit density tail): six identical
                     // boxes read as a wall; two kickers give the eye a rest.
@@ -1694,7 +1694,7 @@ struct AtriaWeeklyReportSheet: View {
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(14)
-                            .atriaInsetCard(cornerRadius: 16, tint: .orange)
+                            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .orange)
                     }
 
                     Button {
@@ -2063,7 +2063,7 @@ private struct AtriaWeeklyReportStatRow: View {
                 .minimumScaleFactor(0.75)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
     }
 }
 
@@ -2542,7 +2542,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                             .font(.title3.weight(.bold))
                             .foregroundStyle(metric.targetEditorTint)
                             .frame(width: 42, height: 42)
-                            .background(AtriaIconTileBackground(cornerRadius: 14, tint: metric.targetEditorTint))
+                            .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: metric.targetEditorTint))
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(metric.label) target")
@@ -3848,10 +3848,16 @@ struct AtriaMetricDetailSheet: View {
 
     private var preparationShell: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ProgressView()
-                .tint(metric.tint)
-            Text("Preparing trend")
-                .font(.headline.weight(.semibold))
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(metric.tint)
+                Text("Preparing trend")
+                    .font(.headline.weight(.semibold))
+            }
+            // Chart-shaped placeholder: the trend lands in this exact slot, so
+            // the card holds its height and nothing jumps when data arrives.
+            AtriaSkeletonBlock(height: 108)
             Text("Your saved metric history will appear here in a moment.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -8383,7 +8389,7 @@ private struct AtriaSleepPlanCard: View {
             }
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private func scheduleWakeAlarm() {
@@ -9016,9 +9022,9 @@ private struct AtriaJournalTodayTagStrip: View, Equatable {
             }
         }
         .padding(10)
-        .background(.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(.cyan.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -9486,7 +9492,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
         .padding(10)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     private func glanceChip(title: String,

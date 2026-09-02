@@ -185,9 +185,7 @@ struct AtriaSleepStageRowStrip: View {
             // The estimate marker stays attached to these rows — mandatory
             // whenever stage-derived pixels render (2.0 invariant).
             Text(AtriaSleepStageRowStripPresentation.headerTitle(isEstimated: isEstimated))
-                .font(.caption2.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
 
             ForEach(rows) { row in
                 stageRow(row)
@@ -200,7 +198,7 @@ struct AtriaSleepStageRowStrip: View {
                 Spacer(minLength: 0)
                 Text(AtriaSleepHypnogramPresentation.clockLabel(windowEnd, calendar: eventCalendar))
             }
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .font(.caption2.weight(.medium).monospacedDigit())
             .foregroundStyle(.tertiary)
 
             // P7: the typical sub-strips are duration-scaled, not wall-clock

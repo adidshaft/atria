@@ -671,9 +671,7 @@ struct AtriaStressDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(projection.presentation.title)
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
 
                 Spacer()
 
@@ -768,7 +766,7 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     /// Legend for the confirmed-sleep band. Rendered only when the visible
@@ -821,15 +819,13 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var loggedContextCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Logged context")
-                .font(.caption.weight(.bold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
 
             ForEach(input.loggedContext) { context in
                 HStack(spacing: 10) {
@@ -853,7 +849,7 @@ struct AtriaStressDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var updateText: String? {
@@ -1079,9 +1075,7 @@ struct AtriaStressDailyTrendCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Stress by day")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 Button {
                     guard canNavigateToPreviousWeek else { return }
@@ -1137,7 +1131,7 @@ struct AtriaStressDailyTrendCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary(framed))
     }
@@ -1202,9 +1196,7 @@ private struct AtriaStressDistributionCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Today vs typical")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 if comparison.typical == nil {
                     Text("Learning")
@@ -1230,7 +1222,7 @@ private struct AtriaStressDistributionCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
     }
 

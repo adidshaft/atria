@@ -116,8 +116,9 @@ private struct AtriaCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -177,8 +178,9 @@ private struct AtriaRaisedCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -376,6 +378,17 @@ extension View {
 
     func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View {
         self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
+    }
+
+    /// The small uppercase label that heads a card section. One font, one
+    /// tracking, one color, so every eyebrow in the app is the same element
+    /// (see `AtriaDesignTokens.Typography.eyebrow`).
+    func atriaEyebrow() -> some View {
+        self
+            .font(AtriaDesignTokens.Typography.eyebrow)
+            .tracking(AtriaDesignTokens.Typography.eyebrowTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(.secondary)
     }
 }
 

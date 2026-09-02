@@ -24,7 +24,9 @@ final class AtriaPostWorkoutRecapTests: XCTestCase {
         let recap = try section(in: source,
                                 from: "private struct AtriaWorkoutEndRecapSheet: View",
                                 to: "private enum HomeTab:")
-        XCTAssertTrue(recap.contains(".atriaGlassCard(cornerRadius: 24, emphasis: .strong)"))
+        // 2026-09-02 radius-scale pass: the recap card now takes the default
+        // card radius from the token scale instead of a literal 24.
+        XCTAssertTrue(recap.contains(".atriaGlassCard(emphasis: .strong)"))
         XCTAssertTrue(recap.contains("GlassEffectContainer(spacing: 12)"))
         XCTAssertTrue(recap.contains("Label(\"Share\", systemImage: \"square.and.arrow.up\")"))
         XCTAssertLessThan(recap.components(separatedBy: "Text(notice.message)").count - 1, 2,

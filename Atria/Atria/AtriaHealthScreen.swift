@@ -3339,10 +3339,10 @@ private struct AtriaSleepConsistencyStrip: View {
         AtriaSleepConsistency.result(from: nights, targetSleepHours: targetSleepHours)
     }
 
-    // Night-centric axis: anchored at 18:00, spanning 18h to 12:00 next day.
-    // The engine's anchored civil minutes map directly: 18:00 → 1080,
-    // next-day noon → 2160.
-    private static let axisStartMinutes = 18 * 60
+    // Night-centric 18h axis. Where it STARTS comes from the engine
+    // (`scheduleAxisStartMinutes`): five hours before the bedtimes' own
+    // centre, so an afternoon sleeper's nights sit in the plot instead of
+    // being dropped or drawn a day late by a fixed 18:00 start.
     private static let axisSpanMinutes = 18 * 60
 
     private struct Row: Identifiable {
@@ -3354,7 +3354,7 @@ private struct AtriaSleepConsistencyStrip: View {
     }
 
     private func fraction(_ anchoredMinutes: Int) -> CGFloat? {
-        let rel = anchoredMinutes - Self.axisStartMinutes
+        let rel = anchoredMinutes - consistency.scheduleAxisStartMinutes
         guard rel >= 0, rel <= Self.axisSpanMinutes else { return nil }
         return CGFloat(rel) / CGFloat(Self.axisSpanMinutes)
     }
@@ -3386,8 +3386,6 @@ private struct AtriaSleepConsistencyStrip: View {
 
     private var bedtimeSpreadMinutes: Int { consistency.bedtimeVariationMinutes ?? 0 }
     private var wakeTimeSpreadMinutes: Int { consistency.wakeVariationMinutes ?? 0 }
-    private var typicalBedtime: String { consistency.typicalBedtimeText }
-    private var typicalWakeTime: String { consistency.typicalWakeTimeText }
 
     // Theme unification (2026-08-29): only the verdict WORD grades its color —
     // green/orange/red, the cyan bucket folded into green. The plot itself
@@ -3418,7 +3416,8 @@ private struct AtriaSleepConsistencyStrip: View {
                         // below is read against. Last night is the outlined row
                         // in the plot (and stays in the accessibility label);
                         // the "Aim for" recommendation restated that window.
-                        Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
+                        Text(consistency.typicalWindowText.map { "Usually \($0)" }
+                             ?? "No single typical window yet")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -3430,7 +3429,7 @@ private struct AtriaSleepConsistencyStrip: View {
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(consistencyVerdict.tint)
                         Text("\(consistency.qualifiedNightCount) qualified nights")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -3459,7 +3458,7 @@ private struct AtriaSleepConsistencyStrip: View {
                             ForEach(rows) { row in
                                 HStack(spacing: 7) {
                                     Text(row.dayLabel)
-                                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                                        .font(.system(.caption2, design: .rounded, weight: .bold))
                                         .foregroundStyle(row.isLatest ? .primary : .secondary)
                                         .frame(width: 21, alignment: .leading)
                                     ZStack(alignment: .leading) {
@@ -3497,15 +3496,13 @@ private struct AtriaSleepConsistencyStrip: View {
                 HStack(spacing: 0) {
                     Color.clear.frame(width: 28)
                     HStack {
-                        Text("6 PM")
-                        Spacer(minLength: 0)
-                        Text("12 AM")
-                        Spacer(minLength: 0)
-                        Text("6 AM")
-                        Spacer(minLength: 0)
-                        Text("12 PM")
+                        ForEach(0..<4, id: \.self) { tick in
+                            if tick > 0 { Spacer(minLength: 0) }
+                            Text(AtriaSleepConsistency.axisHourText(
+                                consistency.scheduleAxisStartMinutes + tick * 6 * 60))
+                        }
                     }
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.tertiary)
                 }
 
@@ -3525,7 +3522,7 @@ private struct AtriaSleepConsistencyStrip: View {
         .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(consistency.isQualified
-                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
+                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. \(consistency.typicalWindowText.map { "Usually \($0)." } ?? "No single typical window yet.") \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
                             : "Sleep schedule, \(consistency.footnote)")
     }
 

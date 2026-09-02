@@ -104,7 +104,7 @@ struct AtriaAssistantScreen: View {
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(.tint.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(.tint.opacity(0.16), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 .frame(maxWidth: .infinity, alignment: .trailing)
             VStack(alignment: .leading, spacing: 6) {
                 Text(exchange.answer)
@@ -118,7 +118,7 @@ struct AtriaAssistantScreen: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(uiColor: .secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
     }
 
@@ -143,8 +143,8 @@ struct AtriaAssistantScreen: View {
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                     .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(prompt.question)
