@@ -1607,7 +1607,7 @@ struct AtriaTodayScreen: View {
     /// freshness stamp are RELOCATED to `accessibilitySummary` below, not
     /// deleted (the sleep detail sheet lives in AtriaOverviewSections, outside
     /// this pass's files). `waitingForData` also stops rendering as a row: the
-    /// sleep chip's "Awaiting current sleep" detail already carries that state
+    /// sleep chip's "No sleep this cycle" detail already carries that state
     /// on-surface all day.
     @ViewBuilder
     private var sleepSettlementRow: some View {
