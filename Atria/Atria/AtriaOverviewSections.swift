@@ -7674,8 +7674,16 @@ private struct AtriaRecoveryContributorMap: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Why today's recovery landed here")
-                        .font(.subheadline.weight(.semibold))
+                    // With nothing scored, "landed here" presumes a landing
+                    // (2026-09-02 fixture screenshot); the empty card names
+                    // what it will hold and lets the notice below speak alone.
+                    if contributors.isEmpty {
+                        Text("Recovery contributors")
+                            .font(.subheadline.weight(.semibold))
+                    } else {
+                        Text("Why today's recovery landed here")
+                            .font(.subheadline.weight(.semibold))
+                    }
                     Spacer(minLength: 8)
                     if let dominantContributor {
                         Text(titleForContributor(dominantContributor))
@@ -7712,9 +7720,13 @@ private struct AtriaRecoveryContributorMap: View {
                 }
             }
 
-            Text("Recovery blends HRV, resting HR, sleep, and respiration against your personal baseline.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // The blend sentence explains rows; with none it was a third
+            // paragraph under an empty notice that already said what is missing.
+            if !contributors.isEmpty {
+                Text("Recovery blends HRV, resting HR, sleep, and respiration against your personal baseline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricGreen)
