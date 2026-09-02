@@ -87,6 +87,6 @@ final class AtriaLiveSignalTruthTests: XCTestCase {
             status: .disconnected,
             streamState: .unknown,
             hasRecentHeartRate: false
-        ), "Off")
+        ), "Not connected")
     }
 }
