@@ -38288,6 +38288,18 @@ final class SessionStore: ObservableObject {
                     SessionStore.recordSleepReviewAdmissionReceipt(receipt)
                     return
                 }
+                // Device 2026-09-02: the overnight settlement re-minted the
+                // already-confirmed 15:38→02:59 window as a review candidate
+                // every hour ("saved_review" in the same minute the record was
+                // confirmed), and Today swung between the duplicate's gross span
+                // and the confirmed night's staged time. A candidate that
+                // overlaps a confirmed night is the same sleep: it never enters
+                // the pending store.
+                if AtriaOverviewCurrentSleep.overlapsConfirmedNight(night, in: self.sleepHistorySnapshot) {
+                    receipt.finalOutcome = "already_confirmed_overlap"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
                 let persisted = AtriaPendingSleepReviewStore.save(night)
                 receipt.pendingStoreOutcome = persisted
                     ? "saved" : "rejected"

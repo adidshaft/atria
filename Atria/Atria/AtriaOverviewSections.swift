@@ -933,7 +933,7 @@ enum AtriaOverviewCurrentSleep {
                                        // the reference-date comparison below.
                                        maximumCandidateAge: TimeInterval = 48 * 60 * 60) -> SleepHistorySnapshot.Night? {
         let snapshotCandidate = snapshot.latestDisplayEvidence
-        let candidate: SleepHistorySnapshot.Night?
+        var candidate: SleepHistorySnapshot.Night?
         if pendingReview != nil {
             let preferred = AtriaTodaySleepReviewProjectionState.preferredReview(
                 snapshot: snapshot,
@@ -948,6 +948,17 @@ enum AtriaOverviewCurrentSleep {
             candidate = freshReview(snapshotCandidate, now: now, maximumAge: maximumCandidateAge)
         }
 
+        // A candidate that overlaps a confirmed night is the same sleep seen
+        // twice, never a second opinion to display. Device 2026-09-02: the
+        // overnight settlement re-minted the confirmed 15:38→02:59 window as
+        // a review candidate every hour, and Today swung between the
+        // candidate's gross span (11h 22m) and the confirmed night's staged
+        // time (9h 49m). The confirmed record is the only authority for its
+        // window: it shows while current, and its duplicate never does.
+        if let pending = candidate, Self.overlapsConfirmedNight(pending, in: snapshot) {
+            candidate = nil
+        }
+
         if let confirmed = resolve(from: snapshot, now: now, calendar: calendar) {
             if let candidate,
                candidate.reviewReferenceDate > confirmed.reviewReferenceDate {
@@ -956,6 +967,16 @@ enum AtriaOverviewCurrentSleep {
             return confirmed
         }
         return candidate
+    }
+
+    static func overlapsConfirmedNight(_ candidate: SleepHistorySnapshot.Night,
+                                       in snapshot: SleepHistorySnapshot) -> Bool {
+        guard let start = candidate.start, let end = candidate.end, end > start else { return false }
+        return snapshot.nights.contains { night in
+            guard night.confirmed, !night.isNapEvidence,
+                  let nightStart = night.start, let nightEnd = night.end else { return false }
+            return start < nightEnd && end > nightStart
+        }
     }
 
     private static func freshReview(_ night: SleepHistorySnapshot.Night?,
