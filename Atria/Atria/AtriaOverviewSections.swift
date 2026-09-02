@@ -5103,7 +5103,12 @@ struct AtriaMetricDetailSheet: View {
         }
         guard showsCurrentPhysiologicalCycleContext,
               let target = guidance.target else {
-            return range == .day ? "Saved day" : "Period average"
+            // A live cycle is still accumulating; "Saved day" belongs to
+            // dated history only (2026-09-02 fixture screenshot).
+            if range == .day {
+                return currentCycleDetailProjection.usesCurrentCycle ? "So far today" : "Saved day"
+            }
+            return "Period average"
         }
         if latest >= target + 1 { return "Strained" }
         if latest >= target - 1 { return "On target" }
