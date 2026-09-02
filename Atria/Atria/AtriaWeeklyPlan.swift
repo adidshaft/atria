@@ -72,6 +72,10 @@ struct WeeklyPlan: Codable, Equatable {
         ]
         return candidates
             .sorted { first, second in
+                // Actionable targets first; a learning row has nothing to do
+                // yet and should not push the one real target off the card
+                // (on a fresh install two learning rows sat above it).
+                if first.isLearning != second.isLearning { return !first.isLearning }
                 let firstGap = first.goal - first.current
                 let secondGap = second.goal - second.current
                 if firstGap == secondGap { return first.id < second.id }
