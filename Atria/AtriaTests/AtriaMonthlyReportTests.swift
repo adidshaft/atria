@@ -77,6 +77,26 @@ final class AtriaMonthlyReportTests: XCTestCase {
                       "cells use the same zone authority as the Today ring")
         XCTAssertTrue(overview.contains(".strokeBorder(.quaternary, lineWidth: 1)"),
                       "unscored days are hollow, never filled or interpolated")
-        XCTAssertTrue(overview.contains("guard let recovery = entry.recovery else { continue }"))
+        // 2026-09-02 (strain strip): the builder collects recovery and strain in
+        // one pass; the nil check is now an `if let` on the same rollup field.
+        XCTAssertTrue(overview.contains("if let recovery = entry.recovery, recoveryByDay[key] == nil"))
+    }
+
+    /// 2026-09-02 (same fire's follow-on): a strain-by-day strip beside the
+    /// recovery one — single strain hue, magnitude as intensity per the
+    /// palette rule; hollow without a value; omitted until one day has one.
+    func testSheetCarriesAStrainByDayStripInOneHueByIntensity() throws {
+        let appDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Atria")
+        let overview = try String(contentsOf: appDirectory.appendingPathComponent("AtriaOverviewSections.swift"),
+                                  encoding: .utf8)
+        XCTAssertTrue(overview.contains("if strainDayCount > 0 {\n                        kicker(\"Strain by day\")"))
+        XCTAssertTrue(overview.contains(".fill(Metrics.electricStrain.opacity(Self.strainIntensity(strain)))"),
+                      "one hue; the fill carries the magnitude")
+        XCTAssertFalse(overview.contains("strainColor(strain)?.tint"), "no zone colours for strain")
+        XCTAssertEqual(AtriaMonthlyReportSheet.strainIntensity(0), 0.22, accuracy: 0.0001)
+        XCTAssertEqual(AtriaMonthlyReportSheet.strainIntensity(21), 1.0, accuracy: 0.0001)
+        XCTAssertEqual(AtriaMonthlyReportSheet.strainIntensity(40), 1.0, accuracy: 0.0001, "clamped")
+        XCTAssertGreaterThan(AtriaMonthlyReportSheet.strainIntensity(14), AtriaMonthlyReportSheet.strainIntensity(7))
     }
 }

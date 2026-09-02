@@ -2080,23 +2080,26 @@ struct AtriaMonthlyReportSheet: View {
         let id: Int
         let day: Date
         let recovery: Int?
+        let strain: Double?
     }
 
-    /// One cell per calendar day of the displayed month. A day's recovery is
-    /// the rollup's own score or nil; nothing is interpolated.
+    /// One cell per calendar day of the displayed month. A day's recovery and
+    /// strain are the rollup's own values or nil; nothing is interpolated.
     private var monthDayCells: [MonthDayCell] {
         guard let interval = calendar.dateInterval(of: .month, for: anchor) else { return [] }
-        var byDay: [Date: Int] = [:]
+        var recoveryByDay: [Date: Int] = [:]
+        var strainByDay: [Date: Double] = [:]
         for entry in rollups {
-            guard let recovery = entry.recovery else { continue }
             let key = calendar.startOfDay(for: entry.day)
-            if byDay[key] == nil { byDay[key] = recovery }
+            if let recovery = entry.recovery, recoveryByDay[key] == nil { recoveryByDay[key] = recovery }
+            if let strain = entry.strain, strainByDay[key] == nil { strainByDay[key] = strain }
         }
         var cells: [MonthDayCell] = []
         var day = interval.start
         var index = 1
         while day < interval.end {
-            cells.append(MonthDayCell(id: index, day: day, recovery: byDay[calendar.startOfDay(for: day)]))
+            let key = calendar.startOfDay(for: day)
+            cells.append(MonthDayCell(id: index, day: day, recovery: recoveryByDay[key], strain: strainByDay[key]))
             guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
             day = next
             index += 1
@@ -2106,6 +2109,10 @@ struct AtriaMonthlyReportSheet: View {
 
     private var scoredDayCount: Int {
         monthDayCells.filter { $0.recovery != nil }.count
+    }
+
+    private var strainDayCount: Int {
+        monthDayCells.filter { $0.strain != nil }.count
     }
 
     /// Days of the month that have happened: the whole month for a past
@@ -2135,15 +2142,7 @@ struct AtriaMonthlyReportSheet: View {
                 }
             }
             .frame(height: 18)
-            HStack {
-                Text("1")
-                Spacer(minLength: 0)
-                Text("15")
-                Spacer(minLength: 0)
-                Text("\(cells.count)")
-            }
-            .font(.caption2.weight(.semibold).monospacedDigit())
-            .foregroundStyle(.secondary)
+            monthDayLabels(count: cells.count)
             Text("\(scoredDayCount) of \(elapsedDayCount) days scored")
                 .font(.caption2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -2152,6 +2151,55 @@ struct AtriaMonthlyReportSheet: View {
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricGreen)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recovery by day, \(scoredDayCount) of \(elapsedDayCount) days scored")
+    }
+
+    /// Strain by day (2026-09-02): the same cells in strain's single cool
+    /// hue, magnitude as intensity — the palette rule keeps effort off the
+    /// recovery colour axis and lets the fill carry the size. Days without
+    /// a strain value stay hollow; the block is omitted until one has one.
+    private var strainByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let strain = cell.strain {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(Self.strainIntensity(strain)))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            monthDayLabels(count: cells.count)
+            Text("\(strainDayCount) of \(elapsedDayCount) days with strain")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricStrain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Strain by day, \(strainDayCount) of \(elapsedDayCount) days with strain")
+    }
+
+    /// Fill intensity for a strain cell: linear over the 0–21 scale with a
+    /// floor so a light day is still visibly a day, never a hollow cell.
+    static func strainIntensity(_ strain: Double) -> Double {
+        let fraction = max(0, min(1, strain / 21))
+        return 0.22 + 0.78 * fraction
+    }
+
+    private func monthDayLabels(count: Int) -> some View {
+        HStack {
+            Text("1")
+            Spacer(minLength: 0)
+            Text("15")
+            Spacer(minLength: 0)
+            Text("\(count)")
+        }
+        .font(.caption2.weight(.semibold).monospacedDigit())
+        .foregroundStyle(.secondary)
     }
 
     private var canNavigateToPreviousMonth: Bool {
@@ -2188,6 +2236,11 @@ struct AtriaMonthlyReportSheet: View {
                     if scoredDayCount > 0 {
                         kicker("Recovery by day")
                         recoveryByDayStrip
+                    }
+
+                    if strainDayCount > 0 {
+                        kicker("Strain by day")
+                        strainByDayStrip
                     }
 
                     if !report.isBuilding {
