@@ -42138,6 +42138,31 @@ final class SessionStore: ObservableObject {
                                                          span: sleep.span)
     }
 
+    /// Stage monotonicity at the persistence boundary (device 2026-09-02: the
+    /// confirmed night's 504 motion-receipted stages vanished between two
+    /// pulls with every other field identical, and Today swung between the
+    /// staged 9h 49m and the gross 11h 22m). Every writer passes through the
+    /// save preparation, so a record re-saved with its stages absent takes
+    /// back the authoritative copy's motion-receipted stages when they still
+    /// validate for the incoming window; a changed window fails that check
+    /// and drops them. HR estimates are left alone: the backfill clears
+    /// those on purpose to re-mint.
+    nonisolated static func preservingValidatedMotionStages(
+        _ incoming: UserConfirmedSleep,
+        authoritative: UserConfirmedSleep?
+    ) -> UserConfirmedSleep {
+        guard incoming.stageSegments?.isEmpty != false,
+              let authoritative,
+              let stages = authoritative.stageSegments, !stages.isEmpty,
+              stages.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) }),
+              AtriaSleepStageIntegrity.validates(stages, for: incoming) else { return incoming }
+        AtriaDebugLog("ATRIADBG confirmed_sleep_store stage_guard id=%@ restored=%d", incoming.id, stages.count)
+        return copyConfirmedSleep(incoming,
+                                  stageSegments: stages,
+                                  motionSource: authoritative.motionSource,
+                                  motionValidated: authoritative.motionValidated)
+    }
+
     nonisolated private static func copyConfirmedSleep(
         _ sleep: UserConfirmedSleep,
         stageSegments: [SleepStageSegment]?,
@@ -43148,11 +43173,16 @@ final class SessionStore: ObservableObject {
         var existingSleepIDs = Set<String>()
         existingNeedByID.reserveCapacity(authoritativeCurrent.count)
         existingSleepIDs.reserveCapacity(authoritativeCurrent.count)
+        var existingMotionStagedByID: [String: UserConfirmedSleep] = [:]
         for (index, sleep) in authoritativeCurrent.enumerated() {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
             existingSleepIDs.insert(sleep.id)
             if let need = sleep.sleepNeedSeconds, need > 0 {
                 existingNeedByID[sleep.id] = (need: need, receipt: sleep.frozenSleepNeed)
+            }
+            if let stages = sleep.stageSegments, !stages.isEmpty,
+               stages.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) }) {
+                existingMotionStagedByID[sleep.id] = sleep
             }
         }
         var needPreservingRebase: [UserConfirmedSleep] = []
@@ -43170,7 +43200,9 @@ final class SessionStore: ObservableObject {
             } else {
                 preserved = sleep
             }
-            needPreservingRebase.append(preserved)
+            let stagePreserved = Self.preservingValidatedMotionStages(
+                preserved, authoritative: existingMotionStagedByID[preserved.id])
+            needPreservingRebase.append(stagePreserved)
             if !existingSleepIDs.contains(preserved.id) {
                 freezableSleepIDs.insert(preserved.id)
             }
