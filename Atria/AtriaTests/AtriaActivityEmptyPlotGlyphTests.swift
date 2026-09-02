@@ -6,6 +6,16 @@ import XCTest
 /// missing trace at a glance; the plot keeps its height so day navigation
 /// does not jump.
 final class AtriaActivityEmptyPlotGlyphTests: XCTestCase {
+    /// The activity list's empty state said "Use Add to log your own" under
+    /// an Add button; one sentence remains (2026-09-02).
+    func testEmptyListStateIsOneSentence() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("Text(\"Detected workouts and sleep appear here.\")"))
+        XCTAssertFalse(source.contains("Use Add to log your own"), "the button says it")
+    }
+
     func testEmptyOverlayShowsTheSignalGlyphAboveTheMessage() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()

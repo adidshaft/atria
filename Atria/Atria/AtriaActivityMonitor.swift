@@ -1907,7 +1907,8 @@ struct AtriaActivityMonitorTab: View {
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
 
-            Text("Detected workouts and sleep appear here. Use Add to log your own.")
+            // 2026-09-02: the second sentence restated the Add button above.
+            Text("Detected workouts and sleep appear here.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
