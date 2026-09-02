@@ -18,6 +18,19 @@ final class AtriaLegendChipAccessibilityTests: XCTestCase {
         XCTAssertTrue(window.contains(".lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)"))
     }
 
+    /// Three chips in a row truncated "Rec…" in the onboarding preview at
+    /// XXXL; from XX-Large up the legend stacks its chips as full rows.
+    func testLegendStacksFromXXLargeUp() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTriRing.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "if legendDynamicTypeSize >= .xxLarge {"))
+        let window = String(source[start.lowerBound...].prefix(900))
+        XCTAssertTrue(window.contains("VStack(spacing: 8) {"), "chips stack from XX-Large up")
+        XCTAssertTrue(window.contains("} else {"))
+        XCTAssertTrue(window.contains("HStack(spacing: 8) {"), "the row stays for standard sizes")
+    }
+
     func testCaptionWrapsFromXXLargeUp() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
