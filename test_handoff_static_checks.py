@@ -11846,7 +11846,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, corner_button, ".glassEffect(")
             assert_contains(self, corner_button, ".frame(width: 18, height: 18)")
             assert_not_contains(self, corner_button, ".contentShape(Circle())")
-        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 6)
+        # 2026-09-02: 6 (cancel + share per sheet) + 1 for AtriaShareEmptyStateView's
+        # close button, the state a sheet shows when nothing real exists yet.
+        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 7)
         self.assertEqual(share.count("GlassEffectContainer(spacing: 12)"), 3)
         self.assertEqual(share.count(".buttonBorderShape(.circle)"), 0)
         assert_contains(self, plist, "NSCameraUsageDescription")
