@@ -161,6 +161,42 @@ final class AtriaDetectionLogTests: XCTestCase {
         XCTAssertEqual(DetectionReasonCopy.text(for: unknownEverything), "raw detail")
     }
 
+    /// 2026-09-02: the Vitals sleep card and History rows showed raw pipeline
+    /// sentences ending in "(source: foreground_edge)". Every emitted skip code
+    /// now maps to plain copy, and the raw fallback drops provenance tokens.
+    func testEveryEmittedSleepSkipCodeReadsAsPlainCopy() {
+        let codes = ["no_strong_candidate", "candidate_not_settled",
+                     "daytime_quiescence_no_strap", "daytime_quiescence_insufficient_motion",
+                     "daytime_quiescence_hr_read_incomplete", "daytime_quiescence_no_candidate",
+                     "daytime_quiescence_slot_held", "review_only_classification",
+                     "wake_boundary_review_only_classification",
+                     "compact_materialization_stale_or_missing",
+                     "compact_wake_materialization_stale_or_missing", "baseline_trust_changed",
+                     "wake_boundary_dismissed", "save_time_dismissal_suppressed",
+                     "wake_boundary_no_wake_detected", "wake_boundary_overlaps_saved",
+                     "already_saved_or_overlapping"]
+        for code in codes {
+            let event = DetectionEvent(kind: "sleepCandidateSkipped", reason: code,
+                                       detail: "raw (source: foreground_edge)")
+            let text = DetectionReasonCopy.text(for: event)
+            XCTAssertNotEqual(text, event.detail, "\(code) must not fall through to the raw detail")
+            XCTAssertFalse(text.contains("(source:"), code)
+            XCTAssertFalse(text.contains("_"), "\(code) copy must not carry machine tokens")
+        }
+    }
+
+    func testRawDetailFallbackDropsProvenanceTokens() {
+        let unknown = DetectionEvent(kind: "sleepCandidateSkipped", reason: "some_future_code",
+                                     detail: "3 sleep candidate(s) proposed, none auto-confirmable (source: foreground_edge)")
+        XCTAssertEqual(DetectionReasonCopy.text(for: unknown),
+                       "3 sleep candidate(s) proposed, none auto-confirmable")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("Only a token (source: x)"), "Only a token")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("Marked not sleep: 13:10–19:05. This window won't be suggested again."),
+                       "Marked not sleep: 13:10–19:05. This window won't be suggested again.")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("(source: x)"), "(source: x)",
+                       "a detail that is nothing but the token stays as recorded rather than vanishing")
+    }
+
     func testDetectionEventCodableRoundTrips() throws {
         let event = DetectionEvent(kind: "workoutSuppressed",
                                     reason: "contact_compromised_stitched",
