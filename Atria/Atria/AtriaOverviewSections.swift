@@ -2075,6 +2075,84 @@ struct AtriaMonthlyReportSheet: View {
         MonthlyReport(rollups: rollups, sleepNights: sleepNights, now: anchor, calendar: calendar)
     }
 
+    private struct MonthDayCell: Identifiable {
+        let id: Int
+        let day: Date
+        let recovery: Int?
+    }
+
+    /// One cell per calendar day of the displayed month. A day's recovery is
+    /// the rollup's own score or nil; nothing is interpolated.
+    private var monthDayCells: [MonthDayCell] {
+        guard let interval = calendar.dateInterval(of: .month, for: anchor) else { return [] }
+        var byDay: [Date: Int] = [:]
+        for entry in rollups {
+            guard let recovery = entry.recovery else { continue }
+            let key = calendar.startOfDay(for: entry.day)
+            if byDay[key] == nil { byDay[key] = recovery }
+        }
+        var cells: [MonthDayCell] = []
+        var day = interval.start
+        var index = 1
+        while day < interval.end {
+            cells.append(MonthDayCell(id: index, day: day, recovery: byDay[calendar.startOfDay(for: day)]))
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+            index += 1
+        }
+        return cells
+    }
+
+    private var scoredDayCount: Int {
+        monthDayCells.filter { $0.recovery != nil }.count
+    }
+
+    /// Days of the month that have happened: the whole month for a past
+    /// month, today's day-of-month for the current one.
+    private var elapsedDayCount: Int {
+        let cells = monthDayCells
+        guard let last = cells.last else { return 0 }
+        if last.day < calendar.startOfDay(for: now) { return cells.count }
+        return calendar.component(.day, from: now)
+    }
+
+    /// Month at a glance (2026-09-02): one cell per day, tinted by that day's
+    /// recovery zone through the same authority the Today ring uses. Unscored
+    /// days stay hollow; the block is omitted until one day has scored.
+    private var recoveryByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let recovery = cell.recovery {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill((Metrics.recoveryZone(recovery)?.tint ?? Color.secondary).opacity(0.9))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            HStack {
+                Text("1")
+                Spacer(minLength: 0)
+                Text("15")
+                Spacer(minLength: 0)
+                Text("\(cells.count)")
+            }
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+            Text("\(scoredDayCount) of \(elapsedDayCount) days scored")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricGreen)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Recovery by day, \(scoredDayCount) of \(elapsedDayCount) days scored")
+    }
+
     private var canNavigateToPreviousMonth: Bool {
         guard let previous = calendar.date(byAdding: .month, value: -1, to: anchor),
               let start = calendar.dateInterval(of: .month, for: previous)?.start else { return false }
@@ -2105,6 +2183,11 @@ struct AtriaMonthlyReportSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
                     .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .cyan)
+
+                    if scoredDayCount > 0 {
+                        kicker("Recovery by day")
+                        recoveryByDayStrip
+                    }
 
                     if !report.isBuilding {
                         kicker("Month averages")

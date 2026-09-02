@@ -62,4 +62,21 @@ final class AtriaMonthlyReportTests: XCTestCase {
         XCTAssertTrue(today.contains("sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights"),
                       "consistency needs the qualified sleep windows, not bedtime-only rollups")
     }
+
+    /// 2026-09-02: the sheet carries a month-at-a-glance strip of daily
+    /// recovery. Cells come from rollup scores only, tinted by the shared
+    /// zone authority; unscored days stay hollow and the block is omitted
+    /// until one day has scored.
+    func testSheetCarriesARecoveryByDayStripFromRealScoresOnly() throws {
+        let appDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Atria")
+        let overview = try String(contentsOf: appDirectory.appendingPathComponent("AtriaOverviewSections.swift"),
+                                  encoding: .utf8)
+        XCTAssertTrue(overview.contains("if scoredDayCount > 0 {\n                        kicker(\"Recovery by day\")"))
+        XCTAssertTrue(overview.contains("Metrics.recoveryZone(recovery)?.tint"),
+                      "cells use the same zone authority as the Today ring")
+        XCTAssertTrue(overview.contains(".strokeBorder(.quaternary, lineWidth: 1)"),
+                      "unscored days are hollow, never filled or interpolated")
+        XCTAssertTrue(overview.contains("guard let recovery = entry.recovery else { continue }"))
+    }
 }
