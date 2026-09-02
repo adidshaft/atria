@@ -1256,14 +1256,19 @@ struct AtriaOnboardingFlow: View {
                                 tint: .indigo,
                                 title: "Tonight",
                                 detail: "Wear your strap to sleep — it captures your night automatically.")
+                // 2026-09-02: the engine scores recovery from the first saved
+                // sleep on a provisional baseline; trusted baselines take
+                // `PersonalBaseline.trustedMinimumSamples` (14) nights, the
+                // same "of 14 nights" the metric heroes count. The page said
+                // the score "kicks in after 3–4 nights", which matched neither.
                 expectationStep(icon: "sunrise.fill",
                                 tint: .orange,
                                 title: "Tomorrow morning",
-                                detail: "Your first sleep review is ready to confirm.")
+                                detail: "Your first sleep review to confirm, and a first recovery score.")
                 expectationStep(icon: "chart.line.uptrend.xyaxis",
                                 tint: .green,
-                                title: "After 3–4 nights",
-                                detail: "Your recovery score kicks in as Atria learns your baseline.",
+                                title: "Over the first two weeks",
+                                detail: "Scores firm up as Atria learns your baseline.",
                                 isLast: true)
             }
             .padding(18)
