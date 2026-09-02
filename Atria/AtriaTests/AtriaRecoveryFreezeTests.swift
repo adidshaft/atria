@@ -1570,7 +1570,7 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         }
     }
 
-    func testMetricDetailPeriodsAreCalendarAlignedAndNavigable() throws {
+    func testMetricDetailPeriodsAreTrailingWindowsAndNavigable() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(
             TimeZone(identifier: "America/Los_Angeles")
@@ -1592,13 +1592,20 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
             "calendar arithmetic must survive DST instead of assuming 86,400 seconds"
         )
 
+        // Owner 2026-09-02: Week and Month are trailing windows ending on
+        // the anchor day (the segment labels say "7 days" and "30 days"),
+        // not the calendar week and month containing it.
         let month = AtriaTrendRange.month.periodInterval(
             containing: anchor,
             calendar: calendar
         )
-        XCTAssertEqual(calendar.component(.day, from: month.start), 1)
-        XCTAssertEqual(calendar.component(.month, from: month.start), 3)
-        XCTAssertEqual(calendar.component(.month, from: month.end), 4)
+        XCTAssertEqual(calendar.dateComponents([.day], from: month.start, to: month.end).day, 30)
+        XCTAssertEqual(month.end, calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: anchor)))
+        XCTAssertTrue(month.contains(anchor), "the anchor day is the window's last day")
+
+        let week = AtriaTrendRange.week.periodInterval(containing: anchor, calendar: calendar)
+        XCTAssertEqual(calendar.dateComponents([.day], from: week.start, to: week.end).day, 7)
+        XCTAssertEqual(week.end, month.end)
 
         let previous = AtriaTrendRange.month.adjacentPeriodAnchor(
             from: anchor,
@@ -1609,7 +1616,6 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
             containing: previous,
             calendar: calendar
         )
-        XCTAssertEqual(calendar.component(.month, from: previousMonth.start), 2)
-        XCTAssertEqual(previousMonth.end, month.start)
+        XCTAssertEqual(previousMonth.end, month.start, "paging back shows the 30 days before")
     }
 }
