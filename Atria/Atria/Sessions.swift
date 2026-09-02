@@ -44834,7 +44834,16 @@ final class SessionStore: ObservableObject {
                                 // here would rewrite the store twice per
                                 // projection cycle for already-validated
                                 // nights — strip only when the provenance
-                                // fields actually moved.
+                                // fields actually moved. Device 2026-09-02:
+                                // when the re-mint then fails (compact read
+                                // deadline), this strip left the night
+                                // stage-less until the next successful pass
+                                // and Today swung 9h 49m / 11h 22m. The save
+                                // preparation's `preservingValidatedMotionStages`
+                                // now hands validated motion-receipted stages
+                                // back on the same save, so a failed re-mint
+                                // changes nothing and a successful one still
+                                // replaces them.
                                 let requiresStageRemint = usedCompactEvidence
                                     ? fieldsChanged
                                     : sleep.stageSegments?.isEmpty == false
