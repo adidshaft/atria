@@ -56,6 +56,15 @@ final class AtriaWeeklyPlanBedtimeTargetTests: XCTestCase {
         XCTAssertTrue(three.title.hasPrefix("Lights out by"))
     }
 
+    func testRHRTargetLearnsUntilTheBaselineHasTrustedMornings() throws {
+        let targets = WeeklyPlan.generate(from: (1...5).map { entry(daysAgo: $0, bedtimeMinutes: 795) },
+                                          now: now, calendar: calendar)
+        let rhr = try XCTUnwrap(targets.first { $0.kind == .rhrInRange })
+        XCTAssertTrue(rhr.isLearning, "no trusted RHR mornings, no range to keep")
+        XCTAssertEqual(rhr.learningNightsRemaining, WeeklyPlan.minimumTrustedRHRDays)
+        XCTAssertFalse(rhr.title.contains("Keep RHR in range"))
+    }
+
     func testAfternoonSleeperGetsAnAfternoonTargetAndPreNoonNightsCount() throws {
         // Recent rhythm: 13:15 ± 20 over ten nights, all before this week.
         var rollups = (8...17).map { entry(daysAgo: $0, bedtimeMinutes: 795 + ($0 % 3) * 15) }

@@ -116,6 +116,8 @@ struct WeeklyPlan: Codable, Equatable {
     /// "Based on your recent bedtime rhythm" (2026-09-02 fresh-install
     /// screenshot: "Lights out by 11:20 PM · 4 nights" with zero nights).
     static let minimumBedtimeNights = 3
+    /// Trusted RHR mornings needed before the RHR-range target is real.
+    static let minimumTrustedRHRDays = 3
 
     private static func bedtimeTarget(recent28: [DailyRollupStoreEntry],
                                       currentWeek: [DailyRollupStoreEntry]) -> WeeklyPlanTarget {
@@ -166,6 +168,18 @@ struct WeeklyPlan: Codable, Equatable {
             return abs((Double(rhr) - stat.mean) / stat.sd) <= 1.5
         }.count)
         let trustedDays = recent28.filter { $0.vitals?.rhr != nil && $0.rhr != nil }.count
+        // No trusted RHR days means no "typical range" to keep — "0/4" implied
+        // four failed mornings on a fresh install (2026-09-02). Same learning
+        // shape as the bedtime target until the baseline has a few days.
+        guard trustedDays >= minimumTrustedRHRDays else {
+            return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.rhrInRange.rawValue,
+                                    kind: .rhrInRange,
+                                    title: "RHR range target",
+                                    detail: "Needs \(minimumTrustedRHRDays) mornings with a trusted RHR (\(trustedDays) so far)",
+                                    goal: 4,
+                                    current: 0,
+                                    learningNightsRemaining: minimumTrustedRHRDays - trustedDays)
+        }
         let goal = trustedDays >= 7 ? 7.0 : 4.0
         return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.rhrInRange.rawValue,
                                 kind: .rhrInRange,
