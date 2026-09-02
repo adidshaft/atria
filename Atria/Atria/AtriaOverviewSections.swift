@@ -3807,6 +3807,13 @@ struct AtriaMetricDetailSheet: View {
     /// provenance to show, in which case the section is simply absent rather
     /// than rendered empty.
     var provenance: AtriaMetricProvenance? = nil
+    /// Self-improving zones (2026-09-02): the max-HR suggestion the engine
+    /// learns from sustained session peaks, offered beside the zone card it
+    /// would change instead of only deep in Settings. nil = nothing to offer.
+    var maxHRSuggestion: AtriaMaxHRSuggestion? = nil
+    var onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil
+    var onDismissMaxHRSuggestion: ((Int) -> Void)? = nil
+    @State private var maxHRSuggestionHandled = false
 
     private final class ExpandedChartEventsCache {
         private var key: Int?
@@ -3870,6 +3877,9 @@ struct AtriaMetricDetailSheet: View {
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
          strapMotionAvailability: AtriaStrapMotionAvailability? = nil,
          provenance: AtriaMetricProvenance? = nil,
+         maxHRSuggestion: AtriaMaxHRSuggestion? = nil,
+         onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil,
+         onDismissMaxHRSuggestion: ((Int) -> Void)? = nil,
          // Cycle-truth strain series (2026-08-30). Default [:] keeps every
          // caller without it byte-identical: absent days chart civil values.
          cycleStrainByDisplayDay: [Date: Double] = [:],
@@ -3892,6 +3902,9 @@ struct AtriaMetricDetailSheet: View {
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.provenance = provenance
+        self.maxHRSuggestion = maxHRSuggestion
+        self.onAcceptMaxHRSuggestion = onAcceptMaxHRSuggestion
+        self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.confirmedWorkoutsRevision = confirmedWorkoutsRevision
@@ -4340,6 +4353,9 @@ struct AtriaMetricDetailSheet: View {
                 // above the fold; the workout/zone/mix/split cards moved
                 // behind the "Show details" reveal (contributors slot).
                 strainRecoveryComboCard
+                // Rare, dismissible, and asking for a decision: the learned
+                // max-HR offer stays above the fold when present (2026-09-02).
+                maxHRSuggestionCard
             } contributors: {
                 if showsCurrentPhysiologicalCycleContext {
                     strainWorkoutSection
@@ -5445,6 +5461,46 @@ struct AtriaMetricDetailSheet: View {
 
     /// Strain time-in-zones histogram (design backlog item 5): minutes per
     /// percent-of-max zone across today's confirmed workouts.
+    /// The learned max-HR offer, one glance and two actions: the same
+    /// profile write as Settings, hidden as soon as either is taken.
+    @ViewBuilder
+    private var maxHRSuggestionCard: some View {
+        if metric == .strain, !maxHRSuggestionHandled, let suggestion = maxHRSuggestion {
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+                Text("Max heart rate")
+                    .atriaEyebrow()
+                Text("Observed \(suggestion.observedPeak) bpm · set to \(suggestion.currentMaxHR)")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                Text(suggestion.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+                    Button {
+                        maxHRSuggestionHandled = true
+                        onAcceptMaxHRSuggestion?(suggestion.observedPeak)
+                    } label: {
+                        Label("Update to \(suggestion.observedPeak)", systemImage: "checkmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: Metrics.electricStrain)
+
+                    Button {
+                        maxHRSuggestionHandled = true
+                        onDismissMaxHRSuggestion?(suggestion.observedPeak)
+                    } label: {
+                        Text("Not now")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(prominent: false, tint: .secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+        }
+    }
+
     @ViewBuilder
     private var strainZoneHistogramCard: some View {
         let histogram = todayZoneHistogram

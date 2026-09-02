@@ -424,6 +424,14 @@ struct AtriaTodayScreen: View {
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
                                        provenance: provenance(for: detail),
+                                       // Cached, not forced: the same value Home
+                                       // hands Settings; refreshed on rollup/session.
+                                       maxHRSuggestion: detail == .strain
+                                           ? (Self.debugMaxHRSuggestion(arguments: ProcessInfo.processInfo.arguments)
+                                              ?? store.cachedMaxHRSuggestion)
+                                           : nil,
+                                       onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) },
+                                       onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) },
                                        // Read, not observed: republished in
                                        // lockstep with dailyRollupHistory, whose
                                        // revision already invalidates this sheet.
@@ -1353,6 +1361,18 @@ struct AtriaTodayScreen: View {
         let valueIndex = arguments.index(after: fixtureIndex)
         return arguments.indices.contains(valueIndex)
             && arguments[valueIndex] == "weekly-report"
+    }
+
+    /// `--atria-ui-fixture strain-detail --atria-debug-max-hr-suggestion`
+    /// seeds the strain sheet's max-HR offer (the fixture slot is taken by
+    /// the sheet itself). DEBUG only.
+    private static func debugMaxHRSuggestion(arguments: [String]) -> AtriaMaxHRSuggestion? {
+#if DEBUG
+        guard arguments.contains("--atria-debug-max-hr-suggestion") else { return nil }
+        return AtriaMaxHRSuggestion(observedPeak: 193, currentMaxHR: 190)
+#else
+        return nil
+#endif
     }
 
     private static func debugShowsBreathwork(arguments: [String]) -> Bool {

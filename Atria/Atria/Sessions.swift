@@ -28989,6 +28989,18 @@ final class SessionStore: ObservableObject {
         refreshMaxHRSuggestion(reason: "dismiss", now: now, force: true)
     }
 
+    /// Accepts the learned peak as the measured max HR (the same profile
+    /// write Settings makes) and re-derives the suggestion so it retires at
+    /// once instead of on the next rollup (2026-09-02, strain-sheet offer).
+    func acceptMaxHRSuggestion(observedPeak: Int, now: Date = Date()) {
+        updateProfile {
+            $0.measuredMaxHR = observedPeak
+            $0.maxHRSource = .measured
+        }
+        AtriaMaxHRSuggestionEngine.clearDismissal()
+        refreshMaxHRSuggestion(reason: "accept", now: now, force: true)
+    }
+
     func completeOnboarding(with profile: AthleteProfile) {
         guard canonicalMutationAllowed else { return }
         var next = profile
