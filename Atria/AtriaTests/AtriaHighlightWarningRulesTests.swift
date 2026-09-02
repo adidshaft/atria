@@ -41,6 +41,19 @@ final class AtriaHighlightWarningRulesTests: XCTestCase {
                      "under a tenth above is noise")
     }
 
+    /// The `north-star-warnings` fixture routes through the same rollup
+    /// synthesizer with the latest morning above the prior week, so both
+    /// warning rows have a screenshot surface.
+    func testWarningFixtureIsRoutedOnBothScreens() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let today = try String(contentsOf: root.appendingPathComponent("Atria/AtriaTodayScreen.swift"), encoding: .utf8)
+        let home = try String(contentsOf: root.appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(today.contains("|| arguments[valueIndex] == \"north-star-warnings\")"))
+        XCTAssertTrue(today.contains("warning: Self.debugShowsNorthStarWarnings(arguments: ProcessInfo.processInfo.arguments))"))
+        XCTAssertTrue(today.contains("let restingHeartRate = offset == 0 ? (warning ? 62 : 52) : 58 + (offset % 2)"))
+        XCTAssertTrue(home.contains("\"north-star-highlights\", \"north-star-warnings\"]"))
+    }
+
     func testLowerAndHigherRestingHRNeverBothFire() {
         let ids = AtriaHighlights.topTwo(rollups: rollups(rhr: [52, 56, 57, 56])).map(\.id)
         XCTAssertTrue(ids.contains("lower-rhr"))
