@@ -472,4 +472,23 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertTrue(f!.detail.contains("30m old"))
         XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 30m old"))
     }
+
+    /// Device 2026-09-02: the pre-Atria backlog banner recommended "Start
+    /// fresh" while offering only a sync glyph and a snooze, and its sentence
+    /// was cut at one line. A decision shows its whole sentence and both
+    /// labeled actions; a status row is unchanged.
+    func testOversizedBacklogIsADecisionWithBothActionsAndAFullSentence() throws {
+        let plain = AtriaMissedDataBannerPresentation.Copy(title: "t", subtitle: "s", offersRecovery: true)
+        XCTAssertFalse(plain.isDecision, "status rows default to the compact form")
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("offersRecovery: true,\n                isDecision: true"))
+        XCTAssertTrue(source.contains("Button(\"Start fresh\", action: onStartFresh)"))
+        XCTAssertTrue(source.contains("Button(\"Sync all\", action: handleSyncTap)"))
+        XCTAssertTrue(source.contains(".lineLimit(bannerCopy.isDecision ? 4 : 1)"))
+        XCTAssertTrue(source.contains("if !bannerCopy.isDecision {\n                    compactState"),
+                      "the status glyph yields to the labeled actions in decision mode")
+    }
 }
