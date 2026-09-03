@@ -80,10 +80,12 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
                                      range: .month)
 
         XCTAssertEqual(day.compactMap(\.strain), [29])
-        // 29 June 2026 is a Monday with this calendar's Monday-first week,
-        // so the current (still incomplete) calendar week honestly contains
-        // only the 29th. It must not borrow weekend rows to make a fuller line.
-        XCTAssertEqual(week.compactMap(\.strain), [29])
+        // Week is a TRAILING seven days ending on the anchor (2026-09-02
+        // owner report: 29 June is a Monday, and the calendar week containing
+        // it held a single day while the strap had weeks of wear — the
+        // segment says "7 days", so it shows seven). Month trails thirty, so
+        // a 29-day fixture shows all of it.
+        XCTAssertEqual(week.compactMap(\.strain), (23...29).map(Double.init))
         XCTAssertEqual(month.compactMap(\.strain), (1...29).map(Double.init))
         XCTAssertNotEqual(week.compactMap(\.strain),
                           month.compactMap(\.strain))

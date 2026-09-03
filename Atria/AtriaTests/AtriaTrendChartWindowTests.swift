@@ -59,6 +59,19 @@ final class AtriaTrendChartWindowTests: XCTestCase {
         XCTAssertTrue(s.contains("if let coverageText {"), "and it is actually rendered")
     }
 
+    /// The metric detail sheet says the same thing in the same words, derived
+    /// from the window it already plots, and stays silent where a day count
+    /// would mislead.
+    func testDetailSheetStatesCoverageToo() throws {
+        let overview = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
+        XCTAssertTrue(overview.contains("return \"\\(points.count) of \\(days) days recorded\""))
+        XCTAssertTrue(overview.contains("guard days > 1, days <= 31, points.count < days else { return nil }"),
+                      "silent on a full window, a single day, and the weekly-bucketed long ranges")
+        XCTAssertTrue(overview.contains("if let coverageText {"), "and it is rendered under the summary line")
+    }
+
     /// Trailing windows: a week ending today contains today's own sample.
     func testTrailingWindowContainsTodayForEveryPrimaryRange() {
         var calendar = Calendar(identifier: .gregorian)
