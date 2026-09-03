@@ -5840,11 +5840,13 @@ struct AtriaMetricDetailSheet: View {
     /// days that actually have a recovery score (missing ≠ zero); strain is the
     /// drained/lagged value the rest of this sheet already shows — never a
     /// fabricated live point.
-    // The combo chart is a FIXED 7-day frame (see AtriaStrainRecoveryComboChart),
-    // so it must be fed a week of history regardless of the selected detail
-    // period. Feeding it the selected-period series meant a `.day` selection
-    // handed it a single point — strain's LineMark runs were length 1 and drew
-    // nothing, so the card rendered empty (2026-08-08 field report).
+    // The combo chart is a trailing 7-day frame ending today
+    // (AtriaStrainRecoveryComboChart), so it must be fed a week of history
+    // regardless of the selected detail period. Feeding it the selected-period
+    // series meant a `.day` selection handed it a single point — strain's
+    // LineMark runs were length 1 and drew nothing, so the card rendered empty
+    // (2026-08-08 field report). The axis is that window, not the last day
+    // that happens to have a reading (2026-09-03).
     private var strainComboWeekPoints: [AtriaDetailChartPoint] {
         replacingCurrentCyclePoint(
             in: preparedHistory.strain[.week] ?? [],
