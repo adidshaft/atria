@@ -165,6 +165,12 @@ struct AtriaTrendChartCard: View {
                 }
             }
 
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             if prepared.series.count >= 2 {
                 Button {
                     showMoreInsights.toggle()
@@ -721,6 +727,19 @@ struct AtriaTrendChartCard: View {
 
     /// Availability and visibility are deliberately separate. Having enough
     /// data enables the control; only the user's selection enables the line.
+    /// How much of the plotted window actually holds a reading. Sparse data
+    /// used to look like a broken chart (owner report 2026-09-02: "incomplete
+    /// insights … dates are not matching"); the count says plainly that the
+    /// gaps are missing days, not a drawing fault. Silent when the window is
+    /// full, and silent for `.all`, whose window has no fixed length.
+    private var coverageText: String? {
+        guard range != .all, !prepared.series.isEmpty else { return nil }
+        let recorded = prepared.series.count
+        let window = range.days
+        guard recorded < window else { return nil }
+        return "\(recorded) of \(window) days recorded"
+    }
+
     private var showsPriorComparison: Bool {
         showsPriorPeriod && priorComparisonIsAvailable
     }

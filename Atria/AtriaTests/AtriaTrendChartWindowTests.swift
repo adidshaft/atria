@@ -46,6 +46,19 @@ final class AtriaTrendChartWindowTests: XCTestCase {
         XCTAssertTrue(s.contains("to: calendar.startOfDay(for: now)) ?? now"))
     }
 
+    /// Sparse data used to read as a broken chart. The card now says how much
+    /// of the plotted window holds a reading, and stays silent when the window
+    /// is full or has no fixed length.
+    func testCardStatesHowMuchOfTheWindowHasData() throws {
+        let s = try source
+        XCTAssertTrue(s.contains("return \"\\(recorded) of \\(window) days recorded\""))
+        XCTAssertTrue(s.contains("guard range != .all, !prepared.series.isEmpty else { return nil }"),
+                      "no count for a window without a fixed length")
+        XCTAssertTrue(s.contains("guard recorded < window else { return nil }"),
+                      "a full window says nothing")
+        XCTAssertTrue(s.contains("if let coverageText {"), "and it is actually rendered")
+    }
+
     /// Trailing windows: a week ending today contains today's own sample.
     func testTrailingWindowContainsTodayForEveryPrimaryRange() {
         var calendar = Calendar(identifier: .gregorian)
