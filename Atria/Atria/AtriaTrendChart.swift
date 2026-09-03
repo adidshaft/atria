@@ -737,7 +737,7 @@ struct AtriaTrendChartCard: View {
         let recorded = prepared.series.count
         let window = range.days
         guard recorded < window else { return nil }
-        return "\(recorded) of \(window) days recorded"
+        return "\(recorded) of \(window) \(metric.coverageNoun) recorded"
     }
 
     private var showsPriorComparison: Bool {
@@ -1958,6 +1958,7 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     case strain
     case hrv
 
+
     var id: String { rawValue }
 
     /// Owner direction 2026-08-25: a metric that produces ONE value per day
@@ -1973,6 +1974,15 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
         switch self {
         case .strain: return true
         case .restingHR, .hrv: return false
+        }
+    }
+
+    /// Resting HR and HRV are read from overnight wear, so their coverage is
+    /// counted in nights; strain accumulates across a waking day.
+    var coverageNoun: String {
+        switch self {
+        case .restingHR, .hrv: return "nights"
+        case .strain: return "days"
         }
     }
 
