@@ -245,7 +245,8 @@ struct AtriaAssistantScreen: View {
 
     private func weekAnswer(_ prompt: Prompt) -> Exchange {
         let report = WeeklyReport(rollups: store.dailyRollupHistory,
-                                  sleepNights: store.sleepHistorySnapshot.nights)
+                                  sleepNights: store.sleepHistorySnapshot.nights,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay)
         var parts: [String] = []
         if let recovery = report.recoveryAvg {
             let delta = report.recoveryDeltaVsPriorWeek.map { $0 >= 0 ? " (up \($0) on the prior week)" : " (down \(-$0) on the prior week)" } ?? ""

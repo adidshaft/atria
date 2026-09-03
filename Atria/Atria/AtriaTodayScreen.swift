@@ -469,6 +469,7 @@ struct AtriaTodayScreen: View {
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: weeklyReport,
                                    rollups: highlightRollups,
+                                   cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay,
                                    sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
@@ -2294,7 +2295,8 @@ struct AtriaTodayScreen: View {
            let cached = glanceMemo.weeklyReportValue {
             return cached
         }
-        let report = WeeklyReport(rollups: highlightRollups)
+        let report = WeeklyReport(rollups: highlightRollups,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay)
         glanceMemo.weeklyReportRevision = revision
         glanceMemo.weeklyReportWeekStart = weekStart
         glanceMemo.weeklyReportValue = report
