@@ -120,7 +120,12 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         )
         let projection = String(source[projectionStart.lowerBound..<truthStart.lowerBound])
         XCTAssertTrue(projection.contains("AtriaStrainDetailContextPolicy.showsCurrentCycle("))
-        XCTAssertTrue(source.contains("return range == .day ? \"Saved day\" : \"Period average\""))
+        // 2026-09-02 split the one-liner in two so a live cycle can say "So
+        // far today" instead of calling an accumulating day saved; the rule it
+        // pins — dated history says Saved day, a multi-day range says Period
+        // average — is unchanged.
+        XCTAssertTrue(source.contains("return currentCycleDetailProjection.usesCurrentCycle ? \"So far today\" : \"Saved day\""))
+        XCTAssertTrue(source.contains("return \"Period average\""))
     }
 
     func testPartialDayStrainKeepsMeasuredNumberAndAddsLimitation() throws {
