@@ -965,7 +965,10 @@ struct AtriaWidgetEntryView: View {
         case .strain:
             return AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date)
         case .sleep:
-            return atriaFormattedSleepHours(entry.snapshot?.sleepHours)
+            // Same token as the recovery value and this metric's own detail.
+            // "--" here made the medium face disagree with itself.
+            guard let hours = entry.snapshot?.sleepHours, hours > 0 else { return "Learning" }
+            return atriaFormattedSleepHours(hours)
         }
     }
 
@@ -1052,7 +1055,11 @@ struct AtriaWidgetEntryView: View {
                 ? "at least \(rendered.dropFirst().trimmingCharacters(in: .whitespaces))"
                 : (rendered == "--" ? "unavailable" : rendered)
         case .sleep:
-            value = entry.snapshot?.sleepHours.map { String(format: "%.1f hours", $0) } ?? "unavailable"
+            if let hours = entry.snapshot?.sleepHours, hours > 0 {
+                value = String(format: "%.1f hours", hours)
+            } else {
+                value = "Learning"
+            }
         }
         return "\(metric.title) \(value). \(dailyDetail(metric))."
     }
