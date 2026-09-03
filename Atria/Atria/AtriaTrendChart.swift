@@ -316,6 +316,12 @@ struct AtriaTrendChartCard: View {
                                       range: AtriaTrendRange,
                                       now: Date) -> AtriaTrendPreparedSeries {
         let cutoff = range.cutoffDate(now: now)
+        let calendar = Calendar.current
+        // The plotted window: the same trailing span the samples below are
+        // filtered to, ending at the close of today so a point recorded this
+        // morning is not clipped by an axis that stops at "now".
+        let windowEnd = calendar.date(byAdding: .day, value: 1,
+                                      to: calendar.startOfDay(for: now)) ?? now
         let previousCutoff = range.hasPriorPeriod
             ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
             : .distantFuture
@@ -360,6 +366,10 @@ struct AtriaTrendChartCard: View {
         let qualifiedPreviousSamples = hasQualifiedComparison ? previousSamples : []
         let currentValues = samples.map(\.value)
         let priorValues = ghost.map(\.value)
+        // `.all` has no trailing cutoff, so its window is the recorded span.
+        let plottedStart = range == .all
+            ? (samples.first?.date ?? cutoff)
+            : cutoff
         return AtriaTrendPreparedSeries(series: samples,
                                         previousSeries: ghost,
                                         summary: AtriaTrendRangeSummary(series: samples,
@@ -381,7 +391,9 @@ struct AtriaTrendChartCard: View {
                                             currentValues: currentValues,
                                             priorValues: priorValues,
                                             includesPrior: true
-                                        ))
+                                        ),
+                                        windowStart: plottedStart,
+                                        windowEnd: windowEnd)
     }
 
     private static func preparePeriodReadout(points: [AtriaTrendPoint],
@@ -666,7 +678,8 @@ struct AtriaTrendChartCard: View {
         // pinning their labels to its clipped edges. Swift Charts otherwise
         // suppresses the trailing label on a real two-day series even when
         // both distinct dates are supplied explicitly.
-        .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
+        .chartXScale(domain: prepared.xDomain,
+                     range: .plotDimension(startPadding: 18, endPadding: 18))
         // Hidden prior data must not flatten the current trace. The wider
         // comparison domain is selected only while that data is visibly drawn.
         .chartYScale(domain: trendYDomain)
@@ -1450,6 +1463,19 @@ private struct AtriaTrendPreparedSeries {
     let action: AtriaTrendActionReadout?
     let currentYDomain: ClosedRange<Double>
     let comparisonYDomain: ClosedRange<Double>
+    /// Owner report 2026-09-02 ("dates are not matching"): the card filtered
+    /// its samples to a trailing window but gave the chart no x-domain, so
+    /// Swift Charts sized the axis to the DATA. Two recorded days out of
+    /// thirty stretched edge to edge and read as a full month; one recorded
+    /// day sat alone in the middle of the plot. The window the samples were
+    /// filtered to now travels with them and becomes the axis.
+    let windowStart: Date
+    let windowEnd: Date
+
+    var xDomain: ClosedRange<Date> {
+        windowStart < windowEnd ? windowStart...windowEnd
+            : windowStart...windowStart.addingTimeInterval(86_400)
+    }
 
     static let empty = AtriaTrendPreparedSeries(series: [],
                                                 previousSeries: [],
@@ -1457,7 +1483,9 @@ private struct AtriaTrendPreparedSeries {
                                                 assessment: nil,
                                                 action: nil,
                                                 currentYDomain: 0...1,
-                                                comparisonYDomain: 0...1)
+                                                comparisonYDomain: 0...1,
+                                                windowStart: .distantPast,
+                                                windowEnd: .distantPast)
 }
 
 
@@ -1815,10 +1843,11 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Calendar-aligned period used by metric detail navigation. This is
-    /// deliberately separate from the legacy rolling `cutoffDate` contract:
-    /// choosing Week or Month in a navigable sheet means an inspectable
-    /// calendar week/month, not an unlabelled trailing number of seconds.
+    /// The navigable period used by metric detail. Day is one calendar day;
+    /// Week and Month are trailing windows ending on the anchor day, matching
+    /// the "7 days" and "30 days" the segments promise (owner report
+    /// 2026-09-02: the calendar week and month containing an anchor held two
+    /// days each on a Wednesday, and excluded today's own point).
     func periodInterval(
         containing anchor: Date,
         calendar: Calendar = .current
