@@ -53,8 +53,10 @@ final class AtriaMonthlyReportTests: XCTestCase {
         let overview = try String(contentsOf: appDirectory.appendingPathComponent("AtriaOverviewSections.swift"),
                                   encoding: .utf8)
         XCTAssertTrue(overview.contains("struct AtriaMonthlyReportSheet: View"))
-        XCTAssertTrue(overview.contains("AtriaMonthlyReportSheet(rollups: rollups, sleepNights: sleepNights)"),
+        XCTAssertTrue(overview.contains("AtriaMonthlyReportSheet(rollups: rollups,"),
                       "the weekly sheet must present the monthly report")
+        XCTAssertTrue(overview.contains("cycleStrainByDisplayDay: cycleStrainByDisplayDay"),
+                      "the monthly sheet must overlay the same cycle series the weekly report uses")
         XCTAssertTrue(overview.contains("Building this month's picture"),
                       "below the honesty gate the hero must say it is building")
         let today = try String(contentsOf: appDirectory.appendingPathComponent("AtriaTodayScreen.swift"),
