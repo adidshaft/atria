@@ -1945,7 +1945,11 @@ struct AtriaWeeklyReportSheet: View {
 
     private var displayedWeekRollups: [DailyRollupStoreEntry] {
         guard let start = displayedReport.weekStart, let end = displayedReport.weekEnd else { return [] }
-        return rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
+        let week = rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
+        // Same overlay the averages, hardest day, and strain chart use. The
+        // bars used to read the civil rollup, so a shifted sleeper's tallest
+        // bar could disagree with the hardest-day row above it.
+        return WeeklyReport.applyingCycleStrain(week, cycleStrainByDisplayDay, calendar: reportCalendar)
     }
 
     /// Each bar carries its own tint from the app's colour authorities

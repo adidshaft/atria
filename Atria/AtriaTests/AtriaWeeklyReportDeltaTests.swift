@@ -100,6 +100,8 @@ final class AtriaWeeklyReportDeltaTests: XCTestCase {
         XCTAssertFalse(source.contains("Nightly duration across the week"))
         XCTAssertTrue(source.contains("cycleStrainByDisplayDay: cycleStrainByDisplayDay"),
                       "paged weeks must overlay the same cycle series")
+        XCTAssertTrue(source.contains("WeeklyReport.applyingCycleStrain(week, cycleStrainByDisplayDay, calendar: reportCalendar)"),
+                      "the weekly trend bars must overlay the same cycle series as the averages")
     }
 
     func testTodayAndThePersistedReportFeedTheCycleMap() throws {

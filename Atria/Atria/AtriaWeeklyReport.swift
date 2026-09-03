@@ -103,14 +103,14 @@ struct WeeklyReport: Codable, Equatable {
             .map { DaySummary(day: $0.day, recovery: $0.recovery, strain: $0.strain) }
     }
 
-    private static func applyingCycleStrain(_ entries: [DailyRollupStoreEntry],
-                                            _ cycleStrainByDisplayDay: [Date: Double],
-                                            calendar: Calendar) -> [DailyRollupStoreEntry] {
+    /// Prefer Calendar.current, which is how SessionStore keys the map and
+    /// how the strain chart looks it up. Fall back to the report calendar
+    /// and the stored day itself so a test that keys on ISO midnight still
+    /// hits, and a pre-normalized rollup day hits without a second convert.
+    static func applyingCycleStrain(_ entries: [DailyRollupStoreEntry],
+                                    _ cycleStrainByDisplayDay: [Date: Double],
+                                    calendar: Calendar) -> [DailyRollupStoreEntry] {
         guard !cycleStrainByDisplayDay.isEmpty else { return entries }
-        // Prefer Calendar.current, which is how SessionStore keys the map and
-        // how the strain chart looks it up. Fall back to the report calendar
-        // and the stored day itself so a test that keys on ISO midnight still
-        // hits, and a pre-normalized rollup day hits without a second convert.
         return entries.map { entry in
             let cycleStrain = cycleStrainByDisplayDay[Calendar.current.startOfDay(for: entry.day)]
                 ?? cycleStrainByDisplayDay[calendar.startOfDay(for: entry.day)]
