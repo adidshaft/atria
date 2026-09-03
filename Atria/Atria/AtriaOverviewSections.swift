@@ -4420,7 +4420,7 @@ struct AtriaMetricDetailSheet: View {
             // hypnogram and strain's gauge — not behind "Show details"
             // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
-                                      heroState: recoveryHeroState,
+                                      heroState: periodHeroState(recoveryHeroState),
                                       // Missing Recovery is neutral. Green is
                                       // reserved for an actual qualified score.
                                       tint: recoveryHeroRawPercent.map {
@@ -4464,7 +4464,7 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: hrvSummaryForSelectedPeriod,
                                                                 points: hrvAutoPointsForSelectedPeriod,
                                                                 unit: "ms"),
-                                      heroState: hrvBand == nil ? "Learning" : "Typical",
+                                      heroState: periodHeroState(hrvBand == nil ? "Learning" : "Typical"),
                                       tint: metric.tint,
                                       heroLearning: hrvBand == nil
                                         ? learningNights(baseline.hrvSampleCount)
@@ -4502,7 +4502,7 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: restingHeartRateSummaryForSelectedPeriod,
                                                                 points: restingHeartRateAutoPointsForSelectedPeriod,
                                                                 unit: "bpm"),
-                                      heroState: restingBand == nil ? "Learning" : "Typical",
+                                      heroState: periodHeroState(restingBand == nil ? "Learning" : "Typical"),
                                       tint: metric.tint,
                                       heroLearning: restingBand == nil
                                         ? learningNights(baseline.restingSampleCount)
@@ -4538,7 +4538,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
-                                      heroState: respiratoryBand == nil ? "Learning" : "Typical",
+                                      heroState: periodHeroState(respiratoryBand == nil ? "Learning" : "Typical"),
                                       tint: metric.tint,
                                       heroLearning: respiratoryBand == nil
                                         ? learningNights(respiratoryQualifiedNightCount,
@@ -4580,7 +4580,7 @@ struct AtriaMetricDetailSheet: View {
             // debt-trend card mount was DELETED: it re-plotted the same data
             // the main chart already shows in W/M.
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
-                                      heroState: sleepHeroState,
+                                      heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
@@ -4688,7 +4688,7 @@ struct AtriaMetricDetailSheet: View {
             }
         case .sleepPerformance:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepPerformanceSummary[range], points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
-                                      heroState: sleepPerformanceHeroState,
+                                      heroState: periodHeroState(sleepPerformanceHeroState),
                                       tint: Metrics.electricSleep) {
                 EmptyView()
             } chart: {
@@ -6034,6 +6034,20 @@ struct AtriaMetricDetailSheet: View {
     /// (2026-07-08: the headline was the latest point for every range, identical
     /// across Day/Week/Month, so the number looked frozen to the selector — the same
     /// class of bug the user reported for recovery.)
+    /// A multi-day range plots an aggregate and `periodHeroText` puts that
+    /// aggregate in the hero — so the state word beside it must stop
+    /// describing a single day. Strain has always said "Period average" here;
+    /// every other metric kept its day word over a number that was already an
+    /// average, so Recovery read "59% Moderate" on a month whose latest day
+    /// was 38%, and Sleep read a 30-day mean under last night's "98% of need"
+    /// (2026-09-03 render). "Learning" survives: it describes calibration, not
+    /// the number.
+    private func periodHeroState(_ dayState: @autoclosure () -> String) -> String {
+        let state = dayState()
+        guard range != .day, state != "Learning" else { return state }
+        return "Period average"
+    }
+
     private func periodHeroText(summary: AtriaDetailPeriodSummary?,
                                 points: [AtriaDetailChartPoint],
                                 unit: String) -> String {
@@ -6153,6 +6167,11 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private func contributorNote(_ contributor: Metrics.RecoveryEstimate.Contributor) -> String {
+        // An excluded contributor carries weight 0 and a placeholder zScore of
+        // 0, which the directional grammar below reads as "at or above
+        // baseline" — so the HRV row said "Above baseline" beside its own
+        // value of "HRV unavailable" (2026-09-03 render).
+        guard contributor.weight > 0 else { return "Not included in this score" }
         switch contributor.kind {
         case .hrv:
             return contributor.zScore >= 0 ? "Above baseline" : "Below baseline"
