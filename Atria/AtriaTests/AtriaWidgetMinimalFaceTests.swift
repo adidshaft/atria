@@ -108,6 +108,35 @@ final class AtriaWidgetMinimalFaceTests: XCTestCase {
         ), "an uncomputed recovery must read Learning, never a number")
     }
 
+    /// Home Screen small and large already say "Learning". The medium daily
+    /// overview printed "--" as the value while its own detail said
+    /// "Learning" — two words for the same missing percent, and a lie next
+    /// to the small widget on the same screen. Lock Screen accessories keep
+    /// "--" for space.
+    func testMediumDailyRecoveryValueUsesLearningLikeTheOtherHomeScreenFaces() throws {
+        let source = try widgetSource()
+        let start = try XCTUnwrap(source.range(of: "private func dailyValue(_ metric:"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func dailyDetail(_ metric:",
+            range: start.upperBound..<source.endIndex
+        ))
+        let daily = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(daily.contains("?? \"Learning\""),
+                      "the medium recovery value must use the canonical not-ready word")
+        XCTAssertFalse(daily.contains("?? \"--\""),
+                       "Home Screen recovery must not say -- while the small hero says Learning")
+        let accessStart = try XCTUnwrap(source.range(of: "private func dailyAccessibilityLabel"))
+        let accessEnd = try XCTUnwrap(source.range(
+            of: "private var recoveryOnlyWidget",
+            range: accessStart.upperBound..<source.endIndex
+        ))
+        let access = String(source[accessStart.lowerBound..<accessEnd.lowerBound])
+        XCTAssertTrue(access.contains("map { \"\\($0) percent\" } ?? \"Learning\""),
+                      "VoiceOver must speak the same word the face shows")
+        XCTAssertFalse(access.contains("map { \"\\($0) percent\" } ?? \"unavailable\""),
+                       "unavailable was the VoiceOver stand-in for the old --")
+    }
+
     func testLargeFaceDropsTheRedundantListThatOverflowedTheContainer() throws {
         let source = try widgetSource()
         let entry = try entryViewSlice(source)
