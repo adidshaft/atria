@@ -1,9 +1,9 @@
 # Atria — Claude handoff 12: close motion acquisition, publish current sleep, repair Stress gaps, and remove duplicate UI
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `22c9fa217a60f1bcf7a760016b0ea53eb56ad044` (`Persist a degraded HR-only sleep review when motion cannot be verified`)  
-Remote parity verified at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
 Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Sleep issue: [#25](https://github.com/adidshaft/atria/issues/25)  
@@ -33,7 +33,7 @@ Continue only in `/private/tmp/atria-notifications-integration.wyA4H7/source` af
 ```text
 HEAD = 22c9fa217a60f1bcf7a760016b0ea53eb56ad044
 git status --short = empty
-git rev-list --left-right --count HEAD...origin/codex/whoop-remaining-product-gaps = 0 0
+git rev-list --left-right --count HEAD...origin/dev = 0 0
 ```
 
 If the remote moved, fetch and inspect it first. Integrate only by a clean fast-forward or isolated rebase/cherry-pick. This handoff document is coordination material and must not enter the app commit.

@@ -5,7 +5,7 @@ not modify source unless a physical run demonstrates a concrete contradiction.
 
 ## Current authoritative state
 
-- Branch: `codex/whoop-remaining-product-gaps`
+- Branch: `dev`
 - Local + origin: `f68c14c9352e40972d38f420279144cba761b467`
 - Upstream parity at handoff: `0 0`
 - Parent: `631fa766e6f96a68c05eef42f9f9272789465608`

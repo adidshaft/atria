@@ -1,9 +1,9 @@
 # Atria — Claude handoff 7: finish protected-v9 motion and make the graph system readable
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `44c12e0e9c8275affaee10ba2d25f72c578ddc0f` (`Show workout strain in the minimized workout pill`)  
-Remote parity at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity at handoff: `HEAD...origin/dev = 0 0`  
 Clean continuation source: `/private/tmp/atria-combined-successor.T76FQG/source`
 
 ## Outcome and hard cutline
@@ -24,7 +24,7 @@ Timebox: roughly 4 hours implementation plus 30–45 minutes focused/device veri
 
 The user's main checkout at `/Users/amanpandey/projects/atria` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains 14 files of the user's chart work, including Activity, Trend, Expanded Chart, Graph Inspector, HeartRate, HRV, and Overview files.
 
-Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and still exactly at `44c12e0e…`, or create a new clean detached worktree from `origin/codex/whoop-remaining-product-gaps`.
+Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and still exactly at `44c12e0e…`, or create a new clean detached worktree from `origin/dev`.
 
 Do not blindly apply the dirty main-checkout diff. Much of it is an older partial adoption of `AtriaChartVisualGrammar` that the pushed branch has already superseded. Inspect it only as user intent when useful.
 
@@ -374,7 +374,7 @@ Use small commits, preferably:
 2. `Polish the shared chart and sleep-stage presentation`
 3. A separate optional relative-skin wiring commit, only if completed.
 
-Author and committer must be `adidshaft <adidshaft@gmail.com>` with no Claude/Codex/AI trailer. Push only to `origin/codex/whoop-remaining-product-gaps`, clean fast-forward, and report exact hashes/parity. No TestFlight.
+Author and committer must be `adidshaft <adidshaft@gmail.com>` with no Claude/Codex/AI trailer. Push only to `origin/dev`, clean fast-forward, and report exact hashes/parity. No TestFlight.
 
 Update existing issues with exact evidence:
 

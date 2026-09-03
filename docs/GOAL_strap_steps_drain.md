@@ -37,7 +37,7 @@ primary WHOOP metric — treat this as P0.
   the ACK cursor — there is NO usable `SET_READ_POINTER` seek on 4.0, and a range encoded
   in the `0x16` payload is **ignored** (device-tested: `history_started=false`).
 
-## What is already shipped (build on this — commits on branch codex/whoop-remaining-product-gaps)
+## What is already shipped (build on this — commits on branch dev)
 - `934f32c8` Step 1: pure safety predicate
   `AtriaBLEManager.shouldDrainHistoryDuringNaturalGap(retainedExplicitHistoryRequest:
   strapBacklogPending: priorEpochEndedNaturally: healthyLiveEpochActive:

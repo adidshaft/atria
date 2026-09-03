@@ -9,7 +9,7 @@ runtime/visual checks below once the Mac and iPhone are available again.
 
 ## Exact source and Git state
 
-- Branch: `codex/whoop-remaining-product-gaps`
+- Branch: `dev`
 - Local + origin: `631fa766e6f96a68c05eef42f9f9272789465608`
 - Upstream parity at handoff: `0 0`
 - Author + committer: `adidshaft <adidshaft@gmail.com>`

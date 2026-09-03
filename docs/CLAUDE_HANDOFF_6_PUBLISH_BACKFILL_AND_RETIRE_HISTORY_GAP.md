@@ -1,9 +1,9 @@
 # Atria — Claude handoff 6: publish backfills in place, retire the zombie history gap, and close remaining sleep authority
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `573e853399a208e94b5de1b85c45a5d24a4caa65` (`Stage HR-only nights and lead step copy with its frontier`)  
-Remote parity at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity at handoff: `HEAD...origin/dev = 0 0`  
 Clean continuation source: `/private/tmp/atria-combined-successor.T76FQG/source`
 
 ## Hard cutline
@@ -41,7 +41,7 @@ Atria/Atria/HeartRate.swift
 Atria/Atria/Insights.swift
 ```
 
-Continue only in `/private/tmp/atria-combined-successor.T76FQG/source`, after proving it is clean and still at exact `573e8533…`, or create a new clean detached worktree from `origin/codex/whoop-remaining-product-gaps`. This handoff file is coordination material; do not include it in the app commit.
+Continue only in `/private/tmp/atria-combined-successor.T76FQG/source`, after proving it is clean and still at exact `573e8533…`, or create a new clean detached worktree from `origin/dev`. This handoff file is coordination material; do not include it in the app commit.
 
 ## What `573e8533` already completed—do not redo
 
@@ -328,7 +328,7 @@ Only while the user is wearing the connected >70% strap near the cabled iPhone: 
 - Author and committer: `adidshaft <adidshaft@gmail.com>`.
 - No Claude/Codex/AI trailer.
 - Commit only files from the clean continuation worktree.
-- Push a clean fast-forward to `origin/codex/whoop-remaining-product-gaps`.
+- Push a clean fast-forward to `origin/dev`.
 - Update existing issues with exact commit/test/device evidence:
   - #5 Activity terminal charts/marker band and nap-row closure.
   - #21 history-gap terminal state, step frontier, and optional motion attempt.

@@ -4,7 +4,7 @@ User ran the shipped build 3–4 days and filed 15 items. This is the working le
 **Every loop iteration: read this first, pick the next NEXT item, update before the turn ends.**
 
 Device: Aman's iPhone `3803F5B6-1666-56D3-A71A-62F131F6CE3B`, bundle `com.adidshaft.atria`.
-Branch: `codex/whoop-remaining-product-gaps`.
+Branch: `dev`.
 
 ---
 
@@ -2145,7 +2145,7 @@ Cron `c359e608` cancelled. Device state at the last read:
 
     15:33   frontier 08-19 10:41   backlog 4.88 h   armed   attempts 23877   flushDebt 1994
 
-Session totals: ~55 commits on `codex/whoop-remaining-product-gaps`, all pushed. All 15 field-report
+Session totals: ~55 commits on `dev`, all pushed. All 15 field-report
 items have dispositions; every remaining question is device-gated on events that fall after this stop.
 
 ### Three checkpoints are now UNWATCHED

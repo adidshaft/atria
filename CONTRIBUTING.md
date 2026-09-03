@@ -46,6 +46,12 @@ ATRIA_DEVICE_ID=<physical-device-id> \
 Only treat the run as accepted when the monitor summary says
 `acceptance_status=pass` and `acceptance_blockers=none`.
 
+## Branches
+
+- `main` is the stable default branch.
+- `dev` is the working branch where day-to-day changes land.
+- Open pull requests into `main` from `dev` or from a topic branch cut off it.
+
 ## Pull Request Checklist
 
 - The change is scoped to one logical behavior.

@@ -1,9 +1,9 @@
 # Atria — Claude handoff 10: publish current sleep from durable live evidence, make Today date-honest, and finish the sparse charts
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `f72ad32bde957a405388a48c0e87a10a4e157722` (`Match the HR probe to the production navigation's priority`)  
-Remote parity verified at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
 Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Primary issues: [#25](https://github.com/adidshaft/atria/issues/25), [#21](https://github.com/adidshaft/atria/issues/21), [#2](https://github.com/adidshaft/atria/issues/2), [#5](https://github.com/adidshaft/atria/issues/5)
@@ -35,12 +35,12 @@ Continue only in `/private/tmp/atria-notifications-integration.wyA4H7/source` af
 ```text
 HEAD = f72ad32bde957a405388a48c0e87a10a4e157722
 git status --short = empty
-git rev-list --left-right --count HEAD...origin/codex/whoop-remaining-product-gaps = 0 0
+git rev-list --left-right --count HEAD...origin/dev = 0 0
 ```
 
 If that worktree is unavailable or dirty, create a fresh isolated worktree from the exact remote tip. This handoff document is coordination material and must not enter the app commit.
 
-Use author and committer `adidshaft <adidshaft@gmail.com>`, no AI/co-author trailer. Push only a clean fast-forward to `origin/codex/whoop-remaining-product-gaps` after every gate passes.
+Use author and committer `adidshaft <adidshaft@gmail.com>`, no AI/co-author trailer. Push only a clean fast-forward to `origin/dev` after every gate passes.
 
 ## Verified Handoff-9 state — do not redo it
 

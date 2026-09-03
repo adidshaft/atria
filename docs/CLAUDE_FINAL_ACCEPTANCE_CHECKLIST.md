@@ -4,7 +4,7 @@ Date: 2026-08-10
 
 Repository: `/Users/amanpandey/projects/atria`
 
-Branch: `codex/whoop-remaining-product-gaps`
+Branch: `dev`
 
 Remote HEAD: `422add5c74558f9f97ba1862069372f53d761262`
 
@@ -343,7 +343,7 @@ Also require:
 
 1. Stage only the intended isolated hunks and tests; keep all unrelated user chart edits untouched.
 2. Author and committer must be `adidshaft <adidshaft@gmail.com>` with no Codex/Claude/co-author trailer.
-3. Push `codex/whoop-remaining-product-gaps` and require upstream parity `0 0`.
+3. Push `dev` and require upstream parity `0 0`.
 4. Update issue #33 with:
    - exact new SHA/provenance;
    - HR gap-truth and sparse UI evidence;
