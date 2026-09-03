@@ -1788,7 +1788,9 @@ struct AtriaWeeklyReportSheet: View {
                     .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showMonthlyReport) {
-                AtriaMonthlyReportSheet(rollups: rollups, sleepNights: sleepNights)
+                AtriaMonthlyReportSheet(rollups: rollups,
+                                        sleepNights: sleepNights,
+                                        cycleStrainByDisplayDay: cycleStrainByDisplayDay)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
@@ -2112,6 +2114,10 @@ struct AtriaWeeklyReportSheet: View {
 struct AtriaMonthlyReportSheet: View {
     var rollups: [DailyRollupStoreEntry] = []
     var sleepNights: [SleepHistorySnapshot.Night] = []
+    /// Closed-cycle strain keyed by predominant civil day. Applied so the
+    /// monthly average, total, hardest week, and by-day strip cannot
+    /// disagree with the strain chart for the same date.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
     var now: Date = Date()
     @Environment(\.dismiss) private var dismiss
     @State private var monthOffset = 0
@@ -2127,7 +2133,11 @@ struct AtriaMonthlyReportSheet: View {
     }
 
     private var report: MonthlyReport {
-        MonthlyReport(rollups: rollups, sleepNights: sleepNights, now: anchor, calendar: calendar)
+        MonthlyReport(rollups: rollups,
+                      sleepNights: sleepNights,
+                      now: anchor,
+                      calendar: calendar,
+                      cycleStrainByDisplayDay: cycleStrainByDisplayDay)
     }
 
     private struct MonthDayCell: Identifiable {
@@ -2139,13 +2149,17 @@ struct AtriaMonthlyReportSheet: View {
     }
 
     /// One cell per calendar day of the displayed month. A day's recovery and
-    /// strain are the rollup's own values or nil; nothing is interpolated.
+    /// sleep are the rollup's own values or nil; strain is the same cycle
+    /// overlay the monthly totals use. Nothing is interpolated.
     private var monthDayCells: [MonthDayCell] {
         guard let interval = calendar.dateInterval(of: .month, for: anchor) else { return [] }
         var recoveryByDay: [Date: Int] = [:]
         var strainByDay: [Date: Double] = [:]
         var sleepByDay: [Date: Int] = [:]
-        for entry in rollups {
+        let strainAligned = MonthlyReport.applyingCycleStrain(rollups,
+                                                              cycleStrainByDisplayDay,
+                                                              calendar: calendar)
+        for entry in strainAligned {
             let key = calendar.startOfDay(for: entry.day)
             if let recovery = entry.recovery, recoveryByDay[key] == nil { recoveryByDay[key] = recovery }
             if let strain = entry.strain, strainByDay[key] == nil { strainByDay[key] = strain }

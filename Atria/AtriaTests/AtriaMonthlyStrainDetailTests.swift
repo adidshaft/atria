@@ -53,4 +53,48 @@ final class AtriaMonthlyStrainDetailTests: XCTestCase {
         XCTAssertEqual(MonthlyReport.strainDetailText(dailyAverage: 7.96, delta: -1.25), "8.0 a day · \u{2212}1.2 vs last month")
         XCTAssertEqual(MonthlyReport.strainDetailText(dailyAverage: 5, delta: 0.04), "5.0 a day · same as last month")
     }
+
+    /// 2026-09-03: the weekly report already overlays
+    /// `physiologicalCycleStrainByDisplayDay` so a shifted sleeper's
+    /// evening work is not counted on the next civil morning. The monthly
+    /// report still averaged the civil rollup, so the same date could
+    /// carry two strain numbers depending on which report you opened.
+    func testCycleStrainOverridesTheCivilBucketOnTheSameDay() {
+        var rollups = (0..<20).map { entry(daysAgo: $0, strain: 8) }
+        rollups += (31..<51).map { entry(daysAgo: $0, strain: 4) }
+        // Rollups normalize `day` with Calendar.current, which is also how
+        // the store keys the cycle series. Key the overlay the same way.
+        let shiftedDay = rollups[0].day
+        let report = MonthlyReport(rollups: rollups,
+                                   now: now,
+                                   calendar: calendar,
+                                   cycleStrainByDisplayDay: [shiftedDay: 16.5])
+        XCTAssertEqual(report.totalStrain ?? 0, 168.5, accuracy: 0.001)
+        XCTAssertEqual(report.strainDailyAverage ?? 0, 8.425, accuracy: 0.001)
+        // Prior month stays 4.0 a day; the overlay only moved one August day.
+        XCTAssertEqual(report.strainDailyAverageDeltaVsPriorMonth ?? 0, 4.425, accuracy: 0.001)
+        let untouched = MonthlyReport(rollups: rollups, now: now, calendar: calendar)
+        XCTAssertEqual(untouched.totalStrain ?? 0, 160, accuracy: 0.001)
+        XCTAssertEqual(untouched.strainDailyAverage ?? 0, 8, accuracy: 0.001)
+    }
+
+    func testAnEmptyCycleMapLeavesTheCivilMonthUntouched() {
+        let rollups = (0..<20).map { entry(daysAgo: $0, strain: 8) }
+        XCTAssertEqual(
+            MonthlyReport(rollups: rollups, now: now, calendar: calendar,
+                          cycleStrainByDisplayDay: [:]),
+            MonthlyReport(rollups: rollups, now: now, calendar: calendar)
+        )
+    }
+
+    func testSheetFeedsTheCycleMapIntoTheReportAndTheStrip() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("cycleStrainByDisplayDay: cycleStrainByDisplayDay"),
+                      "paged months must overlay the same cycle series")
+        XCTAssertTrue(source.contains("MonthlyReport.applyingCycleStrain(rollups,"),
+                      "the by-day strip uses the same overlay as the totals")
+        XCTAssertTrue(source.contains("cycleStrainByDisplayDay: cycleStrainByDisplayDay)"))
+    }
 }
