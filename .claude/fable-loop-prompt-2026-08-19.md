@@ -4,7 +4,7 @@ Copy the block below into a new session running FABLE.
 
 ---
 
-/loop 10min Repair the pre-existing static-check drift in the Atria repo and finish the test/repo hygiene work. Work on a NEW branch off `codex/whoop-remaining-product-gaps` named `fable/static-check-repair`.
+/loop 10min Repair the pre-existing static-check drift in the Atria repo and finish the test/repo hygiene work. Work on a NEW branch off `dev` named `fable/static-check-repair`.
 
 CONTEXT — read these first, do not re-triage:
 - `.claude/field-report-2026-08-19.md` — the 15-item field-report ledger from the Opus session. Sections near the end cover the repo cleanup and the test-script audit.
@@ -21,7 +21,7 @@ YOUR TASK, in priority order:
 
 2. Make the root `test_*.py` scripts runnable as one command. 23 of 26 pass under `unittest`, but `test_analyze_whoop4_gravity_walk.py` is pytest-style (4 bare `def test_*` functions) and pytest is not installed, and `test_decode_whoop_att_capture.py` is a `main()` script rather than a test. Add a single runner (a `scripts/run-tool-tests.sh`) that executes all three shapes and reports one pass/fail total. Do not rewrite the tests to fit the runner; make the runner handle what exists.
 
-3. Triage the 4 git worktrees under `.claude/worktrees/` that still carry uncommitted edits: `agent-a3ac32b3300f4a61d` (5 modified files incl. `AtriaHealthScreen.swift`, `AtriaStressDetailView.swift`), `agent-a20fb84ef7bf7d604` (2), `agent-aaf58d1f2586859da` (3), `design-consent-fdd4ed` (4). For each: diff the working-tree changes, decide whether they are superseded by what is already on `main`/`codex/whoop-remaining-product-gaps`, and either (a) commit them to a clearly-named branch so nothing is lost, or (b) report that they are superseded and safe to discard. DO NOT delete a worktree with uncommitted changes without first preserving the diff somewhere.
+3. Triage the 4 git worktrees under `.claude/worktrees/` that still carry uncommitted edits: `agent-a3ac32b3300f4a61d` (5 modified files incl. `AtriaHealthScreen.swift`, `AtriaStressDetailView.swift`), `agent-a20fb84ef7bf7d604` (2), `agent-aaf58d1f2586859da` (3), `design-consent-fdd4ed` (4). For each: diff the working-tree changes, decide whether they are superseded by what is already on `main`/`dev`, and either (a) commit them to a clearly-named branch so nothing is lost, or (b) report that they are superseded and safe to discard. DO NOT delete a worktree with uncommitted changes without first preserving the diff somewhere.
 
 4. `evidence/` still holds 649 MB across ~13,900 small files, all captured 2026-07-26…07-31. `.claude/evidence-pruned-2026-08-19.md` lists what was already removed. Propose (do not execute) a second-pass rule that would keep the analysis notes actually cited by `docs/WHOOP4_PROTOCOL_FINDINGS.md` and drop the rest, with a measured before/after estimate.
 

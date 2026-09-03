@@ -1,9 +1,9 @@
 # Atria — Claude handoff 11: surface current sleep for review when compact motion is incomplete
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `1c37a0f09dac74dc654e77256c0ee87c0c00ce28` (`Scope receipt replace-ordering to one process instance`)  
-Remote parity verified at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
 Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Primary issue: [#25](https://github.com/adidshaft/atria/issues/25)
@@ -27,7 +27,7 @@ Continue only in `/private/tmp/atria-notifications-integration.wyA4H7/source` af
 ```text
 HEAD = 1c37a0f09dac74dc654e77256c0ee87c0c00ce28
 git status --short = empty
-git rev-list --left-right --count HEAD...origin/codex/whoop-remaining-product-gaps = 0 0
+git rev-list --left-right --count HEAD...origin/dev = 0 0
 ```
 
 If the remote moved, fetch and inspect it first. Integrate only by a clean fast-forward or an isolated rebase/cherry-pick whose final diff is audited against this handoff. Never use the dirty main checkout as a merge source.

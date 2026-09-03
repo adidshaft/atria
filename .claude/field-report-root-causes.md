@@ -241,7 +241,7 @@ Scheme AtriaTests, pure-static assertions only (the suites share process/default
 
 **Challenger 1 — refuted=False**
 
-I read every cited file:line on branch codex/whoop-remaining-product-gaps (HEAD 47538c32). The core mechanism holds — I could not refute (A) or (B) — but four supporting claims and three of the five proposed fixes are wrong or insufficient.
+I read every cited file:line on branch dev (HEAD 47538c32). The core mechanism holds — I could not refute (A) or (B) — but four supporting claims and three of the five proposed fixes are wrong or insufficient.
 
 CONFIRMED BY READING THE CODE
 
@@ -497,7 +497,7 @@ All pure, in the existing suites (scheme AtriaTests), no device and no multi-sav
 
 **Challenger 1 — refuted=False**
 
-I verified every cited file:line against the real source on codex/whoop-remaining-product-gaps (HEAD 47538c32). The mechanism is confirmed by code reading, not accepted on assertion.
+I verified every cited file:line against the real source on dev (HEAD 47538c32). The mechanism is confirmed by code reading, not accepted on assertion.
 
 MECHANISM 1 — CONFIRMED, and stronger than claimed.
 AtriaDailyStepPresentation.swift:165-176 returns bare "\(count)" for partial; the comment at :166-169 explicitly names the dropped "≥"/"~". detailText:187-205 is "Counted through <time>" with the 2026-08-12 comment recording deliberate removal of the percent. accessibilityText:257-264 is the sole surviving coverage disclosure. Test pins confirmed at AtriaDailyStepPresentationTests.swift:131 and :137 (valueText == "176"). Widget confirmed: AtriaWidget.swift:142-145 returns "≥\(value)".
@@ -640,7 +640,7 @@ Run: `xcodebuild test -scheme AtriaTests -only-testing:AtriaTests/AtriaSleepStag
 
 **Challenger 1 — refuted=False**
 
-NOT REFUTED. I read every cited file:line on branch codex/whoop-remaining-product-gaps (HEAD 47538c32) and the mechanism is real, correctly located, and correctly ordered.
+NOT REFUTED. I read every cited file:line on branch dev (HEAD 47538c32) and the mechanism is real, correctly located, and correctly ordered.
 
 CONFIRMED VERBATIM:
 1. AtriaSleepWakeResearch.swift:135-138 — `maximumEvidenceGap = 90`, `minimumTimelineCoverageFraction = 0.85`, `maximumHeartRateGap = 15`, `minimumHeartRateSamplesPerMinute = 6.0`, all four under the :131-134 comment asserting they "match the recovered-motion receipt's maximum tolerated hole". The 15 s constant sits two lines below the 90 s constant it claims to match. The internal contradiction the claim alleges is literally on the page.
@@ -766,7 +766,7 @@ Four adjacent problems found while tracing this, none of which are item 11 itsel
 
 **Challenger 1 — refuted=False**
 
-I verified essentially every cited file:line against the real code on branch codex/whoop-remaining-product-gaps (HEAD 47538c32). The claim's mechanisms hold; the line numbers are accurate; the marker refutation is correct (catchUpMarkerFrontierKey appears at exactly 4 sites — :23 declare, :144 read, :151/:153/:155 write/clear — and feeds only AtriaCatchUpCompletionPolicy.passAction and the catch-up banner). Nothing in the sleep/nap/workout paths touches it. I therefore cannot refute the claim, and mark refuted=false — but three material corrections are needed.
+I verified essentially every cited file:line against the real code on branch dev (HEAD 47538c32). The claim's mechanisms hold; the line numbers are accurate; the marker refutation is correct (catchUpMarkerFrontierKey appears at exactly 4 sites — :23 declare, :144 read, :151/:153/:155 write/clear — and feeds only AtriaCatchUpCompletionPolicy.passAction and the catch-up banner). Nothing in the sleep/nap/workout paths touches it. I therefore cannot refute the claim, and mark refuted=false — but three material corrections are needed.
 
 CONFIRMED BY READING:
 (1) schedule(...) at LocalNotificationScheduler.swift:1107 is the only producer of sleep_review/workout_review decisions; reachable only from scheduleFromLaunchIfRequested (:591, wired at AtriaApp.swift:1080 and :1230) and scheduleBackgroundReviewPass (:644, wired at AtriaApp.swift:836), plus scene_active via scheduleProductionNotificationMaintenance (AtriaApp.swift:561). delay: 6 confirmed at :939, :1639, :1750.

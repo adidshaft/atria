@@ -1,9 +1,9 @@
 # Atria — Claude handoff 8: make historical HR fast, prove backlog convergence, and wire relative skin honestly
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `5befd2066a3ebfe2a3e87b02be46dbddb33b7f1d` (`Route the existing sleep-scope fixture's root tab`)  
-Remote parity at handoff: `HEAD...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity at handoff: `HEAD...origin/dev = 0 0`  
 Clean continuation source: `/private/tmp/atria-combined-successor.T76FQG/source`  
 Primary tracking issues: [#35](https://github.com/adidshaft/atria/issues/35), [#21](https://github.com/adidshaft/atria/issues/21), [#31](https://github.com/adidshaft/atria/issues/31)
 
@@ -22,7 +22,7 @@ Timebox: about 3 hours implementation plus 30–45 minutes device acceptance. St
 
 The user's main checkout `/Users/amanpandey/projects/atria` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains the user's chart work plus prior handoff documents.
 
-Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and exactly at `5befd206…`, or create a new clean worktree from `origin/codex/whoop-remaining-product-gaps`.
+Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and exactly at `5befd206…`, or create a new clean worktree from `origin/dev`.
 
 This handoff file is coordination material. Do not add it to an app commit.
 
@@ -409,7 +409,7 @@ Prefer two commits:
 
 Add a third only if the 30-minute measurement proves and motivates one small drain-throughput correction.
 
-Author and committer: `adidshaft <adidshaft@gmail.com>`. No Claude/Codex/AI trailer. Push only to `origin/codex/whoop-remaining-product-gaps` as a clean fast-forward. No TestFlight.
+Author and committer: `adidshaft <adidshaft@gmail.com>`. No Claude/Codex/AI trailer. Push only to `origin/dev` as a clean fast-forward. No TestFlight.
 
 Update:
 

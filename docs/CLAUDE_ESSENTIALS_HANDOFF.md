@@ -4,7 +4,7 @@
 
 Date: 2026-08-10  
 Repository: `/Users/amanpandey/projects/atria`  
-Branch: `codex/whoop-remaining-product-gaps`  
+Branch: `dev`  
 Current pushed HEAD: `ad45af424dda852caa87b9b2da6d8ff0a3f34389` (`Advance retained step receipts`)  
 Parent: `4149498318bd2eb2e1f3be262d84598e1948b280` (`Stabilize strap connectivity and continuous telemetry`)
 
@@ -356,7 +356,7 @@ This is the most direct saved-device restoration proof, but it is secondary to t
 
 When all required checkpoints are green:
 
-1. Push `codex/whoop-remaining-product-gaps` to `origin`.
+1. Push `dev` to `origin`.
 2. Verify `git rev-list --left-right --count @{upstream}...HEAD` is `0 0`.
 3. Comment on GitHub issue #33 with:
    - exact commit SHA;

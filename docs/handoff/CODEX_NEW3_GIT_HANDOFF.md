@@ -1,6 +1,6 @@
 # Codex handoff — correct the NEW-3 commit that swept in user WIP
 
-**Branch:** `codex/whoop-remaining-product-gaps`
+**Branch:** `dev`
 **Author/committer for every commit:** `adidshaft <adidshaft@gmail.com>` — **no** `Co-Authored-By` / Claude / Codex trailer.
 **Do NOT** run TestFlight, forced rebuilds, process kills, or Bluetooth mode changes.
 
@@ -83,7 +83,7 @@ git rev-parse HEAD          # expect 18181f46...
 git show HEAD --stat        # expect the 5 NEW-3 files only
 git diff HEAD -- Atria/Atria/AtriaVitalsCollectionSections.swift   # expect ONLY the 2 user hunks
 git status --porcelain | grep -c '^ M'                              # expect 14 dirty files
-git push --force-with-lease=codex/whoop-remaining-product-gaps:8ad9993903a3445538c6a56fb17adc0712dbecca origin codex/whoop-remaining-product-gaps
+git push --force-with-lease=dev:8ad9993903a3445538c6a56fb17adc0712dbecca origin dev
 ```
 
 The `--force-with-lease` pins the expected remote tip (`8ad99939`) so the push is refused if anything else moved it.
@@ -94,7 +94,7 @@ If you are on a **fresh clone** (only `8ad99939` present), apply the shipped pat
 git reset --hard cf06696cfa01781e1a309e157bf124137e362a3d
 git am docs/handoff/new3-correct-commit.patch      # recreates 18181f46 content, author preserved
 git apply docs/handoff/user-vitals-wip.patch       # restores the user's 2 Vitals hunks (uncommitted)
-git push --force-with-lease origin codex/whoop-remaining-product-gaps
+git push --force-with-lease origin dev
 ```
 
 ## Recipe B — forward revert (no history rewrite, no force-push)
@@ -102,12 +102,12 @@ git push --force-with-lease origin codex/whoop-remaining-product-gaps
 Keeps `8ad99939` in history and lands a follow-up commit that removes just the user's two hunks and returns them to the working tree:
 
 ```bash
-git checkout codex/whoop-remaining-product-gaps      # at 8ad99939
+git checkout dev      # at 8ad99939
 git apply -R docs/handoff/user-vitals-wip.patch      # remove the 2 user hunks from the working tree
 git add Atria/Atria/AtriaVitalsCollectionSections.swift
 git commit -m "Un-commit Vitals chart WIP that landed by mistake"   # author adidshaft, no trailer
 git apply docs/handoff/user-vitals-wip.patch         # put the 2 hunks back, now uncommitted
-git push origin codex/whoop-remaining-product-gaps   # normal fast-forward
+git push origin dev   # normal fast-forward
 ```
 
 Downside: two commits in history reference the WIP (added then removed). Recipe A is cleaner.

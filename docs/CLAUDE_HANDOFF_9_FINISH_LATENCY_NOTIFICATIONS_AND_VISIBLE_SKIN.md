@@ -1,9 +1,9 @@
 # Atria — Claude handoff 9: finish cold HR latency, accelerate proven catch-up, verify notifications, and expose relative-skin truth
 
 Date: 2026-08-13 (Asia/Kolkata)  
-Release branch: `codex/whoop-remaining-product-gaps`  
+Release branch: `dev`  
 Exact pushed starting commit: `0bc84fdd3ee6184d756839f85e921420a370a810` (`Harden notification settings cancellation`)  
-Remote parity verified at handoff: `0bc84fdd...origin/codex/whoop-remaining-product-gaps = 0 0`  
+Remote parity verified at handoff: `0bc84fdd...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
 Integrated notification commits: `61fec3b12e5b30c3b486f992654581c309df6f7f`, `0bc84fdd3ee6184d756839f85e921420a370a810`  
 Tracking issues: [#35](https://github.com/adidshaft/atria/issues/35), [#21](https://github.com/adidshaft/atria/issues/21), [#31](https://github.com/adidshaft/atria/issues/31), [#36](https://github.com/adidshaft/atria/issues/36)
@@ -40,10 +40,10 @@ Continue in `/private/tmp/atria-notifications-integration.wyA4H7/source` only af
 ```text
 HEAD = 0bc84fdd3ee6184d756839f85e921420a370a810
 git status --short = empty
-HEAD...origin/codex/whoop-remaining-product-gaps = 0 0
+HEAD...origin/dev = 0 0
 ```
 
-If that worktree is unavailable or dirty, create a fresh detached worktree from `origin/codex/whoop-remaining-product-gaps`. This handoff file is coordination material; do not add it to an app commit.
+If that worktree is unavailable or dirty, create a fresh detached worktree from `origin/dev`. This handoff file is coordination material; do not add it to an app commit.
 
 The old `/private/tmp/atria-notifications-wt` worktree and `claude/notifications-2026-08-13` branch are historical inputs only. Their commit was already cherry-picked and hardened on the release branch. Do not merge, cherry-pick, rebase, push, or delete that branch/worktree in this pass.
 
@@ -56,7 +56,7 @@ The old `/private/tmp/atria-notifications-wt` worktree and `claude/notifications
 - `61fec3b12e5b30c3b486f992654581c309df6f7f` — typed 17-category notification catalog, event schedulers, settings copy, dedup ledger, and four default-off categories.
 - `0bc84fdd3ee6184d756839f85e921420a370a810` — fail-closed unknown notification kinds and exact pending-request cancellation for category/master opt-out.
 
-All four are on `origin/codex/whoop-remaining-product-gaps` with parity `0 0`.
+All four are on `origin/dev` with parity `0 0`.
 
 ### Historical-HR measurements
 
@@ -535,7 +535,7 @@ Author and committer must both be:
 adidshaft <adidshaft@gmail.com>
 ```
 
-No Claude/Codex/AI trailer. Push only as a clean fast-forward from `0bc84fdd` to `origin/codex/whoop-remaining-product-gaps`. Do not push `claude/notifications-2026-08-13` separately. No TestFlight.
+No Claude/Codex/AI trailer. Push only as a clean fast-forward from `0bc84fdd` to `origin/dev`. Do not push `claude/notifications-2026-08-13` separately. No TestFlight.
 
 ## GitHub issue hygiene
 

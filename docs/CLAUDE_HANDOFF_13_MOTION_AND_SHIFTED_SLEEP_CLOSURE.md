@@ -2,7 +2,7 @@
 
 Date: 2026-08-13 IST
 Repository: `adidshaft/atria`
-Branch to update: `codex/whoop-remaining-product-gaps`
+Branch to update: `dev`
 Exact required start: `ea7fe417f0842723edaa685f48b2055f0e41e9ef`
 Open motion/steps authority: [#21](https://github.com/adidshaft/atria/issues/21)
 Open shifted-sleep review: [#25](https://github.com/adidshaft/atria/issues/25)
@@ -42,13 +42,13 @@ Timebox: **6 hours**, maximum **three implementation commits**. CP0 gets at most
 
 ## Worktree, identity, and safety
 
-- Fetch `origin/codex/whoop-remaining-product-gaps` and work in a new clean detached worktree from its current fast-forward tip. Its required product-code ancestor is exact `ea7fe417`; later H13 commits before implementation are documentation-only and must not be omitted.
+- Fetch `origin/dev` and work in a new clean detached worktree from its current fast-forward tip. Its required product-code ancestor is exact `ea7fe417`; later H13 commits before implementation are documentation-only and must not be omitted.
 - Do not touch the user's dirty checkout at `/Users/amanpandey/projects/atria`.
 - Preserve the evidence corpus byte-for-byte; use guarded temporary symlinks only if an existing test requires one.
 - Author and committer: `adidshaft <adidshaft@gmail.com>`.
 - No AI/Codex/Claude trailers.
 - Fetch and prove the remote tip has not moved before each push.
-- Push only a clean fast-forward to `origin/codex/whoop-remaining-product-gaps`.
+- Push only a clean fast-forward to `origin/dev`.
 - No TestFlight.
 - Never open Brave, Safari, or Passwords. Never install or pair the WHOOP app, unpair the strap, or change system/Bluetooth permissions without explicit user approval.
 
