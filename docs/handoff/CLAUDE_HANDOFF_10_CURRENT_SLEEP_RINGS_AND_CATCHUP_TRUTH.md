@@ -5,7 +5,7 @@ Release branch: `dev`
 Exact pushed starting commit: `f72ad32bde957a405388a48c0e87a10a4e157722` (`Match the HR probe to the production navigation's priority`)  
 Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
-Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
+Dirty user checkout that must not be touched: `<repo-root>` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Primary issues: [#25](https://github.com/adidshaft/atria/issues/25), [#21](https://github.com/adidshaft/atria/issues/21), [#2](https://github.com/adidshaft/atria/issues/2), [#5](https://github.com/adidshaft/atria/issues/5)
 
 ## Mission and hard cutline
@@ -74,7 +74,7 @@ Physical device:
 
 ```text
 device: Aman's iPhone / iPhone 15 Pro
-CoreDevice ID: 3803F5B6-1666-56D3-A71A-62F131F6CE3B
+CoreDevice ID: <your-device-udid>
 bundle: com.adidshaft.atria
 main PID at pull: 37183
 widget PID at pull: 37182

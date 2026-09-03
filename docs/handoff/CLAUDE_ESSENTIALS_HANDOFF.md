@@ -1,9 +1,9 @@
 # Atria WHOOP essentials handoff for Claude
 
-> **Superseded after implementation:** checkpoints in this document were implemented in `b5e0067f`. Use `docs/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` for the remaining work.
+> **Superseded after implementation:** checkpoints in this document were implemented in `b5e0067f`. Use `docs/handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` for the remaining work.
 
 Date: 2026-08-10  
-Repository: `/Users/amanpandey/projects/atria`  
+Repository: `<repo-root>`  
 Branch: `dev`  
 Current pushed HEAD: `ad45af424dda852caa87b9b2da6d8ff0a3f34389` (`Advance retained step receipts`)  
 Parent: `4149498318bd2eb2e1f3be262d84598e1948b280` (`Stabilize strap connectivity and continuous telemetry`)
@@ -396,4 +396,4 @@ When all required checkpoints are green:
 
 ## Compact prompt to give Claude
 
-> Read `docs/CLAUDE_ESSENTIALS_HANDOFF.md` completely. Implement only Checkpoints 1 and 2, preserving the unrelated dirty chart files and the existing BLE fence semantics. Run only the focused Checkpoint 3 tests. Create an exact clean candidate and perform the short Checkpoint 5 device smoke. If green, push and update issue #33; do not upload TestFlight. Stop on any PID turnover or new crash and report the exact evidence instead of broadening scope.
+> Read `docs/handoff/CLAUDE_ESSENTIALS_HANDOFF.md` completely. Implement only Checkpoints 1 and 2, preserving the unrelated dirty chart files and the existing BLE fence semantics. Run only the focused Checkpoint 3 tests. Create an exact clean candidate and perform the short Checkpoint 5 device smoke. If green, push and update issue #33; do not upload TestFlight. Stop on any PID turnover or new crash and report the exact evidence instead of broadening scope.

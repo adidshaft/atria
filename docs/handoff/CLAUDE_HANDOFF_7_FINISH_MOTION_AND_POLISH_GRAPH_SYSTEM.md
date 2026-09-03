@@ -22,7 +22,7 @@ Timebox: roughly 4 hours implementation plus 30–45 minutes focused/device veri
 
 ## Worktree safety — mandatory
 
-The user's main checkout at `/Users/amanpandey/projects/atria` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains 14 files of the user's chart work, including Activity, Trend, Expanded Chart, Graph Inspector, HeartRate, HRV, and Overview files.
+The user's main checkout at `<repo-root>` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains 14 files of the user's chart work, including Activity, Trend, Expanded Chart, Graph Inspector, HeartRate, HRV, and Overview files.
 
 Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and still exactly at `44c12e0e…`, or create a new clean detached worktree from `origin/dev`.
 
@@ -362,7 +362,7 @@ AtriaRelativeSkinSignalTests         # only if checkpoint 4 changes
 
 Add direct tests for the new transport resolver and shared stage render model rather than relying only on source-string scans.
 
-Use a guarded temporary symlink to `/Users/amanpandey/projects/atria/evidence` only for tests that require the gitignored evidence corpus. Hash a null-delimited manifest before/after, verify equality, and remove the exact symlink with a trap.
+Use a guarded temporary symlink to `<repo-root>/evidence` only for tests that require the gitignored evidence corpus. Hash a null-delimited manifest before/after, verify equality, and remove the exact symlink with a trap.
 
 Then run changed-file Swift parse, `git diff --check`, and a signed device build. Do not weaken an authority or data-honesty test to make a screenshot prettier.
 

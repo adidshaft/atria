@@ -2,7 +2,7 @@
 
 Date: 2026-08-10
 
-Repository: `/Users/amanpandey/projects/atria`
+Repository: `<repo-root>`
 
 Branch: `dev`
 
@@ -366,4 +366,4 @@ Stop and report evidence before further edits if any of these occurs:
 
 ## Compact prompt for Claude
 
-> Read `docs/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` completely. Start from clean commit `422add5`; preserve the 14 dirty user chart files by implementing overlapping UI changes in an isolated worktree and integrating only narrow hunks. Fix live HR gap bridging first. Then coalesce Stress context spans, add a truthful sparse-series Trend grammar, and make saved sleep/day HR and Stress refresh from exact measured canonical/archive evidence. REM/Deep/SWS may appear only from qualified motion evidence that passes the existing integrity gate. Run the listed focused suites and visual fixtures. Exercise the normal motion compact-publication/receipt path without ad hoc BLE commands. Do not force a central rebuild, terminate the app, toggle Bluetooth, forget/re-pair, upload TestFlight, or close issue #33 without explicit authorization.
+> Read `docs/handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` completely. Start from clean commit `422add5`; preserve the 14 dirty user chart files by implementing overlapping UI changes in an isolated worktree and integrating only narrow hunks. Fix live HR gap bridging first. Then coalesce Stress context spans, add a truthful sparse-series Trend grammar, and make saved sleep/day HR and Stress refresh from exact measured canonical/archive evidence. REM/Deep/SWS may appear only from qualified motion evidence that passes the existing integrity gate. Run the listed focused suites and visual fixtures. Exercise the normal motion compact-publication/receipt path without ad hoc BLE commands. Do not force a central rebuild, terminate the app, toggle Bluetooth, forget/re-pair, upload TestFlight, or close issue #33 without explicit authorization.

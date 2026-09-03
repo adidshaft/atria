@@ -5,7 +5,7 @@ Release branch: `dev`
 Exact pushed starting commit: `1c37a0f09dac74dc654e77256c0ee87c0c00ce28` (`Scope receipt replace-ordering to one process instance`)  
 Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
-Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
+Dirty user checkout that must not be touched: `<repo-root>` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Primary issue: [#25](https://github.com/adidshaft/atria/issues/25)
 
 ## Mission and hard cutline
@@ -51,7 +51,7 @@ The exact starting tip already shipped and physically verified:
 Handoff-10 closure report:
 
 ```text
-/Users/amanpandey/.codex/attachments/6340a4ee-a04d-4c70-8da2-36256eaa7b2d/pasted-text.txt
+<home>/.codex/attachments/6340a4ee-a04d-4c70-8da2-36256eaa7b2d/pasted-text.txt
 SHA-256 6946d1c051871332d076b9e40fbfb6b8df40e0e29d7428aa95a5a1ff213daf20
 ```
 
@@ -63,7 +63,7 @@ I revalidated the exact clean tip and used Computer + iPhone Mirroring only for 
 
 ```text
 xcrun devicectl device process launch \
-  --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  --device <your-device-udid> \
   --payload-url 'atria://sleep-review' \
   --activate --terminate-existing false \
   com.adidshaft.atria
@@ -421,7 +421,7 @@ Device:
 
 ```text
 Aman's iPhone / iPhone 15 Pro
-CoreDevice ID: 3803F5B6-1666-56D3-A71A-62F131F6CE3B
+CoreDevice ID: <your-device-udid>
 bundle: com.adidshaft.atria
 ```
 

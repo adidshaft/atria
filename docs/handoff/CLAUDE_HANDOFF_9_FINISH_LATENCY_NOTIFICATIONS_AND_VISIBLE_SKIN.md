@@ -31,7 +31,7 @@ Explicitly out of scope:
 
 ## Worktree safety — mandatory
 
-The user's main checkout at `/Users/amanpandey/projects/atria` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. It contains the user's chart work and handoff documents.
+The user's main checkout at `<repo-root>` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. It contains the user's chart work and handoff documents.
 
 Do **not** edit, stash, reset, clean, stage, switch, merge, rebase, or commit application source in the main checkout.
 
@@ -481,7 +481,7 @@ AtriaExperimentalSensorCopyTests
 
 Add direct catalog-rotation and notification-cancellation tests if they live in new suites. Prefer behavioral tests to source-string scans.
 
-Use a guarded temporary symlink to `/Users/amanpandey/projects/atria/evidence` only when a selected test genuinely needs the gitignored corpus. Hash a null-delimited manifest before and after, prove equality, and remove the exact symlink with a trap.
+Use a guarded temporary symlink to `<repo-root>/evidence` only when a selected test genuinely needs the gitignored corpus. Hash a null-delimited manifest before and after, prove equality, and remove the exact symlink with a trap.
 
 After focused green:
 

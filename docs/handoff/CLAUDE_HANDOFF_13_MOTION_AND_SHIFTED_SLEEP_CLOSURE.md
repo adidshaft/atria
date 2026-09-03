@@ -43,7 +43,7 @@ Timebox: **6 hours**, maximum **three implementation commits**. CP0 gets at most
 ## Worktree, identity, and safety
 
 - Fetch `origin/dev` and work in a new clean detached worktree from its current fast-forward tip. Its required product-code ancestor is exact `ea7fe417`; later H13 commits before implementation are documentation-only and must not be omitted.
-- Do not touch the user's dirty checkout at `/Users/amanpandey/projects/atria`.
+- Do not touch the user's dirty checkout at `<repo-root>`.
 - Preserve the evidence corpus byte-for-byte; use guarded temporary symlinks only if an existing test requires one.
 - Author and committer: `adidshaft <adidshaft@gmail.com>`.
 - No AI/Codex/Claude trailers.
