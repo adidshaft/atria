@@ -4410,6 +4410,7 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: recoveryComparisonForSelectedPeriod,
                                 baselineBand: nil,
                                 accessibilitySummary: "Recovery over \(range.label).",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.recoveryPrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
@@ -4447,6 +4448,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: hrvBand,
                                 accessibilitySummary: "HRV over \(range.label) with your baseline band.",
                                 emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.hrvPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
@@ -4484,6 +4486,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: restingBand,
                                 accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.",
                                 emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
@@ -4519,6 +4522,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: respiratoryBand,
                                 accessibilitySummary: "Respiratory rate over \(range.label) with your typical range.",
                                 emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.respiratoryRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
@@ -4571,6 +4575,7 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "Sleep duration over \(range.label).",
                                 emptyTitle: sleepTrendEmptyTitle,
                                 emptyExplanation: sleepTrendEmptyExplanation,
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod)],
@@ -4658,6 +4663,7 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.sleepPerformanceComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep sufficiency, percent of nightly need, over \(range.label).",
+                                coverageNoun: "nights",
                                 companions: [("Sleep duration", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? []),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
@@ -6140,6 +6146,8 @@ struct AtriaMetricDetailSheet: View {
                              accessibilitySummary: String,
                              emptyTitle: String = "No saved observations",
                              emptyExplanation: String? = nil,
+                             // Overnight metrics count nights, not days.
+                             coverageNoun: String = "days",
                              priorPoints: [AtriaDetailChartPoint] = [],
                              companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
                              onOpenDay: ((Date) -> Void)? = nil,
@@ -6210,6 +6218,7 @@ struct AtriaMetricDetailSheet: View {
             accessibilitySummary: accessibilitySummary,
             emptyTitle: emptyTitle,
             emptyExplanation: emptyExplanation,
+            coverageNoun: coverageNoun,
             priorPoints: priorPoints,
             companions: companions.map {
                 AtriaPreparedMetricChart.Companion(title: $0.title,
@@ -6600,6 +6609,10 @@ private struct AtriaPreparedMetricChart: View {
     let accessibilitySummary: String
     let emptyTitle: String
     let emptyExplanation: String?
+    /// What one plotted point counts as. Overnight metrics are read from a
+    /// night's wear, so claiming "days recorded" would overstate what the
+    /// strap actually measured.
+    let coverageNoun: String
     let priorPoints: [AtriaDetailChartPoint]
     let companions: [Companion]
     let onOpenDay: ((Date) -> Void)?
@@ -6618,6 +6631,7 @@ private struct AtriaPreparedMetricChart: View {
          accessibilitySummary: String,
          emptyTitle: String,
          emptyExplanation: String?,
+         coverageNoun: String,
          priorPoints: [AtriaDetailChartPoint],
          companions: [Companion],
          prepared: AtriaMetricChartPreparedData,
@@ -6635,6 +6649,7 @@ private struct AtriaPreparedMetricChart: View {
         self.accessibilitySummary = accessibilitySummary
         self.emptyTitle = emptyTitle
         self.emptyExplanation = emptyExplanation
+        self.coverageNoun = coverageNoun
         self.priorPoints = priorPoints
         self.companions = companions
         self.prepared = prepared
@@ -6729,7 +6744,7 @@ private struct AtriaPreparedMetricChart: View {
                                            from: xDomain.lowerBound,
                                            to: xDomain.upperBound).day ?? 0
         guard days > 1, days <= 31, points.count < days else { return nil }
-        return "\(points.count) of \(days) days recorded"
+        return "\(points.count) of \(days) \(coverageNoun) recorded"
     }
 
     /// The chart clips to `prepared.xDomain`; the header must quote the last
