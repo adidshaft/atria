@@ -2089,6 +2089,31 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
 /// One day's trend-relevant values, prepared on the main-actor store side so
 /// the chart view stays cheap and Equatable.
+extension Array where Element == AtriaTrendPoint {
+    /// Cycle-truth strain, matching the detail sheet (2026-08-30 rule).
+    /// `makeOverviewTrendPoints` buckets TRIMP by CIVIL day, while the strain
+    /// detail sheet plots the physiological cycle — so the same date could
+    /// read one number on this card and another one tap away. The gap is
+    /// widest for a shifted sleeper, whose evening work falls in the next
+    /// civil day but the same cycle (2026-09-03).
+    ///
+    /// Only strain moves: resting HR and HRV are overnight readings already
+    /// keyed to the night they came from.
+    func applyingCycleStrain(_ byDisplayDay: [Date: Double],
+                             calendar: Calendar = .current) -> [AtriaTrendPoint] {
+        guard !byDisplayDay.isEmpty else { return self }
+        return map { point in
+            guard let cycleStrain = byDisplayDay[calendar.startOfDay(for: point.date)],
+                  cycleStrain != point.strain else { return point }
+            return AtriaTrendPoint(id: point.id,
+                                   date: point.date,
+                                   restingHR: point.restingHR,
+                                   strain: cycleStrain,
+                                   hrv: point.hrv)
+        }
+    }
+}
+
 struct AtriaTrendPoint: Equatable, Identifiable {
     let id: UUID
     let date: Date

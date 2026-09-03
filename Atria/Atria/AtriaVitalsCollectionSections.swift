@@ -175,11 +175,29 @@ final class AtriaVitalsSessionProjectionStore: ObservableObject {
 /// broad SessionStore observation back into the retained Vitals hierarchy.
 struct AtriaVitalsTrendChartHost: View, Equatable {
     let state: AtriaVitalsSessionState
+    /// Closed-cycle strain, published in lockstep with the rollup history.
+    /// Empty leaves the civil-day series exactly as it was.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
+    /// The map's identity. Comparing the dictionary itself on every equality
+    /// check would put an O(n) walk in the render path; the store bumps this
+    /// alongside the map it publishes.
+    var cycleStrainRevision: Int = 0
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.cycleStrainRevision == rhs.cycleStrainRevision && lhs.state == rhs.state
+    }
 
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
-        AtriaTrendChartCard(points: fixturePoints ?? state.overviewTrendPoints,
-                            pointsRevision: fixturePoints == nil ? state.overviewTrendPointsRevision : nil,
+        let points = fixturePoints
+            ?? state.overviewTrendPoints.applyingCycleStrain(cycleStrainByDisplayDay)
+        AtriaTrendChartCard(points: points,
+                            // The prepared-series cache keys on this, so it has
+                            // to move when the cycle series moves, not only when
+                            // the civil points do.
+                            pointsRevision: fixturePoints == nil
+                                ? state.overviewTrendPointsRevision &+ cycleStrainRevision
+                                : nil,
                             baselineRestingHR: fixturePoints == nil ? state.baseline.restingInt : 58,
                             events: trendEvents)
     }
