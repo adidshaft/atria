@@ -22,7 +22,7 @@ Timebox: approximately 3 hours implementation plus 30 minutes device verificatio
 
 ## Worktree safety—mandatory
 
-The user's main checkout at `/Users/amanpandey/projects/atria` is old and intentionally dirty at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit there. It contains the user's chart work:
+The user's main checkout at `<repo-root>` is old and intentionally dirty at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit there. It contains the user's chart work:
 
 ```text
 Atria/Atria/AtriaAboutMetricSheet.swift
@@ -301,7 +301,7 @@ AtriaRelativeSkinSignalTests              # only if checkpoint 4 changes
 AtriaHRVQualificationTests                # only if checkpoint 5 changes
 ```
 
-Use a guarded temporary symlink to the canonical `/Users/amanpandey/projects/atria/evidence` only for tests that require the gitignored evidence corpus. Hash a null-delimited evidence manifest before/after and remove the exact symlink with a trap. Do not modify evidence.
+Use a guarded temporary symlink to the canonical `<repo-root>/evidence` only for tests that require the gitignored evidence corpus. Hash a null-delimited evidence manifest before/after and remove the exact symlink with a trap. Do not modify evidence.
 
 Then run changed-file Swift parse and `git diff --check`. Do not weaken tests to clear source-scan drift; update a structural assertion only when runtime semantics are independently covered.
 

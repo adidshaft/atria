@@ -145,7 +145,7 @@ path climbing as the user walks. Prove BOTH.
 
 ## Build / deploy / soak commands
 - Build+install (Release, over localNetwork): `export
-  ATRIA_DEVICE_ID=3803F5B6-1666-56D3-A71A-62F131F6CE3B; ./scripts/ship-device.sh --no-launch`
+  ATRIA_DEVICE_ID=<your-device-udid>; ./scripts/ship-device.sh --no-launch`
   (prints `shipped <sha>`). Sim tests: scheme `AtriaTests`, sim iPhone 17 Pro (Kept)
   `44333107-67D1-4E0C-9107-B8F52D7FDF19`.
 - Launch + console:

@@ -20,7 +20,7 @@ Timebox: about 3 hours implementation plus 30–45 minutes device acceptance. St
 
 ## Worktree safety — mandatory
 
-The user's main checkout `/Users/amanpandey/projects/atria` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains the user's chart work plus prior handoff documents.
+The user's main checkout `<repo-root>` is intentionally dirty and old at `293d1a7c988bf99b6093b8529da0cf528d6e4896`. Do not edit, stash, reset, clean, stage, or commit application source there. It contains the user's chart work plus prior handoff documents.
 
 Continue only in `/private/tmp/atria-combined-successor.T76FQG/source` after proving it is clean and exactly at `5befd206…`, or create a new clean worktree from `origin/dev`.
 
@@ -383,7 +383,7 @@ AtriaBackgroundDrainBacklogTests              # only if checkpoint 2 changes cod
 
 Add focused suites for any new HR index/store and relative-skin summary store. Prefer behavioral tests over source-string assertions.
 
-Use a guarded temporary symlink to `/Users/amanpandey/projects/atria/evidence` only when a selected test truly needs the gitignored corpus. Hash a null-delimited evidence manifest before/after, verify equality, and remove the exact symlink with a trap.
+Use a guarded temporary symlink to `<repo-root>/evidence` only when a selected test truly needs the gitignored corpus. Hash a null-delimited evidence manifest before/after, verify equality, and remove the exact symlink with a trap.
 
 Then run changed-file Swift parse, `git diff --check`, and a signed physical-device build. Do not weaken data-authority or archive-integrity tests for performance.
 

@@ -5,7 +5,7 @@ Release branch: `dev`
 Exact pushed starting commit: `22c9fa217a60f1bcf7a760016b0ea53eb56ad044` (`Persist a degraded HR-only sleep review when motion cannot be verified`)  
 Remote parity verified at handoff: `HEAD...origin/dev = 0 0`  
 Clean release worktree: `/private/tmp/atria-notifications-integration.wyA4H7/source`  
-Dirty user checkout that must not be touched: `/Users/amanpandey/projects/atria` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
+Dirty user checkout that must not be touched: `<repo-root>` at `293d1a7c988bf99b6093b8529da0cf528d6e4896`  
 Sleep issue: [#25](https://github.com/adidshaft/atria/issues/25)  
 Stress validation issue: [#32](https://github.com/adidshaft/atria/issues/32)
 Stress continuity/UI issue: [#37](https://github.com/adidshaft/atria/issues/37)  
@@ -26,7 +26,7 @@ The definition of done is a signed Release on the physical phone, not only tests
 
 ## Worktree and git safety — mandatory
 
-Never edit, stash, reset, clean, stage, switch, merge, rebase, or commit application source in `/Users/amanpandey/projects/atria`. It contains the user's chart WIP and handoff documents.
+Never edit, stash, reset, clean, stage, switch, merge, rebase, or commit application source in `<repo-root>`. It contains the user's chart WIP and handoff documents.
 
 Continue only in `/private/tmp/atria-notifications-integration.wyA4H7/source` after proving:
 
@@ -439,12 +439,12 @@ Use the `computer-use` plugin and iPhone Mirroring. When tab-bar taps do not rou
 
 ```bash
 xcrun devicectl device process launch \
-  --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  --device <your-device-udid> \
   --payload-url 'atria://vitals' \
   --activate com.adidshaft.atria
 
 xcrun devicectl device process launch \
-  --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+  --device <your-device-udid> \
   --payload-url 'atria://sleep-review' \
   --activate com.adidshaft.atria
 ```

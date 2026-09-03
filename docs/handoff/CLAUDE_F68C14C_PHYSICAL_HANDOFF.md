@@ -66,7 +66,7 @@ The currently installed app is the older clean `631fa766` build. Do not claim
 1. User reconnects the cable (or restores the same-LAN pairing) and unlocks the
    iPhone. Never access Passwords or attempt a credential workaround.
 2. Require the target
-   `3803F5B6-1666-56D3-A71A-62F131F6CE3B` to report `available` in CoreDevice.
+   `<your-device-udid>` to report `available` in CoreDevice.
 3. Confirm no competing `xcodebuild`, `xctrace`, `devicectl` mutation,
    `live_device_debug`, `ios-deploy`, or `idevicesyslog` owner.
 4. Free enough disposable build space if needed. Do not delete source,
