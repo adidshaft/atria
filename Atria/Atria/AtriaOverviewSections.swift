@@ -6574,7 +6574,14 @@ struct AtriaMetricChartPreparedData {
             include(point.bandLower)
             include(point.bandUpper)
         }
-        for point in priorPoints { include(point.value) }
+        // Prior-period points are deliberately NOT drawn in this card (see the
+        // ghost-line note in chartContent), so letting them set the scale sized
+        // the axis to data the reader cannot see: a strain month topping out at
+        // 3.2 was plotted on an axis reaching 14 because some day in the prior
+        // month was that hard, leaving the real bars in the bottom fifth
+        // (2026-09-03 render). The prior AVERAGE still counts — its dashed rule
+        // is on screen. The expanded chart, which does draw the prior series,
+        // computes its own scale.
         include(baselineBounds?.lowerBound)
         include(baselineBounds?.upperBound)
         include(priorAverage)

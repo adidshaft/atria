@@ -10,12 +10,14 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
         return calendar
     }
 
-    func testPreparationIncludesEveryStaticDomainInputOnce() {
+    func testPreparationScalesToTheVisibleInputsOnly() {
         let points = [
             point(day: 1, value: 60, lower: 58, upper: 64),
             point(day: 2, value: 70)
         ]
-        let prior = [point(day: 1, value: 52)]
+        // Far outside every visible input: an undrawn series must not move
+        // the axis (2026-09-03).
+        let prior = [point(day: 1, value: 210)]
 
         let prepared = AtriaMetricChartPreparedData(
             points: points,
