@@ -88,6 +88,24 @@ final class AtriaTrendChartWindowTests: XCTestCase {
         XCTAssertTrue(trend.contains("\\(metric.coverageNoun) recorded"))
     }
 
+    /// The expanded full-screen chart speaks the same way, and both routes
+    /// into it pass the metric's own noun.
+    func testExpandedChartUsesTheSameNoun() throws {
+        let expanded = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaExpandedChart.swift"), encoding: .utf8)
+        XCTAssertTrue(expanded.contains("coverageNoun: String = \"days\","))
+        XCTAssertTrue(expanded.contains("\\(dataDayCount) \\(coverageNoun) of \\(title.lowercased()) recorded."))
+        XCTAssertFalse(expanded.contains("\\(dataDayCount) days of"), "the hardcoded noun is gone")
+        let overview = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
+        XCTAssertTrue(overview.contains("coverageNoun: metric.coverageNoun,"))
+        XCTAssertTrue(overview.contains("case .recovery, .hrv, .restingHeartRate, .respiratoryRate,"))
+        let trendSource = try source
+        XCTAssertTrue(trendSource.contains("coverageNoun: metric.coverageNoun,"))
+    }
+
     /// Trailing windows: a week ending today contains today's own sample.
     func testTrailingWindowContainsTodayForEveryPrimaryRange() {
         var calendar = Calendar(identifier: .gregorian)
