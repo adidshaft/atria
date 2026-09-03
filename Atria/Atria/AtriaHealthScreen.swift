@@ -871,7 +871,8 @@ struct AtriaHealthScreen: View {
             rollups: vitals.dailyRollupHistory,
             workouts: vitals.confirmedWorkouts,
             sleeps: vitals.confirmedSleeps,
-            reviewCandidateDays: historyReviewCandidateDays
+            reviewCandidateDays: historyReviewCandidateDays,
+            cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay
         )
         let historyProjection = historyProjectionStore.projection
         Group {

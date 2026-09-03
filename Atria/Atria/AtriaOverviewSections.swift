@@ -4349,7 +4349,8 @@ struct AtriaMetricDetailSheet: View {
         .sheet(item: $openedHistoryDay) { day in
             let historyModel = AtriaHistoryModel.make(rollups: rollups,
                                                       workouts: confirmedWorkouts,
-                                                      sleeps: confirmedSleeps)
+                                                      sleeps: confirmedSleeps,
+                                                      cycleStrainByDisplayDay: preparationBaseInput.cycleStrainByDisplayDay)
             AtriaHistoryDayDetailSheet(day: day,
                                        medians: historyModel.medianWindow(around: day),
                                        nights: sleepHistory.confirmedNights(on: day.date),
@@ -6560,7 +6561,8 @@ struct AtriaMetricDetailSheet: View {
     private func openHistoryDay(for date: Date) {
         let model = AtriaHistoryModel.make(rollups: rollups,
                                            workouts: confirmedWorkouts,
-                                           sleeps: confirmedSleeps)
+                                           sleeps: confirmedSleeps,
+                                           cycleStrainByDisplayDay: preparationBaseInput.cycleStrainByDisplayDay)
         guard let day = model.days.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) else { return }
         openedHistoryDay = day
     }

@@ -99,8 +99,16 @@ struct AtriaHistoryModel: Equatable {
                       workouts: [UserConfirmedWorkout],
                       sleeps: [UserConfirmedSleep],
                       reviewCandidateDays: [AtriaHistoryReviewCandidateDay] = [],
-                      calendar: Calendar = .current) -> AtriaHistoryModel {
-        let rollupsByDay = Dictionary(grouping: rollups) {
+                      calendar: Calendar = .current,
+                      cycleStrainByDisplayDay: [Date: Double] = [:]) -> AtriaHistoryModel {
+        // Same overlay the strain chart, Trends card, and weekly/monthly
+        // reports use (2026-08-30 / 2026-09-03): a shifted sleeper's civil
+        // rollup shreds one wake-to-wake day across two rows. An empty map
+        // leaves every civil value untouched.
+        let aligned = WeeklyReport.applyingCycleStrain(rollups,
+                                                       cycleStrainByDisplayDay,
+                                                       calendar: calendar)
+        let rollupsByDay = Dictionary(grouping: aligned) {
             calendar.startOfDay(for: $0.day)
         }.compactMapValues(\.first)
         // Presentation gate (2026-07-31): accidental sub-minute live fragments
@@ -208,6 +216,23 @@ struct AtriaHistoryProjectionInput: @unchecked Sendable {
     let workouts: [UserConfirmedWorkout]
     let sleeps: [UserConfirmedSleep]
     let reviewCandidateDays: [AtriaHistoryReviewCandidateDay]
+    /// Closed-cycle strain keyed by predominant civil day. Applied so a
+    /// History row cannot disagree with the strain chart for the same date.
+    let cycleStrainByDisplayDay: [Date: Double]
+
+    init(key: AtriaHistoryRevisionKey,
+         rollups: [DailyRollupStoreEntry],
+         workouts: [UserConfirmedWorkout],
+         sleeps: [UserConfirmedSleep],
+         reviewCandidateDays: [AtriaHistoryReviewCandidateDay],
+         cycleStrainByDisplayDay: [Date: Double] = [:]) {
+        self.key = key
+        self.rollups = rollups
+        self.workouts = workouts
+        self.sleeps = sleeps
+        self.reviewCandidateDays = reviewCandidateDays
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
+    }
 }
 
 struct AtriaHistoryProjection: Equatable {
@@ -237,7 +262,8 @@ final class AtriaVitalsHistoryProjectionStore: ObservableObject {
             AtriaHistoryModel.make(rollups: input.rollups,
                                    workouts: input.workouts,
                                    sleeps: input.sleeps,
-                                   reviewCandidateDays: input.reviewCandidateDays)
+                                   reviewCandidateDays: input.reviewCandidateDays,
+                                   cycleStrainByDisplayDay: input.cycleStrainByDisplayDay)
         }
         let model = await withTaskCancellationHandler {
             await preparation.value
