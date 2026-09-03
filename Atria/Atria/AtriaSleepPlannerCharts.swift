@@ -397,6 +397,17 @@ enum AtriaSleepDebtChartPresentation {
         slots.filter { $0.sleptHours != nil }.count
     }
 
+    /// Axis domain for the 7-slot week, not the nights that happen to have a
+    /// reading (owner 2026-09-02: two recorded mornings must not stretch as a
+    /// full week). Padded half a day each side so edge points aren't clipped.
+    static func weekXDomain(slots: [NightSlot],
+                            calendar: Calendar = .current) -> ClosedRange<Date>? {
+        guard let first = slots.first?.day, let last = slots.last?.day else { return nil }
+        let lo = calendar.date(byAdding: .hour, value: -12, to: first) ?? first
+        let hi = calendar.date(byAdding: .hour, value: 12, to: last) ?? last
+        return lo...hi
+    }
+
     /// GAP-01 gap grammar: contiguous runs of slots that actually carry a
     /// value. The chart draws each run as its own line series, so a night
     /// without a frozen need (or without a confirmed sleep) breaks the line
@@ -647,6 +658,7 @@ struct AtriaSleepDebtChartCard: View {
         }
         .atriaGraphPlotSurface()
         .chartYScale(domain: lowerBound...upperBound)
+        .chartXScale(domain: AtriaSleepDebtChartPresentation.weekXDomain(slots: slots) ?? Date()...Date())
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
