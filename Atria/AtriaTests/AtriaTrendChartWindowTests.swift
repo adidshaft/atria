@@ -67,8 +67,10 @@ final class AtriaTrendChartWindowTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
         XCTAssertTrue(overview.contains("return \"\\(points.count) of \\(days) \\(coverageNoun) recorded\""))
-        XCTAssertTrue(overview.contains("guard days > 1, days <= 31, points.count < days else { return nil }"),
-                      "silent on a full window, a single day, and the weekly-bucketed long ranges")
+        XCTAssertTrue(overview.contains("guard let days = windowMissingDayCount, days <= 31 else { return nil }"),
+                      "silent past a month of window")
+        XCTAssertTrue(overview.contains("guard !prepared.hasMinMaxBand, let xDomain = prepared.xDomain else { return nil }"),
+                      "silent on a full window, a single day, and any bucketed series")
         XCTAssertTrue(overview.contains("if let coverageText {"), "and it is rendered under the summary line")
     }
 

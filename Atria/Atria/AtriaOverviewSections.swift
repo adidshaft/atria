@@ -4061,6 +4061,26 @@ struct AtriaMetricDetailSheet: View {
     var onDismissMaxHRSuggestion: ((Int) -> Void)? = nil
     @State private var maxHRSuggestionHandled = false
 
+    #if DEBUG
+    /// `--atria-ui-range week` (or day/month/quarter/six-months/year/all).
+    /// DEBUG only, and read once at init so it behaves like the user's own
+    /// first choice rather than pinning the picker.
+    static func debugRequestedInitialRange(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> AtriaTrendRange? {
+        guard let index = arguments.firstIndex(of: "--atria-ui-range"),
+              arguments.indices.contains(index + 1) else { return nil }
+        switch arguments[index + 1].lowercased() {
+        case "day": return .day
+        case "week": return .week
+        case "month": return .month
+        case "quarter": return .quarter
+        case "sixmonths", "six-months": return .sixMonths
+        case "year": return .year
+        case "all": return .all
+        default: return nil
+        }
+    }
+    #endif
+
     private final class ExpandedChartEventsCache {
         private var key: Int?
         private var events: [AtriaChartEvent] = []
@@ -4133,8 +4153,15 @@ struct AtriaMetricDetailSheet: View {
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
          initialShowMinMaxBand: Bool = true) {
-        let resolvedInitialRange: AtriaTrendRange =
+        var resolvedInitialRange: AtriaTrendRange =
             metric == .fitnessAge && initialRange == .day ? .week : initialRange
+        #if DEBUG
+        // Screenshot support (2026-09-03): the trailing-window label and the
+        // "N of M nights recorded" coverage line only exist once a multi-day
+        // range is chosen, and a scripted launch cannot tap the segmented
+        // control. Honour a launch argument so those states can be captured.
+        if let forced = Self.debugRequestedInitialRange() { resolvedInitialRange = forced }
+        #endif
         _range = State(initialValue: resolvedInitialRange)
         let currentPeriodAnchor: Date
         switch metric {
@@ -6084,16 +6111,19 @@ struct AtriaMetricDetailSheet: View {
               let sd = baseline.hrvLnSD else { return nil }
         return AtriaDetailBaselineBand(lower: exp(mean - sd),
                                        upper: exp(mean + sd),
-                                       tint: .pink)
+                                       tint: AtriaMetricDetailKind.hrv.tint)
     }
 
     private var restingBand: AtriaDetailBaselineBand? {
         guard baseline.restingTrusted,
               let mean = baseline.restingMean,
               let sd = baseline.restingSD else { return nil }
+        // One identity hue per metric: a pink "typical" band under a cyan
+        // resting-HR chart read as a warning stripe rather than as this
+        // metric's own normal range (2026-09-03 render).
         return AtriaDetailBaselineBand(lower: mean - sd,
                                        upper: mean + sd,
-                                       tint: .pink)
+                                       tint: AtriaMetricDetailKind.restingHeartRate.tint)
     }
 
     /// Nights of overnight respiration a typical range needs before it is
@@ -6110,7 +6140,7 @@ struct AtriaMetricDetailSheet: View {
               stats.sd > 0 else { return nil }
         return AtriaDetailBaselineBand(lower: stats.mean - 1.5 * stats.sd,
                                        upper: stats.mean + 1.5 * stats.sd,
-                                       tint: .teal)
+                                       tint: AtriaMetricDetailKind.respiratoryRate.tint)
     }
 
     private func contributorTitle(_ contributor: Metrics.RecoveryEstimate.Contributor) -> String {
@@ -6750,15 +6780,29 @@ private struct AtriaPreparedMetricChart: View {
     /// fault rather than six recorded days (owner report 2026-09-02).
     /// Silent on a full window, on a single day, and on the long ranges whose
     /// points are weekly buckets rather than days.
+    /// Days in the plotted window that carry no reading. Bucketed series are
+    /// excluded: their points are weekly averages, so counting them against
+    /// calendar days would report "5 of 30 nights" for a fully covered month.
+    private var windowMissingDayCount: Int? {
+        guard !prepared.hasMinMaxBand, let xDomain = prepared.xDomain else { return nil }
+        let days = Calendar.current.dateComponents([.day],
+                                                   from: xDomain.lowerBound,
+                                                   to: xDomain.upperBound).day ?? 0
+        guard days > 1, points.count < days else { return nil }
+        return days
+    }
+
     private var coverageText: String? {
-        guard let xDomain = prepared.xDomain else { return nil }
-        let calendar = Calendar.current
-        let days = calendar.dateComponents([.day],
-                                           from: xDomain.lowerBound,
-                                           to: xDomain.upperBound).day ?? 0
-        guard days > 1, days <= 31, points.count < days else { return nil }
+        guard let days = windowMissingDayCount, days <= 31 else { return nil }
         return "\(points.count) of \(days) \(coverageNoun) recorded"
     }
+
+    /// The gradient under the line is decoration, and it can only be drawn
+    /// across a run of two or more consecutive days. On a window with holes it
+    /// therefore shades some points and not others, which reads as a solid
+    /// block sitting under an arbitrary part of the chart (2026-09-03 render).
+    /// Draw it only when the window is completely covered.
+    private var rendersAreaFill: Bool { windowMissingDayCount == nil }
 
     /// The chart clips to `prepared.xDomain`; the header must quote the last
     /// point actually drawn, never one that fell outside the domain
@@ -6779,8 +6823,12 @@ private struct AtriaPreparedMetricChart: View {
     private var chartContent: some View {
         Chart {
             if let baselineBand {
-                RectangleMark(xStart: .value("Start", points.first?.day ?? Date()),
-                              xEnd: .value("End", points.last?.day ?? Date()),
+                // The band is a property of the metric, not of where the
+                // data happens to stop. Spanning it to the last point drew a
+                // shaded rectangle that ended mid-chart with the remaining
+                // days bare beside it (2026-09-03 render).
+                RectangleMark(xStart: .value("Start", prepared.xDomain?.lowerBound ?? points.first?.day ?? Date()),
+                              xEnd: .value("End", prepared.xDomain?.upperBound ?? points.last?.day ?? Date()),
                               yStart: .value("Lower", baselineBand.lower),
                               yEnd: .value("Upper", baselineBand.upper))
                     .foregroundStyle(baselineBand.tint.opacity(0.12))
@@ -6817,7 +6865,7 @@ private struct AtriaPreparedMetricChart: View {
                 // A filled region is a stronger claim than a stroke, not a
                 // weaker one: it shades area under days that were never
                 // measured.
-                ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+                ForEach(rendersAreaFill ? points.contiguousDayRuns() : [], id: \.point.day) { entry in
                     AreaMark(x: .value("Day", entry.point.day, unit: .day),
                              y: .value(title, entry.point.value),
                              series: .value("Fill run", "fill-\(entry.runID)"))
@@ -6862,8 +6910,12 @@ private struct AtriaPreparedMetricChart: View {
                     .foregroundStyle(point.tint)
             }
             if let last = points.last, selectedPoint == nil {
+                // Emphasise the newest reading by SIZE, not by hue. Painting it
+                // in the metric's identity colour over its own status colour
+                // made the one point a reader cares about most the only one
+                // whose colour said nothing about the value (2026-09-03).
                 PointMark(x: .value("Day", last.day, unit: .day), y: .value(title, last.value))
-                    .foregroundStyle(tint).symbolSize(110)
+                    .foregroundStyle(last.tint).symbolSize(110)
             }
             if let selectedPoint {
                 RuleMark(x: .value("Day", selectedPoint.day, unit: .day))
