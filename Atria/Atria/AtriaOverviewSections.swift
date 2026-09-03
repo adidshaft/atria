@@ -3623,6 +3623,18 @@ enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
     ///
     /// Expanding a chart opens in this form so the full-screen view shows the
     /// same shape that was tapped rather than silently switching to a line.
+    /// What one recorded point is. Everything read from a night's wear
+    /// counts nights; anything accumulated across a waking day counts days.
+    var coverageNoun: String {
+        switch self {
+        case .recovery, .hrv, .restingHeartRate, .respiratoryRate,
+             .sleep, .sleepPerformance, .sleepEfficiency:
+            return "nights"
+        default:
+            return "days"
+        }
+    }
+
     var rendersAsDailyBar: Bool {
         switch self {
         // The owner's chart grammar (2026-08-26): a metric that resolves to
@@ -4259,6 +4271,7 @@ struct AtriaMetricDetailSheet: View {
                                        overlays: expandedChartOverlays,
                                        xDomain: expandedChartXDomain,
                                        comparisonPeriodNoun: range.narrativeLabel,
+                                       coverageNoun: metric.coverageNoun,
                                        // Open in the form the user just tapped.
                                        defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
                                        onDismiss: { showExpandedChart = false })

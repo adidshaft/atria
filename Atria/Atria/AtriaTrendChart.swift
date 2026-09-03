@@ -245,6 +245,7 @@ struct AtriaTrendChartCard: View {
                                    tint: metric.tint,
                                    points: expandedChartPoints,
                                    events: events,
+                                   coverageNoun: metric.coverageNoun,
                                    // Open in the form the user just tapped.
                                    defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
                                    onDismiss: { showExpandedChart = false })
