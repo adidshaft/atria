@@ -1999,6 +1999,25 @@ struct AtriaWeeklyReportSheet: View {
         }
     }
 
+    /// Seven ISO weekdays (Monday first) of the week containing `anchor`.
+    /// The axis is this window, not the days that happen to have a reading
+    /// (owner 2026-09-02: two recorded days must not stretch as a full week).
+    static func trendWeekDays(anchor: Date, calendar: Calendar) -> [Date] {
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return [] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: interval.start) }
+    }
+
+    /// Covers every `unit: .day` bar of that week. `DateInterval.end` is the
+    /// next Monday; Sunday's bar occupies [Sunday, next Monday).
+    static func trendWeekXDomain(anchor: Date, calendar: Calendar) -> ClosedRange<Date>? {
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return nil }
+        return interval.start...interval.end
+    }
+
+    private var weeklyTrendDays: [Date] {
+        Self.trendWeekDays(anchor: displayedReport.generatedAt, calendar: reportCalendar)
+    }
+
     private var weeklyTrendChart: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
@@ -2020,6 +2039,7 @@ struct AtriaWeeklyReportSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
             } else {
+                let weekDays = weeklyTrendDays
                 Chart {
                     ForEach(selectedTrendPoints, id: \.day) { point in
                         BarMark(x: .value("Day", point.day, unit: .day),
@@ -2030,16 +2050,19 @@ struct AtriaWeeklyReportSheet: View {
                     }
                 }
                 .chartYScale(domain: selectedTrendDomain)
+                .chartXScale(domain: Self.trendWeekXDomain(anchor: displayedReport.generatedAt,
+                                                           calendar: reportCalendar) ?? Date()...Date())
                 .chartYAxis {
                     AxisMarks(position: .trailing, values: .automatic(desiredCount: 4))
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisMarks(values: weekDays) { _ in
                         AxisGridLine()
                         // Bars only here, and a `unit: .day` bar spans its
                         // whole day — so the weekday must sit at the middle of
                         // that span, not at midnight where the bar's left edge
-                        // is.
+                        // is. Marks are one day apart, so `centered:` is half
+                        // a day — noon — not half a week.
                         AxisValueLabel(format: .dateTime.weekday(.abbreviated),
                                        centered: true)
                     }
