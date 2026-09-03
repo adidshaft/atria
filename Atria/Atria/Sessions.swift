@@ -27163,7 +27163,8 @@ final class SessionStore: ObservableObject {
         let report = WeeklyReport(rollups: dailyRollupStore.rollups(last: 14),
                                   sleepNights: sleepHistorySnapshot.nights,
                                   now: now,
-                                  calendar: calendar)
+                                  calendar: calendar,
+                                  cycleStrainByDisplayDay: physiologicalCycleStrainByDisplayDay)
         guard report.recoveryAvg != nil else {
             AtriaDebugLog("ATRIADBG weekly_report_generation status=skipped reason=no_recovery_average source=%@ isoYear=%d isoWeek=%d",
                           reason,

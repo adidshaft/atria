@@ -37,10 +37,19 @@ struct WeeklyReport: Codable, Equatable {
     init(rollups: [DailyRollupStoreEntry],
          sleepNights: [SleepHistorySnapshot.Night] = [],
          now: Date = Date(),
-         calendar: Calendar = WeeklyReportCalendar.iso) {
+         calendar: Calendar = WeeklyReportCalendar.iso,
+         cycleStrainByDisplayDay: [Date: Double] = [:]) {
         let recent = Self.recentRollups(rollups, limit: 14)
-        let currentWeek = Array(recent.prefix(7))
-        let priorWeek = Array(recent.dropFirst(7).prefix(7))
+        // Same overlay the strain detail chart and Trends card use
+        // (2026-08-30 / 2026-09-03): a shifted sleeper's civil rollup shreds
+        // one wake-to-wake day across two bars. An empty map leaves every
+        // civil value untouched.
+        let currentWeek = Self.applyingCycleStrain(Array(recent.prefix(7)),
+                                                   cycleStrainByDisplayDay,
+                                                   calendar: calendar)
+        let priorWeek = Self.applyingCycleStrain(Array(recent.dropFirst(7).prefix(7)),
+                                                 cycleStrainByDisplayDay,
+                                                 calendar: calendar)
         let currentRecoveries = currentWeek.compactMap(\.recovery)
         let priorRecoveries = priorWeek.compactMap(\.recovery)
         let currentAverage = Self.roundedAverage(currentRecoveries)
@@ -92,6 +101,25 @@ struct WeeklyReport: Codable, Equatable {
         recoverySeries = currentWeek
             .sorted { $0.day < $1.day }
             .map { DaySummary(day: $0.day, recovery: $0.recovery, strain: $0.strain) }
+    }
+
+    private static func applyingCycleStrain(_ entries: [DailyRollupStoreEntry],
+                                            _ cycleStrainByDisplayDay: [Date: Double],
+                                            calendar: Calendar) -> [DailyRollupStoreEntry] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return entries }
+        // Prefer Calendar.current, which is how SessionStore keys the map and
+        // how the strain chart looks it up. Fall back to the report calendar
+        // and the stored day itself so a test that keys on ISO midnight still
+        // hits, and a pre-normalized rollup day hits without a second convert.
+        return entries.map { entry in
+            let cycleStrain = cycleStrainByDisplayDay[Calendar.current.startOfDay(for: entry.day)]
+                ?? cycleStrainByDisplayDay[calendar.startOfDay(for: entry.day)]
+                ?? cycleStrainByDisplayDay[entry.day]
+            guard let cycleStrain, cycleStrain != entry.strain else { return entry }
+            var copy = entry
+            copy.strain = cycleStrain
+            return copy
+        }
     }
 
     private static func recentRollups(_ rollups: [DailyRollupStoreEntry],

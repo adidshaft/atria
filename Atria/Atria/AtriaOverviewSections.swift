@@ -1655,6 +1655,10 @@ struct AtriaWeeklyReportSheet: View {
     /// fabricating any points. Existing callers that only have one report keep
     /// the current-week experience.
     var rollups: [DailyRollupStoreEntry] = []
+    /// Closed-cycle strain keyed by predominant civil day. Applied when this
+    /// sheet rebuilds a prior week so the average and hardest-day cannot
+    /// disagree with the strain chart for the same date.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
     /// Qualified sleep windows for the monthly report's consistency score.
     /// Empty means the monthly sheet says "Schedule building" rather than
     /// guessing from bedtime-only rollups.
@@ -1820,7 +1824,10 @@ struct AtriaWeeklyReportSheet: View {
             return report
         }
         let window = rollups.filter { $0.day >= earliest && $0.day <= anchor }
-        return WeeklyReport(rollups: window, now: anchor, calendar: reportCalendar)
+        return WeeklyReport(rollups: window,
+                            now: anchor,
+                            calendar: reportCalendar,
+                            cycleStrainByDisplayDay: cycleStrainByDisplayDay)
     }
 
     private var canNavigateToPreviousWeek: Bool {

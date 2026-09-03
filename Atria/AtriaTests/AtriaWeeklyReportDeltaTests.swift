@@ -57,6 +57,39 @@ final class AtriaWeeklyReportDeltaTests: XCTestCase {
         XCTAssertEqual(WeeklyReport.sleepDeltaText(-2 * 3_600), "\u{2212}2h 00m vs prior week")
     }
 
+    func testCycleStrainOverridesTheCivilBucketOnTheSameDay() {
+        let today = DateComponents(calendar: calendar, year: 2026, month: 7, day: 6).date!
+        // Civil: 10 a day this week. Cycle says the most recent day was 16.5
+        // (evening work that the civil split put on the next morning).
+        let strains: [Double?] = Array(repeating: 10, count: 14)
+        let sleeps: [TimeInterval?] = Array(repeating: 7.5 * 3_600, count: 14)
+        let rollups = rollups(strains: strains, sleeps: sleeps, today: today)
+        // Rollups normalize `day` with Calendar.current, which is also how
+        // the store keys the cycle series. Key the overlay the same way.
+        let shiftedDay = rollups[0].day
+        let report = WeeklyReport(rollups: rollups,
+                                  now: today,
+                                  calendar: calendar,
+                                  cycleStrainByDisplayDay: [shiftedDay: 16.5])
+        XCTAssertEqual(report.hardestDay?.strain, 16.5)
+        XCTAssertEqual(report.strainAvg.map { ($0 * 10).rounded() / 10 }, 10.9)
+        let untouched = WeeklyReport(rollups: rollups, now: today, calendar: calendar)
+        XCTAssertEqual(untouched.strainAvg, 10)
+        XCTAssertEqual(untouched.hardestDay?.strain, 10)
+    }
+
+    func testAnEmptyCycleMapLeavesTheCivilWeekUntouched() {
+        let today = DateComponents(calendar: calendar, year: 2026, month: 7, day: 6).date!
+        let strains: [Double?] = Array(repeating: 8, count: 14)
+        let sleeps: [TimeInterval?] = Array(repeating: 7 * 3_600, count: 14)
+        let rollups = rollups(strains: strains, sleeps: sleeps, today: today)
+        XCTAssertEqual(
+            WeeklyReport(rollups: rollups, now: today, calendar: calendar,
+                         cycleStrainByDisplayDay: [:]),
+            WeeklyReport(rollups: rollups, now: today, calendar: calendar)
+        )
+    }
+
     func testReportRowsUseTheDeltas() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -65,5 +98,22 @@ final class AtriaWeeklyReportDeltaTests: XCTestCase {
         XCTAssertTrue(source.contains("detail: WeeklyReport.sleepDeltaText(displayedReport.sleepDeltaVsPriorWeekSeconds),"))
         XCTAssertFalse(source.contains("Daily strain across the week"))
         XCTAssertFalse(source.contains("Nightly duration across the week"))
+        XCTAssertTrue(source.contains("cycleStrainByDisplayDay: cycleStrainByDisplayDay"),
+                      "paged weeks must overlay the same cycle series")
+    }
+
+    func testTodayAndThePersistedReportFeedTheCycleMap() throws {
+        let today = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTodayScreen.swift"), encoding: .utf8)
+        XCTAssertTrue(today.contains("cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay"))
+        let sessions = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+        XCTAssertTrue(sessions.contains("cycleStrainByDisplayDay: physiologicalCycleStrainByDisplayDay"))
+        let assistant = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaAssistantScreen.swift"), encoding: .utf8)
+        XCTAssertTrue(assistant.contains("cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay"))
     }
 }
