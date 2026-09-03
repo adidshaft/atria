@@ -51,6 +51,16 @@ final class AtriaDetailChartBandHonestyTests: XCTestCase {
                        "the old inline rule is gone")
     }
 
+    /// The point layer is gated on `rendersAsDailyBar`; the latest-point
+    /// emphasis beside it was not, so sleep and strain each drew one circle
+    /// sitting on top of their last bar with nothing to explain it.
+    func testBarChartsDrawNoLatestPointDot() throws {
+        let source = try source
+        XCTAssertTrue(source.contains("if let last = points.last, selectedPoint == nil, !rendersAsDailyBar {"))
+        XCTAssertTrue(source.contains("ForEach(rendersAsDailyBar ? [] : points) { point in"),
+                      "the per-day point layer stays gated the same way")
+    }
+
     func testNewestReadingKeepsItsOwnStatusHue() throws {
         let source = try source
         XCTAssertTrue(source.contains(".foregroundStyle(last.tint).symbolSize(110)"),

@@ -6909,7 +6909,10 @@ private struct AtriaPreparedMetricChart: View {
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
                     .foregroundStyle(point.tint)
             }
-            if let last = points.last, selectedPoint == nil {
+            // A bar already carries its own emphasis, and this dot was not
+            // gated with the point layer above it, so every bar chart drew one
+            // unexplained circle on top of its last bar (2026-09-03 render).
+            if let last = points.last, selectedPoint == nil, !rendersAsDailyBar {
                 // Emphasise the newest reading by SIZE, not by hue. Painting it
                 // in the metric's identity colour over its own status colour
                 // made the one point a reader cares about most the only one
