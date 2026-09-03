@@ -70,9 +70,15 @@ final class AtriaUIDensityCompletionTests: XCTestCase {
         XCTAssertTrue(source.contains("compactMetric(title: metricProjection.activeCaloriesHUDTitle"))
     }
 
-    func testAlertSettingsGridStacksOnlyAtAccessibilitySizes() {
+    /// 2026-09-02 moved the stack point below the accessibility sizes: at XXL
+    /// and above, two columns hyphenated "Recov-ery" — and XXXL is the largest
+    /// STANDARD size, so waiting for `isAccessibilitySize` left that break in
+    /// a layout plenty of people use.
+    func testAlertSettingsGridStacksFromExtraExtraLargeUpward() {
         XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .large), 2)
-        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xxxLarge), 2)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xLarge), 2)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xxLarge), 1)
+        XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .xxxLarge), 1)
         XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .accessibility1), 1)
         XCTAssertEqual(AtriaAlertSettingsGrid.columnCount(for: .accessibility5), 1)
     }
