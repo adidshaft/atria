@@ -211,6 +211,57 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
         )
     }
 
+    func testCoverageCaptionNamesBothSeriesAndStaysSilentWhenFull() {
+        let today = day(10)
+        // Window is day 4...10. Five strain days and four recovery nights.
+        let strain = [4, 5, 6, 7, 8].map { point($0, 10) }
+        let recovery = [5, 6, 7, 8].map { point($0, 70) }
+        XCTAssertEqual(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: strain,
+                                                          recovery: recovery,
+                                                          now: today,
+                                                          calendar: calendar),
+            "5 of 7 days · 4 of 7 nights recorded"
+        )
+
+        let full = (4...10).map { point($0, 10) }
+        XCTAssertNil(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: full,
+                                                          recovery: full,
+                                                          now: today,
+                                                          calendar: calendar),
+            "a complete window says nothing, matching Trends and the detail sheet"
+        )
+    }
+
+    func testCoverageCaptionCountsAnEmptySeriesAsZeroNotAsAbsent() {
+        let today = day(10)
+        let strain = [8, 9].map { point($0, 12) }
+        XCTAssertEqual(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: strain,
+                                                          recovery: [],
+                                                          now: today,
+                                                          calendar: calendar),
+            "2 of 7 days · 0 of 7 nights recorded"
+        )
+    }
+
+    func testDetailHostShowsTheComboWhenOnlyOneSeriesHasPoints() throws {
+        let overview = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
+        XCTAssertTrue(overview.contains("if !strainPoints.isEmpty || !recoveryPoints.isEmpty"),
+                      "a week of strain with recovery still learning must still draw")
+        XCTAssertFalse(overview.contains("if !strainPoints.isEmpty && !recoveryPoints.isEmpty"))
+
+        let combo = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaStrainRecoveryComboChart.swift"), encoding: .utf8)
+        XCTAssertFalse(combo.contains("as two lines"),
+                       "the how-to-read paragraph is gone; coverage says what is missing")
+        XCTAssertTrue(combo.contains("if let coverageText"))
+    }
+
     private func healthScreenSource() throws -> String {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

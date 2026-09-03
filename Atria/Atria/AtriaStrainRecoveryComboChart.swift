@@ -63,6 +63,26 @@ struct AtriaStrainRecoveryComboChart: View {
         }
     }
 
+    /// Same words the Trends and metric-detail cards use. Silent on a full
+    /// window. Strain counts days; recovery counts nights. Internal for tests.
+    static func coverageCaption(strain: [AtriaDetailChartPoint],
+                                recovery: [AtriaDetailChartPoint],
+                                now: Date,
+                                calendar: Calendar = .current) -> String? {
+        let window = trailingWeekDays(now: now, calendar: calendar).count
+        guard window > 1 else { return nil }
+        let strainDays = Set(
+            pointsInTrailingWeek(strain, now: now, calendar: calendar)
+                .map { calendar.startOfDay(for: $0.day) }
+        ).count
+        let recoveryNights = Set(
+            pointsInTrailingWeek(recovery, now: now, calendar: calendar)
+                .map { calendar.startOfDay(for: $0.day) }
+        ).count
+        guard strainDays < window || recoveryNights < window else { return nil }
+        return "\(strainDays) of \(window) days · \(recoveryNights) of \(window) nights recorded"
+    }
+
     /// Domain padded half a day each side so edge ticks/points aren't clipped.
     private var xDomain: ClosedRange<Date>? {
         guard let first = weekDays.first, let last = weekDays.last else { return nil }
@@ -79,15 +99,27 @@ struct AtriaStrainRecoveryComboChart: View {
             // trailing axis. The plot now keeps the card inset and gets
             // explicit headroom instead.
             chart
-            Text("Strain (0–21, left) and recovery % (right) as two lines. Recovery points are colored by band; each line breaks on days with no reading rather than drawing across the gap.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricStrain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strain and recovery over \(rangeLabel). Strain on a 0 to 21 scale, recovery as a percentage, one point per day.")
+        .accessibilityLabel(accessibilityCaption)
+    }
+
+    private var coverageText: String? {
+        Self.coverageCaption(strain: strain, recovery: recovery, now: now, calendar: calendar)
+    }
+
+    private var accessibilityCaption: String {
+        let base = "Strain and recovery over \(rangeLabel). Strain on a 0 to 21 scale, recovery as a percentage, one point per day."
+        guard let coverageText else { return base }
+        return "\(base) \(coverageText)."
     }
 
     private var header: some View {

@@ -5869,7 +5869,10 @@ struct AtriaMetricDetailSheet: View {
     private var strainRecoveryComboCard: some View {
         let strainPoints = strainComboWeekPoints
         let recoveryPoints = recoveryComboWeekPoints
-        if !strainPoints.isEmpty && !recoveryPoints.isEmpty {
+        // Either series is enough: a week of strain with recovery still
+        // learning used to hide the whole card, and the empty series already
+        // draws as a gap rather than a fabricated zero.
+        if !strainPoints.isEmpty || !recoveryPoints.isEmpty {
             AtriaStrainRecoveryComboChart(strain: strainPoints,
                                           recovery: recoveryPoints,
                                           rangeLabel: "the last 7 days")
