@@ -6701,6 +6701,12 @@ private struct AtriaPreparedMetricChart: View {
             if let summary, points.count >= 2 || summary.hasSpread {
                 AtriaDetailPeriodSummaryLine(summary: summary)
             }
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         // 12pt gutter (2026-08-05 width audit): match the app-wide screen
         // gutter horizontally; vertical inset stays 14. Reduced padding only —
@@ -6709,6 +6715,21 @@ private struct AtriaPreparedMetricChart: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 14)
         .atriaInsetCard(tint: tint)
+    }
+
+    /// How much of the plotted window holds a reading, in the same words the
+    /// Trends card uses. A month with six readings looked like a drawing
+    /// fault rather than six recorded days (owner report 2026-09-02).
+    /// Silent on a full window, on a single day, and on the long ranges whose
+    /// points are weekly buckets rather than days.
+    private var coverageText: String? {
+        guard let xDomain = prepared.xDomain else { return nil }
+        let calendar = Calendar.current
+        let days = calendar.dateComponents([.day],
+                                           from: xDomain.lowerBound,
+                                           to: xDomain.upperBound).day ?? 0
+        guard days > 1, days <= 31, points.count < days else { return nil }
+        return "\(points.count) of \(days) days recorded"
     }
 
     /// The chart clips to `prepared.xDomain`; the header must quote the last
