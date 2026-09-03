@@ -1403,7 +1403,9 @@ struct AtriaHealthScreen: View {
     // wrapper double-boxed the chart and duplicated the title, costing 16pt of
     // plot width per side.
     private var trendsCard: some View {
-        AtriaVitalsTrendChartHost(state: vitalsStore.state)
+        AtriaVitalsTrendChartHost(state: vitalsStore.state,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay,
+                                  cycleStrainRevision: store.dailyRollupHistoryRevision)
     }
 
     /// First-class breathwork entry point (gap b, 2026-07-05): the pacer
