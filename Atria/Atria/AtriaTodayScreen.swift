@@ -2559,7 +2559,15 @@ struct AtriaTodayScreen: View {
         case .sleep:
             return history.compactMap { $0.sleepSeconds.map { $0 / 3_600 } }
         case .strain, .strainCompare:
-            return history.compactMap(\.strain)
+            // Same overlay History, the strain chart, and the weekly/monthly
+            // reports use. The tile number is cycle strain; the sparkline
+            // used to plot the civil rollup, so a shifted sleeper's last bar
+            // could disagree with the number it sits under.
+            return WeeklyReport.applyingCycleStrain(
+                Array(history),
+                store.physiologicalCycleStrainByDisplayDay,
+                calendar: .current
+            ).compactMap(\.strain)
         case .hrv:
             return history.compactMap(\.lnRMSSD)
         case .rhr, .trend:
@@ -3071,10 +3079,11 @@ struct AtriaTodayScreen: View {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return [] }
-        return highlightRollups
-            .drop { $0.day >= today }
-            .prefix { $0.day >= cutoff }
-            .compactMap { $0.strain }
+        return WeeklyReport.applyingCycleStrain(
+            Array(highlightRollups.drop { $0.day >= today }.prefix { $0.day >= cutoff }),
+            store.physiologicalCycleStrainByDisplayDay,
+            calendar: calendar
+        ).compactMap(\.strain)
     }
 
     /// Measured-perf pass (2026-07-05): memoized behind
