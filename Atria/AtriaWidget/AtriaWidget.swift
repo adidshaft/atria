@@ -958,7 +958,10 @@ struct AtriaWidgetEntryView: View {
     private func dailyValue(_ metric: AtriaDailyOverviewMetric) -> String {
         switch metric {
         case .recovery:
-            return entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "--"
+            // Same token as the small hero and the large summary row.
+            // "--" here made the medium face disagree with both, and with
+            // its own detail line which already said "Learning".
+            return entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "Learning"
         case .strain:
             return AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date)
         case .sleep:
@@ -1004,7 +1007,8 @@ struct AtriaWidgetEntryView: View {
     }
 
     private func dailyValueTint(_ metric: AtriaDailyOverviewMetric) -> Color {
-        dailyValue(metric) == "--" ? .secondary : dailyTint(metric)
+        let value = dailyValue(metric)
+        return (value == "--" || value == "Learning") ? .secondary : dailyTint(metric)
     }
 
     private func dailyRingPresentation(_ metric: AtriaDailyOverviewMetric) -> AtriaDailyRingPresentation {
@@ -1041,7 +1045,7 @@ struct AtriaWidgetEntryView: View {
         let value: String
         switch metric {
         case .recovery:
-            value = entry.snapshot?.recoveryPercent.map { "\($0) percent" } ?? "unavailable"
+            value = entry.snapshot?.recoveryPercent.map { "\($0) percent" } ?? "Learning"
         case .strain:
             let rendered = dailyValue(.strain)
             value = rendered.hasPrefix("≥")
