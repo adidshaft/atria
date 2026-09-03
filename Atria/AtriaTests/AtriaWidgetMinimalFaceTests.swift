@@ -137,6 +137,33 @@ final class AtriaWidgetMinimalFaceTests: XCTestCase {
                        "unavailable was the VoiceOver stand-in for the old --")
     }
 
+    /// The medium daily overview printed "--" for sleep while its own detail
+    /// said "Learning". Recovery on this face already uses the canonical
+    /// not-ready word; sleep must too. Lock Screen accessories keep "--".
+    func testMediumDailySleepValueUsesLearningLikeItsOwnDetail() throws {
+        let source = try widgetSource()
+        let start = try XCTUnwrap(source.range(of: "private func dailyValue(_ metric:"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func dailyDetail(_ metric:",
+            range: start.upperBound..<source.endIndex
+        ))
+        let daily = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(daily.contains("guard let hours = entry.snapshot?.sleepHours, hours > 0 else { return \"Learning\" }"),
+                      "the medium sleep value must use the canonical not-ready word")
+        XCTAssertFalse(daily.contains("return atriaFormattedSleepHours(entry.snapshot?.sleepHours)"),
+                       "that helper's -- fallback is what disagreed with the detail line")
+        let accessStart = try XCTUnwrap(source.range(of: "private func dailyAccessibilityLabel"))
+        let accessEnd = try XCTUnwrap(source.range(
+            of: "private var recoveryOnlyWidget",
+            range: accessStart.upperBound..<source.endIndex
+        ))
+        let access = String(source[accessStart.lowerBound..<accessEnd.lowerBound])
+        XCTAssertTrue(access.contains("value = \"Learning\""),
+                      "VoiceOver must speak the same word the face shows")
+        XCTAssertFalse(access.contains("?? \"unavailable\""),
+                       "unavailable was the VoiceOver stand-in for the old --")
+    }
+
     func testLargeFaceDropsTheRedundantListThatOverflowedTheContainer() throws {
         let source = try widgetSource()
         let entry = try entryViewSlice(source)
