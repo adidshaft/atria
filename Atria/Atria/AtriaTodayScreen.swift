@@ -427,8 +427,7 @@ struct AtriaTodayScreen: View {
                                        // Cached, not forced: the same value Home
                                        // hands Settings; refreshed on rollup/session.
                                        maxHRSuggestion: detail == .strain
-                                           ? (Self.debugMaxHRSuggestion(arguments: ProcessInfo.processInfo.arguments)
-                                              ?? store.cachedMaxHRSuggestion)
+                                           ? strainSheetMaxHRSuggestion
                                            : nil,
                                        onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) },
                                        onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) },
@@ -1335,6 +1334,17 @@ struct AtriaTodayScreen: View {
         }
         #endif
         return sessionProjectionStore.state.dailyRollupHistory
+    }
+
+    /// The strain sheet's max-HR offer. DEBUG launch flags can seed a fixture;
+    /// Release always uses the store's cached suggestion.
+    private var strainSheetMaxHRSuggestion: AtriaMaxHRSuggestion? {
+#if DEBUG
+        Self.debugMaxHRSuggestion(arguments: ProcessInfo.processInfo.arguments)
+            ?? store.cachedMaxHRSuggestion
+#else
+        store.cachedMaxHRSuggestion
+#endif
     }
 
     /// Perf (docs/26 follow-up): `AtriaHighlights.topTwo` derives from the
