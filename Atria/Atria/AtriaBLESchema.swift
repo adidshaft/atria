@@ -418,6 +418,13 @@ extension AtriaBLEManager {
         // stopping the self-sustaining "history incomplete" storm at its source.
         static let historyAbandonedThroughUnix =
             "atria.offlineSync.historyAbandonedThroughUnix.v1"
+        /// Drain cursor at the moment a terminal zero-row stall was accepted.
+        /// `markRangeLossBackfillRequired` must not re-arm the same unfillable
+        /// interval until this cursor actually advances. Distinct from Start
+        /// fresh's `historyAbandonedThroughUnix` — that watermark is `now` and
+        /// must not be shown as "newest record".
+        static let unrecoverableHistoryAcceptedCursorUnix =
+            "atria.offlineSync.unrecoverableHistoryAcceptedCursorUnix.v1"
         // Clean-slate auto-surfacing: persisted mirror of the in-memory
         // consecutive zero-progress catch-up slice counter. A degraded strap
         // that drops the link on every history read accumulates these (each
