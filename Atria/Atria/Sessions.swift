@@ -277,9 +277,28 @@ struct AtriaPhysiologicalCycle: Equatable {
         // second sleep falls inside that day's window (and shows as its own
         // Activity row) instead of spawning an unreachable parallel cycle. With
         // no choice recorded this set is empty and behaviour is unchanged.
-        let nonPrimaryMainIDs = Set(
-            confirmedSleeps.filter { $0.dayPrimaryChoice == false }.map(\.id)
-        )
+        // Device 2026-09-05: two wake days (Aug 21, Aug 28) had `true` on the
+        // chosen sleep and `nil` on the sibling — the writer that only stamped
+        // the chosen row. Treat an unmarked sibling on a chosen-primary day as
+        // non-primary so the second sleep cannot open a parallel cycle.
+        var daysWithChosenPrimary = Set<Date>()
+        for sleep in confirmedSleeps where sleep.dayPrimaryChoice == true {
+            daysWithChosenPrimary.insert(EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ))
+        }
+        let nonPrimaryMainIDs = Set(confirmedSleeps.compactMap { sleep -> String? in
+            if sleep.dayPrimaryChoice == false { return sleep.id }
+            if sleep.dayPrimaryChoice == true { return nil }
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            return daysWithChosenPrimary.contains(day) ? sleep.id : nil
+        })
         let candidates = canonicalMainSleeps(from: confirmedSleeps)
             .filter { $0.end <= now && !nonPrimaryMainIDs.contains($0.id) }
             .sorted { $0.end < $1.end }
@@ -2227,8 +2246,14 @@ struct SavedSession: Codable, Identifiable {
 
     /// All-day cardiovascular load. Unlike workout TRIMP, this excludes the
     /// standard Z0/rest band so ordinary quiet wear cannot accumulate into a
-    /// double-digit training day merely through duration.
-    func dailyLoadTRIMP(rest: Int, max: Int, within interval: DateInterval) -> Double {
+    /// double-digit training day merely through duration. Confirmed workout
+    /// windows pass `mode: .workout` from the day aggregate so a logged drive
+    /// or easy spin is not zeroed by the continuous-day floor while the
+    /// workout card still shows load.
+    func dailyLoadTRIMP(rest: Int,
+                        max: Int,
+                        within interval: DateInterval,
+                        mode: AtriaStrainLoadModel.Mode = .continuousDay) -> Double {
         guard !isBreathwork,
               sleepWakeResearchState != "sleep_research",
               interval.end > interval.start,
@@ -2243,11 +2268,18 @@ struct SavedSession: Codable, Identifiable {
             return ExcludedInterval(start: clippedStart, end: clippedEnd)
         }
         let samples = projected.map { HRSample(t: $0.date, bpm: $0.bpm) }
+        let sex = biologicalSex ?? .unspecified
         return AtriaAnalytics.Strain.contiguousSegments(samples, excluding: clippedExclusions)
             .reduce(0) { total, segment in
-                total + Metrics.dailyLoadTRIMP(segment.map {
+                let series = segment.map {
                     (t: $0.t.timeIntervalSince(interval.start), bpm: $0.bpm)
-                }, rest: rest, max: max, sex: biologicalSex ?? .unspecified)
+                }
+                switch mode {
+                case .workout:
+                    return total + Metrics.trimp(series, rest: rest, max: max, sex: sex)
+                case .continuousDay:
+                    return total + Metrics.dailyLoadTRIMP(series, rest: rest, max: max, sex: sex)
+                }
             }
     }
 
@@ -2258,6 +2290,7 @@ struct SavedSession: Codable, Identifiable {
         rest: Int,
         max: Int,
         within interval: DateInterval,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay,
         shouldContinue: () -> Bool
     ) -> Double? {
         guard shouldContinue() else { return nil }
@@ -2302,7 +2335,7 @@ struct SavedSession: Codable, Identifiable {
             maximumBPM: Double(max),
             intensityMultiplier: parameters.multiplier,
             intensityCoefficient: parameters.coefficient,
-            mode: .continuousDay,
+            mode: mode,
             maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
         )
         var total = 0.0
@@ -12772,10 +12805,15 @@ final class SessionStore: ObservableObject {
         // canonical saved + archive evidence used by those live surfaces. No
         // live-only samples are invented here; they arrive through the normal
         // journal checkpoint path before becoming durable rollup evidence.
-        let cycleAlignedEntries = Self.replacingActiveCycleStrain(
-            in: persistedEntries,
-            cycleStart: preparation.activeCycleStart,
-            strain: preparation.activeCycleStrain,
+        let cycleAlignedEntries = Self.applyingClosedCycleStrain(
+            in: Self.replacingActiveCycleStrain(
+                in: persistedEntries,
+                cycleStart: preparation.activeCycleStart,
+                strain: preparation.activeCycleStrain,
+                calendar: calendar
+            ),
+            cycleStrainByDisplayDay: preparation.cycleStrainByDisplayDay,
+            openCycleStart: preparation.activeCycleStart,
             calendar: calendar
         )
         // Cycle-truth strain series (2026-08-30): publish the closed-cycle
@@ -12877,6 +12915,62 @@ final class SessionStore: ObservableObject {
                                     dayTRIMP: trimp ?? metric.dayTRIMP,
                                     skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                     recoverySummary: metric.recoverySummary)
+        }
+    }
+
+    /// Closed wake-to-wake cycles freeze onto their predominant civil day so
+    /// History keeps strain after sessions age out of the 66-day overlay
+    /// window. The open cycle stays the live hero value.
+    nonisolated static func applyingClosedCycleStrain(
+        in metrics: [SavedDailyMetric],
+        cycleStrainByDisplayDay: [Date: Double],
+        openCycleStart: Date,
+        calendar: Calendar = .current
+    ) -> [SavedDailyMetric] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return metrics }
+        return metrics.map { metric in
+            guard !calendar.isDate(metric.day, inSameDayAs: openCycleStart),
+                  let overlay = cycleStrainByDisplayDay[calendar.startOfDay(for: metric.day)]
+            else { return metric }
+            return SavedDailyMetric(day: metric.day,
+                                    recoveryPercent: metric.recoveryPercent,
+                                    recoveryConfidence: metric.recoveryConfidence,
+                                    hrv: metric.hrv,
+                                    restingHR: metric.restingHR,
+                                    respiratoryRate: metric.respiratoryRate,
+                                    sleepDuration: metric.sleepDuration,
+                                    sleepNeedSeconds: metric.sleepNeedSeconds,
+                                    sleepSpan: metric.sleepSpan,
+                                    sleepStart: metric.sleepStart,
+                                    sleepEnd: metric.sleepEnd,
+                                    sleepSource: metric.sleepSource,
+                                    sleepStageSegments: metric.sleepStageSegments,
+                                    sleepConsistencyPercent:
+                                        metric.sleepConsistencyPercent,
+                                    strain: overlay,
+                                    strainCoverageFraction: metric.strainCoverageFraction,
+                                    strainEvidenceQuality: metric.strainEvidenceQuality,
+                                    dayTRIMP: metric.dayTRIMP,
+                                    skinTemperatureDeviationCelsius:
+                                        metric.skinTemperatureDeviationCelsius,
+                                    recoverySummary: metric.recoverySummary)
+        }
+    }
+
+    nonisolated static func applyingClosedCycleStrain(
+        in entries: [DailyRollupStoreEntry],
+        cycleStrainByDisplayDay: [Date: Double],
+        openCycleStart: Date,
+        calendar: Calendar = .current
+    ) -> [DailyRollupStoreEntry] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return entries }
+        return entries.map { entry in
+            guard !calendar.isDate(entry.day, inSameDayAs: openCycleStart),
+                  let overlay = cycleStrainByDisplayDay[calendar.startOfDay(for: entry.day)]
+            else { return entry }
+            var aligned = entry
+            aligned.strain = overlay
+            return aligned
         }
     }
 
@@ -13173,14 +13267,16 @@ final class SessionStore: ObservableObject {
         let activeCycleStrain = physiologicalAggregate.hasSavedToday
             ? Metrics.strain(fromTRIMP: physiologicalAggregate.savedTodayTRIMP)
             : nil
-        let cycleAlignedMetrics = replacingActiveCycleStrain(in: metrics,
-                                                              cycleStart: cycle.start,
-                                                              strain: activeCycleStrain,
-                                                              trimp: physiologicalAggregate.hasSavedToday
-                                                                  ? physiologicalAggregate.savedTodayTRIMP
-                                                                  : nil,
-                                                              calendar: calendar)
-        let entries = makeDailyRollupStoreEntries(metrics: cycleAlignedMetrics,
+        let activeAlignedMetrics = replacingActiveCycleStrain(
+            in: metrics,
+            cycleStart: cycle.start,
+            strain: activeCycleStrain,
+            trimp: physiologicalAggregate.hasSavedToday
+                ? physiologicalAggregate.savedTodayTRIMP
+                : nil,
+            calendar: calendar
+        )
+        let entries = makeDailyRollupStoreEntries(metrics: activeAlignedMetrics,
                                                   sessions: sessions,
                                                   rest: rest,
                                                   maxHR: maxHR,
@@ -13206,8 +13302,19 @@ final class SessionStore: ObservableObject {
             now: preparedAt,
             calendar: calendar
         ) ?? [:]
+        let cycleAlignedMetrics = applyingClosedCycleStrain(
+            in: activeAlignedMetrics,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+            openCycleStart: cycle.start,
+            calendar: calendar
+        )
         return DailyMetricRollupPreparation(metrics: cycleAlignedMetrics,
-                                            rollupEntries: entries,
+                                            rollupEntries: applyingClosedCycleStrain(
+                                                in: entries,
+                                                cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+                                                openCycleStart: cycle.start,
+                                                calendar: calendar
+                                            ),
                                             invalidatedDays: invalidatedDays,
                                             respiratoryRows: respiratoryRows,
                                             rrSessionCandidates: respiratoryPreparation.candidateCount,
@@ -13352,9 +13459,20 @@ final class SessionStore: ObservableObject {
                     calendar: calendar,
                     shouldContinue: shouldContinue
                 ) else { return nil }
+        let closedAlignedMetrics = applyingClosedCycleStrain(
+            in: cycleAlignedMetrics,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+            openCycleStart: cycle.start,
+            calendar: calendar
+        )
         return shouldContinue() ? .init(
-            metrics: cycleAlignedMetrics,
-            rollupEntries: entries,
+            metrics: closedAlignedMetrics,
+            rollupEntries: applyingClosedCycleStrain(
+                in: entries,
+                cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+                openCycleStart: cycle.start,
+                calendar: calendar
+            ),
             invalidatedDays: invalidatedDays,
             respiratoryRows: respiratoryRows,
             rrSessionCandidates: respiratory.candidateCount,
@@ -20971,46 +21089,106 @@ final class SessionStore: ObservableObject {
             if let shouldContinue {
                 var total = 0.0
                 for pair in dayIntervals {
-                    guard let load = pair.0.dailyLoadTRIMPCancellable(
-                        rest: rest,
-                        max: maxHR,
+                    let parts = partitionedCardioLoadIntervals(
                         within: pair.1,
-                        shouldContinue: shouldContinue
-                    ) else { return nil }
-                    total += load
+                        confirmedWorkouts: confirmedWorkouts
+                    )
+                    for interval in parts.living {
+                        guard let load = pair.0.dailyLoadTRIMPCancellable(
+                            rest: rest,
+                            max: maxHR,
+                            within: interval,
+                            shouldContinue: shouldContinue
+                        ) else { return nil }
+                        total += load
+                    }
+                    for interval in parts.workout {
+                        guard let load = pair.0.dailyLoadTRIMPCancellable(
+                            rest: rest,
+                            max: maxHR,
+                            within: interval,
+                            mode: .workout,
+                            shouldContinue: shouldContinue
+                        ) else { return nil }
+                        total += load
+                    }
                 }
                 strainTRIMP = total
             } else {
                 strainTRIMP = dayIntervals.reduce(0.0) { total, pair in
-                    total + pair.0.dailyLoadTRIMP(
-                        rest: rest,
-                        max: maxHR,
-                        within: pair.1
+                    let parts = partitionedCardioLoadIntervals(
+                        within: pair.1,
+                        confirmedWorkouts: confirmedWorkouts
                     )
+                    let living = parts.living.reduce(0.0) {
+                        $0 + pair.0.dailyLoadTRIMP(rest: rest, max: maxHR, within: $1)
+                    }
+                    let workout = parts.workout.reduce(0.0) {
+                        $0 + pair.0.dailyLoadTRIMP(
+                            rest: rest, max: maxHR, within: $1, mode: .workout
+                        )
+                    }
+                    return total + living + workout
                 }
             }
             let localDayEnd = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+            let civilDayInterval = DateInterval(start: day, end: localDayEnd)
+            let civilCardio = partitionedCardioLoadIntervals(
+                within: civilDayInterval,
+                confirmedWorkouts: confirmedWorkouts
+            )
             let archiveTRIMP: Double
             if let shouldContinue {
-                guard let value = archiveOnlyTRIMPCancellable(
-                    archiveHeartRatePoints,
-                    excludingCoverageFrom: dayLoadSessions,
-                    within: DateInterval(start: day, end: localDayEnd),
-                    rest: rest,
-                    maxHR: maxHR,
-                    biologicalSex: biologicalSex,
-                    shouldContinue: shouldContinue
-                ) else { return nil }
-                archiveTRIMP = value
+                var total = 0.0
+                for interval in civilCardio.living {
+                    guard let value = archiveOnlyTRIMPCancellable(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: interval,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        shouldContinue: shouldContinue
+                    ) else { return nil }
+                    total += value
+                }
+                for interval in civilCardio.workout {
+                    guard let value = archiveOnlyTRIMPCancellable(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: interval,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        mode: .workout,
+                        shouldContinue: shouldContinue
+                    ) else { return nil }
+                    total += value
+                }
+                archiveTRIMP = total
             } else {
-                archiveTRIMP = archiveOnlyTRIMP(
-                    archiveHeartRatePoints,
-                    excludingCoverageFrom: dayLoadSessions,
-                    within: DateInterval(start: day, end: localDayEnd),
-                    rest: rest,
-                    maxHR: maxHR,
-                    biologicalSex: biologicalSex
-                )
+                let living = civilCardio.living.reduce(0.0) {
+                    $0 + archiveOnlyTRIMP(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: $1,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex
+                    )
+                }
+                let workout = civilCardio.workout.reduce(0.0) {
+                    $0 + archiveOnlyTRIMP(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: $1,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        mode: .workout
+                    )
+                }
+                archiveTRIMP = living + workout
             }
             let strainWindowEnd = min(localDayEnd, Date())
             let strainElapsed = max(0, strainWindowEnd.timeIntervalSince(day))
@@ -25592,11 +25770,21 @@ final class SessionStore: ObservableObject {
             within: dayInterval,
             excluding: excludedLoadIntervals
         )
+        let cardioIntervals = partitionedCardioLoadIntervals(
+            within: loadIntervals,
+            confirmedWorkouts: confirmedWorkouts
+        )
         let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < dayEnd }
         let canonicalSavedTRIMP = todaySessions.reduce(0) { total, session in
-            total + loadIntervals.reduce(0) { subtotal, interval in
+            let living = cardioIntervals.living.reduce(0) { subtotal, interval in
                 subtotal + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: interval)
             }
+            let workout = cardioIntervals.workout.reduce(0) { subtotal, interval in
+                subtotal + session.dailyLoadTRIMP(
+                    rest: rest, max: maxHR, within: interval, mode: .workout
+                )
+            }
+            return total + living + workout
         }
         // GAP-09: logged muscular work from workouts completed inside this
         // cycle fuses into the same day total in TRIMP space, before the one
@@ -25605,7 +25793,7 @@ final class SessionStore: ObservableObject {
         let muscularTRIMP = muscularTRIMPEquivalentTotal(
             confirmedWorkouts.filter { $0.end > day && $0.end <= dayEnd }
         )
-        let savedTodayTRIMP = canonicalSavedTRIMP + muscularTRIMP + loadIntervals.reduce(0) {
+        let archiveLiving = cardioIntervals.living.reduce(0) {
             $0 + archiveOnlyTRIMP(
                 archiveHeartRatePoints,
                 excludingCoverageFrom: todaySessions,
@@ -25615,11 +25803,29 @@ final class SessionStore: ObservableObject {
                 biologicalSex: biologicalSex
             )
         }
+        let archiveWorkout = cardioIntervals.workout.reduce(0) {
+            $0 + archiveOnlyTRIMP(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: $1,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                mode: .workout
+            )
+        }
+        let savedTodayTRIMP = canonicalSavedTRIMP + muscularTRIMP + archiveLiving + archiveWorkout
         let savedActiveSessionTRIMP = activeSessionID.flatMap { activeID in
             todaySessions.first(where: { $0.id == activeID }).map { session in
-                loadIntervals.reduce(0) {
+                let living = cardioIntervals.living.reduce(0) {
                     $0 + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: $1)
                 }
+                let workout = cardioIntervals.workout.reduce(0) {
+                    $0 + session.dailyLoadTRIMP(
+                        rest: rest, max: maxHR, within: $1, mode: .workout
+                    )
+                }
+                return living + workout
             }
         } ?? 0
         let savedTodayActiveCalories: Double?
@@ -25708,6 +25914,10 @@ final class SessionStore: ObservableObject {
             within: dayInterval,
             excluding: excludedLoadIntervals
         )
+        let cardioIntervals = partitionedCardioLoadIntervals(
+            within: loadIntervals,
+            confirmedWorkouts: confirmedWorkouts
+        )
         var todaySessions: [SavedSession] = []
         for (index, session) in canonicalSessions.enumerated() {
             if index.isMultiple(of: 64), !shouldContinue() { return nil }
@@ -25718,7 +25928,7 @@ final class SessionStore: ObservableObject {
         var canonicalTRIMP = 0.0
         for (sessionIndex, session) in todaySessions.enumerated() {
             if sessionIndex.isMultiple(of: 4), !shouldContinue() { return nil }
-            for interval in loadIntervals {
+            for interval in cardioIntervals.living {
                 guard let value = session.dailyLoadTRIMPCancellable(
                     rest: rest,
                     max: maxHR,
@@ -25727,9 +25937,19 @@ final class SessionStore: ObservableObject {
                 ) else { return nil }
                 canonicalTRIMP += value
             }
+            for interval in cardioIntervals.workout {
+                guard let value = session.dailyLoadTRIMPCancellable(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval,
+                    mode: .workout,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
+                canonicalTRIMP += value
+            }
         }
         var archiveTRIMP = 0.0
-        for interval in loadIntervals {
+        for interval in cardioIntervals.living {
             guard let value = archiveOnlyTRIMPCancellable(
                 archiveHeartRatePoints,
                 excludingCoverageFrom: todaySessions,
@@ -25741,14 +25961,37 @@ final class SessionStore: ObservableObject {
             ) else { return nil }
             archiveTRIMP += value
         }
+        for interval in cardioIntervals.workout {
+            guard let value = archiveOnlyTRIMPCancellable(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: interval,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                mode: .workout,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            archiveTRIMP += value
+        }
         var activeTRIMP = 0.0
         if let activeSessionID,
            let active = todaySessions.first(where: { $0.id == activeSessionID }) {
-            for interval in loadIntervals {
+            for interval in cardioIntervals.living {
                 guard let value = active.dailyLoadTRIMPCancellable(
                     rest: rest,
                     max: maxHR,
                     within: interval,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
+                activeTRIMP += value
+            }
+            for interval in cardioIntervals.workout {
+                guard let value = active.dailyLoadTRIMPCancellable(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval,
+                    mode: .workout,
                     shouldContinue: shouldContinue
                 ) else { return nil }
                 activeTRIMP += value
@@ -25793,6 +26036,78 @@ final class SessionStore: ObservableObject {
         ) : nil
     }
 
+    /// Confirmed workout windows use the full Banister kernel (no 30% HRR
+    /// floor). Split a load interval so quiet living stays floored while a
+    /// logged drive / easy spin still contributes the load its workout card
+    /// already showed. Device 2026-09-05: Driving avg 95 bpm sat at 29% HRR
+    /// and vanished from day strain while the workout row read 2.3.
+    nonisolated static func partitionedCardioLoadIntervals(
+        within interval: DateInterval,
+        confirmedWorkouts: [UserConfirmedWorkout]
+    ) -> (living: [DateInterval], workout: [DateInterval]) {
+        guard interval.end > interval.start else { return ([], []) }
+        let windows = mergedOverlappingDateIntervals(
+            confirmedWorkouts.compactMap { workout in
+                guard workout.end > workout.start else { return nil }
+                return DateInterval(start: workout.start, end: workout.end)
+            }
+        )
+        guard !windows.isEmpty else { return ([interval], []) }
+        let living = includedLoadIntervals(within: interval, excluding: windows)
+        var workout: [DateInterval] = []
+        workout.reserveCapacity(windows.count)
+        for window in windows {
+            let start = max(interval.start, window.start)
+            let end = min(interval.end, window.end)
+            if end > start {
+                workout.append(DateInterval(start: start, end: end))
+            }
+        }
+        return (living, workout)
+    }
+
+    nonisolated static func partitionedCardioLoadIntervals(
+        within intervals: [DateInterval],
+        confirmedWorkouts: [UserConfirmedWorkout]
+    ) -> (living: [DateInterval], workout: [DateInterval]) {
+        var living: [DateInterval] = []
+        var workout: [DateInterval] = []
+        living.reserveCapacity(intervals.count)
+        for interval in intervals {
+            let parts = partitionedCardioLoadIntervals(
+                within: interval,
+                confirmedWorkouts: confirmedWorkouts
+            )
+            living.append(contentsOf: parts.living)
+            workout.append(contentsOf: parts.workout)
+        }
+        return (living, workout)
+    }
+
+    nonisolated static func mergedOverlappingDateIntervals(
+        _ intervals: [DateInterval]
+    ) -> [DateInterval] {
+        let ordered = intervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        guard var current = ordered.first else { return [] }
+        var merged: [DateInterval] = []
+        merged.reserveCapacity(ordered.count)
+        for next in ordered.dropFirst() {
+            if next.start <= current.end {
+                current = DateInterval(
+                    start: current.start,
+                    end: max(current.end, next.end)
+                )
+            } else {
+                merged.append(current)
+                current = next
+            }
+        }
+        merged.append(current)
+        return merged
+    }
+
     nonisolated static func includedLoadIntervals(
         within interval: DateInterval,
         excluding exclusions: [DateInterval]
@@ -25834,7 +26149,8 @@ final class SessionStore: ObservableObject {
         within interval: DateInterval,
         rest: Int,
         maxHR: Int,
-        biologicalSex: AthleteProfile.BiologicalSex
+        biologicalSex: AthleteProfile.BiologicalSex,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay
     ) -> Double {
         guard maxHR > rest, !archivePoints.isEmpty else { return 0 }
         let segments = archiveOnlyHeartRateSegments(archivePoints,
@@ -25842,12 +26158,13 @@ final class SessionStore: ObservableObject {
                                                     within: interval)
         return segments.reduce(0) { total, segment in
             guard let origin = segment.first?.t else { return total }
-            return total + Metrics.dailyLoadTRIMP(
-                segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
-                rest: rest,
-                max: maxHR,
-                sex: biologicalSex
-            )
+            let series = segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) }
+            switch mode {
+            case .workout:
+                return total + Metrics.trimp(series, rest: rest, max: maxHR, sex: biologicalSex)
+            case .continuousDay:
+                return total + Metrics.dailyLoadTRIMP(series, rest: rest, max: maxHR, sex: biologicalSex)
+            }
         }
     }
 
@@ -25858,6 +26175,7 @@ final class SessionStore: ObservableObject {
         rest: Int,
         maxHR: Int,
         biologicalSex: AthleteProfile.BiologicalSex,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay,
         shouldContinue: () -> Bool
     ) -> Double? {
         guard shouldContinue() else { return nil }
@@ -25876,7 +26194,7 @@ final class SessionStore: ObservableObject {
             maximumBPM: Double(maxHR),
             intensityMultiplier: parameters.multiplier,
             intensityCoefficient: parameters.coefficient,
-            mode: .continuousDay,
+            mode: mode,
             maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
         )
         var total = 0.0
@@ -42245,17 +42563,26 @@ final class SessionStore: ObservableObject {
               ) else { return false }
         let isUserAdjustedSleep = source == "user_adjusted_sleep"
         if isUserAdjustedSleep {
+            // The user already named this Sleep. Require either a densely
+            // observed span (the original 80% floor) or a substantial night
+            // of real coverage. Device 2026-09-05: a 4h 45m measured night
+            // in a 7h 41m window (62%) failed the 80% ratio, so the
+            // physiological day never moved and daytime HR 72 overwrote the
+            // night's resting 58. Twenty minutes in an 8-hour window still
+            // fails both legs.
             let span = end.timeIntervalSince(start)
-            guard span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
-                  measuredDuration / span
-                    >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction else {
+            guard span > 0,
+                  span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
+                  measuredDuration >= AggregateSleepCandidate.napMinimumDuration else {
                 return false
             }
+            let denselyObserved = measuredDuration / span
+                >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
+            let substantialNight = measuredDuration
+                >= AtriaPhysiologicalCycle.minimumMainSleepDuration
+            return denselyObserved || substantialNight
         }
-        let minimumDuration = isUserAdjustedSleep
-            ? AggregateSleepCandidate.napMinimumDuration
-            : AtriaPhysiologicalCycle.minimumMainSleepDuration
-        return measuredDuration >= minimumDuration
+        return measuredDuration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
     }
 
     nonisolated static func confirmedSleepIsPhysiologicalMainSleep(_ sleep: UserConfirmedSleep) -> Bool {
