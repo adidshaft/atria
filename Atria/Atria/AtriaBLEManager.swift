@@ -18352,13 +18352,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func reconcileHistoricalRecoveryPresentation(reason: String) {
         guard !offlineHistoricalSyncInProgress,
               !historicalConsumerMaterializationInFlight else { return }
+        let defaults = UserDefaults.standard
+        if AtriaMissedDataBannerPresentation.acceptTerminalHistoryLossIfNeeded(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            historicalRecoveryPresentation = .idle
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=accepted_unrecoverable_history_loss reason=%@ action=clear_pending_keep_nights",
+                reason
+            )
+            return
+        }
         switch historicalRecoveryPresentation {
         case .needsAttention, .partial:
             break
         case .idle, .syncing, .verified:
             return
         }
-        let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         let actionable = AtriaHistoricalGapLedger
             .windows(defaults: defaults)
@@ -18371,6 +18382,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markRangeLossBackfillRequired(reason: String) {
         let defaults = UserDefaults.standard
+        if AtriaMissedDataBannerPresentation.acceptTerminalHistoryLossIfNeeded(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_rearm_unrecoverable_history reason=%@",
+                reason
+            )
+            return
+        }
         let alreadyPending = defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         if !alreadyPending || defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) == nil {
             defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt)

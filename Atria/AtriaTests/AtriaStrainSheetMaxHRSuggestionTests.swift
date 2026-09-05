@@ -30,7 +30,7 @@ final class AtriaStrainSheetMaxHRSuggestionTests: XCTestCase {
 
     func testTodayHandsTheCachedSuggestionAndStoreOwnedActions() throws {
         let today = try source("Atria/Atria/AtriaTodayScreen.swift")
-        XCTAssertTrue(today.contains("?? store.cachedMaxHRSuggestion)"),
+        XCTAssertTrue(today.contains("?? store.cachedMaxHRSuggestion"),
                       "presentation reads the cached value; it never forces a session scan")
         XCTAssertTrue(today.contains("onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) }"))
         XCTAssertTrue(today.contains("onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) }"))

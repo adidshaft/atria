@@ -6756,6 +6756,38 @@ enum AtriaMissedDataBannerPresentation {
         return false
     }
 
+    /// Device 2026-09-05: range-loss backfill stayed pending after the strap
+    /// had already abandoned the missing interval, so Sync kept advertising
+    /// "filling" while every drain slice yielded zero rows. Accept the loss
+    /// without wiping nights, sessions, or pairing. Returns whether it cleared
+    /// a pending flag.
+    @discardableResult
+    static func acceptTerminalHistoryLossIfNeeded(
+        defaults: UserDefaults,
+        now: Date = Date(),
+        pendingKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending,
+        requestedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt,
+        startedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt,
+        reasonKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason,
+        parkedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt,
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+    ) -> Bool {
+        let pending = defaults.bool(forKey: pendingKey)
+        let stalled = gapIsTerminallyStalled(
+            backlogPending: pending,
+            sequenceGapParkedTerminal: defaults.object(forKey: parkedAtKey) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(forKey: zeroProgressKey),
+            secondsSinceRangeLossRequested: (defaults.object(forKey: requestedAtKey) as? Double)
+                .map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+        guard stalled else { return false }
+        defaults.set(false, forKey: pendingKey)
+        defaults.removeObject(forKey: requestedAtKey)
+        defaults.removeObject(forKey: startedAtKey)
+        defaults.removeObject(forKey: reasonKey)
+        return true
+    }
+
     static func copy(strapPendingRecords: Int,
                      protectsLiveStream: Bool,
                      secondsSinceLastFlush: TimeInterval?,

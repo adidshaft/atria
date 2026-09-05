@@ -97,6 +97,105 @@ final class AtriaStrainConsistencyTests: XCTestCase {
         )
     }
 
+    func testConfirmedWorkoutWindowUsesWorkoutKernelInsideDayLoad() {
+        let start = Date(timeIntervalSince1970: 1_800_200_000)
+        let wear = workout(start: start, bpm: 95, minutes: 60)
+        let interval = DateInterval(start: start, end: start.addingTimeInterval(60 * 60))
+        XCTAssertEqual(
+            wear.dailyLoadTRIMP(rest: 56, max: 190, within: interval),
+            0,
+            accuracy: 1e-9,
+            "95 bpm is below the continuous-day 30% HRR floor"
+        )
+        let workoutLoad = wear.trimp(rest: 56, max: 190, within: interval)
+        XCTAssertGreaterThan(workoutLoad, 0, "workout kernel still counts 95 bpm")
+
+        let confirmed = UserConfirmedWorkout(
+            id: "drive",
+            createdAt: interval.end,
+            start: interval.start,
+            end: interval.end,
+            label: "Driving",
+            source: "live_workout_window",
+            confidence: "test",
+            sessions: 1,
+            samples: 360,
+            avgHR: 95,
+            peakHR: 110,
+            p95HR: 105,
+            p99HR: 108,
+            thresholdHR: 120,
+            streamCoveragePercent: 100,
+            observedDuration: 3_600,
+            reason: "test",
+            eventTimeZoneIdentifier: "UTC"
+        )
+        let without = SessionStore.homeSavedAggregate(
+            from: [wear],
+            rest: 56,
+            maxHR: 190,
+            biologicalSex: .male,
+            now: interval.end,
+            cycleStart: start
+        )
+        XCTAssertEqual(without.savedTodayTRIMP, 0, accuracy: 1e-9)
+
+        let withWorkout = SessionStore.homeSavedAggregate(
+            from: [wear],
+            rest: 56,
+            maxHR: 190,
+            biologicalSex: .male,
+            now: interval.end,
+            cycleStart: start,
+            confirmedWorkouts: [confirmed]
+        )
+        XCTAssertEqual(withWorkout.savedTodayTRIMP, workoutLoad, accuracy: 0.001,
+                       "a confirmed workout window must use the workout kernel in day strain")
+    }
+
+    func testClosedCycleStrainFreezesOntoHistoricalMetricDays() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let open = calendar.date(from: DateComponents(year: 2026, month: 9, day: 5))!
+        let closed = calendar.date(from: DateComponents(year: 2026, month: 9, day: 2))!
+        func metric(day: Date, strain: Double?) -> SavedDailyMetric {
+            SavedDailyMetric(
+                day: day,
+                recoveryPercent: nil,
+                recoveryConfidence: "learning",
+                hrv: nil,
+                restingHR: nil,
+                respiratoryRate: nil,
+                sleepDuration: nil,
+                sleepSpan: nil,
+                sleepStart: nil,
+                sleepEnd: nil,
+                sleepSource: nil,
+                sleepStageSegments: [],
+                sleepConsistencyPercent: nil,
+                strain: strain
+            )
+        }
+        let applied = SessionStore.applyingClosedCycleStrain(
+            in: [metric(day: open, strain: 0.7), metric(day: closed, strain: nil)],
+            cycleStrainByDisplayDay: [closed: 9.3],
+            openCycleStart: open,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(applied.first { calendar.isDate($0.day, inSameDayAs: open) }?.strain),
+            0.7,
+            accuracy: 0.0001,
+            "the open cycle keeps the live hero value"
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(applied.first { calendar.isDate($0.day, inSameDayAs: closed) }?.strain),
+            9.3,
+            accuracy: 0.0001,
+            "a closed cycle freezes onto its display day"
+        )
+    }
+
     func testDailyLoadRetainsMeasuredExerciseAboveRestZone() {
         let start = Date(timeIntervalSince1970: 1_800_100_000)
         let exercise = workout(start: start, bpm: 130, minutes: 60)
