@@ -18382,7 +18382,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markRangeLossBackfillRequired(reason: String) {
         let defaults = UserDefaults.standard
-        if AtriaMissedDataBannerPresentation.acceptTerminalHistoryLossIfNeeded(
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
             defaults: defaults
         ) {
             assignIfChanged(\.rangeLossBackfillPending, false)

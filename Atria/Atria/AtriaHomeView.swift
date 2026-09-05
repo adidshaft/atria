@@ -5076,12 +5076,19 @@ struct AtriaHomeView: View {
             let live = coreLiveStore.state
             switch live.historicalRecoveryPresentation {
             case .syncing(let savedRecords):
+                let defaults = UserDefaults.standard
                 let copy = AtriaHomeRecoverySyncPresentation.copy(
                     savedRecords: savedRecords,
-                    drainedThroughUnix: UserDefaults.standard.object(
+                    drainedThroughUnix: defaults.object(
                         forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
                     ) as? Double,
-                    now: now
+                    now: now,
+                    abandonedThroughUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+                    ) as? Double,
+                    drainCursorUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+                    ) as? Double
                 )
                 return Status(title: copy.title,
                               symbol: "arrow.triangle.2.circlepath",
@@ -6359,16 +6366,75 @@ enum AtriaHomeRecoverySyncPresentation {
         return age >= 0 && age <= freshnessWindow
     }
 
+    /// Start fresh writes `drainedThroughUnix` and `historyAbandonedThroughUnix`
+    /// to the same instant. That pair is a watermark, not a newest saved
+    /// record. Device 2026-09-05: both sat at 09:19 while live HR was current
+    /// and the oldest-first cursor was still yesterday 09:44, so the footer
+    /// read "last 9:19 AM".
+    static func isSyntheticStartFreshFrontier(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double?
+    ) -> Bool {
+        guard let drained = drainedThroughUnix,
+              let abandoned = abandonedThroughUnix,
+              drained.isFinite, abandoned.isFinite,
+              drained > 0, abandoned > 0 else { return false }
+        return abs(drained - abandoned) <= 1
+    }
+
+    static func newestSavedRecordUnix(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if isSyntheticStartFreshFrontier(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        ) {
+            return nil
+        }
+        return drainedThroughUnix
+    }
+
+    static func fillThroughUnix(
+        drainCursorUnix: Double?,
+        drainedThroughUnix: Double? = nil,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if let cursor = drainCursorUnix, cursor.isFinite, cursor > 0 {
+            return cursor
+        }
+        return newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+    }
+
     static func copy(savedRecords: Int,
                      drainedThroughUnix: Double?,
                      now: Date,
                      calendar: Calendar = .current,
-                     locale: Locale = .current) -> Copy {
+                     locale: Locale = .current,
+                     abandonedThroughUnix: Double? = nil,
+                     drainCursorUnix: Double? = nil) -> Copy {
         let savedRecords = max(0, savedRecords)
-        let through = syncedThroughText(drainedThroughUnix: drainedThroughUnix,
-                                        now: now,
-                                        calendar: calendar,
-                                        locale: locale)
+        let newestUnix = newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let newest = syncedThroughText(drainedThroughUnix: newestUnix,
+                                       now: now,
+                                       calendar: calendar,
+                                       locale: locale)
+        let filled = syncedThroughText(
+            drainedThroughUnix: fillThroughUnix(
+                drainCursorUnix: drainCursorUnix,
+                drainedThroughUnix: drainedThroughUnix,
+                abandonedThroughUnix: abandonedThroughUnix
+            ),
+            now: now,
+            calendar: calendar,
+            locale: locale
+        )
 
         var titleParts = ["Syncing strap history"]
         // Keep the channel word in the compact fallback (shown when the full
@@ -6391,10 +6457,15 @@ enum AtriaHomeRecoverySyncPresentation {
         // So "through 7:02 PM" claimed a completeness the value never had, and
         // the owner's question — "idk when it's fully synced" — is exactly the
         // question this string appeared to answer and did not. It reports how
-        // far the drain has REACHED, not how much it has filled.
-        if let through {
-            titleParts.append("newest \(through)")
-            compactParts.append("newest \(through)")
+        // far the drain has REACHED, not how much it has filled. A Start-fresh
+        // watermark equal to abandoned-through is omitted; the fill cursor is
+        // the honest last page the strap actually ACKed.
+        if let newest {
+            titleParts.append("newest \(newest)")
+            compactParts.append("newest \(newest)")
+        } else if let filled {
+            titleParts.append("filled through \(filled)")
+            compactParts.append("filled through \(filled)")
         }
 
         var accessibilityParts = ["History sync in progress."]
@@ -6403,14 +6474,19 @@ enum AtriaHomeRecoverySyncPresentation {
                 "\(savedRecords) records durably saved in this recovery."
             )
         }
-        if let through {
+        if let newest {
             // The old VoiceOver line was the strongest claim of the three —
             // "Strap history is durably synced through X." — and was followed
             // immediately by "Missing data is not yet verified.", which
             // contradicted it. One honest sentence replaces both.
             accessibilityParts.append(
-                "The newest saved record is from \(through). Earlier stretches "
+                "The newest saved record is from \(newest). Earlier stretches "
                     + "may still be filling in."
+            )
+        } else if let filled {
+            accessibilityParts.append(
+                "History fill last reached \(filled). Older pages may no "
+                    + "longer be on the strap."
             )
         } else {
             accessibilityParts.append("Missing data is not yet verified.")
@@ -6507,7 +6583,10 @@ enum AtriaSyncProgressFooterPresentation {
                        backgroundLeaseActive: Bool,
                        liveHeartRateIsCurrent: Bool = false,
                        now: Date,
-                       calendar: Calendar = .current) -> Footer? {
+                       calendar: Calendar = .current,
+                       abandonedThroughUnix: Double? = nil,
+                       drainCursorUnix: Double? = nil,
+                       lastDrainYieldedRows: Bool? = nil) -> Footer? {
         let debtFresh = debtObservedAgeSeconds.map {
             $0.isFinite && $0 >= 0
                 && $0 <= AtriaMissedDataBannerPresentation.debtFreshnessWindow
@@ -6518,7 +6597,17 @@ enum AtriaSyncProgressFooterPresentation {
         // not missing strap data).
         let freshlyCaughtUp = debtFresh
             && (debtRecords ?? 0) <= caughtUpRecordFloor
-        let behindSeconds = drainedThroughUnix.map {
+        let newestUnix = AtriaHomeRecoverySyncPresentation.newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let fillUnix = AtriaHomeRecoverySyncPresentation.fillThroughUnix(
+            drainCursorUnix: drainCursorUnix,
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let displayUnix = newestUnix ?? fillUnix
+        let behindSeconds = displayUnix.map {
             now.timeIntervalSince1970 - $0
         }
         let visiblyBehind = !freshlyCaughtUp
@@ -6531,6 +6620,7 @@ enum AtriaSyncProgressFooterPresentation {
             return nil
         }
         let active: Bool = {
+            if lastDrainYieldedRows == false { return false }
             if let age = secondsSinceLastFlush,
                age <= AtriaMissedDataBannerPresentation.activeDrainRecencyWindow {
                 return true
@@ -6543,8 +6633,8 @@ enum AtriaSyncProgressFooterPresentation {
         let liveText = liveHeartRateIsCurrent
             ? "live HR current · "
             : ""
-        guard let drainedThroughUnix, drainedThroughUnix > 0,
-              drainedThroughUnix <= now.timeIntervalSince1970 else {
+        guard let displayUnix, displayUnix > 0,
+              displayUnix <= now.timeIntervalSince1970 else {
             // No trustworthy frontier yet — state only, never a made-up time.
             let detail = liveText + stateText
             let capitalized = detail.prefix(1).uppercased() + detail.dropFirst()
@@ -6553,7 +6643,7 @@ enum AtriaSyncProgressFooterPresentation {
                           accessibilityDetail: capitalized,
                           active: active)
         }
-        let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
+        let frontier = Date(timeIntervalSince1970: displayUnix)
         let timeFormatter = DateFormatter()
         timeFormatter.calendar = calendar
         timeFormatter.timeZone = calendar.timeZone
@@ -6574,11 +6664,25 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
+        let usingFillCursor = newestUnix == nil && fillUnix != nil
         // Same frontier, same correction as the banner above: this reads the
         // newest-ever watermark, so "through X" and "N behind" both overstated
         // it. `behind` is `now - frontier` — the AGE OF THE NEWEST RECORD, not
         // the size of the backlog, which is larger whenever holes remain behind
-        // the frontier.
+        // the frontier. A Start-fresh stamp equal to abandoned-through is not
+        // a record; the fill cursor is.
+        if usingFillCursor {
+            let strapEmpty = freshlyCaughtUp || lastDrainYieldedRows == false
+            let detail = strapEmpty
+                ? "Last fill \(throughText) · older pages aren't on the strap"
+                : "Last fill \(throughText) · \(behindText(behind)) old"
+            return Footer(
+                headline: "Last fill \(throughText)",
+                detail: detail,
+                accessibilityDetail: "History fill last reached \(throughText). \(liveText)\(stateText)",
+                active: active
+            )
+        }
         return Footer(
             headline: "Newest strap record \(throughText)",
             // Numbers-first visible line; the reassurance clauses live in
@@ -6661,7 +6765,16 @@ private struct AtriaSyncProgressFooter: View {
                 forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
             ) == "active",
             liveHeartRateIsCurrent: liveHeartRateIsCurrent,
-            now: now
+            now: now,
+            abandonedThroughUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+            ) as? Double,
+            drainCursorUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+            ) as? Double,
+            lastDrainYieldedRows: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows
+            ) as? Bool
         )
     }
 }
@@ -6770,7 +6883,9 @@ enum AtriaMissedDataBannerPresentation {
         startedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt,
         reasonKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason,
         parkedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt,
-        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices,
+        drainCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix,
+        acceptedCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
     ) -> Bool {
         let pending = defaults.bool(forKey: pendingKey)
         let stalled = gapIsTerminallyStalled(
@@ -6781,11 +6896,34 @@ enum AtriaMissedDataBannerPresentation {
                 .map { max(0, now.timeIntervalSince1970 - $0) }
         )
         guard stalled else { return false }
+        let cursor = defaults.double(forKey: drainCursorKey)
+        if cursor > 0 {
+            defaults.set(cursor, forKey: acceptedCursorKey)
+        }
         defaults.set(false, forKey: pendingKey)
         defaults.removeObject(forKey: requestedAtKey)
         defaults.removeObject(forKey: startedAtKey)
         defaults.removeObject(forKey: reasonKey)
         return true
+    }
+
+    /// After a terminal stall is accepted, do not re-arm the same unfillable
+    /// interval until the oldest-first cursor actually advances.
+    static func shouldSkipRangeLossRearm(
+        defaults: UserDefaults,
+        now: Date = Date()
+    ) -> Bool {
+        if acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now) {
+            return true
+        }
+        let accepted = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+        )
+        guard accepted > 0 else { return false }
+        let cursor = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        return cursor <= accepted + 1
     }
 
     static func copy(strapPendingRecords: Int,
