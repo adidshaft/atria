@@ -2,7 +2,9 @@
 
 ## Supported Versions
 
-The `main` branch is the active development line.
+`main` is the stable default branch. Day-to-day development lands on `dev`
+and is integrated into `main` through a reviewed pull request. Security reports
+should identify the affected commit or release branch.
 
 ## Reporting a Vulnerability
 
