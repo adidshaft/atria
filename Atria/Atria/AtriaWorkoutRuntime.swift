@@ -392,6 +392,17 @@ final class AtriaWorkoutRuntime {
                 )
             }
         )
+        // Root recovery is a finalize too (2026-08-30): with a declared switch
+        // timeline the persisted scalar resolves to the dominant segment, and
+        // the timeline itself lands on the confirmed record — identical to the
+        // foreground End and presentation-recovery paths.
+        let recoveredActivityType = WorkoutSegment.dominantActivityType(
+            segments: intent.segments,
+            sessionStart: intent.startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: intent.finalizedExcludedIntervals()
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? intent.resolvedActivityType
         let confirmed = await store.confirmWorkoutWindowForUIAsync(
             start: intent.startedAt,
             end: endedAt,
@@ -402,9 +413,10 @@ final class AtriaWorkoutRuntime {
                 ?? store.profile.maxHR,
             source: "pending_live_workout_root_recovery",
             preserveUserDeclaredActivityWithoutHeartRate: true,
-            activityType: intent.resolvedActivityType == .other ? nil : intent.activityType,
+            activityType: recoveredActivityType == .other ? nil : recoveredActivityType.rawValue,
             strengthSets: intent.strengthSets,
             excludedIntervals: intent.finalizedExcludedIntervals(),
+            segments: intent.segments,
             workoutSteps: stepEvidence?.count,
             workoutStepsAreEstimated: stepEvidence?.isEstimated,
             workoutStepsCapturedAt: stepEvidence?.capturedAt

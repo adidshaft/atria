@@ -250,7 +250,7 @@ struct AtriaBehaviorImpactHistogram: View {
                 Spacer(minLength: 4)
                 Text("high")
             }
-            .font(.system(size: 9, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

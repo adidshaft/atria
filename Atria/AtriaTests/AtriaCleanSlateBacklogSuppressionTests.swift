@@ -197,4 +197,59 @@ final class AtriaGapTerminalStallTests: XCTestCase {
             consecutiveZeroProgressSlices: 0,
             secondsSinceRangeLossRequested: 5 * 60))
     }
+
+    /// Device 2026-09-05: pending backfill + 4h of zero-row drains. Accept
+    /// the unrecoverable interval; do not re-arm; do not wipe nights.
+    func testAcceptsTerminalHistoryLossWithoutWipingNights() {
+        let suite = "atria.terminal-loss.tests"
+        UserDefaults().removePersistentDomain(forName: suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let pendingKey = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+        defaults.set(true, forKey: pendingKey)
+        defaults.set(now.timeIntervalSince1970 - P.terminalStallWindow - 60,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+        defaults.set("long_wear_range_loss",
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason)
+        defaults.set(4, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+
+        XCTAssertTrue(P.acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now))
+        XCTAssertFalse(defaults.bool(forKey: pendingKey))
+        XCTAssertNil(defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt))
+        XCTAssertFalse(P.acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now),
+                       "a second pass is a no-op")
+        UserDefaults().removePersistentDomain(forName: suite)
+    }
+
+    /// Device 2026-09-05 14:46: accepting the stall cleared pending, then the
+    /// next connect re-armed the same long-wear ticket because stall requires
+    /// pending=true. Remember the drain cursor so re-arm stays skipped until
+    /// the strap actually ACKs a newer page.
+    func testAcceptedLossSkipsRearmUntilDrainCursorAdvances() {
+        let suite = "atria.terminal-loss.rearm.tests"
+        UserDefaults().removePersistentDomain(forName: suite)
+        let defaults = UserDefaults(suiteName: suite)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let cursor: TimeInterval = 1_799_000_000
+        defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        defaults.set(now.timeIntervalSince1970 - P.terminalStallWindow - 60,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+        defaults.set(5, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        defaults.set(cursor, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+
+        XCTAssertTrue(P.shouldSkipRangeLossRearm(defaults: defaults, now: now))
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending))
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix),
+            cursor,
+            accuracy: 0.001
+        )
+        XCTAssertTrue(P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+                      "cleared pending must not re-arm the same cursor")
+        defaults.set(cursor + 60,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+        XCTAssertFalse(P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+                       "a later ACK'd page may re-arm")
+        UserDefaults().removePersistentDomain(forName: suite)
+    }
 }

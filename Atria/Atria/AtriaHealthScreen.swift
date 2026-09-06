@@ -433,7 +433,14 @@ enum AtriaHealthMetricAuthority {
                     ? specificDetail(current.hrvDetail,
                                      fallback: "Needs quiet rest or sleep")
                     : current.hrvDetail,
-                strain: current.strain,
+                // The Today tile withholds strain while the hero's confidence
+                // says "learning"/"standby" (no usable heart rate yet); the
+                // authority copied the raw 0.0 instead, so the detail hero
+                // printed "0.0 · Saved day" beside a tile reading "-- · HR
+                // pending" (2026-09-02). One rule, shared with the tile.
+                strain: AtriaCompactMetricPresentation.StrainEvidence
+                    .parse(confidence: current.strainDetail).isComputable
+                    ? current.strain : nil,
                 strainDetail: current.strainDetail,
                 strainIsPartial: current.strainIsPartial,
                 wearCoverageFraction: current.wearCoverageFraction,
@@ -673,6 +680,13 @@ enum AtriaHealthMetricEvidencePresentation {
         if let rollup, rollup.lnRMSSD != nil {
             return (rollup.sleepSeconds ?? 0) > 0 ? "sleep signal" : "limited signal"
         }
+        // A recorded sleep with no HRV is a signal outcome, not an adherence
+        // one: the night is there, but no five-minute window accumulated
+        // enough valid beat-to-beat pairs (dropouts, or no verified RR at
+        // all). "needs qualified sleep" would wrongly ask for more wear.
+        if let rollup, (rollup.sleepSeconds ?? 0) > 0 {
+            return "sleep recorded · not enough clean beat-to-beat signal"
+        }
         return liveValueAvailable ? "live estimate" : "needs qualified sleep"
     }
 
@@ -857,7 +871,8 @@ struct AtriaHealthScreen: View {
             rollups: vitals.dailyRollupHistory,
             workouts: vitals.confirmedWorkouts,
             sleeps: vitals.confirmedSleeps,
-            reviewCandidateDays: historyReviewCandidateDays
+            reviewCandidateDays: historyReviewCandidateDays,
+            cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay
         )
         let historyProjection = historyProjectionStore.projection
         Group {
@@ -981,7 +996,12 @@ struct AtriaHealthScreen: View {
                                    maxHeartRate: vitals.maxHeartRate,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary,
-                                   strapMotionAvailability: ble.strapMotionAvailability)
+                                   strapMotionAvailability: ble.strapMotionAvailability,
+                                   // Read, not observed: republished in lockstep
+                                   // with dailyRollupHistory, whose revision
+                                   // already invalidates this sheet.
+                                   cycleStrainByDisplayDay:
+                                    store.physiologicalCycleStrainByDisplayDay)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -1136,7 +1156,7 @@ struct AtriaHealthScreen: View {
                                     // need receipt directly underneath it.
                                     footnote: sleepPerformanceFootnote)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens sleep sufficiency detail")
                 Button {
                     metricDetail = .sleepEfficiency
@@ -1147,10 +1167,17 @@ struct AtriaHealthScreen: View {
                                     // validated motion the stored value is span
                                     // coverage, not efficiency.
                                     state: currentSleep?.displaySleepEfficiency == nil ? .learning : .research,
-                                    tint: .cyan,
-                                    footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
+                                    // Theme unification (2026-08-29): efficiency
+                                    // is a sleep-family metric, so it wears the
+                                    // one sleep identity hue the
+                                    // AtriaMetricIdentity authority defines —
+                                    // not its own cyan.
+                                    tint: Metrics.electricSleep,
+                                    // With no sleep the footnote names the state, like its
+                                    // Sufficiency sibling — not the method (2026-09-02).
+                                    footnote: currentSleep?.sleepEfficiencyFootnote ?? "Needs a confirmed sleep")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens sleep efficiency detail")
             }
 
@@ -1346,7 +1373,7 @@ struct AtriaHealthScreen: View {
         } label: {
             AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AtriaPressableCardStyle())
         .accessibilityHint("Opens Healthspan details")
     }
 
@@ -1377,7 +1404,9 @@ struct AtriaHealthScreen: View {
     // wrapper double-boxed the chart and duplicated the title, costing 16pt of
     // plot width per side.
     private var trendsCard: some View {
-        AtriaVitalsTrendChartHost(state: vitalsStore.state)
+        AtriaVitalsTrendChartHost(state: vitalsStore.state,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay,
+                                  cycleStrainRevision: store.dailyRollupHistoryRevision)
     }
 
     /// First-class breathwork entry point (gap b, 2026-07-05): the pacer
@@ -1464,7 +1493,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Recovery",
                                      value: recoveryValue(live: live),
                                      detail: recoveryDetail(live: live),
-                                     systemImage: "heart.fill",
+                                     systemImage: AtriaTodayMetric.recovery.systemImage,
                                      tint: recoveryTint(live: live),
                                      hint: recoveryHint,
                                      layout: .compactTile,
@@ -1472,7 +1501,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Resting HR",
                                      value: restingHeartRateValue(live: live),
                                      detail: restingHeartRateDetail(live: live),
-                                     systemImage: "heart.text.square.fill",
+                                     systemImage: AtriaTodayMetric.rhr.systemImage,
                                      tint: Metrics.electricRHR,
                                      rangeText: restingHeartRateRangeText,
                                      hint: restingHeartRateHint,
@@ -1481,7 +1510,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue(live: live),
                                      detail: hrvDetail(live: live),
-                                     systemImage: "waveform.path.ecg",
+                                     systemImage: AtriaTodayMetric.hrv.systemImage,
                                      tint: Metrics.electricHRV,
                                      rangeText: hrvRangeText,
                                      hint: hrvHint,
@@ -1498,10 +1527,10 @@ struct AtriaHealthScreen: View {
             monitorGroupKicker("Sleep & body")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
-                AtriaHealthMetricRow(title: "Respiration",
+                AtriaHealthMetricRow(title: "Resp rate",
                                      value: respiratoryValue,
                                      detail: respiratoryDetail,
-                                     systemImage: "lungs.fill",
+                                     systemImage: AtriaTodayMetric.respiratoryRate.systemImage,
                                      tint: Metrics.electricRespiratory,
                                      rangeText: respiratoryRangeText,
                                      hint: respiratoryHint,
@@ -1510,7 +1539,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Sleep",
                                      value: sleepValue,
                                      detail: sleepDetail,
-                                     systemImage: "moon.fill",
+                                     systemImage: AtriaTodayMetric.sleep.systemImage,
                                      tint: Metrics.electricSleep,
                                      hint: sleepHint,
                                      layout: .compactTile,
@@ -1518,10 +1547,10 @@ struct AtriaHealthScreen: View {
                 // Visibility/IA fix (2026-07-05): three rows that previously had
                 // no home on the live Vitals tab. Each opens the real detail
                 // sheet (section 3), not just the education sheet, per spec.
-                AtriaHealthMetricRow(title: "VO2 max",
+                AtriaHealthMetricRow(title: "VO2max",
                                      value: live.vo2MaxEstimate.valueText,
                                      detail: live.vo2MaxEstimate.compactStatusText,
-                                     systemImage: "lungs.fill",
+                                     systemImage: AtriaTodayMetric.vo2max.systemImage,
                                      tint: live.vo2MaxEstimate.value == nil
                                         ? .secondary
                                         : Metrics.electricGreen,
@@ -1535,14 +1564,14 @@ struct AtriaHealthScreen: View {
                                      detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(
                                         summary: vitalsStore.state.skinTemperatureDeviationSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable),
-                                     systemImage: "thermometer.variable",
+                                     systemImage: AtriaTodayMetric.bodyTemp.systemImage,
                                      tint: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                         && vitalsStore.state.skinTemperatureDeviationSummary.isReady
                                         ? Metrics.electricRespiratory
                                         : .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .skinTemperature })
-                AtriaHealthMetricRow(title: "SpO2",
+                AtriaHealthMetricRow(title: "Blood oxygen",
                                      // Was a lone em dash, sitting directly
                                      // beside a Skin temp row already showing
                                      // "--" for the same state.
@@ -1550,7 +1579,7 @@ struct AtriaHealthScreen: View {
                                      detail: AtriaExperimentalSensorCopy.bloodOxygenStatus(
                                         strapModel: ble.strapModel,
                                         decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
-                                     systemImage: "drop.degreesign",
+                                     systemImage: AtriaTodayMetric.bloodOxygen.systemImage,
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })
@@ -1691,12 +1720,18 @@ struct AtriaHealthScreen: View {
 
             Spacer(minLength: 8)
 
-            Text(statusValue(live: live))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(statusTint(live: live))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(statusTint(live: live).opacity(0.12), in: Capsule(style: .continuous))
+            // A "--" pill beside the title said nothing (2026-09-02 screenshot):
+            // the scope pill only earns its place once there is evidence to
+            // scope — "Current cycle" or "Last known". Before that the tiles
+            // below already carry their own not-ready reasons.
+            if currentMetricProjection(live: live).hasEvidence {
+                Text(statusValue(live: live))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(statusTint(live: live))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(statusTint(live: live).opacity(0.12), in: Capsule(style: .continuous))
+            }
         }
     }
 
@@ -1751,7 +1786,25 @@ struct AtriaHealthScreen: View {
     }
 
     private func restingHeartRateDetail(live: AtriaHealthMonitorLiveProjection) -> String {
-        currentMetricProjection(live: live).restingHeartRateDetail
+        let projection = currentMetricProjection(live: live)
+        // 2026-09-02: with a reading, "current cycle" said nothing. Against
+        // at least three baseline mornings (the highlight rule's own gate)
+        // the caption reads the distance from usual; otherwise it falls back.
+        if let value = projection.restingHeartRate,
+           let stats = vitalsStore.state.baseline.restingStats,
+           let caption = Self.restingHeartRateDeltaCaption(value: value, mean: stats.mean, count: stats.count) {
+            return caption
+        }
+        return projection.restingHeartRateDetail
+    }
+
+    /// "2 below usual", "same as usual", "3 above usual"; nil below three
+    /// baseline mornings so a thin baseline never poses as "usual".
+    static func restingHeartRateDeltaCaption(value: Int, mean: Double, count: Int) -> String? {
+        guard count >= 3 else { return nil }
+        let delta = Int((Double(value) - mean).rounded())
+        if delta == 0 { return "same as usual" }
+        return delta < 0 ? "\(-delta) below usual" : "\(delta) above usual"
     }
 
     private func hrvValue(live: AtriaHealthMonitorLiveProjection) -> String {
@@ -2424,7 +2477,9 @@ private struct AtriaHealthMetricRow: View, Equatable {
         } label: {
             rowContent
         }
-        .buttonStyle(.plain)
+        // A chevron-bearing tile that opens a sheet presses like every other
+        // card that opens a sheet (UI-uniformity pass 2026-08-28).
+        .buttonStyle(AtriaPressableCardStyle())
         .disabled(onTap == nil)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
@@ -3009,9 +3064,13 @@ struct AtriaSleepStressCard: View {
                     .font(.subheadline.weight(.bold))
                 Spacer(minLength: 8)
                 if projection.availability == .ready {
+                    // Theme unification (2026-08-29): the header count is a
+                    // receipt, not an alarm — neutral text with the value in
+                    // .primary. Judgment color stays with the data marks
+                    // inside the chart.
                     Text(highSummary)
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(highPeriods.isEmpty ? Metrics.electricGreen : .orange)
+                        .foregroundStyle(highPeriods.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 }
             }
 
@@ -3112,7 +3171,11 @@ struct AtriaSleepStressCard: View {
                                 // an alarm.
                                 Text("\(value)")
                                     .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
+                                    // Theme unification (2026-08-29): the axis
+                                    // is scaffolding, not data — the tri-color
+                                    // grading belongs to the trace gradient it
+                                    // duplicated.
+                                    .foregroundStyle(.secondary)
                             } else if let value = value.as(Double.self) { Text("\(Int(value.rounded()))") }
                         }
                     }
@@ -3140,15 +3203,18 @@ struct AtriaSleepStressCard: View {
                 if mode == .heartRate {
                     stageLegend
                 }
+                // Theme unification (2026-08-29): one caption line, not two —
+                // the elevated timing detail wins when present (it is the only
+                // place those windows render); the typical-resting numbers
+                // otherwise, both in neutral .secondary. The accessibility
+                // label below still carries the timing summary either way, and
+                // the band explanation stays in the inspector subtitle.
                 if let highTimingSummary {
                     Text(highTimingSummary)
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                }
-                if mode == .heartRate, let band = typicalRestingBand {
-                    // What the shaded band is stays explained in the inspector
-                    // subtitle; the caption keeps only the numbers.
+                } else if mode == .heartRate, let band = typicalRestingBand {
                     Text("Typical resting \(Int(band.lowerBound.rounded()))–\(Int(band.upperBound.rounded())) bpm")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -3163,7 +3229,10 @@ struct AtriaSleepStressCard: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(tint: .orange)
+        // Theme unification (2026-08-29): this card lives in the sleep family,
+        // so its frame wears the sleep identity hue — orange stays inside the
+        // chart, where it encodes data.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         // The ready branch keeps the relocated provenance title and the 0–3
         // scale disclaimer audible even though they left the visible card.
@@ -3306,10 +3375,10 @@ private struct AtriaSleepConsistencyStrip: View {
         AtriaSleepConsistency.result(from: nights, targetSleepHours: targetSleepHours)
     }
 
-    // Night-centric axis: anchored at 18:00, spanning 18h to 12:00 next day.
-    // The engine's anchored civil minutes map directly: 18:00 → 1080,
-    // next-day noon → 2160.
-    private static let axisStartMinutes = 18 * 60
+    // Night-centric 18h axis. Where it STARTS comes from the engine
+    // (`scheduleAxisStartMinutes`): five hours before the bedtimes' own
+    // centre, so an afternoon sleeper's nights sit in the plot instead of
+    // being dropped or drawn a day late by a fixed 18:00 start.
     private static let axisSpanMinutes = 18 * 60
 
     private struct Row: Identifiable {
@@ -3321,7 +3390,7 @@ private struct AtriaSleepConsistencyStrip: View {
     }
 
     private func fraction(_ anchoredMinutes: Int) -> CGFloat? {
-        let rel = anchoredMinutes - Self.axisStartMinutes
+        let rel = anchoredMinutes - consistency.scheduleAxisStartMinutes
         guard rel >= 0, rel <= Self.axisSpanMinutes else { return nil }
         return CGFloat(rel) / CGFloat(Self.axisSpanMinutes)
     }
@@ -3351,23 +3420,19 @@ private struct AtriaSleepConsistencyStrip: View {
         }
     }
 
-    private var recommendedWindowText: String? {
-        consistency.recommendedWindow.map {
-            "Aim for \(AtriaSleepConsistency.clockText($0.bedtimeMinutes)) – \(AtriaSleepConsistency.clockText($0.wakeMinutes))"
-        }
-    }
-
     private var bedtimeSpreadMinutes: Int { consistency.bedtimeVariationMinutes ?? 0 }
     private var wakeTimeSpreadMinutes: Int { consistency.wakeVariationMinutes ?? 0 }
-    private var typicalBedtime: String { consistency.typicalBedtimeText }
-    private var typicalWakeTime: String { consistency.typicalWakeTimeText }
 
+    // Theme unification (2026-08-29): only the verdict WORD grades its color —
+    // green/orange/red, the cyan bucket folded into green. The plot itself
+    // (window band, capsules, dots) is structure, not judgment, and renders in
+    // the one sleep identity hue.
     private var consistencyVerdict: (title: String, detail: String, tint: Color) {
         switch consistency.combinedPercent ?? 0 {
         case 85...:
             return ("Very consistent", "Your bed and wake times stayed within half an hour.", Metrics.electricGreen)
         case 70...:
-            return ("Consistent", "Your schedule moved less than an hour night to night.", .cyan)
+            return ("Consistent", "Your schedule moved less than an hour night to night.", Metrics.electricGreen)
         case 50...:
             return ("Variable", "A steadier bedtime would make this week more regular.", .orange)
         default:
@@ -3382,18 +3447,15 @@ private struct AtriaSleepConsistencyStrip: View {
                     Text("Sleep schedule")
                         .font(.caption.weight(.semibold))
                     if consistency.isQualified {
-                        Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
+                        // Theme unification (2026-08-29): one caption line, not
+                        // three — the typical window is the reference every row
+                        // below is read against. Last night is the outlined row
+                        // in the plot (and stays in the accessibility label);
+                        // the "Aim for" recommendation restated that window.
+                        Text(consistency.typicalWindowText.map { "Usually \($0)" }
+                             ?? "No single typical window yet")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        if let latestNightText {
-                            Text(latestNightText)
-                                .font(.caption2.weight(.semibold))
-                        }
-                        if let recommendedWindowText {
-                            Text(recommendedWindowText)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -3403,9 +3465,13 @@ private struct AtriaSleepConsistencyStrip: View {
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(consistencyVerdict.tint)
                         Text("\(consistency.qualifiedNightCount) qualified nights")
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                     }
+                } else {
+                    Text("Learning")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -3424,7 +3490,7 @@ private struct AtriaSleepConsistencyStrip: View {
                            let wakeFrac = consistency.typicalWakeTimeMinutes.flatMap(fraction),
                            wakeFrac > bedFrac {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(consistencyVerdict.tint.opacity(0.10))
+                                .fill(Metrics.electricSleep.opacity(0.10))
                                 .frame(width: max(3, (wakeFrac - bedFrac) * plotWidth))
                                 .offset(x: 28 + bedFrac * plotWidth)
                         }
@@ -3432,7 +3498,7 @@ private struct AtriaSleepConsistencyStrip: View {
                             ForEach(rows) { row in
                                 HStack(spacing: 7) {
                                     Text(row.dayLabel)
-                                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                                        .font(.system(.caption2, design: .rounded, weight: .bold))
                                         .foregroundStyle(row.isLatest ? .primary : .secondary)
                                         .frame(width: 21, alignment: .leading)
                                     ZStack(alignment: .leading) {
@@ -3440,7 +3506,7 @@ private struct AtriaSleepConsistencyStrip: View {
                                             .fill(Color.primary.opacity(0.05))
                                             .frame(height: 11)
                                         Capsule(style: .continuous)
-                                            .fill(consistencyVerdict.tint.opacity(row.isLatest ? 1.0 : 0.55))
+                                            .fill(Metrics.electricSleep.opacity(row.isLatest ? 1.0 : 0.55))
                                             .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
                                             .offset(x: row.startFrac * plotWidth)
                                             .overlay(alignment: .leading) {
@@ -3452,11 +3518,11 @@ private struct AtriaSleepConsistencyStrip: View {
                                                 }
                                             }
                                         Circle()
-                                            .fill(consistencyVerdict.tint)
+                                            .fill(Metrics.electricSleep)
                                             .frame(width: 7, height: 7)
                                             .offset(x: row.startFrac * plotWidth - 3.5)
                                         Circle()
-                                            .fill(consistencyVerdict.tint)
+                                            .fill(Metrics.electricSleep)
                                             .frame(width: 7, height: 7)
                                             .offset(x: row.endFrac * plotWidth - 3.5)
                                     }
@@ -3470,15 +3536,13 @@ private struct AtriaSleepConsistencyStrip: View {
                 HStack(spacing: 0) {
                     Color.clear.frame(width: 28)
                     HStack {
-                        Text("6 PM")
-                        Spacer(minLength: 0)
-                        Text("12 AM")
-                        Spacer(minLength: 0)
-                        Text("6 AM")
-                        Spacer(minLength: 0)
-                        Text("12 PM")
+                        ForEach(0..<4, id: \.self) { tick in
+                            if tick > 0 { Spacer(minLength: 0) }
+                            Text(AtriaSleepConsistency.axisHourText(
+                                consistency.scheduleAxisStartMinutes + tick * 6 * 60))
+                        }
                     }
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.tertiary)
                 }
 
@@ -3486,18 +3550,23 @@ private struct AtriaSleepConsistencyStrip: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text(consistency.footnote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Learning state as a track, not a sentence (2026-09-02): the
+                // engine's real minimum, filled by real qualified nights. The
+                // full sentence stays in the accessibility label below.
+                AtriaLearningProgressTrack(
+                    current: consistency.qualifiedNightCount,
+                    target: AtriaSleepConsistency.minimumQualifiedNights,
+                    caption: "\(consistency.qualifiedNightCount) of \(AtriaSleepConsistency.minimumQualifiedNights) qualified nights",
+                    tint: Metrics.electricSleep)
+                .padding(.top, 2)
             }
         }
         .padding(12)
-        .atriaInsetCard(tint: .cyan)
+        // Theme unification (2026-08-29): sleep identity hue, not cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(consistency.isQualified
-                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
+                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. \(consistency.typicalWindowText.map { "Usually \($0)." } ?? "No single typical window yet.") \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
                             : "Sleep schedule, \(consistency.footnote)")
     }
 

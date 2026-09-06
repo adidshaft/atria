@@ -340,13 +340,29 @@ private struct AtriaStrapConnectionHero: View {
 
     private var primaryState: String {
         guard displayStatus == .connected else { return "Finding" }
+        // This screen promoted its status to .connected BECAUSE a pulse
+        // exists, then read a label that could say "No signal" — one view
+        // contradicting itself (owner UI-uniformity pass 2026-08-28). It now
+        // applies the same shared override the Home pill does.
+        if AtriaLiveSignalTruth.freshPulseOverridesLaggingStream(
+            hasPulseSignal: hasPulseSignal,
+            streamState: coreLiveStore.state.strapStreamState
+        ) {
+            return "Live"
+        }
         return coreLiveStore.state.strapStreamConnectionLabel
     }
 
     private var connectionDetail: String {
         if displayStatus == .connected {
-            if coreLiveStore.state.strapStreamState == .live,
-               pulseLiveStore.state.hasPulseSignal {
+            // Must follow `primaryState`: when the shared override resolves the
+            // label to "Live", the detail below it cannot read "Connected — no
+            // live HR". Both now key off the same rule.
+            if pulseLiveStore.state.hasPulseSignal,
+               coreLiveStore.state.strapStreamState == .live
+                || AtriaLiveSignalTruth.freshPulseOverridesLaggingStream(
+                    hasPulseSignal: hasPulseSignal,
+                    streamState: coreLiveStore.state.strapStreamState) {
                 return "HR \(pulseLiveStore.state.heartRateText) bpm"
             }
             return coreLiveStore.state.strapStreamConnectionDetail

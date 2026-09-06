@@ -153,7 +153,9 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         let sessionsSource = try String(contentsOf: sessionsSourceURL, encoding: .utf8)
         XCTAssertTrue(sessionsSource.contains("settlingCandidateWindow:"),
                       "Saving an adjusted sleep/nap review must durably settle its original detector window")
-        XCTAssertTrue(sessionsSource.contains("addDismissedSleepCandidate(start: start, end: end)"),
+        // 2026-09-02 pin migration: the tombstone-provenance change (75ef1318)
+        // gave this call extra arguments; the invariant is the call itself.
+        XCTAssertTrue(sessionsSource.contains("addDismissedSleepCandidate(start: start, end: end,"),
                       "Confirming a sleep/nap candidate must prevent it from returning as actionable")
         XCTAssertTrue(sessionsSource.contains("let activityLabel: String?"))
         XCTAssertTrue(sessionsSource.contains("label: cleanedLabel ?? cleanedType ?? \"Live workout\""),

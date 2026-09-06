@@ -78,6 +78,66 @@ final class AtriaWidgetProofSheetTests: XCTestCase {
         XCTAssertFalse(diagnostics.configuredOrderText.isEmpty)
     }
 
+    /// 2026-09-03: on a device with no payload the sheet reported "Unknown"
+    /// for all three surfaces — on the very screen opened to find out — and
+    /// told the reader to "Open Atria once", which is the only way to reach
+    /// this sheet. The live probe answers for the surfaces whether or not a
+    /// payload was ever written.
+    @MainActor
+    func testMissingSnapshotFallsBackToTheLiveProbe() {
+        let live = WidgetSnapshotPublisher.Diagnostics(storage: "app_group_userdefaults",
+                                                       appGroupEnabled: true,
+                                                       widgetTargetPresent: true,
+                                                       complicationTargetPresent: false)
+        let diagnostics = AtriaWidgetProofDiagnostics(snapshot: nil,
+                                                      layoutConfig: .default,
+                                                      live: live)
+
+        XCTAssertFalse(diagnostics.hasSnapshot)
+        XCTAssertEqual(diagnostics.appGroupText, "Available")
+        XCTAssertEqual(diagnostics.homeScreenTargetText, "Available")
+        XCTAssertEqual(diagnostics.lockScreenTargetText, "Unavailable")
+        XCTAssertEqual(diagnostics.storageText, "Ready · nothing published yet")
+        let detail = diagnostics.missingPayloadDetail ?? ""
+        XCTAssertTrue(detail.contains("nothing has been published yet"), detail)
+    }
+
+    @MainActor
+    func testUnreachableAppGroupIsNamedAsTheCause() {
+        let live = WidgetSnapshotPublisher.Diagnostics(storage: "unavailable",
+                                                       appGroupEnabled: false,
+                                                       widgetTargetPresent: true,
+                                                       complicationTargetPresent: true)
+        let diagnostics = AtriaWidgetProofDiagnostics(snapshot: nil,
+                                                      layoutConfig: .default,
+                                                      live: live)
+
+        XCTAssertEqual(diagnostics.appGroupText, "Unavailable")
+        XCTAssertEqual(diagnostics.storageText, "App group unavailable")
+        let detail = diagnostics.missingPayloadDetail ?? ""
+        XCTAssertTrue(detail.contains("cannot reach the shared app group"), detail)
+    }
+
+    func testAPayloadThatExistsHasNoMissingDetail() {
+        let diagnostics = AtriaWidgetProofDiagnostics(
+            snapshot: makeSnapshot(writtenAt: Date(timeIntervalSince1970: 1_725_000_000),
+                                   recovery: 61, strain: 4.2,
+                                   restingHeartRate: 59, hrv: nil, heartRate: 72),
+            layoutConfig: .default
+        )
+        XCTAssertNil(diagnostics.missingPayloadDetail)
+    }
+
+    func testTheImpossibleInstructionIsGone() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWidgetProofSheet.swift"), encoding: .utf8)
+        XCTAssertFalse(source.contains("Open Atria once to publish a shared payload"),
+                       "this sheet can only be opened from inside Atria")
+        XCTAssertTrue(source.contains("live: WidgetSnapshotPublisher.diagnostics"),
+                      "the sheet passes the live probe")
+    }
+
     func testSheetCannotReintroduceIndependentMetricPresentation() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

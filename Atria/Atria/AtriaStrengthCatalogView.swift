@@ -250,7 +250,7 @@ struct AtriaStrengthCatalogRow: View {
                         .minimumScaleFactor(0.8)
                     if row.holdsCurrentRecord {
                         Text("PR")
-                            .font(.system(size: 9, weight: .heavy))
+                            .font(.caption2.weight(.heavy))
                             .foregroundStyle(AtriaStrengthPalette.amberTint)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)

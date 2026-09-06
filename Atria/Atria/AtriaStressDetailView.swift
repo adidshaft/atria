@@ -350,7 +350,19 @@ enum AtriaStressMinuteBand: Equatable {
     /// score always renders — sleep changes the classification word, never the
     /// value.
     static func scoreLine(_ reading: AtriaStressDetailReading) -> String {
-        "\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(resolve(reading).displayName)"
+        scoreLine(score: reading.score,
+                  isAsleep: reading.sleepContext == .asleep)
+    }
+
+    /// Same line for surfaces that carry only the recorded score and confirmed
+    /// sleep membership (Activity's day-chart scrub card). The zone word is
+    /// resolved from the score by the one shared authority; a confirmed-sleep
+    /// minute says "Sleep", never a zone word.
+    static func scoreLine(score: Double, isAsleep: Bool) -> String {
+        let band: AtriaStressMinuteBand = isAsleep
+            ? .sleep
+            : .zone(.resolve(score: score))
+        return "\(score.formatted(.number.precision(.fractionLength(2)))) · \(band.displayName)"
     }
 
     /// Legend gating: a Sleep legend entry belongs on a stress timeline only
@@ -659,9 +671,7 @@ struct AtriaStressDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(projection.presentation.title)
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
 
                 Spacer()
 
@@ -756,7 +766,7 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     /// Legend for the confirmed-sleep band. Rendered only when the visible
@@ -809,15 +819,13 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var loggedContextCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Logged context")
-                .font(.caption.weight(.bold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
 
             ForEach(input.loggedContext) { context in
                 HStack(spacing: 10) {
@@ -841,7 +849,7 @@ struct AtriaStressDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var updateText: String? {
@@ -1067,9 +1075,7 @@ struct AtriaStressDailyTrendCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Stress by day")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 Button {
                     guard canNavigateToPreviousWeek else { return }
@@ -1125,7 +1131,7 @@ struct AtriaStressDailyTrendCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary(framed))
     }
@@ -1190,9 +1196,7 @@ private struct AtriaStressDistributionCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Today vs typical")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 if comparison.typical == nil {
                     Text("Learning")
@@ -1218,7 +1222,7 @@ private struct AtriaStressDistributionCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
     }
 
@@ -1642,6 +1646,9 @@ private struct AtriaStressTimelineChart: View, Equatable {
 
 private struct AtriaStressHeartRateTimelineChart: View {
     let points: [AtriaStressMonitorStore.HeartRateHistoryPoint]
+    // Same drag-to-inspect grammar as the stress timeline beside it
+    // (2026-08-29): time + measured bpm on the shared clamped card.
+    @State private var selectedDate: Date?
 
     private var segmentedPoints: [(point: AtriaStressMonitorStore.HeartRateHistoryPoint,
                                    segment: Int)] {
@@ -1687,6 +1694,25 @@ private struct AtriaStressHeartRateTimelineChart: View {
                 .background(.secondary.opacity(0.035))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                AtriaChartScrubOverlay(proxy: proxy,
+                                       geometry: geometry,
+                                       points: points,
+                                       date: { $0.t },
+                                       value: { Double($0.bpm) },
+                                       selectedDate: $selectedDate) { point in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(point.t.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2.weight(.semibold))
+                        Text("\(point.bpm) bpm")
+                            .font(.caption.monospacedDigit().weight(.bold))
+                    }
+                    .atriaChartScrubCardChrome()
+                }
+            }
+        }
+        .accessibilityHint("Drag across the chart to inspect time and measured heart rate")
     }
 }
 

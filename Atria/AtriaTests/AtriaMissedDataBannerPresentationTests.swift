@@ -472,4 +472,59 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertTrue(f!.detail.contains("30m old"))
         XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 30m old"))
     }
+
+    /// Device 2026-09-05: Start fresh stamped drainedThrough AND abandonedThrough
+    /// at 09:19. That is not a newest record. Show the oldest-first fill cursor.
+    func testStartFreshWatermarkIsNotNewestRecord() {
+        let abandoned = now.addingTimeInterval(-5 * 3600)
+        let cursor = now.addingTimeInterval(-29 * 3600)
+        XCTAssertTrue(AtriaHomeRecoverySyncPresentation.isSyntheticStartFreshFrontier(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970
+        ))
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.newestSavedRecordUnix(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970
+        ))
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("yesterday"),
+                      "the fill cursor is yesterday 9:44, not this morning's watermark")
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active, "zero-row drains are not catching up")
+    }
+
+    /// Device 2026-09-02: the pre-Atria backlog banner recommended "Start
+    /// fresh" while offering only a sync glyph and a snooze, and its sentence
+    /// was cut at one line. A decision shows its whole sentence and both
+    /// labeled actions; a status row is unchanged.
+    func testOversizedBacklogIsADecisionWithBothActionsAndAFullSentence() throws {
+        let plain = AtriaMissedDataBannerPresentation.Copy(title: "t", subtitle: "s", offersRecovery: true)
+        XCTAssertFalse(plain.isDecision, "status rows default to the compact form")
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("offersRecovery: true,\n                isDecision: true"))
+        XCTAssertTrue(source.contains("Button(\"Start fresh\", action: onStartFresh)"))
+        XCTAssertTrue(source.contains("Button(\"Sync all\", action: handleSyncTap)"))
+        XCTAssertTrue(source.contains(".lineLimit(bannerCopy.isDecision ? 4 : 1)"))
+        XCTAssertTrue(source.contains("if !bannerCopy.isDecision {\n                    compactState"),
+                      "the status glyph yields to the labeled actions in decision mode")
+    }
 }

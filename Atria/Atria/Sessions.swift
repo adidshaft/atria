@@ -277,9 +277,28 @@ struct AtriaPhysiologicalCycle: Equatable {
         // second sleep falls inside that day's window (and shows as its own
         // Activity row) instead of spawning an unreachable parallel cycle. With
         // no choice recorded this set is empty and behaviour is unchanged.
-        let nonPrimaryMainIDs = Set(
-            confirmedSleeps.filter { $0.dayPrimaryChoice == false }.map(\.id)
-        )
+        // Device 2026-09-05: two wake days (Aug 21, Aug 28) had `true` on the
+        // chosen sleep and `nil` on the sibling — the writer that only stamped
+        // the chosen row. Treat an unmarked sibling on a chosen-primary day as
+        // non-primary so the second sleep cannot open a parallel cycle.
+        var daysWithChosenPrimary = Set<Date>()
+        for sleep in confirmedSleeps where sleep.dayPrimaryChoice == true {
+            daysWithChosenPrimary.insert(EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            ))
+        }
+        let nonPrimaryMainIDs = Set(confirmedSleeps.compactMap { sleep -> String? in
+            if sleep.dayPrimaryChoice == false { return sleep.id }
+            if sleep.dayPrimaryChoice == true { return nil }
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            return daysWithChosenPrimary.contains(day) ? sleep.id : nil
+        })
         let candidates = canonicalMainSleeps(from: confirmedSleeps)
             .filter { $0.end <= now && !nonPrimaryMainIDs.contains($0.id) }
             .sorted { $0.end < $1.end }
@@ -1645,89 +1664,135 @@ struct SavedSession: Codable, Identifiable {
             cooperativeDeadline: cooperativeDeadline,
             areInIncreasingOrder: { $0.t < $1.t }
         )
-        guard sorted.count >= minimumBeatCount else { return [] }
+        guard sorted.count >= minimumBeatCount,
+              let first = sorted.first, let final = sorted.last else { return [] }
 
-        var segments: [[(t: Double, ms: Double)]] = []
-        var current: [(t: Double, ms: Double)] = []
-        for (index, point) in sorted.enumerated() {
+        // RR values end at their timestamps. Cover from the beginning of the
+        // first measured interval (when its value is physiologically plausible)
+        // so a capture that spans exactly N windows yields N window positions.
+        let coverageStart = (300.0...2_000.0).contains(first.ms)
+            ? first.t - first.ms / 1_000
+            : first.t
+        guard final.t - coverageStart >= Self.qualifiedWindowSeconds else { return [] }
+
+        // RMSSD is defined over successive differences of ADJACENT beats, so a
+        // brief link dropout inside a window only removes the beat pairs that
+        // straddle it (enforced per-window in qualifiedLnRMSSDCore). A window
+        // is therefore placed on a fixed half-window stride over the whole
+        // qualified stream rather than being required to sit entirely inside
+        // one dropout-free run — a geometry no real BLE night can satisfy.
+        var qualified: [(start: Double, end: Double, lnRMSSD: Double)] = []
+        var windowEnd = coverageStart + Self.qualifiedWindowSeconds
+        let finalEnd = final.t
+        var lowerIndex = sorted.startIndex
+        var upperIndex = sorted.startIndex
+        while windowEnd <= finalEnd {
+            try cooperativeDeadline?.checkpoint()
+            let windowStart = windowEnd - Self.qualifiedWindowSeconds
+            while lowerIndex < sorted.endIndex, sorted[lowerIndex].t <= windowStart {
+                lowerIndex += 1
+                if lowerIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+            }
+            if upperIndex < lowerIndex { upperIndex = lowerIndex }
+            while upperIndex < sorted.endIndex, sorted[upperIndex].t <= windowEnd {
+                upperIndex += 1
+                if upperIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+            }
+            let windowCount = upperIndex - lowerIndex
+            if cooperativeDeadline != nil, windowCount > 4_096 {
+                windowEnd += Self.qualifiedWindowStrideSeconds
+                continue
+            }
+            let window: [(t: Double, ms: Double)]
+            if cooperativeDeadline != nil {
+                var checkedWindow: [(t: Double, ms: Double)] = []
+                checkedWindow.reserveCapacity(windowCount)
+                if lowerIndex < upperIndex {
+                    for index in lowerIndex..<upperIndex {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        checkedWindow.append(sorted[index])
+                    }
+                }
+                window = checkedWindow
+            } else {
+                window = Array(sorted[lowerIndex..<upperIndex])
+            }
+            if let lnRMSSD = try Self.qualifiedLnRMSSDCore(
+                window,
+                cooperativeDeadline: cooperativeDeadline
+            ) {
+                qualified.append((start: windowStart, end: windowEnd, lnRMSSD: lnRMSSD))
+            }
+            windowEnd += Self.qualifiedWindowStrideSeconds
+        }
+        try cooperativeDeadline?.checkpoint()
+        return try Self.distinctCoverageHonestWindows(
+            qualified,
+            sorted: sorted,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    /// Overlapping windows must not multiply evidence: `windowCount >= 3` is a
+    /// trust threshold, so three windows have to stand on at least
+    /// `qualifiedEvidenceMinimumDistinctSeconds` of DISTINCT valid adjacent-beat
+    /// time — the same 450 seconds seen through three half-stride windows is
+    /// still 450 seconds of physiology. When the union falls short, only
+    /// span-disjoint windows survive, restoring the non-overlapping geometry
+    /// the threshold was originally written against.
+    private static func distinctCoverageHonestWindows(
+        _ qualified: [(start: Double, end: Double, lnRMSSD: Double)],
+        sorted: [(t: Double, ms: Double)],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [Double] {
+        guard qualified.count >= 3 else { return qualified.map(\.lnRMSSD) }
+        // Merge qualifying window spans (already in ascending start order).
+        var merged: [(start: Double, end: Double)] = []
+        for window in qualified {
+            if let last = merged.last, window.start <= last.end {
+                merged[merged.count - 1].end = max(last.end, window.end)
+            } else {
+                merged.append((start: window.start, end: window.end))
+            }
+        }
+        // Distinct evidence is valid-pair time clipped to the merged spans:
+        // each adjacent-beat interval is real signal exactly once, no matter
+        // how many overlapping windows contain it.
+        var distinctSeconds = 0.0
+        var spanIndex = merged.startIndex
+        for index in 1..<sorted.count {
             if index.isMultiple(of: 256) {
                 try cooperativeDeadline?.checkpoint()
             }
-            if let last = current.last {
-                let gap = point.t - last.t
-                if gap <= 0 || gap > HRVSnapshot.maxReadyRRGapSeconds {
-                    if current.count >= 2 { segments.append(current) }
-                    current.removeAll(keepingCapacity: true)
-                }
+            let previous = sorted[index - 1]
+            let current = sorted[index]
+            let dt = current.t - previous.t
+            guard dt > 0, dt <= HRVSnapshot.maxReadyRRGapSeconds,
+                  (300.0...2_000.0).contains(previous.ms),
+                  (300.0...2_000.0).contains(current.ms) else { continue }
+            while spanIndex < merged.endIndex, merged[spanIndex].end <= previous.t {
+                spanIndex += 1
             }
-            current.append(point)
+            guard spanIndex < merged.endIndex else { break }
+            let overlap = min(current.t, merged[spanIndex].end)
+                - max(previous.t, merged[spanIndex].start)
+            if overlap > 0 { distinctSeconds += overlap }
         }
-        if current.count >= 2 { segments.append(current) }
-
-        var lnRMSSDs: [Double] = []
-        for (segmentIndex, segment) in segments.enumerated() {
-            if segmentIndex.isMultiple(of: 16) {
-                try cooperativeDeadline?.checkpoint()
-            }
-            guard let first = segment.first, let final = segment.last,
-                  (300...2000).contains(first.ms) else { continue }
-            // RR values end at their timestamps. Tile from the beginning of the
-            // first measured interval so a true 15-minute low-rate capture has
-            // three five-minute windows rather than only two.
-            let coverageStart = first.t - first.ms / 1_000
-            guard final.t - coverageStart >= 300 else { continue }
-            var windowEnd = coverageStart + 300
-            let finalEnd = final.t
-            var lowerIndex = segment.startIndex
-            var upperIndex = segment.startIndex
-            while windowEnd <= finalEnd {
-                try cooperativeDeadline?.checkpoint()
-                let windowStart = windowEnd - 300
-                while lowerIndex < segment.endIndex, segment[lowerIndex].t <= windowStart {
-                    lowerIndex += 1
-                    if lowerIndex.isMultiple(of: 256) {
-                        try cooperativeDeadline?.checkpoint()
-                    }
-                }
-                if upperIndex < lowerIndex { upperIndex = lowerIndex }
-                while upperIndex < segment.endIndex, segment[upperIndex].t <= windowEnd {
-                    upperIndex += 1
-                    if upperIndex.isMultiple(of: 256) {
-                        try cooperativeDeadline?.checkpoint()
-                    }
-                }
-                let windowCount = upperIndex - lowerIndex
-                if cooperativeDeadline != nil, windowCount > 4_096 {
-                    windowEnd += 300
-                    continue
-                }
-                let window: [(t: Double, ms: Double)]
-                if cooperativeDeadline != nil {
-                    var checkedWindow: [(t: Double, ms: Double)] = []
-                    checkedWindow.reserveCapacity(windowCount)
-                    if lowerIndex < upperIndex {
-                        for index in lowerIndex..<upperIndex {
-                            if index.isMultiple(of: 256) {
-                                try cooperativeDeadline?.checkpoint()
-                            }
-                            checkedWindow.append(segment[index])
-                        }
-                    }
-                    window = checkedWindow
-                } else {
-                    window = Array(segment[lowerIndex..<upperIndex])
-                }
-                if let lnRMSSD = try Self.qualifiedLnRMSSDCore(
-                    window,
-                    cooperativeDeadline: cooperativeDeadline
-                ) {
-                    lnRMSSDs.append(lnRMSSD)
-                }
-                windowEnd += 300
-            }
+        guard distinctSeconds < Self.qualifiedEvidenceMinimumDistinctSeconds else {
+            return qualified.map(\.lnRMSSD)
         }
-        try cooperativeDeadline?.checkpoint()
-        return lnRMSSDs
+        var disjoint: [(start: Double, end: Double, lnRMSSD: Double)] = []
+        for window in qualified
+        where disjoint.last.map({ window.start >= $0.end }) ?? true {
+            disjoint.append(window)
+        }
+        return disjoint.map(\.lnRMSSD)
     }
 
     private func localHRVCacheKey(rrPoints: [RRPoint]) -> SavedSessionLocalHRVCacheKey {
@@ -1753,28 +1818,42 @@ struct SavedSession: Codable, Identifiable {
     ) throws -> Double? {
         try cooperativeDeadline?.checkpoint()
         let minimumBeatCount = minimumQualifiedRRBeatCount()
-        guard samples.count >= minimumBeatCount,
-              let first = samples.first,
-              let last = samples.last,
-              (300...2000).contains(first.ms),
-              // Match the live readiness policy: the measured RR coverage may
-              // end just before the wall-clock boundary, but the uncovered tail
-              // must remain within the same strict three-second continuity gate.
-              last.t - (first.t - first.ms / 1_000)
-                >= 300 - HRVSnapshot.maxReadyRRGapSeconds else { return nil }
+        guard samples.count >= minimumBeatCount else { return nil }
+        // RMSSD is defined over successive differences of ADJACENT beats. A
+        // valid pair is two neighboring RR samples separated by a plausible
+        // inter-beat time (0 < dt <= maxReadyRRGapSeconds) whose values both
+        // sit in the accepted 300...2000 ms band. A link dropout invalidates
+        // exactly the pairs that touch it — never the rest of the window —
+        // and no difference may ever be taken across an invalid pair.
+        var pairValid = [Bool](repeating: false, count: samples.count)
+        var validPairSeconds = 0.0
         for index in 1..<samples.count {
             if index.isMultiple(of: 128) {
                 try cooperativeDeadline?.checkpoint()
             }
-            let gap = samples[index].t - samples[index - 1].t
-            guard gap > 0, gap <= HRVSnapshot.maxReadyRRGapSeconds else { return nil }
+            let dt = samples[index].t - samples[index - 1].t
+            guard dt > 0, dt <= HRVSnapshot.maxReadyRRGapSeconds,
+                  (300.0...2_000.0).contains(samples[index].ms),
+                  (300.0...2_000.0).contains(samples[index - 1].ms) else { continue }
+            pairValid[index] = true
+            validPairSeconds += dt
         }
+        // The window must be mostly real adjacent-beat time: dropouts may
+        // pepper it, but valid pairs have to cover at least 70% of the nominal
+        // five minutes or the estimate would rest on too little of the night.
+        guard validPairSeconds >= minimumValidPairCoverageFraction
+                * qualifiedWindowSeconds else { return nil }
         var kept: [(ordinal: Int, value: Double)] = []
         kept.reserveCapacity(samples.count)
+        // Each invalid pair widens the ordinal spacing so that, exactly like a
+        // beat rejected by the artifact filter below, the beats on its two
+        // sides are never treated as physiological neighbors.
+        var adjacencyBreaks = 0
         for (index, sample) in samples.enumerated() {
             if index.isMultiple(of: 128) {
                 try cooperativeDeadline?.checkpoint()
             }
+            if index > 0, !pairValid[index] { adjacencyBreaks += 1 }
             guard (300...2000).contains(sample.ms) else { continue }
             let lower = max(samples.startIndex, index - 2)
             let upper = min(samples.index(before: samples.endIndex), index + 2)
@@ -1788,7 +1867,7 @@ struct SavedSession: Codable, Identifiable {
                     continue
                 }
             }
-            kept.append((ordinal: index, value: sample.ms))
+            kept.append((ordinal: index + adjacencyBreaks, value: sample.ms))
         }
         guard kept.count >= minimumBeatCount,
               Double(kept.count) / Double(samples.count) >= 0.75 else { return nil }
@@ -1864,6 +1943,22 @@ struct SavedSession: Codable, Identifiable {
     private static func minimumQualifiedRRBeatCount(windowSeconds: TimeInterval = 300) -> Int {
         Int(ceil(windowSeconds * HRVSnapshot.minimumReadyBeatsPerSecond))
     }
+
+    /// One qualified HRV window is five minutes of overnight RR signal.
+    static let qualifiedWindowSeconds: TimeInterval = 300
+    /// Windows advance by half a window. RMSSD needs adjacent-beat pairs, not
+    /// wall-clock alignment, so a clean stretch that ends between two
+    /// non-overlapping grid positions still contributes its full evidence.
+    static let qualifiedWindowStrideSeconds: TimeInterval = 150
+    /// Valid adjacent-beat pairs must cover at least this fraction of a
+    /// window's nominal five minutes for its RMSSD to describe the window
+    /// rather than a fragment of it.
+    static let minimumValidPairCoverageFraction = 0.70
+    /// The `windowCount >= 3` trust threshold requires at least two
+    /// non-overlapping windows' worth (600 s) of distinct valid-pair time, so
+    /// half-stride overlap cannot inflate the same physiology into extra
+    /// evidence.
+    static let qualifiedEvidenceMinimumDistinctSeconds: TimeInterval = 600
 
     private static func median(_ values: [Double]) -> Double {
         let sorted = values.sorted()
@@ -2151,8 +2246,14 @@ struct SavedSession: Codable, Identifiable {
 
     /// All-day cardiovascular load. Unlike workout TRIMP, this excludes the
     /// standard Z0/rest band so ordinary quiet wear cannot accumulate into a
-    /// double-digit training day merely through duration.
-    func dailyLoadTRIMP(rest: Int, max: Int, within interval: DateInterval) -> Double {
+    /// double-digit training day merely through duration. Confirmed workout
+    /// windows pass `mode: .workout` from the day aggregate so a logged drive
+    /// or easy spin is not zeroed by the continuous-day floor while the
+    /// workout card still shows load.
+    func dailyLoadTRIMP(rest: Int,
+                        max: Int,
+                        within interval: DateInterval,
+                        mode: AtriaStrainLoadModel.Mode = .continuousDay) -> Double {
         guard !isBreathwork,
               sleepWakeResearchState != "sleep_research",
               interval.end > interval.start,
@@ -2167,11 +2268,18 @@ struct SavedSession: Codable, Identifiable {
             return ExcludedInterval(start: clippedStart, end: clippedEnd)
         }
         let samples = projected.map { HRSample(t: $0.date, bpm: $0.bpm) }
+        let sex = biologicalSex ?? .unspecified
         return AtriaAnalytics.Strain.contiguousSegments(samples, excluding: clippedExclusions)
             .reduce(0) { total, segment in
-                total + Metrics.dailyLoadTRIMP(segment.map {
+                let series = segment.map {
                     (t: $0.t.timeIntervalSince(interval.start), bpm: $0.bpm)
-                }, rest: rest, max: max, sex: biologicalSex ?? .unspecified)
+                }
+                switch mode {
+                case .workout:
+                    return total + Metrics.trimp(series, rest: rest, max: max, sex: sex)
+                case .continuousDay:
+                    return total + Metrics.dailyLoadTRIMP(series, rest: rest, max: max, sex: sex)
+                }
             }
     }
 
@@ -2182,6 +2290,7 @@ struct SavedSession: Codable, Identifiable {
         rest: Int,
         max: Int,
         within interval: DateInterval,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay,
         shouldContinue: () -> Bool
     ) -> Double? {
         guard shouldContinue() else { return nil }
@@ -2226,7 +2335,7 @@ struct SavedSession: Codable, Identifiable {
             maximumBPM: Double(max),
             intensityMultiplier: parameters.multiplier,
             intensityCoefficient: parameters.coefficient,
-            mode: .continuousDay,
+            mode: mode,
             maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
         )
         var total = 0.0
@@ -3173,6 +3282,14 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     /// recomputation but must never be claimed to be frozen history.
     var muscularLoadReceipt: AtriaStrengthLog.MuscularLoadReceipt? = nil
     var excludedIntervals: [ExcludedInterval]? = nil
+    /// User-declared in-workout activity switches (2026-08-30), in order,
+    /// seeded with the original type at session start. Nil for never-switched
+    /// and legacy workouts (synthesized optional decode keeps them readable;
+    /// synthesized encode omits the key so their bytes are unchanged). The
+    /// scalar `activityType` above remains the dominant-segment authority
+    /// every existing reader already uses; per-segment stats are DERIVED from
+    /// samples at display time, never stored as a second schema.
+    var segments: [WorkoutSegment]? = nil
     var reviewSource: String? = nil
     /// Stable identity of the detector suggestion the user explicitly labelled.
     /// Nil for manual/live workouts and legacy records.
@@ -3653,6 +3770,13 @@ struct AtriaSameDayMainSleepChoice: Identifiable, Equatable {
 struct AtriaDismissedSleepCandidate: Codable, Equatable {
     let start: Date
     let end: Date
+    /// When this tombstone was written (2026-08-29 device forensics: today's
+    /// 05:34-07:17 nap review vanished behind a tombstone and the store could
+    /// not say when — or through which flow — that entry appeared, so the
+    /// outage was chased for hours as a detector regression). Optional and
+    /// additive: entries written by earlier builds decode as nil, older
+    /// builds ignore the extra key, and suppression semantics never read it.
+    var createdAt: Date? = nil
 
     func overlaps(start otherStart: Date, end otherEnd: Date) -> Bool {
         start < otherEnd && end > otherStart
@@ -5646,7 +5770,7 @@ struct BiologicalAgeSummary: Equatable, Codable {
         guard let first = blockers.first else { return "Building 28-day baseline" }
         switch first {
         case "vo2max_learning":
-            return "VO₂ max is still learning"
+            return "VO2max is still learning"
         case "resting_hr_learning":
             return "Building resting HR baseline"
         case "hrv_learning":
@@ -5664,7 +5788,7 @@ struct BiologicalAgeSummary: Equatable, Codable {
     /// shows snake_case to a human.
     private static func humanBlocker(_ raw: String) -> String {
         switch raw {
-        case "vo2max_learning": return "VO₂ max learning"
+        case "vo2max_learning": return "VO2max learning"
         case "resting_hr_learning": return "resting HR baseline"
         case "hrv_learning": return "HRV baseline"
         case "sleep_history_thin": return "3 sleep nights"
@@ -8986,6 +9110,9 @@ final class SessionStore: ObservableObject {
         let workoutSteps: Int?
         let workoutStepsAreEstimated: Bool?
         let workoutStepsCapturedAt: Date?
+        /// User-declared switch timeline carried verbatim from the live
+        /// workout intent to the confirmed record. Nil for single-type saves.
+        let segments: [WorkoutSegment]?
         let profile: AthleteProfile
         let eventTimeZoneIdentifier: String
     }
@@ -9603,6 +9730,10 @@ final class SessionStore: ObservableObject {
         let preparedAt: Date
         let activeCycleStart: Date
         let activeCycleStrain: Double?
+        /// Closed-cycle strain keyed by predominant civil day (2026-08-30);
+        /// display-only, feeds the strain detail chart. See
+        /// `physiologicalCycleStrainByDisplayDayCancellable`.
+        let cycleStrainByDisplayDay: [Date: Double]
     }
 
     struct DailyRespiratoryRatePreparation: Equatable {
@@ -9835,6 +9966,15 @@ final class SessionStore: ObservableObject {
     /// body evaluation, including the ones driven by live-pulse updates that
     /// never touch the rollups at all.
     private(set) var dailyRollupHistoryRevision = 0
+    /// Closed-cycle strain keyed by predominant civil day (2026-08-30) — the
+    /// strain detail chart's cycle-truth series. Deliberately NOT @Published:
+    /// it is reassigned in lockstep with the rollup history it was prepared
+    /// with and read (not observed) at the metric detail sheet's construction
+    /// sites, so it invalidates with `dailyRollupHistoryRevision` and never
+    /// adds its own render churn.
+    /// Not persisted: recomputed with every rollup preparation from the same
+    /// evidence, and display-only (rollup store keys stay civil).
+    private(set) var physiologicalCycleStrainByDisplayDay: [Date: Double] = [:]
     @Published private(set) var todayHRZoneMinutesSnapshot = TodayHRZoneMinutes.empty
     private let healthKitExporter = HealthKitExporter()
     private var dailyRollupStore = DailyRollupStore(loadPersisted: false)
@@ -10404,6 +10544,17 @@ final class SessionStore: ObservableObject {
         TimeInterval = 30
     private var motionBankOffloadObserver: NSObjectProtocol?
     private var motionCompactStoreObserver: NSObjectProtocol?
+    /// Wire-2 (2026-08-29): timestamp throttle for the compact-motion sleep
+    /// evidence upgrade. Deliberately time-based, never a latch: a skipped
+    /// attempt needs no clearing edge — the next durable compact generation
+    /// after the interval simply retries (the recovery-state defect class
+    /// this codebase keeps refinding is state cleared only by an edge that
+    /// may never run). Starts ARMED at construction: the launch chain
+    /// (deferred_session_load) already runs the identical rebuild+backfill
+    /// with compact context, and a same-launch arrival pass preparing from
+    /// a pre-upgrade snapshot was one leg of the 08-29 device oscillation.
+    private var lastCompactMotionSleepEvidenceUpgradeAttempt: Date? = Date()
+    private var compactMotionSleepEvidenceUpgradeInFlight = false
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var recoveredThermalStateObserver: NSObjectProtocol?
     private var recoveredPowerStateObserver: NSObjectProtocol?
@@ -11727,6 +11878,11 @@ final class SessionStore: ObservableObject {
                       ).producesFootfalls else { return nil }
                 return DateInterval(start: workout.start, end: workout.end)
             }
+            // Plus every window the wearer has answered "Not walking" in the
+            // unverified-movement review — the only channel that can separate
+            // a meal from a walk in this data (2026-08-27: the two are the
+            // same statistical population in every drained signal).
+            + AtriaNonGaitArbitrationStore.shared.notWalkingWindows()
         Self.currentCycleStepReceiptQueue.async { [weak self] in
             var postsEmptyCycleInvalidation = false
             defer {
@@ -12649,12 +12805,22 @@ final class SessionStore: ObservableObject {
         // canonical saved + archive evidence used by those live surfaces. No
         // live-only samples are invented here; they arrive through the normal
         // journal checkpoint path before becoming durable rollup evidence.
-        let cycleAlignedEntries = Self.replacingActiveCycleStrain(
-            in: persistedEntries,
-            cycleStart: preparation.activeCycleStart,
-            strain: preparation.activeCycleStrain,
+        let cycleAlignedEntries = Self.applyingClosedCycleStrain(
+            in: Self.replacingActiveCycleStrain(
+                in: persistedEntries,
+                cycleStart: preparation.activeCycleStart,
+                strain: preparation.activeCycleStrain,
+                calendar: calendar
+            ),
+            cycleStrainByDisplayDay: preparation.cycleStrainByDisplayDay,
+            openCycleStart: preparation.activeCycleStart,
             calendar: calendar
         )
+        // Cycle-truth strain series (2026-08-30): publish the closed-cycle
+        // series prepared from the same evidence as these entries. Kept in
+        // lockstep with the rollup history so a detail sheet never pairs new
+        // civil rows with a stale cycle series or vice versa.
+        physiologicalCycleStrainByDisplayDay = preparation.cycleStrainByDisplayDay
         let didChangeRollups = !preparation.invalidatedDays.isEmpty
             || Self.preparedDailyRollupsNeedPersistence(cycleAlignedEntries,
                                                         existing: existingRollups,
@@ -12750,6 +12916,175 @@ final class SessionStore: ObservableObject {
                                     skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                     recoverySummary: metric.recoverySummary)
         }
+    }
+
+    /// Closed wake-to-wake cycles freeze onto their predominant civil day so
+    /// History keeps strain after sessions age out of the 66-day overlay
+    /// window. The open cycle stays the live hero value.
+    nonisolated static func applyingClosedCycleStrain(
+        in metrics: [SavedDailyMetric],
+        cycleStrainByDisplayDay: [Date: Double],
+        openCycleStart: Date,
+        calendar: Calendar = .current
+    ) -> [SavedDailyMetric] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return metrics }
+        return metrics.map { metric in
+            guard !calendar.isDate(metric.day, inSameDayAs: openCycleStart),
+                  let overlay = cycleStrainByDisplayDay[calendar.startOfDay(for: metric.day)]
+            else { return metric }
+            return SavedDailyMetric(day: metric.day,
+                                    recoveryPercent: metric.recoveryPercent,
+                                    recoveryConfidence: metric.recoveryConfidence,
+                                    hrv: metric.hrv,
+                                    restingHR: metric.restingHR,
+                                    respiratoryRate: metric.respiratoryRate,
+                                    sleepDuration: metric.sleepDuration,
+                                    sleepNeedSeconds: metric.sleepNeedSeconds,
+                                    sleepSpan: metric.sleepSpan,
+                                    sleepStart: metric.sleepStart,
+                                    sleepEnd: metric.sleepEnd,
+                                    sleepSource: metric.sleepSource,
+                                    sleepStageSegments: metric.sleepStageSegments,
+                                    sleepConsistencyPercent:
+                                        metric.sleepConsistencyPercent,
+                                    strain: overlay,
+                                    strainCoverageFraction: metric.strainCoverageFraction,
+                                    strainEvidenceQuality: metric.strainEvidenceQuality,
+                                    dayTRIMP: metric.dayTRIMP,
+                                    skinTemperatureDeviationCelsius:
+                                        metric.skinTemperatureDeviationCelsius,
+                                    recoverySummary: metric.recoverySummary)
+        }
+    }
+
+    nonisolated static func applyingClosedCycleStrain(
+        in entries: [DailyRollupStoreEntry],
+        cycleStrainByDisplayDay: [Date: Double],
+        openCycleStart: Date,
+        calendar: Calendar = .current
+    ) -> [DailyRollupStoreEntry] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return entries }
+        return entries.map { entry in
+            guard !calendar.isDate(entry.day, inSameDayAs: openCycleStart),
+                  let overlay = cycleStrainByDisplayDay[calendar.startOfDay(for: entry.day)]
+            else { return entry }
+            var aligned = entry
+            aligned.strain = overlay
+            return aligned
+        }
+    }
+
+    /// The strain detail chart's interactive D/W/M horizon (a period plus its
+    /// prior-period ghost/comparison), with margin. Cycle-keyed bars only need
+    /// to cover what the range selector can show; deeper ranges (3M+) keep
+    /// their civil rollup rows, bounding this walk's cost.
+    nonisolated static let cycleStrainDisplayDayWindow = 66
+
+    /// Physiological-cycle strain keyed by each CLOSED cycle's predominant
+    /// civil day, for the strain detail chart (2026-08-30). The rollup store
+    /// stays civil-keyed (7/28/90-day windows, ACWR and monotony depend on
+    /// those keys); this series exists only so a shifted sleep schedule
+    /// (e.g. main sleep mid-afternoon) does not shred one wake-to-wake day's
+    /// load across two civil bars. Rules:
+    /// - Only cycles whose START boundary is a confirmed main sleep enter.
+    ///   A day whose cycles lack confirmed boundaries is absent here and the
+    ///   chart renders its civil value — never a fabricated "cycle" bar.
+    /// - The OPEN cycle is excluded; the hero's live value owns it
+    ///   (`replacingCurrentCyclePoint` in the detail sheet).
+    /// - Each cycle labels its predominant civil day, exactly the
+    ///   `AtriaStepsWeekChart.predominantCivilDay` precedent (an exact-midnight
+    ///   split keeps the earlier day). Two cycles sharing a day SUM — in TRIMP
+    ///   space, before the one saturating 0–21 display map (GAP-09 rule).
+    /// - Per-cycle load reuses the hero's own window-bounded machinery
+    ///   (`homeSavedAggregateCancellable`: includedLoadIntervals + the same
+    ///   TRIMP integration), never a forked formula.
+    nonisolated static func physiologicalCycleStrainByDisplayDayCancellable(
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        confirmedWorkouts: [UserConfirmedWorkout],
+        archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
+        rest: Int,
+        maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex,
+        openCycleStart: Date,
+        now: Date,
+        dayWindow: Int = SessionStore.cycleStrainDisplayDayWindow,
+        calendar: Calendar = .current,
+        shouldContinue: @escaping @Sendable () -> Bool = { true }
+    ) -> [Date: Double]? {
+        guard shouldContinue() else { return nil }
+        guard !confirmedSleeps.isEmpty else { return [:] }
+        let sleepIntervals = confirmedSleeps.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        // Sort the archive once so each cycle slices its points by binary
+        // search instead of rescanning the whole array (the repo's HR
+        // tail-facade CPU trap was exactly a per-call full-archive rescan).
+        var sortedArchive = archiveHeartRatePoints
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &sortedArchive,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.t < $1.t }
+        ) else { return nil }
+        func archiveSlice(_ interval: DateInterval) -> [HistoricalArchive.HeartRatePoint] {
+            var low = 0
+            var high = sortedArchive.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sortedArchive[mid].t < interval.start { low = mid + 1 } else { high = mid }
+            }
+            let start = low
+            high = sortedArchive.count
+            while low < high {
+                let mid = (low + high) / 2
+                if sortedArchive[mid].t < interval.end { low = mid + 1 } else { high = mid }
+            }
+            return start < low ? Array(sortedArchive[start..<low]) : []
+        }
+        let today = calendar.startOfDay(for: now)
+        var seenCycleStarts = Set<Date>()
+        var trimpByDisplayDay: [Date: Double] = [:]
+        for offset in 0...max(0, dayWindow) {
+            guard shouldContinue() else { return nil }
+            guard let displayDay = calendar.date(byAdding: .day,
+                                                 value: -offset,
+                                                 to: today) else { continue }
+            let cycle = AtriaHistoricalPhysiologicalCycle.resolve(
+                displayDay: displayDay,
+                confirmedSleeps: confirmedSleeps,
+                calendar: calendar
+            )
+            // Confirmed wake boundary only; the open cycle stays the hero's.
+            guard case .mainSleep = cycle.startBoundary,
+                  cycle.interval.end <= now,
+                  cycle.interval.start < openCycleStart,
+                  cycle.interval.duration > 0,
+                  seenCycleStarts.insert(cycle.interval.start).inserted else { continue }
+            guard let aggregate = homeSavedAggregateCancellable(
+                from: canonicalSessions,
+                archiveHeartRatePoints: archiveSlice(cycle.interval),
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                calendar: calendar,
+                now: cycle.interval.end,
+                cycleStart: cycle.interval.start,
+                excludedLoadIntervals: sleepIntervals,
+                confirmedWorkouts: confirmedWorkouts,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            // No evidence in the cycle -> no entry; the chart falls back to
+            // the civil rollup row rather than drawing a fabricated zero.
+            guard aggregate.hasSavedToday else { continue }
+            let day = AtriaStepsWeekChart.predominantCivilDay(
+                windowStart: cycle.interval.start,
+                windowEnd: cycle.interval.end,
+                calendar: calendar
+            )
+            trimpByDisplayDay[day, default: 0] += aggregate.savedTodayTRIMP
+        }
+        guard shouldContinue() else { return nil }
+        return trimpByDisplayDay.mapValues { Metrics.strain(fromTRIMP: $0) }
     }
 
     nonisolated static func preparedDailyRollupsNeedPersistence(_ prepared: [DailyRollupStoreEntry],
@@ -12911,8 +13246,9 @@ final class SessionStore: ObservableObject {
         let cycle = AtriaPhysiologicalCycle.current(now: preparedAt,
                                                     confirmedSleeps: confirmedSleeps,
                                                     calendar: calendar)
+        let canonicalForCycle = makeCanonicalSessions(from: sessions)
         let physiologicalAggregate = homeSavedAggregate(
-            from: makeCanonicalSessions(from: sessions),
+            from: canonicalForCycle,
             archiveHeartRatePoints: archiveHeartRatePoints,
             rest: rest,
             maxHR: maxHR,
@@ -12931,14 +13267,16 @@ final class SessionStore: ObservableObject {
         let activeCycleStrain = physiologicalAggregate.hasSavedToday
             ? Metrics.strain(fromTRIMP: physiologicalAggregate.savedTodayTRIMP)
             : nil
-        let cycleAlignedMetrics = replacingActiveCycleStrain(in: metrics,
-                                                              cycleStart: cycle.start,
-                                                              strain: activeCycleStrain,
-                                                              trimp: physiologicalAggregate.hasSavedToday
-                                                                  ? physiologicalAggregate.savedTodayTRIMP
-                                                                  : nil,
-                                                              calendar: calendar)
-        let entries = makeDailyRollupStoreEntries(metrics: cycleAlignedMetrics,
+        let activeAlignedMetrics = replacingActiveCycleStrain(
+            in: metrics,
+            cycleStart: cycle.start,
+            strain: activeCycleStrain,
+            trimp: physiologicalAggregate.hasSavedToday
+                ? physiologicalAggregate.savedTodayTRIMP
+                : nil,
+            calendar: calendar
+        )
+        let entries = makeDailyRollupStoreEntries(metrics: activeAlignedMetrics,
                                                   sessions: sessions,
                                                   rest: rest,
                                                   maxHR: maxHR,
@@ -12949,15 +13287,42 @@ final class SessionStore: ObservableObject {
                                                                                        calendar: calendar),
                                                   calendar: calendar)
         let respiratoryRows = entries.filter { $0.respiratoryRate != nil }.count
+        // Closed-cycle strain series (2026-08-30): same evidence set as the
+        // active-cycle row above, computed here (off-render, revision-gated by
+        // the preparation pipeline) — never during a body evaluation.
+        let cycleStrainByDisplayDay = physiologicalCycleStrainByDisplayDayCancellable(
+            canonicalSessions: canonicalForCycle,
+            confirmedSleeps: confirmedSleeps,
+            confirmedWorkouts: confirmedWorkouts,
+            archiveHeartRatePoints: archiveHeartRatePoints,
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: biologicalSex,
+            openCycleStart: cycle.start,
+            now: preparedAt,
+            calendar: calendar
+        ) ?? [:]
+        let cycleAlignedMetrics = applyingClosedCycleStrain(
+            in: activeAlignedMetrics,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+            openCycleStart: cycle.start,
+            calendar: calendar
+        )
         return DailyMetricRollupPreparation(metrics: cycleAlignedMetrics,
-                                            rollupEntries: entries,
+                                            rollupEntries: applyingClosedCycleStrain(
+                                                in: entries,
+                                                cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+                                                openCycleStart: cycle.start,
+                                                calendar: calendar
+                                            ),
                                             invalidatedDays: invalidatedDays,
                                             respiratoryRows: respiratoryRows,
                                             rrSessionCandidates: respiratoryPreparation.candidateCount,
                                             sessionsCount: sessions.count,
                                             preparedAt: preparedAt,
                                             activeCycleStart: cycle.start,
-                                            activeCycleStrain: activeCycleStrain)
+                                            activeCycleStrain: activeCycleStrain,
+                                            cycleStrainByDisplayDay: cycleStrainByDisplayDay)
     }
 
     private nonisolated static func makeDailyMetricRollupPreparationCancellable(
@@ -13077,16 +13442,45 @@ final class SessionStore: ObservableObject {
             if index.isMultiple(of: 64), !shouldContinue() { return nil }
             if entry.respiratoryRate != nil { respiratoryRows += 1 }
         }
+        // Closed-cycle strain series (2026-08-30): same evidence set as the
+        // active-cycle row above, computed inside the cancellable preparation
+        // (off-render, revision-gated) — never during a body evaluation.
+        guard let cycleStrainByDisplayDay =
+                physiologicalCycleStrainByDisplayDayCancellable(
+                    canonicalSessions: canonical,
+                    confirmedSleeps: confirmedSleeps,
+                    confirmedWorkouts: confirmedWorkouts,
+                    archiveHeartRatePoints: archiveHeartRatePoints,
+                    rest: rest,
+                    maxHR: maxHR,
+                    biologicalSex: biologicalSex,
+                    openCycleStart: cycle.start,
+                    now: preparedAt,
+                    calendar: calendar,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
+        let closedAlignedMetrics = applyingClosedCycleStrain(
+            in: cycleAlignedMetrics,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+            openCycleStart: cycle.start,
+            calendar: calendar
+        )
         return shouldContinue() ? .init(
-            metrics: cycleAlignedMetrics,
-            rollupEntries: entries,
+            metrics: closedAlignedMetrics,
+            rollupEntries: applyingClosedCycleStrain(
+                in: entries,
+                cycleStrainByDisplayDay: cycleStrainByDisplayDay,
+                openCycleStart: cycle.start,
+                calendar: calendar
+            ),
             invalidatedDays: invalidatedDays,
             respiratoryRows: respiratoryRows,
             rrSessionCandidates: respiratory.candidateCount,
             sessionsCount: sessions.count,
             preparedAt: preparedAt,
             activeCycleStart: cycle.start,
-            activeCycleStrain: activeCycleStrain
+            activeCycleStrain: activeCycleStrain,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay
         ) : nil
     }
 
@@ -13488,8 +13882,15 @@ final class SessionStore: ObservableObject {
         let cycleStart = AtriaPhysiologicalCycle.current(now: now,
                                                          confirmedSleeps: cachedConfirmedSleeps,
                                                          calendar: .current).start
+        // Mirror of the strain path's excludedLoadIntervals (2026-08-30): the
+        // hero strain subtracts confirmed sleeps via includedLoadIntervals, so
+        // the zone split must subtract the same windows or a fallback cycle
+        // books the night as restMinutes while strain says zero.
+        let excludedLoadIntervals = cachedConfirmedSleeps.map {
+            DateInterval(start: $0.start, end: $0.end)
+        }
         let delay: TimeInterval = deferred ? 0.12 : 0
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, now, cycleStart, revision, executionShouldContinue] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, now, cycleStart, excludedLoadIntervals, revision, executionShouldContinue] in
             guard executionShouldContinue() else {
                 DispatchQueue.main.async { completion?(false) }
                 return
@@ -13505,6 +13906,7 @@ final class SessionStore: ObservableObject {
                     maxHR: maxHR,
                     now: now,
                     cycleStart: cycleStart,
+                    excludedLoadIntervals: excludedLoadIntervals,
                     shouldContinue: executionShouldContinue
                 )
             }
@@ -19517,12 +19919,18 @@ final class SessionStore: ObservableObject {
     /// `savedTodayTRIMP` (walks `sessions` newest-first, stopping at the
     /// first session that isn't today). Excludes logged strength-log
     /// intervals from each session the same way `trimp(rest:max:)` and
-    /// `timeInZone(maxHR:)` do, so the zone split matches the strain figure.
+    /// `timeInZone(maxHR:)` do, and subtracts `excludedLoadIntervals`
+    /// (confirmed sleeps at the store call site) the same way the strain
+    /// aggregate's `includedLoadIntervals` does — so the zone split matches
+    /// the strain figure. Without that subtraction (pre 2026-08-30) a
+    /// fallback cycle that still contained a confirmed sleep counted the
+    /// sleeping hours as `restMinutes` while strain excluded them.
     nonisolated static func makeTodayHRZoneMinutes(sessions: [SavedSession],
                                                    rest: Int,
                                                    maxHR: Int,
                                                    now: Date = Date(),
                                                    cycleStart: Date? = nil,
+                                                   excludedLoadIntervals: [DateInterval] = [],
                                                    calendar: Calendar = .current) -> TodayHRZoneMinutes {
         makeTodayHRZoneMinutesCancellable(
             sessions: sessions,
@@ -19530,6 +19938,7 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             now: now,
             cycleStart: cycleStart,
+            excludedLoadIntervals: excludedLoadIntervals,
             calendar: calendar,
             shouldContinue: { true }
         ) ?? .empty
@@ -19541,6 +19950,7 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         now: Date = Date(),
         cycleStart: Date? = nil,
+        excludedLoadIntervals: [DateInterval] = [],
         calendar: Calendar = .current,
         shouldContinue: @escaping @Sendable () -> Bool
     ) -> TodayHRZoneMinutes? {
@@ -19566,6 +19976,19 @@ final class SessionStore: ObservableObject {
             hasSamples = true
             var clippedExclusions: [ExcludedInterval] = []
             for interval in session.excludedIntervals ?? [] {
+                guard shouldContinue() else { return nil }
+                let start = max(interval.start, dayStart)
+                let end = min(interval.end, dayEnd)
+                if end > start {
+                    clippedExclusions.append(.init(start: start, end: end))
+                }
+            }
+            // Confirmed-sleep exclusion (2026-08-30): union the caller's load
+            // exclusions into the clipped set so a sleep interval that sits
+            // inside a fallback cycle never accrues as restMinutes. Same clip
+            // bounds as the strength-log exclusions above; empty by default,
+            // so callers that pass nothing are byte-identical.
+            for interval in excludedLoadIntervals {
                 guard shouldContinue() else { return nil }
                 let start = max(interval.start, dayStart)
                 let end = min(interval.end, dayEnd)
@@ -20666,46 +21089,106 @@ final class SessionStore: ObservableObject {
             if let shouldContinue {
                 var total = 0.0
                 for pair in dayIntervals {
-                    guard let load = pair.0.dailyLoadTRIMPCancellable(
-                        rest: rest,
-                        max: maxHR,
+                    let parts = partitionedCardioLoadIntervals(
                         within: pair.1,
-                        shouldContinue: shouldContinue
-                    ) else { return nil }
-                    total += load
+                        confirmedWorkouts: confirmedWorkouts
+                    )
+                    for interval in parts.living {
+                        guard let load = pair.0.dailyLoadTRIMPCancellable(
+                            rest: rest,
+                            max: maxHR,
+                            within: interval,
+                            shouldContinue: shouldContinue
+                        ) else { return nil }
+                        total += load
+                    }
+                    for interval in parts.workout {
+                        guard let load = pair.0.dailyLoadTRIMPCancellable(
+                            rest: rest,
+                            max: maxHR,
+                            within: interval,
+                            mode: .workout,
+                            shouldContinue: shouldContinue
+                        ) else { return nil }
+                        total += load
+                    }
                 }
                 strainTRIMP = total
             } else {
                 strainTRIMP = dayIntervals.reduce(0.0) { total, pair in
-                    total + pair.0.dailyLoadTRIMP(
-                        rest: rest,
-                        max: maxHR,
-                        within: pair.1
+                    let parts = partitionedCardioLoadIntervals(
+                        within: pair.1,
+                        confirmedWorkouts: confirmedWorkouts
                     )
+                    let living = parts.living.reduce(0.0) {
+                        $0 + pair.0.dailyLoadTRIMP(rest: rest, max: maxHR, within: $1)
+                    }
+                    let workout = parts.workout.reduce(0.0) {
+                        $0 + pair.0.dailyLoadTRIMP(
+                            rest: rest, max: maxHR, within: $1, mode: .workout
+                        )
+                    }
+                    return total + living + workout
                 }
             }
             let localDayEnd = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+            let civilDayInterval = DateInterval(start: day, end: localDayEnd)
+            let civilCardio = partitionedCardioLoadIntervals(
+                within: civilDayInterval,
+                confirmedWorkouts: confirmedWorkouts
+            )
             let archiveTRIMP: Double
             if let shouldContinue {
-                guard let value = archiveOnlyTRIMPCancellable(
-                    archiveHeartRatePoints,
-                    excludingCoverageFrom: dayLoadSessions,
-                    within: DateInterval(start: day, end: localDayEnd),
-                    rest: rest,
-                    maxHR: maxHR,
-                    biologicalSex: biologicalSex,
-                    shouldContinue: shouldContinue
-                ) else { return nil }
-                archiveTRIMP = value
+                var total = 0.0
+                for interval in civilCardio.living {
+                    guard let value = archiveOnlyTRIMPCancellable(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: interval,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        shouldContinue: shouldContinue
+                    ) else { return nil }
+                    total += value
+                }
+                for interval in civilCardio.workout {
+                    guard let value = archiveOnlyTRIMPCancellable(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: interval,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        mode: .workout,
+                        shouldContinue: shouldContinue
+                    ) else { return nil }
+                    total += value
+                }
+                archiveTRIMP = total
             } else {
-                archiveTRIMP = archiveOnlyTRIMP(
-                    archiveHeartRatePoints,
-                    excludingCoverageFrom: dayLoadSessions,
-                    within: DateInterval(start: day, end: localDayEnd),
-                    rest: rest,
-                    maxHR: maxHR,
-                    biologicalSex: biologicalSex
-                )
+                let living = civilCardio.living.reduce(0.0) {
+                    $0 + archiveOnlyTRIMP(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: $1,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex
+                    )
+                }
+                let workout = civilCardio.workout.reduce(0.0) {
+                    $0 + archiveOnlyTRIMP(
+                        archiveHeartRatePoints,
+                        excludingCoverageFrom: dayLoadSessions,
+                        within: $1,
+                        rest: rest,
+                        maxHR: maxHR,
+                        biologicalSex: biologicalSex,
+                        mode: .workout
+                    )
+                }
+                archiveTRIMP = living + workout
             }
             let strainWindowEnd = min(localDayEnd, Date())
             let strainElapsed = max(0, strainWindowEnd.timeIntervalSince(day))
@@ -23807,6 +24290,15 @@ final class SessionStore: ObservableObject {
                     self?.scheduleConfirmedWorkoutStepEvidencePublication(
                         reason: "compact_generation_durable"
                     )
+                    // Wire-2 (2026-08-29): durable compact motion is the
+                    // upgrade trigger the confirmed-sleep chain never had —
+                    // the provenance rebuild used to fire only from
+                    // HR-archive tickets, so motion that arrived after a
+                    // night settled could never validate it. Heavily
+                    // throttled and prechecked inside.
+                    self?.scheduleCompactMotionSleepEvidenceUpgrade(
+                        reason: "compact_motion_durable"
+                    )
                 }
             }
         self.systemTimeZoneObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name.NSSystemTimeZoneDidChange,
@@ -25278,11 +25770,21 @@ final class SessionStore: ObservableObject {
             within: dayInterval,
             excluding: excludedLoadIntervals
         )
+        let cardioIntervals = partitionedCardioLoadIntervals(
+            within: loadIntervals,
+            confirmedWorkouts: confirmedWorkouts
+        )
         let todaySessions = canonicalSessions.filter { $0.end > day && $0.start < dayEnd }
         let canonicalSavedTRIMP = todaySessions.reduce(0) { total, session in
-            total + loadIntervals.reduce(0) { subtotal, interval in
+            let living = cardioIntervals.living.reduce(0) { subtotal, interval in
                 subtotal + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: interval)
             }
+            let workout = cardioIntervals.workout.reduce(0) { subtotal, interval in
+                subtotal + session.dailyLoadTRIMP(
+                    rest: rest, max: maxHR, within: interval, mode: .workout
+                )
+            }
+            return total + living + workout
         }
         // GAP-09: logged muscular work from workouts completed inside this
         // cycle fuses into the same day total in TRIMP space, before the one
@@ -25291,7 +25793,7 @@ final class SessionStore: ObservableObject {
         let muscularTRIMP = muscularTRIMPEquivalentTotal(
             confirmedWorkouts.filter { $0.end > day && $0.end <= dayEnd }
         )
-        let savedTodayTRIMP = canonicalSavedTRIMP + muscularTRIMP + loadIntervals.reduce(0) {
+        let archiveLiving = cardioIntervals.living.reduce(0) {
             $0 + archiveOnlyTRIMP(
                 archiveHeartRatePoints,
                 excludingCoverageFrom: todaySessions,
@@ -25301,11 +25803,29 @@ final class SessionStore: ObservableObject {
                 biologicalSex: biologicalSex
             )
         }
+        let archiveWorkout = cardioIntervals.workout.reduce(0) {
+            $0 + archiveOnlyTRIMP(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: $1,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                mode: .workout
+            )
+        }
+        let savedTodayTRIMP = canonicalSavedTRIMP + muscularTRIMP + archiveLiving + archiveWorkout
         let savedActiveSessionTRIMP = activeSessionID.flatMap { activeID in
             todaySessions.first(where: { $0.id == activeID }).map { session in
-                loadIntervals.reduce(0) {
+                let living = cardioIntervals.living.reduce(0) {
                     $0 + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: $1)
                 }
+                let workout = cardioIntervals.workout.reduce(0) {
+                    $0 + session.dailyLoadTRIMP(
+                        rest: rest, max: maxHR, within: $1, mode: .workout
+                    )
+                }
+                return living + workout
             }
         } ?? 0
         let savedTodayActiveCalories: Double?
@@ -25394,6 +25914,10 @@ final class SessionStore: ObservableObject {
             within: dayInterval,
             excluding: excludedLoadIntervals
         )
+        let cardioIntervals = partitionedCardioLoadIntervals(
+            within: loadIntervals,
+            confirmedWorkouts: confirmedWorkouts
+        )
         var todaySessions: [SavedSession] = []
         for (index, session) in canonicalSessions.enumerated() {
             if index.isMultiple(of: 64), !shouldContinue() { return nil }
@@ -25404,7 +25928,7 @@ final class SessionStore: ObservableObject {
         var canonicalTRIMP = 0.0
         for (sessionIndex, session) in todaySessions.enumerated() {
             if sessionIndex.isMultiple(of: 4), !shouldContinue() { return nil }
-            for interval in loadIntervals {
+            for interval in cardioIntervals.living {
                 guard let value = session.dailyLoadTRIMPCancellable(
                     rest: rest,
                     max: maxHR,
@@ -25413,9 +25937,19 @@ final class SessionStore: ObservableObject {
                 ) else { return nil }
                 canonicalTRIMP += value
             }
+            for interval in cardioIntervals.workout {
+                guard let value = session.dailyLoadTRIMPCancellable(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval,
+                    mode: .workout,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
+                canonicalTRIMP += value
+            }
         }
         var archiveTRIMP = 0.0
-        for interval in loadIntervals {
+        for interval in cardioIntervals.living {
             guard let value = archiveOnlyTRIMPCancellable(
                 archiveHeartRatePoints,
                 excludingCoverageFrom: todaySessions,
@@ -25427,14 +25961,37 @@ final class SessionStore: ObservableObject {
             ) else { return nil }
             archiveTRIMP += value
         }
+        for interval in cardioIntervals.workout {
+            guard let value = archiveOnlyTRIMPCancellable(
+                archiveHeartRatePoints,
+                excludingCoverageFrom: todaySessions,
+                within: interval,
+                rest: rest,
+                maxHR: maxHR,
+                biologicalSex: biologicalSex,
+                mode: .workout,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            archiveTRIMP += value
+        }
         var activeTRIMP = 0.0
         if let activeSessionID,
            let active = todaySessions.first(where: { $0.id == activeSessionID }) {
-            for interval in loadIntervals {
+            for interval in cardioIntervals.living {
                 guard let value = active.dailyLoadTRIMPCancellable(
                     rest: rest,
                     max: maxHR,
                     within: interval,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
+                activeTRIMP += value
+            }
+            for interval in cardioIntervals.workout {
+                guard let value = active.dailyLoadTRIMPCancellable(
+                    rest: rest,
+                    max: maxHR,
+                    within: interval,
+                    mode: .workout,
                     shouldContinue: shouldContinue
                 ) else { return nil }
                 activeTRIMP += value
@@ -25479,6 +26036,78 @@ final class SessionStore: ObservableObject {
         ) : nil
     }
 
+    /// Confirmed workout windows use the full Banister kernel (no 30% HRR
+    /// floor). Split a load interval so quiet living stays floored while a
+    /// logged drive / easy spin still contributes the load its workout card
+    /// already showed. Device 2026-09-05: Driving avg 95 bpm sat at 29% HRR
+    /// and vanished from day strain while the workout row read 2.3.
+    nonisolated static func partitionedCardioLoadIntervals(
+        within interval: DateInterval,
+        confirmedWorkouts: [UserConfirmedWorkout]
+    ) -> (living: [DateInterval], workout: [DateInterval]) {
+        guard interval.end > interval.start else { return ([], []) }
+        let windows = mergedOverlappingDateIntervals(
+            confirmedWorkouts.compactMap { workout in
+                guard workout.end > workout.start else { return nil }
+                return DateInterval(start: workout.start, end: workout.end)
+            }
+        )
+        guard !windows.isEmpty else { return ([interval], []) }
+        let living = includedLoadIntervals(within: interval, excluding: windows)
+        var workout: [DateInterval] = []
+        workout.reserveCapacity(windows.count)
+        for window in windows {
+            let start = max(interval.start, window.start)
+            let end = min(interval.end, window.end)
+            if end > start {
+                workout.append(DateInterval(start: start, end: end))
+            }
+        }
+        return (living, workout)
+    }
+
+    nonisolated static func partitionedCardioLoadIntervals(
+        within intervals: [DateInterval],
+        confirmedWorkouts: [UserConfirmedWorkout]
+    ) -> (living: [DateInterval], workout: [DateInterval]) {
+        var living: [DateInterval] = []
+        var workout: [DateInterval] = []
+        living.reserveCapacity(intervals.count)
+        for interval in intervals {
+            let parts = partitionedCardioLoadIntervals(
+                within: interval,
+                confirmedWorkouts: confirmedWorkouts
+            )
+            living.append(contentsOf: parts.living)
+            workout.append(contentsOf: parts.workout)
+        }
+        return (living, workout)
+    }
+
+    nonisolated static func mergedOverlappingDateIntervals(
+        _ intervals: [DateInterval]
+    ) -> [DateInterval] {
+        let ordered = intervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        guard var current = ordered.first else { return [] }
+        var merged: [DateInterval] = []
+        merged.reserveCapacity(ordered.count)
+        for next in ordered.dropFirst() {
+            if next.start <= current.end {
+                current = DateInterval(
+                    start: current.start,
+                    end: max(current.end, next.end)
+                )
+            } else {
+                merged.append(current)
+                current = next
+            }
+        }
+        merged.append(current)
+        return merged
+    }
+
     nonisolated static func includedLoadIntervals(
         within interval: DateInterval,
         excluding exclusions: [DateInterval]
@@ -25520,7 +26149,8 @@ final class SessionStore: ObservableObject {
         within interval: DateInterval,
         rest: Int,
         maxHR: Int,
-        biologicalSex: AthleteProfile.BiologicalSex
+        biologicalSex: AthleteProfile.BiologicalSex,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay
     ) -> Double {
         guard maxHR > rest, !archivePoints.isEmpty else { return 0 }
         let segments = archiveOnlyHeartRateSegments(archivePoints,
@@ -25528,12 +26158,13 @@ final class SessionStore: ObservableObject {
                                                     within: interval)
         return segments.reduce(0) { total, segment in
             guard let origin = segment.first?.t else { return total }
-            return total + Metrics.dailyLoadTRIMP(
-                segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) },
-                rest: rest,
-                max: maxHR,
-                sex: biologicalSex
-            )
+            let series = segment.map { ($0.t.timeIntervalSince(origin), $0.bpm) }
+            switch mode {
+            case .workout:
+                return total + Metrics.trimp(series, rest: rest, max: maxHR, sex: biologicalSex)
+            case .continuousDay:
+                return total + Metrics.dailyLoadTRIMP(series, rest: rest, max: maxHR, sex: biologicalSex)
+            }
         }
     }
 
@@ -25544,6 +26175,7 @@ final class SessionStore: ObservableObject {
         rest: Int,
         maxHR: Int,
         biologicalSex: AthleteProfile.BiologicalSex,
+        mode: AtriaStrainLoadModel.Mode = .continuousDay,
         shouldContinue: () -> Bool
     ) -> Double? {
         guard shouldContinue() else { return nil }
@@ -25562,7 +26194,7 @@ final class SessionStore: ObservableObject {
             maximumBPM: Double(maxHR),
             intensityMultiplier: parameters.multiplier,
             intensityCoefficient: parameters.coefficient,
-            mode: .continuousDay,
+            mode: mode,
             maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
         )
         var total = 0.0
@@ -26849,7 +27481,8 @@ final class SessionStore: ObservableObject {
         let report = WeeklyReport(rollups: dailyRollupStore.rollups(last: 14),
                                   sleepNights: sleepHistorySnapshot.nights,
                                   now: now,
-                                  calendar: calendar)
+                                  calendar: calendar,
+                                  cycleStrainByDisplayDay: physiologicalCycleStrainByDisplayDay)
         guard report.recoveryAvg != nil else {
             AtriaDebugLog("ATRIADBG weekly_report_generation status=skipped reason=no_recovery_average source=%@ isoYear=%d isoWeek=%d",
                           reason,
@@ -28647,9 +29280,15 @@ final class SessionStore: ObservableObject {
                                         value: -AtriaMaxHRSuggestionEngine.lookbackDays,
                                         to: calendar.startOfDay(for: now))
             ?? now.addingTimeInterval(TimeInterval(-AtriaMaxHRSuggestionEngine.lookbackDays * 24 * 60 * 60))
+        // Sustained peaks, not the single highest sample: the suggestion is a
+        // learning input to zones and strain, so it must not learn from an
+        // optical spike (see AtriaMaxHRSuggestionEngine.sustainedSeconds).
         let peaks = canonicalSessions()
             .filter { $0.start >= windowStart && $0.start <= now }
-            .map(\.peak)
+            .compactMap { session in
+                AtriaMaxHRSuggestionEngine.sustainedPeak(
+                    points: session.points.map { (t: $0.t, bpm: $0.bpm) })
+            }
         return AtriaMaxHRSuggestionEngine.suggestion(sessionPeaks: peaks,
                                                      currentMaxHR: profile.maxHR,
                                                      dismissed: AtriaMaxHRSuggestionEngine.loadDismissal(),
@@ -28667,6 +29306,18 @@ final class SessionStore: ObservableObject {
     func dismissMaxHRSuggestion(observedPeak: Int, now: Date = Date()) {
         AtriaMaxHRSuggestionEngine.saveDismissal(observedPeak: observedPeak, now: now)
         refreshMaxHRSuggestion(reason: "dismiss", now: now, force: true)
+    }
+
+    /// Accepts the learned peak as the measured max HR (the same profile
+    /// write Settings makes) and re-derives the suggestion so it retires at
+    /// once instead of on the next rollup (2026-09-02, strain-sheet offer).
+    func acceptMaxHRSuggestion(observedPeak: Int, now: Date = Date()) {
+        updateProfile {
+            $0.measuredMaxHR = observedPeak
+            $0.maxHRSource = .measured
+        }
+        AtriaMaxHRSuggestionEngine.clearDismissal()
+        refreshMaxHRSuggestion(reason: "accept", now: now, force: true)
     }
 
     func completeOnboarding(with profile: AthleteProfile) {
@@ -31255,6 +31906,7 @@ final class SessionStore: ObservableObject {
         reviewSource: String? = nil,
         reviewCandidateID: String? = nil,
         settlingCandidateWindow: (start: Date, end: Date)? = nil,
+        segments: [WorkoutSegment]? = nil,
         workoutSteps: Int? = nil,
         workoutStepsAreEstimated: Bool? = nil,
         workoutStepsCapturedAt: Date? = nil
@@ -31285,6 +31937,7 @@ final class SessionStore: ObservableObject {
                 workoutSteps: workoutSteps,
                 workoutStepsAreEstimated: workoutStepsAreEstimated,
                 workoutStepsCapturedAt: workoutStepsCapturedAt,
+                segments: segments,
                 profile: currentProfile,
                 eventTimeZoneIdentifier: TimeZone.current.identifier
             )
@@ -31787,7 +32440,8 @@ final class SessionStore: ObservableObject {
                     settlingCandidateWindow: request.settlingCandidateWindow,
                     workoutSteps: request.workoutSteps,
                     workoutStepsAreEstimated: request.workoutStepsAreEstimated,
-                    workoutStepsCapturedAt: request.workoutStepsCapturedAt
+                    workoutStepsCapturedAt: request.workoutStepsCapturedAt,
+                    segments: request.segments
                 )
             }
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=window_too_few_samples source=%@ start=%@ end=%@ samples=%d metric_promotions=0",
@@ -31874,6 +32528,7 @@ final class SessionStore: ObservableObject {
             strengthSets: request.strengthSets.isEmpty ? nil : request.strengthSets,
             muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: request.strengthSets),
             excludedIntervals: request.excludedIntervals.isEmpty ? nil : request.excludedIntervals,
+            segments: request.segments,
             reviewSource: cleanedReview,
             reviewCandidateID: cleanedReviewCandidateID,
             activityCalibrationEvidence: prepared.activityCalibrationEvidence,
@@ -32351,7 +33006,8 @@ final class SessionStore: ObservableObject {
         settlingCandidateWindow: (start: Date, end: Date)?,
         workoutSteps: Int?,
         workoutStepsAreEstimated: Bool?,
-        workoutStepsCapturedAt: Date?
+        workoutStepsCapturedAt: Date?,
+        segments: [WorkoutSegment]? = nil
     ) async -> UserConfirmedWorkout? {
         let workoutSource = "live_workout_window"
         let id = confirmedWorkoutID(start: start, end: end, source: workoutSource)
@@ -32437,6 +33093,7 @@ final class SessionStore: ObservableObject {
             strengthSets: strengthSets.isEmpty ? nil : strengthSets,
             muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: strengthSets),
             excludedIntervals: excludedIntervals.isEmpty ? nil : excludedIntervals,
+            segments: segments,
             reviewSource: review,
             reviewCandidateID: candidateID,
             activityCalibrationEvidence: activityCalibrationEvidence,
@@ -32531,6 +33188,9 @@ final class SessionStore: ObservableObject {
         // must never drop them, or a later profile change silently rewrites
         // the workout's zone ranges.
         merged.zoneBoundaries = workout.zoneBoundaries
+        // The user's declared switch timeline is identity, like the sets and
+        // pauses above: a later evidence merge must never drop it.
+        merged.segments = workout.segments
         merged.workoutSteps = workout.workoutSteps
         merged.workoutStepsAreEstimated = workout.workoutStepsAreEstimated
         merged.workoutStepsCapturedAt = workout.workoutStepsCapturedAt
@@ -32598,6 +33258,9 @@ final class SessionStore: ObservableObject {
         upgraded.strengthSets = existing.strengthSets
         upgraded.muscularLoadReceipt = existing.muscularLoadReceipt
         upgraded.excludedIntervals = existing.excludedIntervals
+        // Declared switch timeline is a user-edited identity field; the
+        // stronger recompute cannot know it and must not erase it.
+        upgraded.segments = existing.segments ?? recomputed.segments
         upgraded.reviewSource = existing.reviewSource
         upgraded.reviewCandidateID = existing.reviewCandidateID
         // Freshly computed effort-derived metrics replace the weaker placeholders.
@@ -33326,6 +33989,7 @@ final class SessionStore: ObservableObject {
         // GAP-03: a rename must never drop the frozen zone boundaries (and a
         // relabel of a strength workout must never drop its muscular receipt).
         renamed.zoneBoundaries = old.zoneBoundaries
+        renamed.segments = old.segments
         renamed.workoutSteps = old.workoutSteps
         renamed.workoutStepsAreEstimated = old.workoutStepsAreEstimated
         renamed.workoutStepsCapturedAt = old.workoutStepsCapturedAt
@@ -33542,6 +34206,7 @@ final class SessionStore: ObservableObject {
             strengthSets: old.strengthSets,
             muscularLoadReceipt: old.muscularLoadReceipt,
             excludedIntervals: old.excludedIntervals,
+            segments: old.segments,
             reviewSource: old.reviewSource,
             reviewCandidateID: old.reviewCandidateID,
             activityCalibrationEvidence: old.activityCalibrationEvidence,
@@ -33773,6 +34438,10 @@ final class SessionStore: ObservableObject {
                     strengthSets: old.strengthSets,
                     muscularLoadReceipt: old.muscularLoadReceipt,
                     excludedIntervals: old.excludedIntervals,
+                    // Declared switch timestamps are absolute; a window edit
+                    // narrows/extends the bounds they are clamped to at
+                    // display time, it does not invalidate the declarations.
+                    segments: old.segments,
                     reviewSource: old.reviewSource,
                     reviewCandidateID: old.reviewCandidateID,
                     activityCalibrationEvidence: old.activityCalibrationEvidence == nil
@@ -33853,6 +34522,7 @@ final class SessionStore: ObservableObject {
                 strengthSets: old.strengthSets,
                 muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
+                segments: old.segments,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
                 activityCalibrationEvidence: old.activityCalibrationEvidence == nil
@@ -33901,6 +34571,7 @@ final class SessionStore: ObservableObject {
                 strengthSets: old.strengthSets,
                 muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
+                segments: old.segments,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
                 activityCalibrationEvidence: old.activityCalibrationEvidence,
@@ -34390,6 +35061,17 @@ final class SessionStore: ObservableObject {
         guard !restoreInitializationBlocked,
               UIApplication.shared.applicationState == .active else { return }
         sleepReviewProjectionForegroundAuthority = true
+        // Second trigger for the daytime-quiescence lane. Its only trigger was
+        // the empty-pool branch of the sleep evaluation — which simply had not
+        // run since install while the owner's real 15:28-20:12 sleep sat
+        // undetected (ring's newest sleep entry predated the install). A
+        // foreground edge is the one moment guaranteed to occur when the owner
+        // looks for the card. Cheap gate: only when no confirmed sleep ended
+        // in the last 20 h — precisely the situation the lane exists for.
+        let recentSleepCutoff = Date().addingTimeInterval(-20 * 3_600)
+        if !confirmedSleeps.contains(where: { $0.end > recentSleepCutoff }) {
+            maybeScheduleDaytimeQuiescenceReview(reason: "foreground_edge")
+        }
         guard sleepReviewRefreshDeferredUntilForeground else { return }
         // A deadline records this exact input as fail-closed ready(nil) to stop
         // 20 ms/UI retry storms. A new active lifecycle is the authority to
@@ -34567,7 +35249,17 @@ final class SessionStore: ObservableObject {
                         rest: rest,
                         maxHR: maxHR,
                         calendar: calendar,
-                        cooperativeDeadline: cooperativeDeadline
+                        cooperativeDeadline: cooperativeDeadline,
+                        // 2026-08-30: candidate bounds may be narrowed by
+                        // compact motion quiescence before review surfaces
+                        // them; identity was already captured above.
+                        compactMotion: persistedStrapIdentifier.map {
+                            SessionStore.ConfirmedSleepCompactMotionContext(
+                                store: .shared,
+                                strapIdentifier: $0,
+                                now: preparedAt
+                            )
+                        }
                 )
                 freshlyQualified = projection.main
                 try cooperativeDeadline.checkpoint()
@@ -34737,7 +35429,13 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         cooperativeDeadline: AtriaSleepSettlementDeadline,
         mainStageInvocationCounter:
-            AtriaSleepReviewStageInvocationCounter? = nil
+            AtriaSleepReviewStageInvocationCounter? = nil,
+        // 2026-08-30 quiescence refinement: candidate-window compact-motion
+        // evidence, nil for byte-identical legacy behavior. Unlike the
+        // `.boundedRecent` JSONL decode this policy exists to avoid, the
+        // compact tick read is stat-prechecked, recency/row-bounded and
+        // budget-walled — the same channel the settlement lane trusts.
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> (
         main: SleepHistorySnapshot.Night?,
         naps: [SleepHistorySnapshot.Night]
@@ -34755,7 +35453,8 @@ final class SessionStore: ObservableObject {
             // leased and receipt-bound.
             historicalMotionPolicy: .attachedCompactOnly,
             cooperativeDeadline: cooperativeDeadline,
-            includeResumedReviewCandidates: true
+            includeResumedReviewCandidates: true,
+            compactMotion: compactMotion
         )
         try cooperativeDeadline.checkpoint()
         let authorities = try boundedSleepReviewAuthorities(
@@ -35879,7 +36578,8 @@ final class SessionStore: ObservableObject {
             // Repair older saved reviews that predate durable candidate
             // settlement. Re-confirming must remove the actionable candidate
             // immediately even though the confirmed record itself is unchanged.
-            addDismissedSleepCandidate(start: start, end: end)
+            addDismissedSleepCandidate(start: start, end: end,
+                                       reason: "reconfirm_settled")
             sleepHistorySnapshot = SleepHistorySnapshot(
                 rollups: historySnapshot.rollups,
                 confirmedSleeps: cachedConfirmedSleeps,
@@ -35969,7 +36669,8 @@ final class SessionStore: ObservableObject {
         // canonical record is durable. A failed write must never dismiss the
         // sole actionable candidate and leave Activity empty.
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
-        addDismissedSleepCandidate(start: start, end: end)
+        addDismissedSleepCandidate(start: start, end: end,
+                                   reason: "confirm_settled")
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed_specific id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
                       confirmed.id,
@@ -37343,6 +38044,179 @@ final class SessionStore: ObservableObject {
     /// (which already consults the durable store) reconciles it exactly once
     /// on the next active edge. The strap identity is re-checked here so a
     /// preparation that outlived a re-pair cannot persist a stale claim.
+    private static var daytimeQuiescenceLastAttemptAt: Date?
+    private static let daytimeQuiescenceQueue = DispatchQueue(
+        label: "atria.daytime-quiescence", qos: .utility
+    )
+
+    /// Review-only daytime sleep detection from motion quiescence. Runs only
+    /// when the classic candidate pool came back EMPTY, throttled, off-main,
+    /// and its sole output is a durable pending-review record — the same seam
+    /// the H11 degraded lane uses, surfaced by the existing card with the
+    /// existing dismissal machinery.
+    func maybeScheduleDaytimeQuiescenceReview(reason: String) {
+        let now = Date()
+        if let last = Self.daytimeQuiescenceLastAttemptAt,
+           now.timeIntervalSince(last) < 10 * 60 { return }
+        Self.daytimeQuiescenceLastAttemptAt = now
+
+        // MainActor snapshots; the queue below must not touch self's state.
+        let confirmedSleepWindows: [DateInterval] = confirmedSleeps.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        let workoutWindows: [DateInterval] = confirmedWorkouts.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        let sleepsSnapshot = confirmedSleeps
+        let dismissedSnapshot = dismissedSleepCandidates
+        let rest = baseline.restingInt ?? 60
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else {
+            DetectionEventLog.append(DetectionEvent(
+                kind: "sleepCandidateSkipped",
+                reason: "daytime_quiescence_no_strap",
+                detail: "Motion-quiet scan has no persisted strap identity "
+                    + "(source: \(reason))"
+            ))
+            return
+        }
+
+        Self.daytimeQuiescenceQueue.async { [weak self] in
+            let searchStart = now.addingTimeInterval(-26 * 3_600)
+            let points = AtriaWhoop4MotionTickCompactStore.shared
+                .decodedPoints(start: searchStart, end: now,
+                               strapIdentifier: strapIdentifier)
+            guard points.count > 600 else {
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_insufficient_motion",
+                    detail: "Motion-quiet scan found only \(points.count) "
+                        + "motion rows in 26 h (source: \(reason))"
+                ))
+                return
+            }
+            var hrByBucket: [Int: (total: Double, n: Int)] = [:]
+            // Exact-window sidecar read, NOT the recent-tail facade: at a
+            // 110k limit the tail facade re-scans the whole archive with
+            // per-line ISO-8601 parsing to keep the newest rows — 144 s of
+            // solid CPU in the 2026-08-28 03:51 cpu_resource report, never
+            // finishing before suspension, so the review card silently never
+            // appeared. The exact read selects only overlapping sealed
+            // chunks via the catalog and serves repeats from sidecars.
+            guard let hrRead = HistoricalArchive.metricHeartRatePoints(
+                start: searchStart, end: now, maximumPoints: 110_000
+            ) else {
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_hr_read_incomplete",
+                    detail: "Motion-quiet scan could not complete the exact "
+                        + "HR window read (source: \(reason))"
+                ))
+                return
+            }
+            for point in hrRead.points where point.bpm > 0 {
+                let bucket = Int(point.t.timeIntervalSince1970 / 60)
+                let entry = hrByBucket[bucket] ?? (0, 0)
+                hrByBucket[bucket] = (entry.total + Double(point.bpm), entry.n + 1)
+            }
+            let hrMinutes = hrByBucket.mapValues { $0.total / Double($0.n) }
+            let sustainedUse = AtriaDeviceUseJournal.intervalsOfSustainedUse(
+                in: DateInterval(start: searchStart, end: now),
+                minimumDuration: AtriaDaytimeQuiescentSleepDetector
+                    .sustainedUseMinimumSeconds
+            )
+            guard let candidate = AtriaDaytimeQuiescentSleepDetector.detect(
+                points: points,
+                hrMinutesByBucket: hrMinutes,
+                excluded: confirmedSleepWindows + workoutWindows,
+                sustainedDeviceUse: sustainedUse,
+                now: now
+            ) else {
+                AtriaDebugLog("ATRIADBG daytime_quiescence status=no_candidate reason=%@", reason)
+                // Ring-visible, so a field failure is diagnosable from a
+                // preferences pull instead of a debugger. This very defect
+                // burned a day: the detector never ran and nothing said so.
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_no_candidate",
+                    detail: "Motion-quiet scan found no reviewable daytime "
+                        + "sleep (source: \(reason))"
+                ))
+                return
+            }
+            // Single-slot precedence: a valid record from ANOTHER lane (H11
+            // carries HR/RR evidence) wins; never clobber it. Our own record
+            // for the same rounded window refreshes via fingerprint dedupe.
+            let existing = AtriaPendingSleepReviewStore.load(
+                now: now,
+                confirmedSleeps: sleepsSnapshot,
+                dismissedCandidates: dismissedSnapshot,
+                currentStrapIdentifier: strapIdentifier
+            )
+            if let existing, !existing.id.hasSuffix("daytime_quiescence") {
+                AtriaDebugLog("ATRIADBG daytime_quiescence status=slot_held_by_other id=%@", existing.id)
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_slot_held",
+                    detail: "Another pending sleep review holds the slot "
+                        + "(source: \(reason))"
+                ))
+                return
+            }
+            let night = AtriaDaytimeQuiescentSleepDetector.night(for: candidate)
+            let outcome = AtriaPendingSleepReviewStore.saveDegradedReview(
+                night,
+                motionBlocker: "daytime_quiescence_motion_only",
+                evidenceFingerprint: candidate.evidenceFingerprint(
+                    strapIdentifier: strapIdentifier
+                ),
+                sourceStrapIdentifier: strapIdentifier,
+                now: now
+            )
+            AtriaDebugLog(
+                "ATRIADBG daytime_quiescence status=%@ window=%@..%@ quiet_h=%.2f hr_in=%.1f hr_out=%.1f",
+                String(describing: outcome),
+                candidate.start.description, candidate.end.description,
+                candidate.observedQuietSeconds / 3_600,
+                candidate.meanInWindowHR, candidate.meanSurroundHR
+            )
+            DetectionEventLog.append(DetectionEvent(
+                kind: "sleepCandidateSkipped",
+                reason: "daytime_quiescence_\(String(describing: outcome))",
+                detail: String(
+                    format: "Motion-quiet sleep %.1fh, HR %.0f vs %.0f awake "
+                        + "(source: %@)",
+                    candidate.observedQuietSeconds / 3_600,
+                    candidate.meanInWindowHR, candidate.meanSurroundHR, reason
+                )
+            ))
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.sleepReviewCacheInputKey = nil
+                self.sleepReviewRefreshDeferredUntilForeground = true
+                if UIApplication.shared.applicationState == .active {
+                    self.scheduleSleepReviewCacheRefresh(
+                        rest: rest,
+                        calendar: .current,
+                        reason: "daytime_quiescence_persisted"
+                    )
+                }
+                // Event-bound review notification (same rule the qualified
+                // admission lane follows): without it a save from a background
+                // pass waited silently for the next open — "reviews come to
+                // the wearer". The full gate stack (toggle, budget, debounce,
+                // redundant-while-active) applies unchanged inside.
+                if case .saved = outcome {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await LocalNotificationScheduler
+                            .scheduleAdmittedSleepReview(store: self)
+                    }
+                }
+            }
+        }
+    }
+
     private func persistCompactLatestNightDegradedReview(
         _ review: CompactLatestNightDegradedReviewProposal,
         rest: Int,
@@ -37669,7 +38543,16 @@ final class SessionStore: ObservableObject {
                         dismissedCandidates: dismissedCandidates,
                         rest: rest,
                         maxHR: maxHR,
-                        cooperativeDeadline: deadline
+                        cooperativeDeadline: deadline,
+                        // 2026-08-30: durable pending review must offer the
+                        // same quiescence-refined bounds the live card shows.
+                        compactMotion: strapIdentifier.map {
+                            SessionStore.ConfirmedSleepCompactMotionContext(
+                                store: .shared,
+                                strapIdentifier: $0,
+                                now: now
+                            )
+                        }
                     )
                 night = projection.main
                 if let main = projection.main {
@@ -37721,6 +38604,18 @@ final class SessionStore: ObservableObject {
                 }
                 if night.confirmed {
                     receipt.finalOutcome = "already_confirmed"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                // Device 2026-09-02: the overnight settlement re-minted the
+                // already-confirmed 15:38→02:59 window as a review candidate
+                // every hour ("saved_review" in the same minute the record was
+                // confirmed), and Today swung between the duplicate's gross span
+                // and the confirmed night's staged time. A candidate that
+                // overlaps a confirmed night is the same sleep: it never enters
+                // the pending store.
+                if AtriaOverviewCurrentSleep.overlapsConfirmedNight(night, in: self.sleepHistorySnapshot) {
+                    receipt.finalOutcome = "already_confirmed_overlap"
                     SessionStore.recordSleepReviewAdmissionReceipt(receipt)
                     return
                 }
@@ -38112,6 +39007,15 @@ final class SessionStore: ObservableObject {
             restingHR: candidate.restingHR,
             isNap: candidate.kind == "nap_candidate",
             motionValidated: classification.motionValidated,
+            // 2026-08-29: auto-confirmed nights were the only confirm lane
+            // still minting NO estimate segments on motion-insufficient
+            // nights (device-verified: every recent confirmed sleep had
+            // stageSegments == 0). This preparation already runs on the
+            // deadline-checked utility worker and stays row-budgeted, so it
+            // may pay for HR-only ESTIMATE staging like the user-initiated
+            // and cooperative-backfill lanes; output keeps the estimate id
+            // prefixes and renders only through the labeled-estimate lane.
+            allowHROnlyEstimate: true,
             maximumRows: compactLatestNightMaximumStagingRows,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -38259,6 +39163,14 @@ final class SessionStore: ObservableObject {
                           reason,
                           candidatePool.count,
                           strongCandidates.count)
+            if candidatePool.isEmpty {
+                // The classic lanes proposed NOTHING. This is exactly the
+                // owner's daytime-sleep wedge (too long for the nap lane,
+                // outside the overnight hours, holes under the 5 h HR-only
+                // floor) — hand the day to the motion-quiescence review
+                // detector, which can only ever produce a review card.
+                maybeScheduleDaytimeQuiescenceReview(reason: reason)
+            }
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
                                                      reason: skipReason,
                                                      detail: detail))
@@ -38459,7 +39371,13 @@ final class SessionStore: ObservableObject {
                                                             end: candidate.end,
                                                             restingHR: candidate.restingHR,
                                                             isNap: candidate.kind == "nap_candidate",
-                                                            motionValidated: classification.motionValidated)
+                                                            motionValidated: classification.motionValidated,
+                                                            // 2026-08-29: auto-confirm mints the
+                                                            // same labeled HR-only ESTIMATE the
+                                                            // user-initiated confirm lane does —
+                                                            // a dense-HR night without motion no
+                                                            // longer persists stage-less.
+                                                            allowHROnlyEstimate: true)
         let metrics = Self.confirmedSleepWindowMetrics(from: constructionSessions,
                                                        start: candidate.start,
                                                        end: candidate.end,
@@ -40172,7 +41090,8 @@ final class SessionStore: ObservableObject {
         if let settlingCandidateWindow,
            settlingCandidateWindow.end > settlingCandidateWindow.start {
             addDismissedSleepCandidate(start: settlingCandidateWindow.start,
-                                       end: settlingCandidateWindow.end)
+                                       end: settlingCandidateWindow.end,
+                                       reason: "adjust_settled")
         }
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_adjust status=saved id=%@ from_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f stages=%d",
@@ -40259,7 +41178,8 @@ final class SessionStore: ObservableObject {
             publishStressContext:
                 Self.sleepStressContextAuthority(removed) != nil
         ) else { return false }
-        addDismissedSleepCandidate(start: removed.start, end: removed.end)
+        addDismissedSleepCandidate(start: removed.start, end: removed.end,
+                                   reason: "record_deleted")
         refreshSleepSnapshotAfterCandidateSettlement()
         if autoSleepLoggedBanner?.sleepID == id { autoSleepLoggedBanner = nil }
         dashboardRevision &+= 1
@@ -40281,7 +41201,8 @@ final class SessionStore: ObservableObject {
             .filter { Self.dismissalRetractsConfirmedSleep($0, dismissalStart: start, dismissalEnd: end) }
             .map(\.id)
         if night.confirmed, retractableIDs.isEmpty { return false }
-        addDismissedSleepCandidate(start: start, end: end)
+        addDismissedSleepCandidate(start: start, end: end,
+                                   reason: "user_dismissed")
         if !retractableIDs.isEmpty {
             Task { @MainActor [weak self] in
                 _ = await self?.retractConfirmedSleeps(ids: retractableIDs)
@@ -40342,15 +41263,61 @@ final class SessionStore: ObservableObject {
         return retracted
     }
 
-    private func addDismissedSleepCandidate(start: Date, end: Date) {
+    private func addDismissedSleepCandidate(start: Date, end: Date, reason: String) {
         guard end > start else { return }
         dismissedSleepCandidates.removeAll { $0.overlaps(start: start, end: end) }
-        dismissedSleepCandidates.append(AtriaDismissedSleepCandidate(start: start, end: end))
+        dismissedSleepCandidates.append(AtriaDismissedSleepCandidate(start: start,
+                                                                     end: end,
+                                                                     createdAt: Date()))
         AtriaDismissedSleepCandidateStore.save(dismissedSleepCandidates)
         AtriaPendingSleepReviewStore.clear(
             overlappingStart: start,
             end: end
         )
+        // 2026-08-29 device forensics: every tombstone write is named in the
+        // detection ring with its provenance and window. Both of today's nap
+        // reviews were suppressed by tombstones, yet no store or log recorded
+        // when or from which flow they were written — the detection ring only
+        // held detector refusals about an Aug 25 window, so the outage read as
+        // a candidate-pipeline regression for hours. Logging only: suppression
+        // semantics, confirm flows and review products are unchanged.
+        AtriaDebugLog("ATRIADBG sleep_candidate_tombstone reason=%@ start=%@ end=%@",
+                      reason,
+                      isoString(start),
+                      isoString(end))
+        DetectionEventLog.append(DetectionEvent(
+            kind: "sleepCandidateSettled",
+            reason: reason,
+            detail: Self.dismissedSleepTombstoneDetail(reason: reason,
+                                                       start: start,
+                                                       end: end),
+            windowStart: start,
+            windowEnd: end
+        ))
+    }
+
+    /// Human copy for the tombstone provenance ring rows. Unknown reason codes
+    /// fall back to the settled window alone — the detail is built only from
+    /// fields already computed at the write site, never fabricated.
+    private nonisolated static func dismissedSleepTombstoneDetail(reason: String,
+                                                                  start: Date,
+                                                                  end: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        let window = "\(formatter.string(from: start))–\(formatter.string(from: end))"
+        switch reason {
+        case "user_dismissed":
+            return "Marked not sleep: \(window). This window won't be suggested again."
+        case "confirm_settled", "reconfirm_settled":
+            return "Suggestion \(window) settled — you saved it, so it won't be re-proposed."
+        case "adjust_settled":
+            return "Original suggestion \(window) settled after you adjusted and saved it."
+        case "record_deleted":
+            return "Removed sleep \(window) won't be re-suggested."
+        default:
+            return "Sleep suggestion \(window) settled."
+        }
     }
 
     private func clearDismissedSleepCandidates(overlappingStart start: Date, end: Date) {
@@ -41071,7 +42038,10 @@ final class SessionStore: ObservableObject {
         )) ?? []
     }
 
-    private nonisolated static func sleepStageResearchSegments(
+    // Internal (not private, 2026-08-29) so the archive-HR union behavior is
+    // directly testable — same seam pattern as
+    // `fragmentedAggregateHRStagesAreUnsupported`.
+    nonisolated static func sleepStageResearchSegments(
         from sessions: [SavedSession],
         start: Date,
         end: Date,
@@ -41079,6 +42049,8 @@ final class SessionStore: ObservableObject {
         isNap: Bool,
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        extraMotionEpochs: [AtriaRecoveredMotionEpoch] = [],
         maximumRows: Int,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> [SleepStageSegment] {
@@ -41090,11 +42062,23 @@ final class SessionStore: ObservableObject {
             isNap: isNap,
             motionValidated: motionValidated,
             allowHROnlyEstimate: allowHROnlyEstimate,
+            extraHeartSamples: extraHeartSamples,
+            extraMotionEpochs: extraMotionEpochs,
             maximumRows: maximumRows,
             cooperativeDeadline: cooperativeDeadline
         )
     }
 
+    // `extraHeartSamples` (2026-08-29): already-fetched drained-archive HR for
+    // the confirmed window, supplied ONLY by the cooperative backfill lane.
+    // The core stays pure over its inputs — it never reads the archive itself.
+    // Session points win timestamp collisions (whole-second keys; strap HR is
+    // 1 Hz with integer-second archive stamps), and the merged total honors
+    // the same `maximumRows` fail-closed budget as session rows.
+    // `extraMotionEpochs` (2026-08-29): already-projected compact-store motion
+    // epochs for the confirmed window, supplied only when the sessions carry
+    // no overlapping recovered epochs of their own. Same purity rule — the
+    // core never reads the compact store — and the same fail-closed budget.
     private nonisolated static func sleepStageResearchSegmentsCore(
         from sessions: [SavedSession],
         start: Date,
@@ -41103,6 +42087,8 @@ final class SessionStore: ObservableObject {
         isNap: Bool,
         motionValidated: Bool,
         allowHROnlyEstimate: Bool = false,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        extraMotionEpochs: [AtriaRecoveredMotionEpoch] = [],
         maximumRows: Int?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
@@ -41141,6 +42127,49 @@ final class SessionStore: ObservableObject {
                        recoveredMotionEpochs.count > maximumRows {
                         return []
                     }
+                }
+            }
+        }
+        if !extraHeartSamples.isEmpty {
+            // Archive-HR union (2026-08-29): drained history fills session
+            // holes so the density gate can see the whole night. Session
+            // points win second-granularity timestamp collisions; extras
+            // deduplicate against each other under the same keys.
+            var sessionSeconds = Set<Int64>()
+            sessionSeconds.reserveCapacity(samples.count + extraHeartSamples.count)
+            for sample in samples {
+                sessionSeconds.insert(Int64(sample.t.timeIntervalSince1970.rounded()))
+            }
+            for (extraIndex, extra) in extraHeartSamples.enumerated() {
+                if extraIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                guard extra.t >= start, extra.t <= end, extra.bpm > 0,
+                      sessionSeconds.insert(
+                          Int64(extra.t.timeIntervalSince1970.rounded())
+                      ).inserted else { continue }
+                samples.append(extra)
+                if let maximumRows, samples.count > maximumRows {
+                    return []
+                }
+            }
+        }
+        if !extraMotionEpochs.isEmpty {
+            // Compact-motion union (2026-08-29): epochs projected from the
+            // compact tick store stage a night whose sessions never had
+            // epochs attached (the lifetime archive channel is budget-
+            // starved for recent nights). Supplied only when session epochs
+            // are absent, so no dedup key is needed — but the window filter
+            // and row budget mirror the session-epoch gather exactly.
+            for (epochIndex, epoch) in extraMotionEpochs.enumerated() {
+                if epochIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                guard epoch.end > start, epoch.start < end else { continue }
+                recoveredMotionEpochs.append(epoch)
+                if let maximumRows,
+                   recoveredMotionEpochs.count > maximumRows {
+                    return []
                 }
             }
         }
@@ -41256,14 +42285,27 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private nonisolated static func sleepStageResearchSampleCount(
+    // `extraHeartSamples` (2026-08-29): mirrors the stage-input archive union
+    // so `shouldRefreshUserAdjustedSleepEvidence`'s candidate-sample trigger
+    // sees the same evidence the stager would — a night whose session holes
+    // drained AFTER confirmation grows here and actually retries. The dedup
+    // rule (whole-second keys, session points win) matches
+    // `sleepStageResearchSegmentsCore` exactly; with no extras the count is
+    // byte-for-byte the historical session-only count. Internal (not
+    // private) so the union count is directly testable.
+    nonisolated static func sleepStageResearchSampleCount(
         from sessions: [SavedSession],
         start: Date,
         end: Date,
+        extraHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> Int {
         try cooperativeDeadline.checkpoint()
         var count = 0
+        var sessionSeconds: Set<Int64> = []
+        if !extraHeartSamples.isEmpty {
+            sessionSeconds.reserveCapacity(extraHeartSamples.count)
+        }
         for (sessionIndex, session) in sessions.enumerated() {
             if sessionIndex.isMultiple(of: 16) {
                 try cooperativeDeadline.checkpoint()
@@ -41282,11 +42324,63 @@ final class SessionStore: ObservableObject {
                    timestamp <= end,
                    point.bpm > 0 {
                     count += 1
+                    if !extraHeartSamples.isEmpty {
+                        sessionSeconds.insert(
+                            Int64(timestamp.timeIntervalSince1970.rounded())
+                        )
+                    }
                 }
             }
         }
+        for (extraIndex, extra) in extraHeartSamples.enumerated() {
+            if extraIndex.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard extra.t >= start, extra.t <= end, extra.bpm > 0,
+                  sessionSeconds.insert(
+                      Int64(extra.t.timeIntervalSince1970.rounded())
+                  ).inserted else { continue }
+            count += 1
+        }
         try cooperativeDeadline.checkpoint()
         return count
+    }
+
+    /// Bounded archive-HR fetch for the cooperative stage-evidence lane
+    /// (2026-08-29). Confirmed windows routinely span multi-hour session
+    /// holes whose HR exists only in the drained `HistoricalArchive`, so
+    /// session points alone could never satisfy the stage engine's density
+    /// gate for those nights — stages starved forever even after the drain
+    /// caught up. This supplies the missing evidence to STAGE INPUT ONLY:
+    /// durations/metrics/coverage stay session-derived, and the integrity
+    /// gate keeps its full authority over what persists.
+    /// - Recency-bounded (last `stageEvidenceArchiveHRRecencyDays`) so the
+    ///   backfill lane never rescans deep history window-by-window.
+    /// - The reader is the catalog-bounded, LRU-cached exact-window scan
+    ///   (`HistoricalArchive.metricHeartRatePoints(start:end:maximumPoints:)`),
+    ///   whose row parser already drops physiology-withheld rows
+    ///   (`metricUsable` + 35–240 bpm) — off-wrist HR==0 can never become
+    ///   stage evidence. Fail-closed: an incomplete or over-budget read is
+    ///   nil and contributes nothing.
+    nonisolated static let stageEvidenceArchiveHRRecencyDays: Double = 7
+    nonisolated static let stageEvidenceArchiveHRMaximumPoints = 100_000
+
+    nonisolated static func archiveStageEvidenceHeartSamples(
+        start: Date,
+        end: Date,
+        now: Date = Date(),
+        reader: (Date, Date, Int) -> HistoricalArchive.HeartRateWindowRead? = {
+            HistoricalArchive.metricHeartRatePoints(
+                start: $0, end: $1, maximumPoints: $2
+            )
+        }
+    ) -> [AtriaSleepWakeResearch.HeartSample] {
+        guard end > start,
+              now.timeIntervalSince(end)
+                <= stageEvidenceArchiveHRRecencyDays * 86_400 else { return [] }
+        guard let read = reader(start, end, stageEvidenceArchiveHRMaximumPoints)
+        else { return [] }
+        return read.points.map { .init(t: $0.t, bpm: $0.bpm) }
     }
 
     private static func readConfirmedSleeps() -> [UserConfirmedSleep] {
@@ -41363,18 +42457,44 @@ final class SessionStore: ObservableObject {
                                                          span: sleep.span)
     }
 
+    /// Stage monotonicity at the persistence boundary (device 2026-09-02: the
+    /// confirmed night's 504 motion-receipted stages vanished between two
+    /// pulls with every other field identical, and Today swung between the
+    /// staged 9h 49m and the gross 11h 22m). Every writer passes through the
+    /// save preparation, so a record re-saved with its stages absent takes
+    /// back the authoritative copy's motion-receipted stages when they still
+    /// validate for the incoming window; a changed window fails that check
+    /// and drops them. HR estimates are left alone: the backfill clears
+    /// those on purpose to re-mint.
+    nonisolated static func preservingValidatedMotionStages(
+        _ incoming: UserConfirmedSleep,
+        authoritative: UserConfirmedSleep?
+    ) -> UserConfirmedSleep {
+        guard incoming.stageSegments?.isEmpty != false,
+              let authoritative,
+              let stages = authoritative.stageSegments, !stages.isEmpty,
+              stages.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) }),
+              AtriaSleepStageIntegrity.validates(stages, for: incoming) else { return incoming }
+        AtriaDebugLog("ATRIADBG confirmed_sleep_store stage_guard id=%@ restored=%d", incoming.id, stages.count)
+        return copyConfirmedSleep(incoming,
+                                  stageSegments: stages,
+                                  motionSource: authoritative.motionSource,
+                                  motionValidated: authoritative.motionValidated)
+    }
+
     nonisolated private static func copyConfirmedSleep(
         _ sleep: UserConfirmedSleep,
         stageSegments: [SleepStageSegment]?,
         motionSource: String? = nil,
-        motionValidated: Bool? = nil
+        motionValidated: Bool? = nil,
+        confidence: String? = nil
     ) -> UserConfirmedSleep {
         return UserConfirmedSleep(id: sleep.id,
                                   createdAt: sleep.createdAt,
                                   start: sleep.start,
                                   end: sleep.end,
                                   source: sleep.source,
-                                  confidence: sleep.confidence,
+                                  confidence: confidence ?? sleep.confidence,
                                   sessions: sleep.sessions,
                                   samples: sleep.samples,
                                   avgHR: sleep.avgHR,
@@ -41443,17 +42563,26 @@ final class SessionStore: ObservableObject {
               ) else { return false }
         let isUserAdjustedSleep = source == "user_adjusted_sleep"
         if isUserAdjustedSleep {
+            // The user already named this Sleep. Require either a densely
+            // observed span (the original 80% floor) or a substantial night
+            // of real coverage. Device 2026-09-05: a 4h 45m measured night
+            // in a 7h 41m window (62%) failed the 80% ratio, so the
+            // physiological day never moved and daytime HR 72 overwrote the
+            // night's resting 58. Twenty minutes in an 8-hour window still
+            // fails both legs.
             let span = end.timeIntervalSince(start)
-            guard span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
-                  measuredDuration / span
-                    >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction else {
+            guard span > 0,
+                  span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
+                  measuredDuration >= AggregateSleepCandidate.napMinimumDuration else {
                 return false
             }
+            let denselyObserved = measuredDuration / span
+                >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
+            let substantialNight = measuredDuration
+                >= AtriaPhysiologicalCycle.minimumMainSleepDuration
+            return denselyObserved || substantialNight
         }
-        let minimumDuration = isUserAdjustedSleep
-            ? AggregateSleepCandidate.napMinimumDuration
-            : AtriaPhysiologicalCycle.minimumMainSleepDuration
-        return measuredDuration >= minimumDuration
+        return measuredDuration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
     }
 
     nonisolated static func confirmedSleepIsPhysiologicalMainSleep(_ sleep: UserConfirmedSleep) -> Bool {
@@ -42222,6 +43351,100 @@ final class SessionStore: ObservableObject {
         return min(noSleepRollover, settlementEdge)
     }
 
+    /// 2026-08-29 device regression (nap 08-29 07:46-10:11): one lane logged
+    /// and prepared a motion-validated upgrade, yet minutes later the durable
+    /// record read hr-only with estimate stages again. Several lanes run the
+    /// provenance/stage chain concurrently at launch (deferred session load,
+    /// the archive projection, the compact-arrival trigger), each preparing
+    /// from its own snapshot; the ordinary rebase applies a prepared delta
+    /// over CURRENT unconditionally, so a pass whose snapshot predates the
+    /// upgrade — or whose compact read failed while the upgrade's evidence
+    /// lives only in the compact store, never on the sessions — can lawfully
+    /// write an hr-estimate image over validated motion evidence.
+    ///
+    /// This fence makes motion evidence MONOTONIC at the single save choke
+    /// point (mirroring the pending-store keptMotionValidated no-downgrade
+    /// rule): a record that is currently motion-validated with receipt
+    /// stages keeps that evidence unless the incoming record either changed
+    /// the window/source (a real edit — evidence must re-derive) or itself
+    /// carries motion-receipt stages (a re-mint from a pass that could see
+    /// motion). Context-less and stale passes therefore converge upward
+    /// instead of oscillating. Internal (not private) so the no-downgrade
+    /// rule is directly testable.
+    nonisolated static func motionEvidenceMonotonicConfirmedSleeps(
+        settled: [UserConfirmedSleep],
+        authoritativeCurrent: [UserConfirmedSleep],
+        shouldContinue: @escaping @Sendable () -> Bool = { true }
+    ) -> [UserConfirmedSleep]? {
+        guard shouldContinue() else { return nil }
+        var upgradedByID: [String: UserConfirmedSleep] = [:]
+        for (index, record) in authoritativeCurrent.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard record.motionValidated,
+                  let stages = record.stageSegments,
+                  !stages.isEmpty,
+                  stages.allSatisfy({
+                      $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+                  }) else { continue }
+            upgradedByID[record.id] = record
+        }
+        guard !upgradedByID.isEmpty else { return settled }
+        var result: [UserConfirmedSleep] = []
+        result.reserveCapacity(settled.count)
+        for (index, record) in settled.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard let upgraded = upgradedByID[record.id],
+                  record.start == upgraded.start,
+                  record.end == upgraded.end,
+                  record.source == upgraded.source,
+                  // A downgrade loses the verdict AND the receipt. A record
+                  // that keeps motionValidated (e.g. the rebuild's
+                  // intentional strip-for-remint) or that carries fresh
+                  // motion-receipt stages (a re-mint, possibly with a new
+                  // active/awake verdict) passes through untouched.
+                  !record.motionValidated,
+                  (record.stageSegments ?? []).allSatisfy({
+                      !$0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+                  }) else {
+                result.append(record)
+                continue
+            }
+            AtriaDebugLog("ATRIADBG sleep_motion_monotonic_fence status=restored id=%@ source=%@ kept_confidence=%@ kept_segments=%d rejected_segments=%d",
+                          record.id,
+                          record.source,
+                          upgraded.confidence,
+                          upgraded.stageSegments?.count ?? 0,
+                          record.stageSegments?.count ?? 0)
+            result.append(UserConfirmedSleep(
+                id: record.id,
+                createdAt: record.createdAt,
+                start: record.start,
+                end: record.end,
+                source: record.source,
+                confidence: upgraded.confidence,
+                sessions: record.sessions,
+                samples: record.samples,
+                avgHR: record.avgHR,
+                peakHR: record.peakHR,
+                restingHR: record.restingHR,
+                hrv: record.hrv,
+                hrvWindowCount: record.hrvWindowCount,
+                respiratoryRate: record.respiratoryRate,
+                duration: record.duration,
+                span: record.span,
+                reason: record.reason,
+                motionSource: upgraded.motionSource,
+                motionValidated: upgraded.motionValidated,
+                stageSegments: upgraded.stageSegments,
+                eventTimeZoneIdentifier: record.eventTimeZoneIdentifier,
+                sleepNeedSeconds: record.sleepNeedSeconds,
+                frozenSleepNeed: record.frozenSleepNeed,
+                dayPrimaryChoice: record.dayPrimaryChoice
+            ))
+        }
+        return shouldContinue() ? result : nil
+    }
+
     nonisolated static func prepareConfirmedSleepSave(
         base: [UserConfirmedSleep],
         desired: [UserConfirmedSleep],
@@ -42256,8 +43479,15 @@ final class SessionStore: ObservableObject {
             )
         }
         guard let rebasedUnnormalized = rebasedRaw,
+              // 2026-08-29: motion evidence is monotonic across concurrent
+              // lanes — see motionEvidenceMonotonicConfirmedSleeps.
+              let monotonicRebase = motionEvidenceMonotonicConfirmedSleeps(
+                settled: rebasedUnnormalized,
+                authoritativeCurrent: authoritativeCurrent,
+                shouldContinue: shouldContinue
+              ),
               let rebased = normalizingDayPrimaryChoices(
-                in: rebasedUnnormalized,
+                in: monotonicRebase,
                 calendar: calendar,
                 shouldContinue: shouldContinue
               ) else { return nil }
@@ -42271,11 +43501,16 @@ final class SessionStore: ObservableObject {
         var existingSleepIDs = Set<String>()
         existingNeedByID.reserveCapacity(authoritativeCurrent.count)
         existingSleepIDs.reserveCapacity(authoritativeCurrent.count)
+        var existingMotionStagedByID: [String: UserConfirmedSleep] = [:]
         for (index, sleep) in authoritativeCurrent.enumerated() {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
             existingSleepIDs.insert(sleep.id)
             if let need = sleep.sleepNeedSeconds, need > 0 {
                 existingNeedByID[sleep.id] = (need: need, receipt: sleep.frozenSleepNeed)
+            }
+            if let stages = sleep.stageSegments, !stages.isEmpty,
+               stages.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) }) {
+                existingMotionStagedByID[sleep.id] = sleep
             }
         }
         var needPreservingRebase: [UserConfirmedSleep] = []
@@ -42293,7 +43528,9 @@ final class SessionStore: ObservableObject {
             } else {
                 preserved = sleep
             }
-            needPreservingRebase.append(preserved)
+            let stagePreserved = Self.preservingValidatedMotionStages(
+                preserved, authoritative: existingMotionStagedByID[preserved.id])
+            needPreservingRebase.append(stagePreserved)
             if !existingSleepIDs.contains(preserved.id) {
                 freezableSleepIDs.insert(preserved.id)
             }
@@ -42795,12 +44032,307 @@ final class SessionStore: ObservableObject {
         )
     }
 
-    private nonisolated static func refreshedUserAdjustedSleepEvidenceIfNeeded(
+    /// Compact-store access for the confirmed-sleep provenance/stage lanes
+    /// (2026-08-29). Captured on the actor before the off-main prepare hop.
+    /// The lifetime archive's recovered-motion channel is budget-starved for
+    /// recent nights (oldest-first append against a hard 750k cap plus a
+    /// fail-closed completeness gate), so these lanes source their epochs
+    /// per sleep window from the compact fixed-width store instead. `nil`
+    /// context disables the fallback entirely and preserves the historical
+    /// session-epoch-only behavior byte for byte.
+    struct ConfirmedSleepCompactMotionContext: Sendable {
+        let store: AtriaWhoop4MotionTickCompactStore
+        let strapIdentifier: String
+        let now: Date
+
+        /// Only windows the compact store can actually retain are worth a
+        /// read: retention is `retainedBucketCount` (4) daily shards, so a
+        /// slightly wider recency fence stays cheap and future-proof.
+        static let recencyWindowSeconds: TimeInterval = 14 * 86_400
+        /// Mirrors `LatestNightReadBudget.production.maximumRows`.
+        static let maximumRows = 200_000
+        /// A provenance-sufficient window needs >=20 min at >=80% coverage of
+        /// ~1 Hz rows; anything below this floor cannot qualify, so skip the
+        /// decode without touching row bytes (stat-only precheck).
+        static let minimumRows = 1_024
+        /// Local hard wall for the in-process epoch projection so a
+        /// cancellation-only cooperative deadline can never let the merge
+        /// sort spin unbounded.
+        static let projectionBudgetNanoseconds: UInt64 = 10_000_000_000
+    }
+
+    /// Window-bounded compact-motion evidence: epochs projected through the
+    /// SAME `latestNightEpochFeatures` math the compact settlement lane uses
+    /// (no forked epoch model), plus their provenance over the window.
+    struct CompactWindowMotionEvidence: Sendable {
+        let epochs: [AtriaRecoveredMotionEpoch]
+        let provenance: AtriaRecoveredMotionAnalytics.SleepProvenance
+    }
+
+    /// Reads compact ticks for one sleep window and projects epochs.
+    /// Fail-closed by construction: every store-level shortfall (no strap
+    /// rows, cap overflow, projection failure, insufficient provenance)
+    /// returns nil so the caller behaves exactly as it did before the
+    /// compact channel existed (hr_only). Only cooperative-deadline aborts
+    /// propagate. Internal (not private) so the fallback is directly
+    /// testable against a fixture store.
+    nonisolated static func compactWindowMotionEvidence(
+        start: Date,
+        end: Date,
+        compactMotion: ConfirmedSleepCompactMotionContext,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> CompactWindowMotionEvidence? {
+        try cooperativeDeadline.checkpoint()
+        guard !Thread.isMainThread,
+              end > start,
+              // Bound the epoch projection: sleep windows are physiologic,
+              // and anything wider would also exceed the shard budget below.
+              end.timeIntervalSince(start) <= 24 * 3_600,
+              compactMotion.now.timeIntervalSince(end)
+                <= ConfirmedSleepCompactMotionContext.recencyWindowSeconds
+        else { return nil }
+        guard compactMotion.store.hasStoredRows(
+            start: start,
+            end: end,
+            strapIdentifier: compactMotion.strapIdentifier,
+            minimumRows: ConfirmedSleepCompactMotionContext.minimumRows
+        ) else { return nil }
+        try cooperativeDeadline.checkpoint()
+        let points = compactMotion.store.decodedPoints(
+            start: start,
+            end: end,
+            strapIdentifier: compactMotion.strapIdentifier
+        )
+        try cooperativeDeadline.checkpoint()
+        // Decline telemetry (2026-08-29 device follow-up): everything past
+        // the stat precheck concerns a recent window with real rows, so a
+        // decline here is exactly the "wired but did not upgrade" question a
+        // prefs pull cannot answer. Bounded volume: at most one line per
+        // recent confirmed sleep per pass.
+        guard points.count
+                >= ConfirmedSleepCompactMotionContext.minimumRows,
+              points.count
+                <= ConfirmedSleepCompactMotionContext.maximumRows
+        else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=row_bounds start=%.0f rows=%d",
+                          start.timeIntervalSince1970,
+                          points.count)
+            return nil
+        }
+        var samples: [AtriaRecoveredMotionProjection.Sample] = []
+        samples.reserveCapacity(points.count)
+        for (index, point) in points.enumerated() {
+            if index.isMultiple(of: 4_096) {
+                try cooperativeDeadline.checkpoint()
+            }
+            // Rows reach the compact store only through the canonical decoder
+            // after durable admission; validation bits mirror the settlement
+            // lane's decode of the same fixed-width records.
+            samples.append(.init(
+                timestamp: Date(timeIntervalSince1970: point.timestamp),
+                sequence: index,
+                x: point.gravityX,
+                y: point.gravityY,
+                z: point.gravityZ,
+                timestampValidated: true,
+                gravityValidated: true
+            ))
+        }
+        let projectionDeadline = DispatchTime.now().uptimeNanoseconds
+            .addingReportingOverflow(
+                ConfirmedSleepCompactMotionContext.projectionBudgetNanoseconds
+            ).partialValue
+        let projected = compactMotion.store.latestNightEpochFeatures(
+            samples: samples,
+            start: start,
+            end: end,
+            deadlineUptimeNanoseconds: projectionDeadline
+        )
+        try cooperativeDeadline.checkpoint()
+        guard case .success(let epochs) = projected, !epochs.isEmpty else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=projection_failed start=%.0f rows=%d",
+                          start.timeIntervalSince1970,
+                          points.count)
+            return nil
+        }
+        let provenance = try AtriaRecoveredMotionAnalytics.sleepProvenance(
+            epochs: epochs,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        // The evidence must still clear the production sufficiency gate
+        // before anything upgrades; insufficient reads stay hr_only.
+        guard provenance.measurementSufficient else {
+            AtriaDebugLog("ATRIADBG compact_window_motion status=declined reason=insufficient start=%.0f rows=%d validated_fraction=%.3f max_gap_s=%.0f low_motion_fraction=%.3f",
+                          start.timeIntervalSince1970,
+                          points.count,
+                          provenance.validatedCoverageFraction,
+                          provenance.maximumGapSeconds,
+                          provenance.lowMotionCoverageFraction)
+            return nil
+        }
+        return CompactWindowMotionEvidence(
+            epochs: epochs,
+            provenance: provenance
+        )
+    }
+
+    /// Wire-4 (2026-08-29): the persisted confidence string finally follows
+    /// the `motionValidated` flag it always described. Monotonic upgrade
+    /// only — an hr_only tier becomes its motion-validated sibling when
+    /// validated motion evidence lands; nothing ever downgrades here, and
+    /// `source` is never rewritten (auto_confirmed_sleep_hr_only keys its
+    /// tier in the SOURCE, whose confidence tier — "provisional" — has no
+    /// motion-validated sibling string; its `motionValidated`/`motionSource`
+    /// fields carry the upgrade instead). Both mapped strings keep their
+    /// authorship prefix, so `sleepRecordIsUserAuthored` is unaffected.
+    nonisolated static func upgradedConfirmedSleepConfidence(
+        _ confidence: String,
+        motionValidated: Bool
+    ) -> String {
+        guard motionValidated else { return confidence }
+        switch confidence {
+        case "user_confirmed_hr_only":
+            return "user_confirmed_motion_validated"
+        case "user_adjusted_hr_only":
+            return "user_adjusted_motion_validated"
+        default:
+            return confidence
+        }
+    }
+
+    /// Wire-3 (2026-08-29) eligibility: review-confirmed and auto-confirmed
+    /// detector sources join the motion-arrival upgrade lane. `manual_*`
+    /// stays excluded — a hand-typed window never earns sensor stages (the
+    /// same fence the Night stage classifier applies).
+    nonisolated static func confirmedSleepSourceIsMotionUpgradeEligible(
+        _ source: String
+    ) -> Bool {
+        guard !source.hasPrefix("manual_") else { return false }
+        if source.hasPrefix("user_adjusted_") { return true }
+        return SleepHistorySnapshot.Night.explicitSleepSources
+            .contains(source)
+            || SleepHistorySnapshot.Night.explicitNapSources.contains(source)
+    }
+
+    /// Wire-3 (2026-08-29): compact-motion arrival upgrades a
+    /// review-confirmed or auto-confirmed night in place. Deliberately
+    /// narrower than the user_adjusted evidence refresh: persisted
+    /// metrics, duration and span are NEVER rewritten here — auto and
+    /// review durations were settled by engines with their own wake-
+    /// deduction semantics (2026-08-04), and re-deriving them as
+    /// min(span, coverage) could silently re-credit detected wake. Only
+    /// the stage timeline, the motion provenance fields and the
+    /// hr_only confidence tier may change, and only when the freshly
+    /// minted stages pass the same integrity gate every other stage
+    /// writer uses. Returns nil (fall through to the general backfill
+    /// path, byte-identical historical behavior) on any shortfall.
+    /// Internal (not private) so the upgrade is directly testable.
+    nonisolated static func motionArrivalUpgradedConfirmedSleepIfNeeded(
         _ sleep: UserConfirmedSleep,
         sourceSessions: [SavedSession],
+        drainedHeartSamples: [AtriaSleepWakeResearch.HeartSample],
+        compactMotionEvidence: CompactWindowMotionEvidence?,
         reason: String,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> UserConfirmedSleep? {
+        guard Self.confirmedSleepSourceIsMotionUpgradeEligible(sleep.source),
+              !sleep.source.hasPrefix("user_adjusted_") else { return nil }
+        guard let compactMotionEvidence else {
+            // Decline telemetry (2026-08-29): only for records still hungry
+            // for an upgrade — a validated+staged record declining is the
+            // steady state and must not spam the ring buffer.
+            if !sleep.motionValidated || sleep.stageSegments?.isEmpty != false {
+                AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=declined reason=no_compact_evidence sleep_source=%@ start=%.0f",
+                              sleep.source,
+                              sleep.start.timeIntervalSince1970)
+            }
+            return nil
+        }
+        let provenance = compactMotionEvidence.provenance
+        guard provenance.measurementSufficient else { return nil }
+        let motionSource = provenance.source
+        let motionValidated = provenance.lowMotionValidated
+        let needsFieldUpdate = sleep.motionSource != motionSource
+            || sleep.motionValidated != motionValidated
+        let needsStages = sleep.stageSegments?.isEmpty != false
+        guard needsFieldUpdate || needsStages else { return nil }
+        let stages = try Self.sleepStageResearchSegments(
+            from: sourceSessions,
+            start: sleep.start,
+            end: sleep.end,
+            restingHR: sleep.restingHR,
+            isNap: Self.confirmedSleepSourceIsNap(
+                source: sleep.source,
+                duration: sleep.duration
+            ),
+            motionValidated: motionValidated,
+            allowHROnlyEstimate: true,
+            extraHeartSamples: drainedHeartSamples,
+            extraMotionEpochs: compactMotionEvidence.epochs,
+            maximumRows: Int.max,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        guard Self.confirmedSleepStagesCoverSleep(stages, sleep: sleep) else {
+            AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=declined reason=stage_coverage sleep_source=%@ start=%.0f segments=%d",
+                          sleep.source,
+                          sleep.start.timeIntervalSince1970,
+                          stages.count)
+            return nil
+        }
+        let upgraded = Self.copyConfirmedSleep(
+            sleep,
+            stageSegments: stages,
+            motionSource: motionSource,
+            motionValidated: motionValidated,
+            confidence: Self.upgradedConfirmedSleepConfidence(
+                sleep.confidence,
+                motionValidated: motionValidated
+            )
+        )
+        guard upgraded != sleep else { return nil }
+        AtriaDebugLog("ATRIADBG sleep_motion_arrival_upgrade status=updated reason=%@ sleep_source=%@ motion_validated=%d segments=%d low_motion_fraction=%.2f mean_intensity=%.3f",
+                      reason,
+                      sleep.source,
+                      motionValidated ? 1 : 0,
+                      stages.count,
+                      provenance.lowMotionCoverageFraction,
+                      provenance.meanMovementIntensity ?? -1)
+        return upgraded
+    }
+
+    // `archiveHeartSamples` (2026-08-29): drained-archive HR for this exact
+    // window, fetched once by the cooperative backfill loop. It feeds ONLY
+    // the refresh trigger's candidate-sample count and the stage-evidence
+    // inputs; `sensorCovered`, `duration`, and every persisted metric stay
+    // session-derived exactly as before.
+    private nonisolated static func refreshedUserAdjustedSleepEvidenceIfNeeded(
+        _ sleep: UserConfirmedSleep,
+        sourceSessions: [SavedSession],
+        archiveHeartSamples: [AtriaSleepWakeResearch.HeartSample] = [],
+        // Wire-1/3 (2026-08-29): pre-resolved compact-store motion evidence
+        // for this exact window, fetched once by the backfill loop when the
+        // sessions carry no overlapping epochs. Nil keeps the historical
+        // session-epoch-only behavior byte for byte.
+        compactMotionEvidence: CompactWindowMotionEvidence? = nil,
+        reason: String,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> UserConfirmedSleep? {
+        // Wire-3 (2026-08-29): review-confirmed and auto-confirmed sources
+        // take the metrics-preserving motion-arrival upgrade lane; the full
+        // metric/duration re-derivation below remains user_adjusted-only
+        // because those bounds semantics belong to the Adjust sheet.
+        if !sleep.source.hasPrefix("user_adjusted_") {
+            return try Self.motionArrivalUpgradedConfirmedSleepIfNeeded(
+                sleep,
+                sourceSessions: sourceSessions,
+                drainedHeartSamples: archiveHeartSamples,
+                compactMotionEvidence: compactMotionEvidence,
+                reason: reason,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
         let sensorCovered = try Self.confirmedSleepSensorCoverage(
             from: sourceSessions,
             start: sleep.start,
@@ -42811,13 +44343,30 @@ final class SessionStore: ObservableObject {
             from: sourceSessions,
             start: sleep.start,
             end: sleep.end,
+            extraHeartSamples: archiveHeartSamples,
             cooperativeDeadline: cooperativeDeadline
         )
-        let motionProvenance = try Self.recoveredMotionProvenance(
-            for: sleep,
-            sessions: sourceSessions,
-            cooperativeDeadline: cooperativeDeadline
-        )
+        let motionProvenance: AtriaRecoveredMotionAnalytics.SleepProvenance
+        if let compactMotionEvidence {
+            motionProvenance = compactMotionEvidence.provenance
+        } else {
+            motionProvenance = try Self.recoveredMotionProvenance(
+                for: sleep,
+                sessions: sourceSessions,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
+        // 2026-08-29 monotonicity: once a record earned validated motion,
+        // its evidence may live ONLY in the compact store (never on the
+        // sessions), so a pass whose compact read failed sees "no epochs"
+        // for a genuinely motion-backed night. Re-staging it here via the
+        // sample-growth trigger would replace receipt stages with estimate
+        // provenance — the oscillation the 08-29 device pull showed. A
+        // motion-validated record therefore refreshes only when this pass
+        // can actually see motion; hr-only records keep the old behavior.
+        if sleep.motionValidated, !motionProvenance.hasRecoveredEpochs {
+            return nil
+        }
         guard Self.shouldRefreshUserAdjustedSleepEvidence(source: sleep.source,
                                                           existingSamples: sleep.samples,
                                                           candidateSamples: candidateSamples,
@@ -42860,6 +44409,8 @@ final class SessionStore: ObservableObject {
             // Cooperative backfill lane: allowed to pay for HR-only
             // ESTIMATE staging so stage-less records converge (2026-08-12).
             allowHROnlyEstimate: true,
+            extraHeartSamples: archiveHeartSamples,
+            extraMotionEpochs: compactMotionEvidence?.epochs ?? [],
             maximumRows: Int.max,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -42874,7 +44425,16 @@ final class SessionStore: ObservableObject {
                                            start: sleep.start,
                                            end: sleep.end,
                                            source: sleep.source,
-                                           confidence: sleep.confidence,
+                                           // 2026-08-29 (was `confidence:
+                                           // sleep.confidence`): the hr_only
+                                           // tier upgrades with the validated
+                                           // motion it now carries; authorship
+                                           // prefix is preserved.
+                                           confidence: Self
+                                            .upgradedConfirmedSleepConfidence(
+                                                sleep.confidence,
+                                                motionValidated: motionValidated
+                                            ),
                                            sessions: metrics.sessions,
                                            samples: metrics.samples,
                                            avgHR: metrics.avgHR,
@@ -42940,6 +44500,10 @@ final class SessionStore: ObservableObject {
                 affectedSince.map { session.end > $0 } ?? true
             }
         let sourceSleeps = cachedConfirmedSleeps
+        // Wire-1 (2026-08-29): captured on the actor so the off-main prepare
+        // thread can read window-bounded compact motion for recent sleeps
+        // whose sessions carry no recovered epochs.
+        let compactMotion = confirmedSleepCompactMotionContext()
         guard executionShouldContinue(),
               !sourceSessions.isEmpty,
               !sourceSleeps.isEmpty else {
@@ -42997,10 +44561,58 @@ final class SessionStore: ObservableObject {
                                     }
                                 }
                             }
+                            // Wire-1 (2026-08-29): when the sessions carry no
+                            // epochs, source them from the compact tick store
+                            // for this exact window. The fetch is recency- and
+                            // row-bounded, fail-closed (nil keeps hr_only
+                            // behavior byte-identical), and only sufficiency-
+                            // qualified evidence may count as epoch overlap —
+                            // an insufficient read must never strip stages or
+                            // bypass the preserve gate below.
+                            var compactMotionEvidence:
+                                CompactWindowMotionEvidence?
+                            if !hasRecoveredEpochOverlap,
+                               // A hand-typed window never earns sensor
+                               // stages; don't pay for its decode either.
+                               !sleep.source.hasPrefix("manual_"),
+                               let compactMotion {
+                                compactMotionEvidence = try Self
+                                    .compactWindowMotionEvidence(
+                                        start: sleep.start,
+                                        end: sleep.end,
+                                        compactMotion: compactMotion,
+                                        cooperativeDeadline: deadline
+                                    )
+                                if compactMotionEvidence != nil {
+                                    hasRecoveredEpochOverlap = true
+                                }
+                            }
+                            // Archive-HR union (2026-08-29, cooperative lane
+                            // only): a STAGE-LESS record whose session holes
+                            // drained after confirmation gets the drained HR
+                            // as extra stage evidence. Staged records skip
+                            // the fetch — their evidence already converged,
+                            // and skipping keeps this loop from re-running
+                            // the stager every pass. The helper is recency-
+                            // bounded and served by the LRU-cached exact-
+                            // window reader, so repeat passes are cheap.
+                            let archiveHeartSamples: [AtriaSleepWakeResearch.HeartSample]
+                            if sleep.stageSegments?.isEmpty != false {
+                                archiveHeartSamples = Self
+                                    .archiveStageEvidenceHeartSamples(
+                                        start: sleep.start,
+                                        end: sleep.end
+                                    )
+                            } else {
+                                archiveHeartSamples = []
+                            }
                             if let refreshed = try Self
                                 .refreshedUserAdjustedSleepEvidenceIfNeeded(
                                     sleep,
                                     sourceSessions: sourceSessions,
+                                    archiveHeartSamples: archiveHeartSamples,
+                                    compactMotionEvidence:
+                                        compactMotionEvidence,
                                     reason: reason,
                                     cooperativeDeadline: deadline
                                 ) {
@@ -43046,19 +44658,50 @@ final class SessionStore: ObservableObject {
                                 updated.append(sleep)
                                 continue
                             }
+                            // 2026-08-29 monotonicity: a motion-validated
+                            // record whose stages are absent (the rebuild's
+                            // strip-for-remint) or motion-receipted may only
+                            // be re-staged by a pass that can see motion
+                            // evidence. Without this, a failed compact read
+                            // here mints allowHROnlyEstimate stages and
+                            // flips the verdict hr-only — the device
+                            // oscillation. Legacy validated records with
+                            // un-receipted stages keep their hygiene path.
+                            if sleep.motionValidated,
+                               !hasRecoveredEpochOverlap,
+                               sleep.stageSegments?.isEmpty != false
+                                || sleep.stageSegments?.allSatisfy({
+                                    $0.id.hasPrefix(
+                                        SleepStageSegment.motionReceiptIDPrefix
+                                    )
+                                }) == true {
+                                updated.append(sleep)
+                                continue
+                            }
                             let sampleCount = try Self
                                 .sleepStageResearchSampleCount(
                                     from: sourceSessions,
                                     start: sleep.start,
                                     end: sleep.end,
+                                    extraHeartSamples: archiveHeartSamples,
                                     cooperativeDeadline: deadline
                                 )
-                            let provenance = try Self
-                                .recoveredMotionProvenance(
-                                    for: sleep,
-                                    sessions: sourceSessions,
-                                    cooperativeDeadline: deadline
-                                )
+                            let provenance: AtriaRecoveredMotionAnalytics
+                                .SleepProvenance
+                            if let compactMotionEvidence {
+                                // Wire-1 (2026-08-29): sufficiency-qualified
+                                // compact evidence is the provenance
+                                // authority for a window whose sessions
+                                // carry no epochs of their own.
+                                provenance = compactMotionEvidence.provenance
+                            } else {
+                                provenance = try Self
+                                    .recoveredMotionProvenance(
+                                        for: sleep,
+                                        sessions: sourceSessions,
+                                        cooperativeDeadline: deadline
+                                    )
+                            }
                             let stages = try Self.sleepStageResearchSegments(
                                 from: sourceSessions,
                                 start: sleep.start,
@@ -43073,6 +44716,9 @@ final class SessionStore: ObservableObject {
                                 // Cooperative backfill lane (2026-08-12):
                                 // may pay for HR-only ESTIMATE staging.
                                 allowHROnlyEstimate: true,
+                                extraHeartSamples: archiveHeartSamples,
+                                extraMotionEpochs:
+                                    compactMotionEvidence?.epochs ?? [],
                                 maximumRows: Int.max,
                                 cooperativeDeadline: deadline
                             )
@@ -43096,7 +44742,17 @@ final class SessionStore: ObservableObject {
                                 stageSegments: stages,
                                 motionSource: provenance.source,
                                 motionValidated:
-                                    provenance.lowMotionValidated
+                                    provenance.lowMotionValidated,
+                                // Wire-4 (2026-08-29): the hr_only
+                                // confidence tier follows the flag it
+                                // has always described; monotonic, and
+                                // authorship prefixes are preserved.
+                                confidence: Self
+                                    .upgradedConfirmedSleepConfidence(
+                                        sleep.confidence,
+                                        motionValidated:
+                                            provenance.lowMotionValidated
+                                    )
                             )
                             if regenerated.stageSegments != sleep.stageSegments {
                                 repaired += 1
@@ -43290,6 +44946,130 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    /// Wire-1 (2026-08-29): actor-side capture of the compact-store access
+    /// the provenance/stage lanes hand to their off-main prepare threads.
+    /// Nil (no persisted strap identity) disables the compact fallback and
+    /// keeps every lane byte-identical to its historical behavior.
+    private func confirmedSleepCompactMotionContext()
+        -> ConfirmedSleepCompactMotionContext? {
+        // 2026-08-30: shares the identity-sourcing rule with the
+        // candidate-time quiescence context.
+        Self.sleepCandidateCompactMotionContext()
+    }
+
+    /// Wire-2 (2026-08-29) admission planner, pure so the throttle and
+    /// precheck are directly testable. Returns the confirmed-sleep windows
+    /// still worth a compact read, or nil when the trigger must not run:
+    /// throttled (30-min floor), already in flight, an archive projection is
+    /// active (its own chain runs the identical rebuild+backfill with
+    /// archive truth — racing it doubles the work for nothing), or no
+    /// recent record has anything left to upgrade. The coverage window
+    /// mirrors the store's `retainedBucketCount` (4 daily shards).
+    nonisolated static func compactMotionSleepEvidenceUpgradeCandidateWindows(
+        now: Date,
+        lastAttempt: Date?,
+        upgradeInFlight: Bool,
+        recomputeIdle: Bool,
+        confirmedSleeps: [UserConfirmedSleep],
+        minimumInterval: TimeInterval = 30 * 60,
+        coverageWindow: TimeInterval = 4 * 86_400
+    ) -> [DateInterval]? {
+        guard !upgradeInFlight, recomputeIdle else { return nil }
+        if let lastAttempt,
+           now.timeIntervalSince(lastAttempt) < minimumInterval {
+            return nil
+        }
+        let cutoff = now.addingTimeInterval(-coverageWindow)
+        let windows = confirmedSleeps.compactMap {
+            sleep -> DateInterval? in
+            guard sleep.end > cutoff,
+                  sleep.end > sleep.start,
+                  Self.confirmedSleepSourceIsMotionUpgradeEligible(
+                    sleep.source
+                  ),
+                  !sleep.motionValidated
+                    || sleep.stageSegments?.isEmpty != false else {
+                return nil
+            }
+            return DateInterval(start: sleep.start, end: sleep.end)
+        }
+        return windows.isEmpty ? nil : windows
+    }
+
+    /// Wire-2 (2026-08-29): a durable compact-motion generation schedules
+    /// one throttled confirmed-sleep provenance rebuild + stage backfill so
+    /// motion that drains AFTER a night settled can still validate it. All
+    /// heavy work stays in the existing cooperative off-main lanes; this
+    /// method only plans, stats shard files off-main, and re-checks its
+    /// gates after every suspension point.
+    private func scheduleCompactMotionSleepEvidenceUpgrade(reason: String) {
+        guard canonicalMutationAllowed else { return }
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return }
+        let now = Date()
+        guard let windows = Self
+            .compactMotionSleepEvidenceUpgradeCandidateWindows(
+                now: now,
+                lastAttempt: lastCompactMotionSleepEvidenceUpgradeAttempt,
+                upgradeInFlight: compactMotionSleepEvidenceUpgradeInFlight,
+                recomputeIdle: recoveredDataRecompute.phase == .idle,
+                confirmedSleeps: cachedConfirmedSleeps
+            ) else { return }
+        lastCompactMotionSleepEvidenceUpgradeAttempt = now
+        compactMotionSleepEvidenceUpgradeInFlight = true
+        let affectedSince = now.addingTimeInterval(-4 * 86_400)
+        let store = AtriaWhoop4MotionTickCompactStore.shared
+        Task(priority: .utility) { @MainActor [weak self] in
+            // Stat-only shard precheck, off the main actor's hot path.
+            let hasRows = await withCheckedContinuation {
+                (continuation: CheckedContinuation<Bool, Never>) in
+                DispatchQueue.global(qos: .utility).async {
+                    let value = windows.contains {
+                        store.hasStoredRows(
+                            start: $0.start,
+                            end: $0.end,
+                            strapIdentifier: strapIdentifier,
+                            minimumRows:
+                                ConfirmedSleepCompactMotionContext.minimumRows
+                        )
+                    }
+                    continuation.resume(returning: value)
+                }
+            }
+            guard let self else { return }
+            defer { self.compactMotionSleepEvidenceUpgradeInFlight = false }
+            guard hasRows,
+                  self.canonicalMutationAllowed,
+                  self.recoveredDataRecompute.phase == .idle else {
+                AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=skipped reason=%@ has_rows=%d",
+                              reason,
+                              hasRows ? 1 : 0)
+                return
+            }
+            AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=started reason=%@ windows=%d",
+                          reason,
+                          windows.count)
+            guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
+                reason: reason,
+                deferDerivedPublication: false,
+                affectedSince: affectedSince
+            ) else {
+                AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=rebuild_failed reason=%@",
+                              reason)
+                return
+            }
+            let outcome = await self.backfillConfirmedSleepStagesFromSessions(
+                reason: reason,
+                deferDerivedPublication: false,
+                affectedSince: affectedSince
+            )
+            AtriaDebugLog("ATRIADBG compact_motion_sleep_upgrade status=%@ reason=%@ changed=%d",
+                          outcome.succeeded ? "completed" : "backfill_failed",
+                          reason,
+                          outcome.changed ? 1 : 0)
+        }
+    }
+
     /// Rebuilds sensor provenance before stage backfill. Any recovered epoch
     /// gap or active-motion interval removes the old whole-window low-motion
     /// claim. The following backfill pass always regenerates stages for an
@@ -43309,6 +45089,8 @@ final class SessionStore: ObservableObject {
                 affectedSince.map { session.end > $0 } ?? true
             }
         let sourceSleeps = cachedConfirmedSleeps
+        // Wire-1 (2026-08-29): actor-side capture for the off-main prepare.
+        let compactMotion = confirmedSleepCompactMotionContext()
         guard executionShouldContinue() else { return false }
         let preparation: (updated: [UserConfirmedSleep], changed: Int)? =
             await withCheckedContinuation { continuation in
@@ -43333,21 +45115,69 @@ final class SessionStore: ObservableObject {
                                     updated.append(sleep)
                                     continue
                                 }
-                                let provenance = try Self
+                                let sessionProvenance = try Self
                                     .recoveredMotionProvenance(
                                         for: sleep,
                                         sessions: sourceSessions,
                                         cooperativeDeadline: deadline
                                     )
+                                // Wire-1 (2026-08-29): the compact store
+                                // supplies this window's provenance when the
+                                // sessions cannot measure it. Sufficiency-
+                                // gated inside the fetch; a session verdict
+                                // that already measured the window (even a
+                                // failing one) is never overridden.
+                                var provenance = sessionProvenance
+                                var usedCompactEvidence = false
+                                if !sessionProvenance.measurementSufficient,
+                                   // Hand-typed windows never earn sensor
+                                   // validation; the compact channel must
+                                   // not be the first thing to flip a
+                                   // manual record's motion fields.
+                                   !sleep.source.hasPrefix("manual_"),
+                                   let compactMotion,
+                                   let compactEvidence = try Self
+                                    .compactWindowMotionEvidence(
+                                        start: sleep.start,
+                                        end: sleep.end,
+                                        compactMotion: compactMotion,
+                                        cooperativeDeadline: deadline
+                                    ) {
+                                    provenance = compactEvidence.provenance
+                                    usedCompactEvidence = true
+                                }
                                 let motionSource = provenance.source
                                 let motionValidated =
                                     provenance.lowMotionValidated
-                                guard provenance.hasRecoveredEpochs,
-                                      sleep.motionSource != motionSource
+                                let fieldsChanged =
+                                    sleep.motionSource != motionSource
                                         || sleep.motionValidated
                                             != motionValidated
-                                        || sleep.stageSegments?.isEmpty
-                                            == false else {
+                                // Session-epoch nights keep the historical
+                                // always-strip contract (changed epoch timing
+                                // must never leave stale stages). For a
+                                // compact-projected window the stage backfill
+                                // already regenerates every epoch-overlapped
+                                // night each pass, so an unconditional strip
+                                // here would rewrite the store twice per
+                                // projection cycle for already-validated
+                                // nights — strip only when the provenance
+                                // fields actually moved. Device 2026-09-02:
+                                // when the re-mint then fails (compact read
+                                // deadline), this strip left the night
+                                // stage-less until the next successful pass
+                                // and Today swung 9h 49m / 11h 22m. The save
+                                // preparation's `preservingValidatedMotionStages`
+                                // now hands validated motion-receipted stages
+                                // back on the same save, so a failed re-mint
+                                // changes nothing and a successful one still
+                                // replaces them.
+                                let requiresStageRemint = usedCompactEvidence
+                                    ? fieldsChanged
+                                    : sleep.stageSegments?.isEmpty == false
+                                guard provenance.hasRecoveredEpochs,
+                                      fieldsChanged || requiresStageRemint
+                                else {
                                     updated.append(sleep)
                                     continue
                                 }
@@ -43358,7 +45188,14 @@ final class SessionStore: ObservableObject {
                                     start: sleep.start,
                                     end: sleep.end,
                                     source: sleep.source,
-                                    confidence: sleep.confidence,
+                                    // Wire-4 (2026-08-29): the hr_only
+                                    // confidence tier follows the validated
+                                    // flag; monotonic, authorship preserved.
+                                    confidence: Self
+                                        .upgradedConfirmedSleepConfidence(
+                                            sleep.confidence,
+                                            motionValidated: motionValidated
+                                        ),
                                     sessions: sleep.sessions,
                                     samples: sleep.samples,
                                     avgHR: sleep.avgHR,
@@ -43376,7 +45213,12 @@ final class SessionStore: ObservableObject {
                                     eventTimeZoneIdentifier:
                                         sleep.eventTimeZoneIdentifier,
                                     sleepNeedSeconds: sleep.sleepNeedSeconds,
-                                    frozenSleepNeed: sleep.frozenSleepNeed
+                                    frozenSleepNeed: sleep.frozenSleepNeed,
+                                    // 2026-08-29: this rewrite previously
+                                    // dropped the user's main-sleep answer
+                                    // (init defaults it nil), silently
+                                    // re-prompting the day. Preserve it.
+                                    dayPrimaryChoice: sleep.dayPrimaryChoice
                                 ))
                             }
                             try deadline.checkpoint()
@@ -45907,6 +47749,318 @@ final class SessionStore: ObservableObject {
         return clamped > start ? clamped : start
     }
 
+    // MARK: - Motion-quiescence candidate bound refinement (2026-08-30)
+
+    /// 2026-08-30 motion-quiescence bound refinement (owner-caught): the
+    /// review proposal claimed a 02:01 sleep onset for a night whose motion
+    /// shards showed a brief 02:00–02:30 lull, sustained restlessness from
+    /// 02:45 to 04:10 (per-15-min mean |ΔG| 0.13–0.45 versus ≤0.08 asleep),
+    /// and true settling only from ~04:15 (owner correction: 04:37). HR sat
+    /// near baseline through the restlessness, so every HR lane bridged the
+    /// early lull into the claimed onset; motion flatly contradicts that
+    /// bridge. Narrowing a proposal toward measured quiet is honest;
+    /// widening never is, so this refinement only ever moves the start
+    /// later and the end earlier. Thresholds are anchored to the epoch
+    /// projection's existing grammar, not invented:
+    /// - Quiet epoch: movementIntensity <= 0.18, the exact
+    ///   `lowMotionIntensity` ceiling `lowMotionQualified` and
+    ///   `lowMotionValidated` already trust.
+    /// - Support epoch: <= 2x that ceiling. ONE isolated support epoch
+    ///   flanked by quiet is a rollover/position shift (normal in-sleep
+    ///   movement) and must not break a quiet run; consecutive support is
+    ///   restlessness and does.
+    /// - Sustained quiet floor (20 min): the shortest stretch this codebase
+    ///   classifies as sleep anywhere (nap floor, provenance floor).
+    /// - Established-sleep floor (60 min): a wearer continuously quiet for
+    ///   a full overnight hour is asleep with near-certainty (onset latency
+    ///   norms are 10–20 min; motionless waking rest rarely holds an hour),
+    ///   so any later movement is MID-SLEEP wake owned by the
+    ///   sustained-awake duration deduction; the boundary scan stops there
+    ///   and can never eat established sleep. Device-calibrated 2026-08-30:
+    ///   the defect night's pre-onset lull measured 47 continuous quiet
+    ///   minutes (02:03–02:50) before the restlessness, so a 45-min floor
+    ///   would have locked the false onset it exists to reject.
+    /// - Sustained elevated evidence (>= 20 min span holding >= 10 min of
+    ///   measured movement): double the 10-minute sustained-awake deduction
+    ///   floor, because moving a claimed boundary is stronger surgery than
+    ///   deducting minutes. Only such a block may clear an unestablished
+    ///   quiet anchor — exactly the lull-then-85-minutes-restless trap.
+    /// - Minimum trim (5 min): epoch quantization/seam jitter at an
+    ///   already-truthful boundary must not perturb the proposal.
+    nonisolated static let sleepQuiescenceQuietIntensityCeiling = 0.18
+    nonisolated static let sleepQuiescenceSupportIntensityCeiling = 0.36
+    nonisolated static let sleepQuiescenceSustainedQuietFloor: TimeInterval = 20 * 60
+    nonisolated static let sleepQuiescenceEstablishedSleepFloor: TimeInterval = 60 * 60
+    nonisolated static let sleepQuiescenceElevatedSpanFloor: TimeInterval = 20 * 60
+    nonisolated static let sleepQuiescenceElevatedCoverageFloor: TimeInterval = 10 * 60
+    nonisolated static let sleepQuiescenceQuietSeamTolerance: TimeInterval = 90
+    nonisolated static let sleepQuiescenceElevatedMergeTolerance: TimeInterval = 5 * 60
+    nonisolated static let sleepQuiescenceMinimumTrim: TimeInterval = 5 * 60
+
+    /// Pure interval scan over validated motion epochs. Fail-closed by
+    /// construction: no epochs, no qualifying quiet run, or an anchor within
+    /// jitter of the existing bound all return the bounds unchanged, and the
+    /// result never widens the window. The caller — not this scan — owns
+    /// evidence sufficiency gating, the LATER-onset merge with the
+    /// device-use clamp, and the post-refinement duration-floor check.
+    nonisolated static func motionQuiescenceRefinedBounds(
+        start: Date,
+        end: Date,
+        epochs: [AtriaRecoveredMotionEpoch],
+        cooperativeDeadline: AtriaSleepSettlementDeadline? = nil
+    ) throws -> (start: Date, end: Date) {
+        guard end > start, !epochs.isEmpty else { return (start, end) }
+        struct Measured {
+            let start: TimeInterval
+            let end: TimeInterval
+            let intensity: Double
+        }
+        var measured: [Measured] = []
+        measured.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            // A validation bit without a finite intensity is provenance
+            // metadata, not a usable time-series measurement (the same rule
+            // `sleepProvenance` applies).
+            guard epoch.measurementValidated,
+                  let intensity = epoch.movementIntensity,
+                  intensity.isFinite,
+                  epoch.end > start,
+                  epoch.start < end else { continue }
+            measured.append(Measured(
+                start: max(epoch.start, start).timeIntervalSince1970,
+                end: min(epoch.end, end).timeIntervalSince1970,
+                intensity: intensity
+            ))
+        }
+        guard !measured.isEmpty else { return (start, end) }
+        try cooperativeDeadline?.checkpoint()
+        measured.sort { $0.start < $1.start }
+        try cooperativeDeadline?.checkpoint()
+
+        // Isolated-support absorption: a lone support-level epoch flanked by
+        // raw-quiet neighbors counts as quiet; everything else is non-quiet.
+        func quietLabels(_ ordered: [Measured]) throws -> [Bool] {
+            var labels = [Bool](repeating: false, count: ordered.count)
+            for (index, epoch) in ordered.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                if epoch.intensity <= Self.sleepQuiescenceQuietIntensityCeiling {
+                    labels[index] = true
+                } else if epoch.intensity
+                            <= Self.sleepQuiescenceSupportIntensityCeiling {
+                    let previousQuiet = index > 0
+                        && ordered[index - 1].intensity
+                            <= Self.sleepQuiescenceQuietIntensityCeiling
+                    let nextQuiet = index + 1 < ordered.count
+                        && ordered[index + 1].intensity
+                            <= Self.sleepQuiescenceQuietIntensityCeiling
+                    labels[index] = previousQuiet && nextQuiet
+                }
+            }
+            return labels
+        }
+
+        struct Run {
+            var start: TimeInterval
+            var end: TimeInterval
+            var covered: TimeInterval
+        }
+        enum BoundaryEvent {
+            case quiet(Run)
+            case elevated(Run)
+        }
+
+        // Qualifying quiet runs and elevated blocks over one direction's
+        // ordering; the two boundary scanners below share this construction.
+        func boundaryEvents(
+            _ ordered: [Measured]
+        ) throws -> [BoundaryEvent] {
+            let labels = try quietLabels(ordered)
+            var quietRuns: [Run] = []
+            var elevatedBlocks: [Run] = []
+            var currentQuiet: Run?
+            var currentElevated: Run?
+            for (index, epoch) in ordered.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let length = max(0, epoch.end - epoch.start)
+                if labels[index] {
+                    if var run = currentQuiet,
+                       epoch.start - run.end
+                        <= Self.sleepQuiescenceQuietSeamTolerance {
+                        run.end = max(run.end, epoch.end)
+                        run.covered += length
+                        currentQuiet = run
+                    } else {
+                        if let run = currentQuiet { quietRuns.append(run) }
+                        currentQuiet = Run(start: epoch.start,
+                                           end: epoch.end,
+                                           covered: length)
+                    }
+                } else {
+                    // Any non-quiet epoch ends the quiet run: consecutive
+                    // support is restlessness, elevated is movement. Brief
+                    // interleaved quiet does NOT end an elevated block — a
+                    // restless wearer stills for moments; only a gap wider
+                    // than the merge tolerance separates two blocks, and the
+                    // coverage floor below keeps sparse chains disqualified.
+                    if let run = currentQuiet { quietRuns.append(run) }
+                    currentQuiet = nil
+                    if var block = currentElevated,
+                       epoch.start - block.end
+                        <= Self.sleepQuiescenceElevatedMergeTolerance {
+                        block.end = max(block.end, epoch.end)
+                        block.covered += length
+                        currentElevated = block
+                    } else {
+                        if let block = currentElevated {
+                            elevatedBlocks.append(block)
+                        }
+                        currentElevated = Run(start: epoch.start,
+                                              end: epoch.end,
+                                              covered: length)
+                    }
+                }
+            }
+            if let run = currentQuiet { quietRuns.append(run) }
+            if let block = currentElevated { elevatedBlocks.append(block) }
+
+            var events: [BoundaryEvent] = []
+            events.reserveCapacity(quietRuns.count + elevatedBlocks.count)
+            for run in quietRuns
+            where run.covered >= Self.sleepQuiescenceSustainedQuietFloor {
+                events.append(.quiet(run))
+            }
+            for block in elevatedBlocks
+            where block.end - block.start
+                    >= Self.sleepQuiescenceElevatedSpanFloor
+                && block.covered
+                    >= Self.sleepQuiescenceElevatedCoverageFloor {
+                events.append(.elevated(block))
+            }
+            func eventStart(_ event: BoundaryEvent) -> TimeInterval {
+                switch event {
+                case .quiet(let run), .elevated(let run): return run.start
+                }
+            }
+            events.sort { eventStart($0) < eventStart($1) }
+            return events
+        }
+
+        // START rule: clamp forward to the first sustained quiet run that
+        // survives to sleep establishment. An unestablished quiet anchor is
+        // cleared by later sustained restlessness (the lull-then-restless
+        // trap); once a run reaches the establishment floor the scan stops,
+        // so the clamp can never eat established sleep.
+        func leadingQuietAnchor(
+            _ events: [BoundaryEvent]
+        ) -> TimeInterval? {
+            var anchor: TimeInterval?
+            for event in events {
+                switch event {
+                case .quiet(let run):
+                    if anchor == nil { anchor = run.start }
+                    if run.covered
+                        >= Self.sleepQuiescenceEstablishedSleepFloor {
+                        // Established sleep: everything later is mid-sleep
+                        // territory owned by the wake-duration deduction,
+                        // never by a boundary move.
+                        return anchor
+                    }
+                case .elevated:
+                    // Sustained restlessness before sleep was established:
+                    // the earlier lull was settling, not onset.
+                    anchor = nil
+                }
+            }
+            return anchor
+        }
+
+        // END rule (deliberately asymmetric, mirrored timeline): trim ONLY
+        // past trailing sustained-elevated evidence — the first qualifying
+        // event walking back from the end must be an elevated block, and
+        // the end then re-anchors at the next sustained quiet run. Any
+        // sustained quiet run nearer the end (a mid-night wake deeper in,
+        // or a post-wake return to sleep) means the proposed end already
+        // sits on sleep: identity. Device-calibrated 2026-08-30: the
+        // defect night's tail (07:28–07:45) held scattered sub-floor
+        // stirring — normal light morning sleep — and its 07:45 end was
+        // CORRECT; a symmetric establishment scan would have eaten it, and
+        // would equally have eaten a sub-establishment return-to-sleep tail
+        // after a mid-night wake (the 2026-08-04 wake-exclusion fixture).
+        func trailingTrimAnchor(
+            _ events: [BoundaryEvent]
+        ) -> TimeInterval? {
+            var sawSustainedElevated = false
+            for event in events {
+                switch event {
+                case .quiet(let run):
+                    return sawSustainedElevated ? run.start : nil
+                case .elevated:
+                    sawSustainedElevated = true
+                }
+            }
+            return nil
+        }
+
+        var refinedStart = start
+        if let anchor = leadingQuietAnchor(try boundaryEvents(measured)),
+           anchor - start.timeIntervalSince1970
+               >= Self.sleepQuiescenceMinimumTrim {
+            refinedStart = Date(timeIntervalSince1970: anchor)
+        }
+        var mirrored: [Measured] = []
+        mirrored.reserveCapacity(measured.count)
+        for (index, epoch) in measured.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            mirrored.append(Measured(start: -epoch.end,
+                                     end: -epoch.start,
+                                     intensity: epoch.intensity))
+        }
+        mirrored.reverse()
+        var refinedEnd = end
+        if let mirroredAnchor = trailingTrimAnchor(
+            try boundaryEvents(mirrored)
+        ) {
+            let anchorEnd = -mirroredAnchor
+            if end.timeIntervalSince1970 - anchorEnd
+                >= Self.sleepQuiescenceMinimumTrim {
+                refinedEnd = Date(timeIntervalSince1970: anchorEnd)
+            }
+        }
+        // Never widen, never cross the far bound. A fully-restless window
+        // can leave refinedStart >= refinedEnd; the caller's floor check
+        // owns discarding that candidate with a named reason.
+        refinedStart = min(max(refinedStart, start), end)
+        refinedEnd = max(min(refinedEnd, end), start)
+        return (refinedStart, refinedEnd)
+    }
+
+    /// Compact-store access for CANDIDATE-time quiescence refinement
+    /// (2026-08-30), identity-sourced exactly like the confirmed-sleep
+    /// lanes' context. Static so off-main projection work items can capture
+    /// or build it without actor hops; the identity read is a UserDefaults
+    /// lookup. Nil (no persisted strap) disables the compact fallback and
+    /// keeps candidate bounds byte-identical to history.
+    nonisolated static func sleepCandidateCompactMotionContext(
+        now: Date = Date()
+    ) -> ConfirmedSleepCompactMotionContext? {
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return nil }
+        return ConfirmedSleepCompactMotionContext(
+            store: .shared,
+            strapIdentifier: strapIdentifier,
+            now: now
+        )
+    }
+
     nonisolated static func aggregateSleepCandidates(
         in sourceSessions: [SavedSession],
         rest: Int,
@@ -45933,7 +48087,8 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         historicalMotionPolicy: HistoricalSleepMotionPolicy,
         cooperativeDeadline: AtriaSleepSettlementDeadline,
-        includeResumedReviewCandidates: Bool = false
+        includeResumedReviewCandidates: Bool = false,
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> [AggregateSleepCandidate] {
         try aggregateSleepCandidatesCore(
             in: sourceSessions,
@@ -45942,7 +48097,8 @@ final class SessionStore: ObservableObject {
             calendar: calendar,
             historicalMotionPolicy: historicalMotionPolicy,
             cooperativeDeadline: cooperativeDeadline,
-            includeResumedReviewCandidates: includeResumedReviewCandidates
+            includeResumedReviewCandidates: includeResumedReviewCandidates,
+            compactMotion: compactMotion
         )
     }
 
@@ -45953,7 +48109,10 @@ final class SessionStore: ObservableObject {
         calendar: Calendar,
         historicalMotionPolicy: HistoricalSleepMotionPolicy,
         cooperativeDeadline: AtriaSleepSettlementDeadline?,
-        includeResumedReviewCandidates: Bool
+        includeResumedReviewCandidates: Bool,
+        // 2026-08-30 quiescence refinement: optional, default-nil compact
+        // evidence channel. Nil keeps every legacy caller byte-identical.
+        compactMotion: ConfirmedSleepCompactMotionContext? = nil
     ) throws -> [AggregateSleepCandidate] {
         try cooperativeDeadline?.checkpoint()
         var fullArchiveMotionSnapshot: HistoricalArchive.MotionArchiveSnapshot?
@@ -46156,13 +48315,44 @@ final class SessionStore: ObservableObject {
             ).flatMap(Self.splitShortPreludeFromDenseSleepCluster)
         }
         try cooperativeDeadline?.checkpoint()
+        // A cluster that reaches the lane gates and is refused everywhere used
+        // to vanish with no DetectionEvent and no log, leaving "no sleep
+        // candidates proposed at all" undiagnosable on device. Deterministic
+        // replay policies stay silent: a replay re-walks history and must not
+        // rewrite today's user-facing detection ring.
+        let logSkippedCluster: (String, String, Date, Date) -> Void = { reason, detail, windowStart, windowEnd in
+            guard historicalMotionPolicy == .boundedRecent
+                    || historicalMotionPolicy == .fullArchive else { return }
+            DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
+                                                     reason: reason,
+                                                     detail: detail,
+                                                     windowStart: windowStart,
+                                                     windowEnd: windowEnd))
+        }
         var candidates: [AggregateSleepCandidate] = []
         candidates.reserveCapacity(clusters.count)
-        for cluster in clusters {
-            try cooperativeDeadline?.checkpoint()
-            let candidate: AggregateSleepCandidate? = try {
-                () throws -> AggregateSleepCandidate? in
+        // Awake-split retry context. Non-nil ONLY for a sub-cluster produced by
+        // `awakeSplitSubClusters` after the whole cluster was refused by every
+        // lane; a nil context is exact identity with the pre-retry evaluation.
+        // `boundedByAwakeRunAfter` records that the cut immediately after this
+        // sub-cluster was a sustained elevated-HR run — positive awake evidence
+        // at least as strong as the awake-after-session bound the nap lanes
+        // already accept (an elevated-dominated run of rest+22 minute means
+        // versus a 10-minute session averaging rest+15). `originalSessionIDs` names the
+        // parent fragments of the failed cluster so they cannot be misread as
+        // an independent recording continuing past a sub-window's end.
+        struct AwakeSplitContext {
+            let boundedByAwakeRunAfter: Bool
+            let originalSessionIDs: Set<UUID>
+        }
+        let evaluateCluster: (
+            _ cluster: [SavedSession],
+            _ splitContext: AwakeSplitContext?
+        ) throws -> AggregateSleepCandidate? = { cluster, splitContext in
                 try cooperativeDeadline?.checkpoint()
+                // A sub-cluster refusal must stay distinguishable from a
+                // whole-cluster refusal in the detection ring.
+                let skipDetailSuffix = splitContext == nil ? "" : "; post_split"
                 var capturedDuration = 0.0
                 var gaps: [TimeInterval] = []
                 gaps.reserveCapacity(max(0, cluster.count - 1))
@@ -46313,13 +48503,86 @@ final class SessionStore: ObservableObject {
                 let clusterDaytimeNapWindow = !clusterOvernightReviewWindow
                     && clusterStartHour >= 11
                     && clusterEndHour <= 20
-                let daytimeNapCandidateReady = clusterDaytimeNapWindow
-                    && span <= AggregateSleepCandidate.napMaximumSpan
+                let napSpanAndDurationReady = span <= AggregateSleepCandidate.napMaximumSpan
                     && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                // Clock-agnostic nap admission. A shifted-schedule wearer's real
+                // nap can sit at ANY clock hour, so the nap lanes cannot key on
+                // the civil daytime band alone. But a short low-HR window outside
+                // that band is also exactly what a fragment of a hole-riddled
+                // night — or of a sleep still in progress — looks like. Such a
+                // window may become a nap only when the evidence itself bounds it
+                // AFTER its end:
+                //   (a) a later session with sustained awake-level HR begins
+                //       within the cluster-join horizon after the window ends, or
+                //   (b) a separate sleep-eligible session starts at least one
+                //       join-gap after the window end (a closer eligible session
+                //       would have been clustered into this window, and a split
+                //       short prelude must not be minted as a nap beside its own
+                //       dense night), or
+                //   (c) the window ended at least 45 minutes ago and no session
+                //       outside this cluster continues past its end within the
+                //       join gap — the recording simply stopped, and nothing
+                //       marks the window as the leading fragment of more sleep.
+                // (c) reads the wall clock, so a just-ended window is deferred,
+                // not lost: the next aggregation pass re-evaluates it.
+                let anyHourNapBounded: Bool = try {
+                    guard !clusterDaytimeNapWindow, napSpanAndDurationReady else {
+                        return false
+                    }
+                    // A sub-cluster whose trailing cut was a sustained
+                    // elevated-HR run is bounded by construction: the run is
+                    // positive awake evidence stronger than the awake-after
+                    // session bound below. A hole-bounded sub-cluster gets no
+                    // such credit — a hole is a boundary, never awake evidence.
+                    if splitContext?.boundedByAwakeRunAfter == true { return true }
+                    let joinGap: TimeInterval = 2 * 60 * 60
+                    var clusterIDs = Set(cluster.map(\.id))
+                    // Parent fragments of the just-failed cluster are the same
+                    // evidence this sub-cluster was carved from, not an
+                    // independent recording continuing past its end.
+                    if let splitContext {
+                        clusterIDs.formUnion(splitContext.originalSessionIDs)
+                    }
+                    var awakeHRAfterWindow = false
+                    var continuesPastWindowEnd = false
+                    for (index, other) in sourceSessions.enumerated() {
+                        if index.isMultiple(of: 64) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        guard !clusterIDs.contains(other.id) else { continue }
+                        if other.end > end.addingTimeInterval(60),
+                           other.start < end.addingTimeInterval(joinGap) {
+                            continuesPastWindowEnd = true
+                        }
+                        if other.start >= end.addingTimeInterval(-60),
+                           other.start < end.addingTimeInterval(joinGap),
+                           other.duration >= 10 * 60,
+                           let stats = sessionHRStats[other.id],
+                           stats.roundedAverage >= rest + 15 {
+                            awakeHRAfterWindow = true
+                        }
+                    }
+                    if awakeHRAfterWindow { return true }
+                    for other in eligible where !clusterIDs.contains(other.id) {
+                        if other.start.timeIntervalSince(end) >= joinGap {
+                            return true
+                        }
+                    }
+                    return end.timeIntervalSinceNow <= -45 * 60
+                        && !continuesPastWindowEnd
+                }()
+                // Outside the daytime band, boundedness alone is not enough: the
+                // multi-fragment lane below carries no HR gate of its own, so the
+                // any-hour path additionally requires the low-HR nap envelope.
+                // Daytime-band clusters keep their existing admission unchanged.
+                let anyHourBoundedNapWindow = anyHourNapBounded
+                    && avg <= rest + 12
+                let napClockWindowReady = clusterDaytimeNapWindow || anyHourBoundedNapWindow
+                let napWindowCandidateReady = napClockWindowReady
+                    && napSpanAndDurationReady
                 let shortLowHRNapCandidateReady = cluster.count == 1
-                    && clusterDaytimeNapWindow
-                    && span <= AggregateSleepCandidate.napMaximumSpan
-                    && totalDuration >= AggregateSleepCandidate.napMinimumDuration
+                    && napClockWindowReady
+                    && napSpanAndDurationReady
                     && avg <= rest + 12
                     && peak <= rest + 35
                 // A daytime low-HR window can be desk work, reading, or active
@@ -46329,7 +48592,7 @@ final class SessionStore: ObservableObject {
                 // unavailable. Compute the physiology shape here, then apply
                 // the validated-motion requirement once motion provenance has
                 // been resolved below.
-                let napPhysiologyReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady
+                let napPhysiologyReady = napWindowCandidateReady || shortLowHRNapCandidateReady
                 let hrSampleCoverageFraction = min(1, Double(allHR.count) / max(1, totalDuration))
                 var rrSampleCount = 0
                 var qualifiedRRSampleCount = 0
@@ -46420,7 +48683,19 @@ final class SessionStore: ObservableObject {
                         || fragmentedFallbackReady
                         || napPhysiologyReady
                         || denseMorningHROnlyReviewReady
-                        || denseLongHROnlyReviewReady else { return nil }
+                        || denseLongHROnlyReviewReady else {
+                    logSkippedCluster(
+                        "cluster_no_surviving_lane",
+                        "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
+                            + "\(Int(totalDuration / 60)) min captured; no lane fit "
+                            + "(strict 3h, fragmented fallback, nap shape, dense morning "
+                            + "and dense long HR-only were all evaluated and refused)"
+                            + skipDetailSuffix,
+                        start,
+                        end
+                    )
+                    return nil
+                }
                 var motionHintCount = 0
                 var recoveredEpochs: [AtriaRecoveredMotionEpoch] = []
                 for session in cluster {
@@ -46526,6 +48801,20 @@ final class SessionStore: ObservableObject {
                     ? recoveredMotion.lowMotionValidated
                     : (historicalMotion.lowMotionReady || sessionMotionValidated)
                 let napCandidateReady = napPhysiologyReady && motionValidated
+                // Motion offload on this strap can lag hours-to-days behind HR,
+                // so a real nap with unambiguous nap physiology must not die
+                // silently on that lag. Admit it WITHOUT motion validation for
+                // wearer review only, behind a stricter HR bar than the nap
+                // admission floor: average within +12, P90 within +30, and at
+                // least 30 captured minutes versus the 20-minute nap floor. The
+                // candidate keeps motionEvidenceValidated=false, so downstream
+                // surfaces it as review_needed/unconfirmed, and every automatic
+                // confirmation tier rejects kind == "nap_candidate" outright.
+                let hrOnlyNapReviewReady = napPhysiologyReady
+                    && !motionValidated
+                    && avg <= rest + 12
+                    && hrP90 <= rest + 30
+                    && totalDuration >= 30 * 60
                 let motionSource = recoveredMotion.hasRecoveredEpochs
                     ? recoveredMotion.source
                     : (historicalMotion.lowMotionReady
@@ -46593,22 +48882,59 @@ final class SessionStore: ObservableObject {
                     && elevatedSampleFraction < 0.10
                     && elevatedSampleFraction * totalDuration < 20 * 60
                 guard napCandidateReady
+                        || hrOnlyNapReviewReady
                         || motionValidatedMainSleepReady
                         || stableHROnlyMainSleepReady
                         || highSpecificityFragmentedHROnlyMainSleepReady
                         || degradedHROnlyMainSleepReviewReady
                         || denseMorningHROnlyReviewReady
                         || denseLongHROnlyReviewReady else {
+                    if napPhysiologyReady {
+                        logSkippedCluster(
+                            "nap_motion_unvalidated_hr_weak",
+                            "Nap-shaped window \(clusterStartHour)h–\(clusterEndHour)h, "
+                                + "\(Int(totalDuration / 60)) min captured; stillness "
+                                + "unvalidated and HR below the stricter review bar "
+                                + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
+                                + "30 min floor)"
+                                + skipDetailSuffix,
+                            start,
+                            end
+                        )
+                    } else {
+                        logSkippedCluster(
+                            "cluster_no_surviving_lane",
+                            "Low-HR window \(clusterStartHour)h–\(clusterEndHour)h, "
+                                + "\(Int(totalDuration / 60)) min captured; motion and "
+                                + "main-sleep review lanes were all evaluated and refused"
+                                + skipDetailSuffix,
+                            start,
+                            end
+                        )
+                    }
                     return nil
                 }
                 let motionReason = motionValidated
                     ? "historical gravity low-motion validated"
                     : "\(motionClause); historical gravity \(historicalMotion.reason)"
                 let reason: String
-                if napPhysiologyReady && !napCandidateReady {
+                if napPhysiologyReady && !napCandidateReady && !hrOnlyNapReviewReady {
                     // Fail closed: the HR shape is retained in diagnostics but
                     // must not become a user-visible nap review.
+                    logSkippedCluster(
+                        "nap_motion_unvalidated_hr_weak",
+                        "Nap-shaped window \(clusterStartHour)h–\(clusterEndHour)h, "
+                            + "\(Int(totalDuration / 60)) min captured; stillness "
+                            + "unvalidated and HR below the stricter review bar "
+                            + "(avg \(avg) vs rest \(rest)+12, P90 \(hrP90) vs rest+30, "
+                            + "30 min floor)"
+                            + skipDetailSuffix,
+                        start,
+                        end
+                    )
                     return nil
+                } else if napPhysiologyReady && !napCandidateReady && hrOnlyNapReviewReady {
+                    reason = "HR-only nap candidate; stillness not yet validated; user confirmation required; \(motionReason)"
                 } else if fragmentedFallbackReady && !strictDurationReady {
                     reason = "HR-only interrupted overnight low-HR aggregate; below strict 3h low-HR total but span supports broken sleep fallback; \(motionReason)"
                 } else if shortLowHRNapCandidateReady {
@@ -46624,7 +48950,12 @@ final class SessionStore: ObservableObject {
                 } else {
                     reason = "HR-only overnight review window; user confirmation required; \(motionReason)"
                 }
-                let kind = napCandidateReady ? "nap_candidate" : "overnight_sleep"
+                // An HR-only nap review is still a nap: labeling it
+                // "overnight_sleep" would hand an unvalidated daytime window to
+                // the main-sleep presentation and gating paths.
+                let napReviewCandidate = napCandidateReady
+                    || (napPhysiologyReady && hrOnlyNapReviewReady)
+                let kind = napReviewCandidate ? "nap_candidate" : "overnight_sleep"
                 // Duration honesty (2026-08-04, user-caught): deduct SUSTAINED
                 // validated wake movement from the reported duration so a
                 // candidate can never claim duration == span across a stretch
@@ -46658,7 +48989,7 @@ final class SessionStore: ObservableObject {
                             in: DateInterval(start: start, end: end),
                             minimumDuration: Self.sleepOnsetClampMinimumSustainedUse
                         ),
-                        minimumRetainedDuration: napCandidateReady
+                        minimumRetainedDuration: napReviewCandidate
                             ? AggregateSleepCandidate.napMinimumDuration
                             : AggregateSleepCandidate.strictMinimumDuration
                     )
@@ -46673,14 +49004,117 @@ final class SessionStore: ObservableObject {
                         forKey: "atria.debug.sleepOnsetClamp.v1"
                     )
                 }
+                // 2026-08-30 motion-quiescence refinement (owner-caught
+                // 02:01-proposed vs ~04:37 real onset; see
+                // `motionQuiescenceRefinedBounds`). Evidence order: session-
+                // attached epochs when window provenance is measurement-
+                // sufficient (deterministic — they are part of the session
+                // input, so they refine under every policy, `.sessionOnly`
+                // included); otherwise a recency/row-bounded compact tick
+                // read (itself sufficiency-gated and fail-closed nil),
+                // which `.sessionOnly` replay excludes exactly as it
+                // excludes the device-use journal above. No evidence keeps
+                // today's bounds byte-identical. The refinement only ever
+                // narrows: the start moves later (the LATER of the
+                // device-use clamp and the quiescence onset wins), the end
+                // moves earlier.
+                var quiescenceEpochs: [AtriaRecoveredMotionEpoch]?
+                if recoveredMotion.measurementSufficient {
+                    quiescenceEpochs = recoveredEpochs
+                } else if historicalMotionPolicy != .sessionOnly,
+                          let compactMotion,
+                          let cooperativeDeadline,
+                          let compactEvidence = try Self
+                            .compactWindowMotionEvidence(
+                                start: start,
+                                end: end,
+                                compactMotion: compactMotion,
+                                cooperativeDeadline: cooperativeDeadline
+                            ) {
+                    quiescenceEpochs = compactEvidence.epochs
+                }
+                var refinedStart = clampedStart
+                var refinedEnd = end
+                if let quiescenceEpochs {
+                    let refined = try Self.motionQuiescenceRefinedBounds(
+                        start: start,
+                        end: end,
+                        epochs: quiescenceEpochs,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                    refinedStart = max(clampedStart, refined.start)
+                    refinedEnd = min(end, refined.end)
+                }
+                let quiescenceApplied = refinedStart > clampedStart
+                    || refinedEnd < end
+                // Trimmed lead/tail time must never count toward credited
+                // sleep. Both are wall-clock deductions from the captured
+                // total, matching the device-use clamp's accounting; over-
+                // deducting across a coverage hole under-credits, which is
+                // the fail-closed direction.
+                let leadingTrimSeconds = max(
+                    0, refinedStart.timeIntervalSince(start)
+                )
+                let trailingTrimSeconds = max(
+                    0, end.timeIntervalSince(refinedEnd)
+                )
+                var netMotionAwakeSeconds = motionAwakeSeconds
+                var refinedReason = reason
+                if quiescenceApplied {
+                    // Duration floors re-check AFTER refinement: a candidate
+                    // this clamp shrinks below its admission floor dies with
+                    // a named reason — it must never propose a sliver.
+                    let refinedFloor = napReviewCandidate
+                        ? AggregateSleepCandidate.napMinimumDuration
+                        : AggregateSleepCandidate.strictMinimumDuration
+                    let refinedSpan = refinedEnd.timeIntervalSince(refinedStart)
+                    guard refinedSpan >= refinedFloor else {
+                        AtriaDebugLog("ATRIADBG sleep_candidate_onset_refined status=discarded reason=refined_below_duration_floor start=%.0f end=%.0f refined_span_min=%d floor_min=%d",
+                                      start.timeIntervalSince1970,
+                                      end.timeIntervalSince1970,
+                                      Int(max(0, refinedSpan) / 60),
+                                      Int(refinedFloor / 60))
+                        logSkippedCluster(
+                            "sleep_candidate_quiescence_below_floor",
+                            "Motion-quiescence refinement left "
+                                + "\(Int(max(0, refinedSpan) / 60)) min, below the "
+                                + "\(Int(refinedFloor / 60))-min floor; sustained "
+                                + "restlessness contradicted the HR-shaped window"
+                                + skipDetailSuffix,
+                            start,
+                            end
+                        )
+                        return nil
+                    }
+                    // Wake deducted against the ORIGINAL window would
+                    // double-count the trimmed restlessness; re-measure
+                    // inside the refined bounds, from the same evidence that
+                    // moved them.
+                    netMotionAwakeSeconds = try cooperativeSustainedAwakeSeconds(
+                        epochs: quiescenceEpochs ?? recoveredEpochs,
+                        start: refinedStart,
+                        end: refinedEnd,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                    let startDeltaMinutes = Int(
+                        max(0, refinedStart.timeIntervalSince(clampedStart)) / 60
+                    )
+                    let endDeltaMinutes = Int(trailingTrimSeconds / 60)
+                    AtriaDebugLog("ATRIADBG sleep_candidate_onset_refined start_delta_min=%d end_delta_min=%d reason=motion_quiescence",
+                                  startDeltaMinutes,
+                                  endDeltaMinutes)
+                    refinedReason += "; bounds refined to sustained motion "
+                        + "quiescence (onset +\(startDeltaMinutes) min, "
+                        + "end -\(endDeltaMinutes) min)"
+                }
                 return AggregateSleepCandidate(kind: kind,
                                                day: day,
                                                eventTimeZoneIdentifier: eventTimeZoneIdentifier,
                                                sessions: cluster.count,
-                                               start: clampedStart,
-                                               end: end,
-                                               duration: max(0, totalDuration - motionAwakeSeconds - onsetClampSeconds),
-                                               span: end.timeIntervalSince(clampedStart),
+                                               start: refinedStart,
+                                               end: refinedEnd,
+                                               duration: max(0, totalDuration - netMotionAwakeSeconds - leadingTrimSeconds - trailingTrimSeconds),
+                                               span: refinedEnd.timeIntervalSince(refinedStart),
                                                maxGap: maxGap,
                                                samples: allHR.count,
                                                hrObservedCoverageFraction: hrObservedCoverageFraction,
@@ -46694,7 +49128,7 @@ final class SessionStore: ObservableObject {
                                                baselineRestingHR: rest,
                                                restingHR: resting,
                                                confidence: confidence,
-                                               reason: reason,
+                                               reason: refinedReason,
                                                motionHintCount: motionHintCount,
                                                motionHintKinds: motionHintKinds,
                                                motionEvidenceSource: motionSource,
@@ -46719,10 +49153,53 @@ final class SessionStore: ObservableObject {
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
                                                denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady,
                                                qualifiedRRCoverageFraction: qualifiedRRCoverageFraction)
-            }()
+        }
+        for cluster in clusters {
             try cooperativeDeadline?.checkpoint()
-            if let candidate {
+            if let candidate = try evaluateCluster(cluster, nil) {
                 candidates.append(candidate)
+                continue
+            }
+            // Awake-split retry (2026-08-29 device dead-end): real sleep plus
+            // adjacent awake stretches can chain into one cluster that every
+            // lane refuses whole — the 17h evening-through-morning chain, and
+            // equally the 5.6h morning cluster whose interior awake runs push
+            // its variance and P90 past every review bar. Only when the
+            // unsplit cluster was refused everywhere AND its span exceeds the
+            // nap ceiling (a nap-sized window was already judged at full
+            // fidelity; nothing shorter can hide lane-visible structure), cut
+            // it at POSITIVE sustained-awake evidence (and at long coverage
+            // holes, which are boundaries, never evidence) and re-evaluate
+            // each sub-cluster through the same lanes exactly once. A cluster
+            // any lane accepts returns above and is never split, so this can
+            // only ever add candidates to an outcome that was empty.
+            guard let unsplitStart = cluster.first?.start,
+                  let unsplitEnd = cluster.last?.end,
+                  unsplitEnd.timeIntervalSince(unsplitStart)
+                    > AggregateSleepCandidate.napMaximumSpan else {
+                continue
+            }
+            let split = try Self.awakeSplitSubClusters(
+                in: cluster,
+                rest: rest,
+                cooperativeDeadline: cooperativeDeadline
+            )
+            guard !split.subClusters.isEmpty else { continue }
+            for (sliceID, sliceStats) in split.sliceHRStats {
+                sessionHRStats[sliceID] = sliceStats
+            }
+            let originalSessionIDs = Set(cluster.map(\.id))
+            for subCluster in split.subClusters {
+                try cooperativeDeadline?.checkpoint()
+                if let candidate = try evaluateCluster(
+                    subCluster.sessions,
+                    AwakeSplitContext(
+                        boundedByAwakeRunAfter: subCluster.boundedByAwakeRunAfter,
+                        originalSessionIDs: originalSessionIDs
+                    )
+                ) {
+                    candidates.append(candidate)
+                }
             }
         }
         let resumed: [AggregateSleepCandidate]
@@ -46766,6 +49243,243 @@ final class SessionStore: ObservableObject {
             result.sort(by: ordering)
         }
         return result
+    }
+
+    /// Awake-split thresholds. The elevation floor sits at rest+22 — above the
+    /// average-HR ceiling of every HR-only review lane's admission shape — so a
+    /// minute that clears it could never have been accepted sleep, and
+    /// sustained mid-sleep elevation below it (real REM/arousal minutes) never
+    /// cuts a night apart on its own. Real awake stretches are NOT wall-to-wall
+    /// elevated at minute resolution (device 2026-08-29: an 18-minute awake
+    /// blip carried isolated 75-78 minutes between 79-86 ones, and the waking
+    /// tail dipped to 74 for single minutes inside 22 elevated ones), so a run
+    /// is bounded by elevated minutes but tolerates interior minutes down to
+    /// the support floor as long as the elevated share stays dominant. A
+    /// support-floor minute is never itself evidence; it can only connect
+    /// elevated minutes. A coverage hole must exceed the 45-minute quiet-tail
+    /// horizon the nap bound already uses before it can act as a boundary; a
+    /// hole is never awake evidence.
+    private nonisolated static let awakeSplitElevationOverRestBPM = 22
+    private nonisolated static let awakeSplitSupportOverRestBPM = 15
+    private nonisolated static let awakeSplitMinimumRunMinutes = 15
+    private nonisolated static let awakeSplitMinimumElevatedRunFraction = 0.60
+    private nonisolated static let awakeSplitMinimumHoleSeconds: TimeInterval = 45 * 60
+    /// Cost bounds: the per-minute timeline is capped at 26 hours and the
+    /// session fan-out at 64 fragments; a cluster beyond either bound skips
+    /// the retry entirely and keeps the plain refusal.
+    private nonisolated static let awakeSplitMaximumTimelineMinutes = 26 * 60
+    private nonisolated static let awakeSplitMaximumSessions = 64
+
+    /// Cuts a lane-refused cluster at sustained elevated-HR runs and long
+    /// coverage holes, yielding sub-clusters for exactly one re-evaluation
+    /// pass. Honesty law: every sub-cluster's metrics recompute from its own
+    /// sessions' points only — a sliced fragment keeps only the HR/RR samples
+    /// and recovered-motion epochs that physically fall inside its window, and
+    /// awake-run minutes belong to no sub-cluster. An empty result means no
+    /// positive cut point existed; the caller keeps the original refusal.
+    private nonisolated static func awakeSplitSubClusters(
+        in cluster: [SavedSession],
+        rest: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (subClusters: [(sessions: [SavedSession], boundedByAwakeRunAfter: Bool)],
+                 sliceHRStats: [UUID: CooperativeBPMStats]) {
+        guard cluster.count <= awakeSplitMaximumSessions,
+              let clusterStart = cluster.first?.start,
+              let clusterEnd = cluster.last?.end else { return ([], [:]) }
+        let span = clusterEnd.timeIntervalSince(clusterStart)
+        let minuteCount = Int((span / 60).rounded(.up))
+        guard minuteCount > 0,
+              minuteCount <= awakeSplitMaximumTimelineMinutes else { return ([], [:]) }
+        // Per-minute mean HR over the cluster span. Downsampling to minute
+        // means bounds the work of this synchronous, non-deadlined lane.
+        var minuteSum = [Double](repeating: 0, count: minuteCount)
+        var minuteSamples = [Int](repeating: 0, count: minuteCount)
+        for session in cluster {
+            try cooperativeDeadline?.checkpoint()
+            let base = session.start.timeIntervalSince(clusterStart)
+            for (index, point) in session.points.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let offset = base + min(max(0, point.t), session.duration)
+                let minute = min(minuteCount - 1, max(0, Int(offset / 60)))
+                minuteSum[minute] += Double(point.bpm)
+                minuteSamples[minute] += 1
+            }
+        }
+        // Cut intervals in minute indices. `awakeRun` distinguishes positive
+        // awake evidence from a mere coverage boundary. A run begins and ends
+        // on ELEVATED minutes; a covered support-floor minute keeps the run
+        // alive, and an uncovered minute or one below the support floor closes
+        // it. On close, the cut is the LONGEST elevated-bounded prefix that is
+        // both long enough and elevated-dominated: sparse late elevated
+        // minutes bridged by support must not dilute a genuine dense awake
+        // stretch below the fraction floor (device 2026-08-29: the real
+        // 07:17-07:34 awake blip measured 12/18 elevated, but stray elevated
+        // minutes through 07:43 stretched the raw run to 15/27 and lost it).
+        var cuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
+        let elevationFloor = Double(rest + awakeSplitElevationOverRestBPM)
+        let supportFloor = Double(rest + awakeSplitSupportOverRestBPM)
+        var runStart: Int?
+        var runElevatedMinutes: [Int] = []
+        runElevatedMinutes.reserveCapacity(minuteCount)
+        var holeStart: Int?
+        for minute in 0...minuteCount {
+            if minute.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            let covered = minute < minuteCount && minuteSamples[minute] > 0
+            let mean = covered
+                ? minuteSum[minute] / Double(minuteSamples[minute]) : 0
+            if covered, mean >= elevationFloor {
+                if runStart == nil {
+                    runStart = minute
+                    runElevatedMinutes.removeAll(keepingCapacity: true)
+                }
+                runElevatedMinutes.append(minute)
+            } else if !covered || mean < supportFloor, let started = runStart {
+                for index in stride(from: runElevatedMinutes.count - 1,
+                                    through: 0,
+                                    by: -1) {
+                    let length = runElevatedMinutes[index] + 1 - started
+                    guard length >= awakeSplitMinimumRunMinutes else { break }
+                    if Double(index + 1) / Double(length)
+                        >= awakeSplitMinimumElevatedRunFraction {
+                        cuts.append((started, runElevatedMinutes[index] + 1, true))
+                        break
+                    }
+                }
+                runStart = nil
+            }
+            let uncovered = minute < minuteCount && minuteSamples[minute] == 0
+            if uncovered {
+                if holeStart == nil { holeStart = minute }
+            } else if let started = holeStart {
+                if Double(minute - started) * 60 > awakeSplitMinimumHoleSeconds {
+                    cuts.append((started, minute, false))
+                }
+                holeStart = nil
+            }
+        }
+        // A hole is only a boundary, never evidence — and a refused chain of
+        // quiet fragments whose ONLY cut points are evidence gaps must stay
+        // refused: splitting it would manufacture lane-sized windows out of
+        // nothing but missing data (pinned: a one-hour daytime evidence gap
+        // between two quiet fragments is not a storage-only rollover). Holes
+        // participate as boundaries only when the cluster also carries at
+        // least one positive sustained-awake run.
+        guard cuts.contains(where: { $0.awakeRun }) else { return ([], [:]) }
+        cuts.sort { $0.startMinute < $1.startMinute }
+        var mergedCuts: [(startMinute: Int, endMinute: Int, awakeRun: Bool)] = []
+        for cut in cuts {
+            if var last = mergedCuts.last, cut.startMinute <= last.endMinute {
+                last.endMinute = max(last.endMinute, cut.endMinute)
+                last.awakeRun = last.awakeRun || cut.awakeRun
+                mergedCuts[mergedCuts.count - 1] = last
+            } else {
+                mergedCuts.append(cut)
+            }
+        }
+        // Keep intervals are the complement of the cuts within the cluster
+        // span. Each records whether the cut ending it was positive awake
+        // evidence (versus a hole, or the end of the cluster).
+        var keeps: [(start: Date, end: Date, boundedByAwakeRunAfter: Bool)] = []
+        var cursorMinute = 0
+        for cut in mergedCuts {
+            if cut.startMinute > cursorMinute {
+                keeps.append((
+                    clusterStart.addingTimeInterval(Double(cursorMinute) * 60),
+                    clusterStart.addingTimeInterval(Double(cut.startMinute) * 60),
+                    cut.awakeRun
+                ))
+            }
+            cursorMinute = max(cursorMinute, cut.endMinute)
+        }
+        if cursorMinute < minuteCount {
+            keeps.append((
+                clusterStart.addingTimeInterval(Double(cursorMinute) * 60),
+                clusterEnd,
+                false
+            ))
+        }
+        var subClusters: [(sessions: [SavedSession], boundedByAwakeRunAfter: Bool)] = []
+        var sliceHRStats: [UUID: CooperativeBPMStats] = [:]
+        for keep in keeps {
+            try cooperativeDeadline?.checkpoint()
+            var subSessions: [SavedSession] = []
+            for session in cluster {
+                guard session.end > keep.start, session.start < keep.end else { continue }
+                if session.start >= keep.start, session.end <= keep.end {
+                    // Untouched fragment: identity, including its cached stats.
+                    subSessions.append(session)
+                    continue
+                }
+                let sliceStart = max(session.start, keep.start)
+                let sliceEnd = min(session.end, keep.end)
+                guard sliceEnd.timeIntervalSince(sliceStart)
+                        >= AggregateSleepCandidate.minimumFragmentDuration else { continue }
+                let fromOffset = sliceStart.timeIntervalSince(session.start)
+                let toOffset = sliceEnd.timeIntervalSince(session.start)
+                // A slice that reaches the session's own end keeps the exact
+                // end-boundary sample; an interior slice stays half-open so a
+                // cut-run boundary sample never leaks into the sleep side.
+                let includesSessionEnd = sliceEnd >= session.end
+                var slicePoints: [SavedSession.Point] = []
+                for (index, point) in session.points.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    guard point.t >= fromOffset,
+                          includesSessionEnd ? point.t <= toOffset : point.t < toOffset else { continue }
+                    slicePoints.append(.init(t: point.t - fromOffset, bpm: point.bpm))
+                }
+                guard !slicePoints.isEmpty else { continue }
+                var sliceRRPoints: [SavedSession.RRPoint]?
+                if let rrPoints = session.rrPoints {
+                    var kept: [SavedSession.RRPoint] = []
+                    for (index, rrPoint) in rrPoints.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        guard rrPoint.t >= fromOffset,
+                              includesSessionEnd ? rrPoint.t <= toOffset : rrPoint.t < toOffset else { continue }
+                        kept.append(.init(t: rrPoint.t - fromOffset,
+                                          ms: rrPoint.ms,
+                                          source: rrPoint.source))
+                    }
+                    sliceRRPoints = kept.isEmpty ? nil : kept
+                }
+                var sliceEpochs: [AtriaRecoveredMotionEpoch]?
+                if let epochs = session.recoveredMotionEpochs {
+                    let kept = epochs.filter { $0.end > sliceStart && $0.start < sliceEnd }
+                    sliceEpochs = kept.isEmpty ? nil : kept
+                }
+                // The whole-session stillness claim covers any sub-window of
+                // the same session, so the validated-motion booleans carry
+                // over; diagnostic hint counters and audit tallies cannot be
+                // attributed to a sub-window and are dropped rather than
+                // duplicated onto each slice.
+                let slice = SavedSession(id: UUID(),
+                                         start: sliceStart,
+                                         end: sliceEnd,
+                                         label: session.label,
+                                         points: slicePoints,
+                                         rrPoints: sliceRRPoints,
+                                         motionEvidenceSource: session.motionEvidenceSource,
+                                         motionEvidenceValidated: session.motionEvidenceValidated,
+                                         recoveredMotionEpochs: sliceEpochs,
+                                         kind: session.kind,
+                                         eventTimeZoneIdentifier: session.eventTimeZoneIdentifier)
+                sliceHRStats[slice.id] = try slice.cooperativeBPMStats(
+                    cooperativeDeadline: cooperativeDeadline
+                )
+                subSessions.append(slice)
+            }
+            if !subSessions.isEmpty {
+                subClusters.append((subSessions, keep.boundedByAwakeRunAfter))
+            }
+        }
+        return (subClusters, sliceHRStats)
     }
 
     private nonisolated static func cooperativeRecoveredMotionSleepProvenance(
@@ -54204,7 +56918,7 @@ struct HistoryView: View {
                                                description: Text("Finish a session to save it here."))
                             .frame(maxWidth: .infinity)
                             .padding(20)
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     } else {
                         historySection(title: "Daily rollups", subtitle: "Recent saved evidence") {
                             LazyVStack(spacing: 12) {
@@ -54417,7 +57131,7 @@ struct HistoryView: View {
             }
         }
         .padding(14)
-        .atriaCard(cornerRadius: 18, emphasis: .soft)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(fact.timeline.label), compact verified historical session")
     }
@@ -54455,7 +57169,7 @@ struct HistoryView: View {
                 }
                 Spacer(minLength: 12)
                 Text("\(snapshot.sessions.count)")
-                    .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+                    .font(AtriaDesignTokens.Typography.cardHeroValue.monospacedDigit())
             }
 
             HStack(spacing: 12) {
@@ -54465,7 +57179,7 @@ struct HistoryView: View {
             }
         }
         .padding(18)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func historySection<Content: View>(title: String,
@@ -54484,7 +57198,7 @@ struct HistoryView: View {
             content()
         }
         .padding(18)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private func historySessionRow(_ row: HistorySessionRowSnapshot) -> some View {
@@ -54510,7 +57224,7 @@ struct HistoryView: View {
             }
         }
         .padding(16)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
     }
 
     private func historySessionPill(_ label: String, value: String, tint: Color) -> some View {
@@ -54716,7 +57430,7 @@ private struct HistorySleepReviewCTA: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         // Keep Adjust and Confirm as independent VoiceOver actions. Combining
         // this interactive card turns both buttons into one static element.
         .accessibilityElement(children: .contain)
@@ -56531,10 +59245,72 @@ struct AtriaSleepConsistency: Equatable {
     let wakeTimeRegularity: Int?
     let combinedPercent: Int?
     let qualifiedNightCount: Int
+    /// Withheld (nil) while qualified when the bedtimes do not share one
+    /// centre — see `minimumResultantLengthForTypical`. A centre that nobody
+    /// sleeps at is not a typical bedtime.
     let typicalBedtimeMinutes: Int?
     let typicalWakeTimeMinutes: Int?
     let deviations: [NightDeviation]
     let recommendedWindow: RecommendedWindow?
+    /// Where the schedule visual's 18h axis starts, in civil minutes. Every
+    /// anchored minute in `deviations`, the typical times and the recommended
+    /// window unwrap from this point, so the strip draws them without a
+    /// parallel calculation. It follows the circular centre of the bedtimes
+    /// (five hours before it, on the hour): 18:00 for a 23:00 sleeper — the
+    /// old fixed axis — and 08:00 for someone whose main sleep starts at
+    /// 13:15, whose nights the fixed axis used to drop or draw a day late.
+    var scheduleAxisStartMinutes: Int = 18 * 60
+
+    /// Circular statistics on the 24h clock. Civil times live on a circle, so
+    /// a straight mean of minutes is only right when every night sits on the
+    /// same side of an arbitrary cut. The old noon cut placed 11:28 and 12:08
+    /// — forty minutes apart — 23.3 hours apart, and reported a "typical
+    /// bedtime" the owner had never gone to bed at (issue #41). The resultant
+    /// length `r` (1 = identical times, 0 = evenly scattered) says whether one
+    /// centre is meaningful at all.
+    struct CircularClock: Equatable {
+        let meanMinutes: Int
+        let resultantLength: Double
+
+        init?(minutes: [Int]) {
+            guard !minutes.isEmpty else { return nil }
+            var x = 0.0
+            var y = 0.0
+            for minute in minutes {
+                let theta = Double(minute) / 1_440 * 2 * Double.pi
+                x += cos(theta)
+                y += sin(theta)
+            }
+            x /= Double(minutes.count)
+            y /= Double(minutes.count)
+            var angle = atan2(y, x)
+            if angle < 0 { angle += 2 * Double.pi }
+            var mean = Int((angle / (2 * Double.pi) * 1_440).rounded())
+            if mean >= 1_440 { mean -= 1_440 }
+            meanMinutes = mean
+            resultantLength = (x * x + y * y).squareRoot()
+        }
+
+        /// Shortest way round the clock between two civil times.
+        static func distance(_ a: Int, _ b: Int) -> Int {
+            let d = (((a - b) % 1_440) + 1_440) % 1_440
+            return min(d, 1_440 - d)
+        }
+    }
+
+    /// Below this resultant length the nights do not share one centre (two
+    /// clusters, or scatter wider than about 4.5h circular std). Naming a mean
+    /// would fabricate a time nobody sleeps at, so the typical time is withheld
+    /// and the copy says so — the same fail-closed rule as
+    /// `minimumQualifiedNights`.
+    static let minimumResultantLengthForTypical = 0.5
+
+    /// "Usually 11:05 PM – 6:40 AM", or nil when either lane has no single
+    /// typical time. Consumers show the honest absence rather than "--" pairs.
+    var typicalWindowText: String? {
+        guard let typicalBedtimeMinutes, let typicalWakeTimeMinutes else { return nil }
+        return "\(Self.clockText(typicalBedtimeMinutes)) – \(Self.clockText(typicalWakeTimeMinutes))"
+    }
 
     /// The newest qualified night — every consumer highlights the same row.
     var latestNight: NightDeviation? {
@@ -56554,6 +59330,9 @@ struct AtriaSleepConsistency: Equatable {
     var footnote: String {
         guard let combinedPercent else {
             return "Needs \(Self.minimumQualifiedNights) qualified main-sleep nights (\(qualifiedNightCount) so far)."
+        }
+        if typicalBedtimeMinutes == nil || typicalWakeTimeMinutes == nil {
+            return "Bed or wake times fall into more than one cluster, so there is no single typical window yet."
         }
         if combinedPercent >= 85 { return "Very steady bed and wake timing." }
         if combinedPercent >= 70 { return "Mostly steady bed and wake timing." }
@@ -56581,15 +59360,17 @@ struct AtriaSleepConsistency: Equatable {
                 let endParts = calendar.dateComponents([.hour, .minute], from: end)
                 let bedtime = (startParts.hour ?? 0) * 60 + (startParts.minute ?? 0)
                 let wake = (endParts.hour ?? 0) * 60 + (endParts.minute ?? 0)
-                // Anchor both timings at the night that starts in the evening.
-                return (night.id,
-                        night.day,
-                        bedtime < 12 * 60 ? bedtime + 24 * 60 : bedtime,
-                        wake < 12 * 60 ? wake + 24 * 60 : wake)
+                // Raw civil clock minutes (0..<1440). Anchoring happens below,
+                // once the bedtimes' own centre is known — a fixed noon cut
+                // assumed sleep starts in the evening and split any
+                // afternoon-sleeping owner's nights across two days.
+                return (night.id, night.day, bedtime, wake)
             }
             .prefix(14)
 
-        guard timings.count >= minimumQualifiedNights else {
+        guard timings.count >= minimumQualifiedNights,
+              let bedClock = CircularClock(minutes: timings.map(\.bedtime)),
+              let wakeClock = CircularClock(minutes: timings.map(\.wake)) else {
             return Self(bedtimeRegularity: nil,
                         wakeTimeRegularity: nil,
                         combinedPercent: nil,
@@ -56599,42 +59380,71 @@ struct AtriaSleepConsistency: Equatable {
                         deviations: [],
                         recommendedWindow: nil)
         }
-        let bedtimes = timings.map(\.bedtime)
-        let wakes = timings.map(\.wake)
-        let typicalBedtime = Int((Double(bedtimes.reduce(0, +)) / Double(bedtimes.count)).rounded())
-        let typicalWake = Int((Double(wakes.reduce(0, +)) / Double(wakes.count)).rounded())
-        let deviations = timings.map {
-            NightDeviation(id: $0.id,
-                           day: $0.day,
-                           bedtimeMinutes: $0.bedtime,
-                           wakeMinutes: $0.wake,
-                           bedtimeDeviationMinutes: abs($0.bedtime - typicalBedtime),
-                           wakeDeviationMinutes: abs($0.wake - typicalWake))
+
+        // One axis for everything drawn or quoted: it starts five hours before
+        // the bedtimes' circular centre, on the hour, and every civil time
+        // unwraps forward from there. For a 23:00 sleeper that is 18:00 — the
+        // axis the strip always used — so evening schedules are unchanged.
+        let axisStart = ((((bedClock.meanMinutes - 5 * 60) % 1_440) + 1_440) % 1_440) / 60 * 60
+        func anchored(_ minute: Int) -> Int {
+            minute >= axisStart ? minute : minute + 1_440
         }
-        func regularity(_ values: [Int], typical: Int) -> Int {
-            let meanDeviation = Double(values.reduce(0) { $0 + abs($1 - typical) }) / Double(values.count)
+        let anchoredTimings = timings.map { timing -> (id: String, day: Date, bedtime: Int, wake: Int) in
+            let bedtime = anchored(timing.bedtime)
+            let civilDuration = (((timing.wake - timing.bedtime) % 1_440) + 1_440) % 1_440
+            return (timing.id, timing.day, bedtime, bedtime + civilDuration)
+        }
+        let typicalBedtime = anchored(bedClock.meanMinutes)
+        let typicalWake = typicalBedtime
+            + (((wakeClock.meanMinutes - bedClock.meanMinutes) % 1_440) + 1_440) % 1_440
+
+        // Deviations are the shortest way round the clock from each lane's
+        // centre, so a 23:50 night and a 00:20 night are 30 minutes apart
+        // whichever side of midnight the centre falls.
+        let deviations = anchoredTimings.map { timing in
+            NightDeviation(id: timing.id,
+                           day: timing.day,
+                           bedtimeMinutes: timing.bedtime,
+                           wakeMinutes: timing.wake,
+                           bedtimeDeviationMinutes: CircularClock.distance(timing.bedtime, typicalBedtime),
+                           wakeDeviationMinutes: CircularClock.distance(timing.wake, typicalWake))
+        }
+        func regularity(_ deviationMinutes: [Int]) -> Int {
+            let meanDeviation = Double(deviationMinutes.reduce(0, +)) / Double(deviationMinutes.count)
             return min(max(100 - Int((meanDeviation / 120 * 60).rounded()), 0), 100)
         }
-        let bedtimeRegularity = regularity(bedtimes, typical: typicalBedtime)
-        let wakeRegularity = regularity(wakes, typical: typicalWake)
+        let bedtimeRegularity = regularity(deviations.map(\.bedtimeDeviationMinutes))
+        let wakeRegularity = regularity(deviations.map(\.wakeDeviationMinutes))
         // Same shape as the planner's live nudge: median qualified wake time
         // minus the configured target. Exposed as data so the schedule visual
         // never maintains a parallel calculation.
         let recommendedWindow = targetSleepHours.map { target -> RecommendedWindow in
-            let sortedWakes = wakes.sorted()
+            let sortedWakes = anchoredTimings.map(\.wake).sorted()
             let medianWake = sortedWakes[sortedWakes.count / 2]
             let targetMinutes = Int((min(max(target, 6), 10) * 60).rounded())
             return RecommendedWindow(bedtimeMinutes: medianWake - targetMinutes,
                                      wakeMinutes: medianWake)
         }
+        let hasTypicalBedtime = bedClock.resultantLength >= minimumResultantLengthForTypical
+        let hasTypicalWake = wakeClock.resultantLength >= minimumResultantLengthForTypical
         return Self(bedtimeRegularity: bedtimeRegularity,
                     wakeTimeRegularity: wakeRegularity,
                     combinedPercent: Int((Double(bedtimeRegularity + wakeRegularity) / 2).rounded()),
                     qualifiedNightCount: timings.count,
-                    typicalBedtimeMinutes: typicalBedtime,
-                    typicalWakeTimeMinutes: typicalWake,
+                    typicalBedtimeMinutes: hasTypicalBedtime ? typicalBedtime : nil,
+                    typicalWakeTimeMinutes: hasTypicalWake ? typicalWake : nil,
                     deviations: deviations,
-                    recommendedWindow: recommendedWindow)
+                    recommendedWindow: recommendedWindow,
+                    scheduleAxisStartMinutes: axisStart)
+    }
+
+    /// Axis tick label for the schedule strip: "6 PM", "12 AM".
+    static func axisHourText(_ minute: Int) -> String {
+        let normalized = ((minute % 1_440) + 1_440) % 1_440
+        let hour24 = normalized / 60
+        let suffix = hour24 >= 12 ? "PM" : "AM"
+        let hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12
+        return "\(hour12) \(suffix)"
     }
 
     static func clockText(_ minute: Int?) -> String {
@@ -56663,7 +59473,7 @@ private struct HistoryQuickStat: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
     }
 }
 
@@ -56744,7 +59554,7 @@ private struct HistoryActivityRhythmCard: View {
             }
         }
         .padding(10)
-        .atriaInsetCard(cornerRadius: 18, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .white)
     }
 
     private var sequenceSummary: String {
@@ -56857,10 +59667,10 @@ private struct HistoryPillBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
+        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
             .fill(colorScheme == .dark ? tint.opacity(0.10) : tint.opacity(0.08))
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                     .stroke(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.20), lineWidth: 1)
             }
     }
@@ -56989,7 +59799,7 @@ private struct HistoryVerifiedStepDayRow: View {
                 .font(.headline.weight(.bold).monospacedDigit())
         }
         .padding(10)
-        .atriaInsetCard(cornerRadius: 16,
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset,
                         tint: presentation.completeness == .complete ? .green : .orange)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(day.dayStart.formatted(date: .abbreviated, time: .omitted)). \(presentation.accessibilityText)")
@@ -57219,7 +60029,7 @@ private struct TrendWindowFocusCard: View {
             }
         }
         .padding(14)
-        .atriaInsetCard(cornerRadius: 22, tint: .white)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .white)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(summary.days)-day trend. \(stateText). Coverage \(summary.coverageDays) of \(summary.requiredCoverageDays) days. Recovery \(summary.avgRecovery.map { "\($0) percent" } ?? "building"). HRV \(summary.avgHRV.map { "\($0) milliseconds" } ?? "building").")
     }
@@ -57245,7 +60055,7 @@ private struct TrendFocusMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -57294,9 +60104,9 @@ private struct TrendWindowChip: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
         .background(selected ? Color.primary.opacity(0.08) : Color.secondary.opacity(0.05),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                 .stroke(selected ? Color.primary.opacity(0.14) : Color.secondary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityLabel("\(chip.label), \(chip.coverageText) days, \(chip.confidence)")
@@ -57522,7 +60332,7 @@ struct SessionDetail: View {
                     }
                     .frame(height: 220)
                     .padding()
-                    .atriaCard(cornerRadius: 22, emphasis: .soft)
+                    .atriaCard(emphasis: .soft)
                     .atriaInspectableGraph(sessionHeartRateGraph)
 
                     HStack(spacing: 0) {
@@ -57537,21 +60347,21 @@ struct SessionDetail: View {
                         .frame(maxWidth: .infinity)
                     }
                     .padding()
-                    .atriaCard(cornerRadius: 22, emphasis: .soft)
+                    .atriaCard(emphasis: .soft)
 
                     if summary.metricsComplete {
                         TimeInZoneView(rows: summary.zoneRows,
                                        total: summary.zoneTotal,
                                        boundaries: summary.zoneBoundaries)
                             .padding()
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     } else {
                         Label(summary.coverageText, systemImage: "exclamationmark.circle")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding()
-                            .atriaCard(cornerRadius: 22, emphasis: .soft)
+                            .atriaCard(emphasis: .soft)
                     }
                 }
                 .padding()

@@ -499,6 +499,13 @@ struct AtriaWidgetProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<AtriaWidgetEntry>) -> Void) {
         let now = Date()
         let refreshAt = now.addingTimeInterval(15 * 60)
+        // `.after(refreshAt)` is a REQUEST, not a guarantee: WidgetKit grants
+        // reloads out of a budget and can run late. Entries are pre-rendered,
+        // so boundaries past the requested reload cost nothing to carry and
+        // let the face correct itself on time even when the reload slips.
+        // Without them a delayed reload leaves a stale cycle total, or a
+        // yesterday value, on screen until the system gets round to us.
+        let entryHorizon = now.addingTimeInterval(4 * 60 * 60)
         let snapshot = Self.loadSnapshot()
         var entryDates = [now]
         let batteryEvidenceAt: Date?
@@ -528,18 +535,18 @@ struct AtriaWidgetProvider: TimelineProvider {
         for (capturedAt, freshness) in expirySources {
             guard let capturedAt else { continue }
             let staleAt = capturedAt.addingTimeInterval(freshness + 0.001)
-            if staleAt > now, staleAt < refreshAt {
+            if staleAt > now, staleAt < entryHorizon {
                 entryDates.append(staleAt)
             }
         }
         if let cycleExpiresAt = snapshot?.strainCycleExpiresAt,
            cycleExpiresAt > now,
-           cycleExpiresAt < refreshAt {
+           cycleExpiresAt < entryHorizon {
             entryDates.append(cycleExpiresAt)
         }
         if let cycleExpiresAt = snapshot?.stepsCycleExpiresAt,
            cycleExpiresAt > now,
-           cycleExpiresAt < refreshAt {
+           cycleExpiresAt < entryHorizon {
             entryDates.append(cycleExpiresAt)
         }
         // Handoff-10 CP1: reload exactly when the display-day identity expires
@@ -548,7 +555,7 @@ struct AtriaWidgetProvider: TimelineProvider {
                                snapshot?.sleepExpiresAt,
                                snapshot?.biomarkerExpiresAt,
                                snapshot?.whiteboardExpiresAt] {
-            if let identityExpiry, identityExpiry > now, identityExpiry < refreshAt {
+            if let identityExpiry, identityExpiry > now, identityExpiry < entryHorizon {
                 entryDates.append(identityExpiry)
             }
         }
@@ -951,11 +958,17 @@ struct AtriaWidgetEntryView: View {
     private func dailyValue(_ metric: AtriaDailyOverviewMetric) -> String {
         switch metric {
         case .recovery:
-            return entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "--"
+            // Same token as the small hero and the large summary row.
+            // "--" here made the medium face disagree with both, and with
+            // its own detail line which already said "Learning".
+            return entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "Learning"
         case .strain:
             return AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date)
         case .sleep:
-            return atriaFormattedSleepHours(entry.snapshot?.sleepHours)
+            // Same token as the recovery value and this metric's own detail.
+            // "--" here made the medium face disagree with itself.
+            guard let hours = entry.snapshot?.sleepHours, hours > 0 else { return "Learning" }
+            return atriaFormattedSleepHours(hours)
         }
     }
 
@@ -997,7 +1010,8 @@ struct AtriaWidgetEntryView: View {
     }
 
     private func dailyValueTint(_ metric: AtriaDailyOverviewMetric) -> Color {
-        dailyValue(metric) == "--" ? .secondary : dailyTint(metric)
+        let value = dailyValue(metric)
+        return (value == "--" || value == "Learning") ? .secondary : dailyTint(metric)
     }
 
     private func dailyRingPresentation(_ metric: AtriaDailyOverviewMetric) -> AtriaDailyRingPresentation {
@@ -1034,14 +1048,18 @@ struct AtriaWidgetEntryView: View {
         let value: String
         switch metric {
         case .recovery:
-            value = entry.snapshot?.recoveryPercent.map { "\($0) percent" } ?? "unavailable"
+            value = entry.snapshot?.recoveryPercent.map { "\($0) percent" } ?? "Learning"
         case .strain:
             let rendered = dailyValue(.strain)
             value = rendered.hasPrefix("≥")
                 ? "at least \(rendered.dropFirst().trimmingCharacters(in: .whitespaces))"
                 : (rendered == "--" ? "unavailable" : rendered)
         case .sleep:
-            value = entry.snapshot?.sleepHours.map { String(format: "%.1f hours", $0) } ?? "unavailable"
+            if let hours = entry.snapshot?.sleepHours, hours > 0 {
+                value = String(format: "%.1f hours", hours)
+            } else {
+                value = "Learning"
+            }
         }
         return "\(metric.title) \(value). \(dailyDetail(metric))."
     }

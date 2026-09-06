@@ -24,7 +24,8 @@ final class AtriaStrainRecoveryComboChartSnapshotTests: XCTestCase {
 
         let content = AtriaStrainRecoveryComboChart(strain: strain,
                                                     recovery: recovery,
-                                                    rangeLabel: "This week")
+                                                    rangeLabel: "This week",
+                                                    now: base.addingTimeInterval(6 * 86_400))
             .frame(width: 360, height: 230)
             .padding(16)
             .background(Color.black)

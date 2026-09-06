@@ -342,10 +342,9 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
         ))
         .font(.caption.weight(.semibold))
         .toggleStyle(.switch)
-        .tint(.purple)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .atriaInsetCard(cornerRadius: 14, tint: .purple)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .purple)
     }
 }
 
@@ -354,7 +353,12 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
 /// wiring. Rows come from `AtriaNotificationCategory`, so every category the
 /// scheduler can post has a toggle and an honest one-line description here.
 struct AtriaNotificationSettingsCard: View {
+    // Large type (2026-09-02 XXXL screenshot): the delivery-posture row
+    // squeezed its sentence into a narrow column beside "Enable alerts".
+    // From XX-Large up the action sits under the sentence instead.
+    @Environment(\.dynamicTypeSize) private var noticeDynamicTypeSize
     @State private var settings = AtriaNotificationSettings.load()
+    @State private var prominence: AtriaNotificationProminence?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -373,6 +377,10 @@ struct AtriaNotificationSettingsCard: View {
 
             masterToggle
 
+            if settings.allowNotifications, let prominence {
+                prominenceRow(prominence)
+            }
+
             if settings.allowNotifications {
                 VStack(spacing: 8) {
                     ForEach(AtriaNotificationCategory.allCases) { category in
@@ -385,16 +393,83 @@ struct AtriaNotificationSettingsCard: View {
         .padding(14)
         .atriaInsetCard(tint: .blue)
         .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: settings.allowNotifications)
+        .task { prominence = await AtriaNotificationProminence.current() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            // Returning from the system prompt or iOS Settings re-activates
+            // the scene; re-read so the row reflects what the wearer chose.
+            Task { prominence = await AtriaNotificationProminence.current() }
+        }
+    }
+
+    /// Honest delivery-posture row. Without it a provisional (quiet) or
+    /// system-denied state was invisible here: 17 enabled toggles while
+    /// nothing ever popped up (owner report 2026-08-28).
+    private func prominenceRow(_ state: AtriaNotificationProminence) -> some View {
+        Group {
+            if noticeDynamicTypeSize >= .xxLarge {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        prominenceGlyph(state)
+                        prominenceText(state)
+                    }
+                    prominenceAction(state)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    prominenceGlyph(state)
+                    prominenceText(state)
+                    Spacer(minLength: 4)
+                    prominenceAction(state)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: state == .full ? .blue : .orange)
+    }
+
+    private func prominenceGlyph(_ state: AtriaNotificationProminence) -> some View {
+        Image(systemName: state == .full ? "bell.fill" : "bell.slash")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(state == .full ? Color.blue : Color.orange)
+    }
+
+    private func prominenceText(_ state: AtriaNotificationProminence) -> some View {
+        Text(state.settingsStatusText)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private func prominenceAction(_ state: AtriaNotificationProminence) -> some View {
+        if state.canRequestUpgradeInApp {
+            Button("Enable alerts") {
+                LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+        } else if state == .denied {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .buttonStyle(.borderless)
+        }
     }
 
     private var masterToggle: some View {
         Toggle("Allow notifications", isOn: masterBinding)
             .font(.subheadline.weight(.semibold))
             .toggleStyle(.switch)
-            .tint(.blue)
             .padding(.vertical, 6)
             .padding(.horizontal, 8)
-            .atriaInsetCard(cornerRadius: 14, tint: .blue)
+            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
     }
 
     private func categoryRow(_ category: AtriaNotificationCategory) -> some View {
@@ -409,10 +484,9 @@ struct AtriaNotificationSettingsCard: View {
             }
         }
         .toggleStyle(.switch)
-        .tint(.blue)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
-        .atriaInsetCard(cornerRadius: 14, tint: .blue)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: .blue)
         .accessibilityLabel("\(category.displayName). \(category.honestDescription)")
     }
 
@@ -489,7 +563,9 @@ enum AtriaPendingNotificationCancellation {
 
 enum AtriaAlertSettingsGrid {
     static func columnCount(for dynamicTypeSize: DynamicTypeSize) -> Int {
-        dynamicTypeSize.isAccessibilitySize ? 1 : 2
+        // 2026-09-02 XXXL screenshot: two columns hyphenated "Recov-ery" at
+        // the largest standard size, which is not an accessibility size.
+        dynamicTypeSize >= .xxLarge ? 1 : 2
     }
 
     static func columns(for dynamicTypeSize: DynamicTypeSize) -> [GridItem] {

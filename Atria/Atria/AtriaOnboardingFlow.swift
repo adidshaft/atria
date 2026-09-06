@@ -655,7 +655,7 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             onboardingLifestyleHero
             Text("Your strap. Your data.")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
             onboardingRingCard
@@ -721,7 +721,7 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             onboardingBrandTile
             Text("Welcome to Atria")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Your strap becomes a calm, honest readiness coach. What should we call you?")
                 .font(.subheadline)
@@ -764,7 +764,7 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             ringsPreviewCard
             Text("Choose your rings")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Pick what the three rings track, and which one sits in the center. You can change this anytime from Customize Today.")
                 .font(.subheadline)
@@ -854,7 +854,7 @@ struct AtriaOnboardingFlow: View {
                                    colors: [Self.cycleHue.opacity(0.38),
                                             Color.red.opacity(0.22)])
             Text("Cycle tracking")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Track your cycle alongside recovery. Your own store, kept separate from research sharing — always.")
                 .font(.subheadline)
@@ -1256,14 +1256,19 @@ struct AtriaOnboardingFlow: View {
                                 tint: .indigo,
                                 title: "Tonight",
                                 detail: "Wear your strap to sleep — it captures your night automatically.")
+                // 2026-09-02: the engine scores recovery from the first saved
+                // sleep on a provisional baseline; trusted baselines take
+                // `PersonalBaseline.trustedMinimumSamples` (14) nights, the
+                // same "of 14 nights" the metric heroes count. The page said
+                // the score "kicks in after 3–4 nights", which matched neither.
                 expectationStep(icon: "sunrise.fill",
                                 tint: .orange,
                                 title: "Tomorrow morning",
-                                detail: "Your first sleep review is ready to confirm.")
+                                detail: "Your first sleep review to confirm, and a first recovery score.")
                 expectationStep(icon: "chart.line.uptrend.xyaxis",
                                 tint: .green,
-                                title: "After 3–4 nights",
-                                detail: "Your recovery score kicks in as Atria learns your baseline.",
+                                title: "Over the first two weeks",
+                                detail: "Scores firm up as Atria learns your baseline.",
                                 isLast: true)
             }
             .padding(18)
@@ -1329,7 +1334,7 @@ struct AtriaOnboardingFlow: View {
                 .frame(width: 40)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

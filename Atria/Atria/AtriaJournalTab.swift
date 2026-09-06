@@ -11,6 +11,12 @@ struct AtriaJournalProjectionState: Equatable {
     /// journal revision alone does not cover.
     let dailyMetricHistoryRevision: Int
     let localDay: Date
+    /// Distinct days with at least one typed check-in answer. Drives the
+    /// Patterns empty state's progress track: the insight engine needs
+    /// `AtriaJournalInsights.minimumSplitTotalDays` answered days per question
+    /// before it can split a metric, so this is the honest lower bound on
+    /// "how far along" the user is — a number, not a "2–3 weeks" sentence.
+    let answeredDayCount: Int
 }
 
 struct AtriaJournalDeckSizing: Equatable {
@@ -152,7 +158,8 @@ final class AtriaJournalProjectionStore: ObservableObject {
             typedInsights: Array(store.journalInsightsCache.prefix(3)),
             dailyRollupHistoryRevision: store.dailyRollupHistoryRevision,
             dailyMetricHistoryRevision: store.dailyMetricHistoryRevision,
-            localDay: calendar.startOfDay(for: now)
+            localDay: calendar.startOfDay(for: now),
+            answeredDayCount: Set(store.journalAnswers.answers.map { calendar.startOfDay(for: $0.day) }).count
         )
     }
 
@@ -166,7 +173,8 @@ final class AtriaJournalProjectionStore: ObservableObject {
             typedInsights: state.typedInsights,
             dailyRollupHistoryRevision: state.dailyRollupHistoryRevision,
             dailyMetricHistoryRevision: state.dailyMetricHistoryRevision,
-            localDay: localDay
+            localDay: localDay,
+            answeredDayCount: state.answeredDayCount
         )
         return true
     }
@@ -203,7 +211,8 @@ struct AtriaJournalTab: View {
                                                    store: store)
         Group {
             AtriaJournalCheckInDeck(store: store, projection: projection)
-            AtriaJournalTypedInsightsSection(insights: projection.typedInsights)
+            AtriaJournalTypedInsightsSection(insights: projection.typedInsights,
+                                             answeredDayCount: projection.answeredDayCount)
             AtriaBehaviorImpactCard(model: impactModel)
             // The evidence chart and its compact evidence rows already answer
             // what moved recovery and how much data supports it. A second
@@ -494,6 +503,15 @@ private struct AtriaCyclePeriodLogSheet: View {
 /// precomputed cache only — never computes in body.
 private struct AtriaJournalTypedInsightsSection: View {
     let insights: [JournalInsight]
+    let answeredDayCount: Int
+
+    private static let neededDays = AtriaJournalInsights.minimumSplitTotalDays
+
+    private var progressCaption: String {
+        answeredDayCount >= Self.neededDays
+            ? "\(answeredDayCount) days answered · no clear pattern yet"
+            : "\(answeredDayCount) of \(Self.neededDays) days answered"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -517,18 +535,23 @@ private struct AtriaJournalTypedInsightsSection: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
                         .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text("Patterns are learning")
                             .font(.subheadline.weight(.bold))
-                        Text("About 2–3 weeks of answers")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        // A progress track instead of "About 2–3 weeks": the
+                        // engine's real minimum, filled by the user's real
+                        // answered days, so the state shows how close a
+                        // pattern is rather than describing the wait.
+                        AtriaLearningProgressTrack(current: answeredDayCount,
+                                                   target: Self.neededDays,
+                                                   caption: progressCaption)
                     }
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(12)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Patterns are learning. \(progressCaption).")
                 .overlay {
                     RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                         .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
@@ -764,7 +787,7 @@ private struct AtriaJournalCheckInDeck: View {
         // Each card needs its own opaque surface — the deck stacks the next
         // card behind the current one in a ZStack, and without a background
         // here the "peeking" card would show straight through the front card.
-        .atriaInsetCard(cornerRadius: 20, tint: .cyan)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: .cyan)
     }
 
     @ViewBuilder
@@ -1248,7 +1271,10 @@ private struct AtriaJournalFollowUpSheet: View {
                     .accessibilityLabel("One fewer drink")
 
                     Text("\(drinks)")
-                        .font(.system(size: 48, weight: .bold, design: .rounded))
+                        // The stepper's count is a card hero value (2026-09-02):
+                        // the shared token scales with Dynamic Type; the
+                        // hand-set 48pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
                         .frame(maxWidth: .infinity)
@@ -1268,7 +1294,7 @@ private struct AtriaJournalFollowUpSheet: View {
                 }
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity)
-                .background(.quaternary.opacity(0.34), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .background(.quaternary.opacity(0.34), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous))
             case .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale:
                 EmptyView()
             }

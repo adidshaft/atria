@@ -393,6 +393,18 @@ struct AtriaTriRing: View, Equatable {
         actions[slot] ?? {}
     }
 
+    /// A slot with no action is a READ-ONLY presentation (the frozen day
+    /// browser, the onboarding preview, the share render). Before the
+    /// 2026-08-28 uniformity pass those still consumed the tap through a
+    /// no-op closure, so browsing one day back silently turned the app's most
+    /// prominent control dead — identical chips, nothing happening, the touch
+    /// swallowed rather than passed on, and VoiceOver still announcing
+    /// buttons. The values shown are real saved numbers, so the fix removes
+    /// the false affordance without dimming anything.
+    private func isInteractive(_ slot: AtriaTriRingSlot) -> Bool {
+        actions[slot] != nil
+    }
+
     /// Compress a metric's own detail line into the one-word marker the
     /// separate layout has room for. Returns nil for a settled metric so a
     /// confident ring stays clean — the marker exists to stop a provisional
@@ -453,6 +465,7 @@ struct AtriaTriRing: View, Equatable {
                                         ))
                     }
                     .buttonStyle(.plain)
+                    .disabled(!isInteractive(content.slot))
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
@@ -501,6 +514,7 @@ struct AtriaTriRing: View, Equatable {
                         .frame(width: Self.outerDiameter, height: Self.outerDiameter)
                         .contentShape(AtriaRingBandShape(innerRadius: radii.inner, outerRadius: radii.outer), eoFill: true)
                         .onTapGesture(perform: action(for: content.slot))
+                        .allowsHitTesting(isInteractive(content.slot))
                 }
 
                 centerContent
@@ -510,9 +524,25 @@ struct AtriaTriRing: View, Equatable {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilitySummary)
 
-            HStack(spacing: 8) {
-                ForEach(slots, id: \.slot) { content in
-                    legendChip(metric: content.metric, action: action(for: content.slot))
+            // Large type (2026-09-02 XXXL screenshots): three chips in a row
+            // truncated "Rec…" in the onboarding preview's 260pt card and
+            // cramped Today's row. From XX-Large up the chips stack as
+            // full-width rows; each already stretches to its container.
+            if legendDynamicTypeSize >= .xxLarge {
+                VStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
                 }
             }
         }
@@ -558,10 +588,14 @@ struct AtriaTriRing: View, Equatable {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
+            // Large type (2026-09-02, XXXL screenshot): "Save sleep to score"
+            // truncated to "Save sleep to s…" at the 0.75 floor. From
+            // XX-Large up the state may take a second line inside the ring.
             Text(centerState)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .multilineTextAlignment(.center)
+                .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                 .minimumScaleFactor(0.75)
             if let centerDelta {
                 Text(centerDelta)
@@ -699,6 +733,12 @@ struct AtriaTriRing: View, Equatable {
             && !metric.suppressesDetail
     }
 
+    // Large type (2026-09-02, XXXL screenshot): "No sleep this cycle"
+    // truncated to "No sleep this c…" at the one-line contract's 0.6 floor.
+    // The contract stays through Extra Large; from XX-Large up, where the
+    // values already wrap, the caption may take a second line too.
+    @Environment(\.dynamicTypeSize) private var legendDynamicTypeSize
+
     private func legendChip(metric: AtriaTriRingMetric, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -770,7 +810,7 @@ struct AtriaTriRing: View, Equatable {
                     Text(showsLegendDetail(metric) ? metric.detail : " ")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                         .minimumScaleFactor(0.6)
                         .allowsTightening(true)
                         .accessibilityHidden(!showsLegendDetail(metric))

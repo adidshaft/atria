@@ -105,16 +105,20 @@ enum AtriaSleepNeedLedgerPresentation {
     }
 }
 
-/// Section-6 hues from the design file (dark-first, same exact-hex idiom as
-/// the hypnogram card's stage table).
+/// 2026-08-29 minimalism pass: the seven unrelated section-6 hexes reduce to
+/// one ramp of the sleep theme hue (`Metrics.electricSleep` at stepped
+/// opacities) plus a single warning tone for debt. The stacked-bar SEGMENTS
+/// stay visually distinct (data encoding — opacity steps + the nap hatch),
+/// but the card no longer introduces identity hues of its own.
 enum AtriaSleepLedgerPalette {
-    static let baseline = Color(red: 0.369, green: 0.361, blue: 0.902)   // #5E5CE6
-    static let strain = Color(red: 1.0, green: 0.624, blue: 0.039)       // #FF9F0A
-    static let debt = Color(red: 1.0, green: 0.271, blue: 0.227)         // #FF453A
-    static let napCredit = Color(red: 0.494, green: 0.886, blue: 0.604)  // #7EE29A
-    static let slept = Color(red: 0.039, green: 0.518, blue: 1.0)        // #0A84FF
-    static let strainValue = Color(red: 1.0, green: 0.776, blue: 0.439)  // #FFC670
-    static let debtValue = Color(red: 1.0, green: 0.541, blue: 0.502)    // #FF8A80
+    static let baseline = Metrics.electricSleep
+    static let strain = Metrics.electricSleep.opacity(0.55)
+    static let debt = Color(red: 1.0, green: 0.271, blue: 0.227)         // warning tone
+    static let napCredit = Metrics.electricSleep.opacity(0.30)
+    static let slept = Metrics.electricSleep
+    /// The dashed "needed" line in the 7-night chart — the same theme hue,
+    /// stepped down so the two series separate without a second identity hue.
+    static let needed = Metrics.electricSleep.opacity(0.5)
 
     static func fill(for term: AtriaSleepNeedLedgerPresentation.Term) -> Color {
         switch term {
@@ -171,26 +175,21 @@ struct AtriaSleepNeedLedgerCard: View {
             stackedBar
             axisRow
 
+            // 2026-08-29 minimalism pass: value text reads neutral — the
+            // swatch beside each row already keys it to its bar segment.
             legendRow(term: .baseline,
                       name: "Baseline need",
-                      value: AtriaMetricFormat.sleepHours(components.baseHours),
-                      valueTint: .primary)
+                      value: AtriaMetricFormat.sleepHours(components.baseHours))
             legendRow(term: .strain,
                       name: yesterdayStrain.map { "Yesterday's strain \(AtriaMetricFormat.strain($0))" }
                           ?? "Recent strain",
-                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.strainAdderHours, sign: "+"),
-                      valueTint: components.strainAdderHours >= AtriaSleepNeedLedgerPresentation.minimumSegmentHours
-                          ? AtriaSleepLedgerPalette.strainValue : .secondary)
+                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.strainAdderHours, sign: "+"))
             legendRow(term: .debt,
                       name: "Recent sleep debt",
-                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.debtAdderHours, sign: "+"),
-                      valueTint: components.debtAdderHours >= AtriaSleepNeedLedgerPresentation.minimumSegmentHours
-                          ? AtriaSleepLedgerPalette.debtValue : .secondary)
+                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.debtAdderHours, sign: "+"))
             legendRow(term: .napCredit,
                       name: "Nap credit",
-                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.napCreditHours, sign: "\u{2212}"),
-                      valueTint: components.napCreditHours >= AtriaSleepNeedLedgerPresentation.minimumSegmentHours
-                          ? AtriaSleepLedgerPalette.napCredit : .secondary)
+                      value: AtriaSleepNeedLedgerPresentation.minutesText(hours: components.napCreditHours, sign: "\u{2212}"))
 
             Divider()
 
@@ -209,8 +208,10 @@ struct AtriaSleepNeedLedgerCard: View {
                     .foregroundStyle(.secondary)
             }
 
+            // 2026-08-29 minimalism pass: one sentence — the provenance claim
+            // stays, the cross-reference elaboration goes.
             Text(isFrozenReceipt
-                 ? "Frozen when this night was saved. Tonight's projection is on the Sleep plan card."
+                 ? "Frozen when this night was saved."
                  : "Provisional until this night is saved.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -268,7 +269,7 @@ struct AtriaSleepNeedLedgerCard: View {
         GeometryReader { proxy in
             ForEach(AtriaSleepNeedLedgerPresentation.axisTicks, id: \.label) { tick in
                 Text(tick.label)
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .font(.caption2.weight(.medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .fixedSize()
                     .position(x: min(max(proxy.size.width * tick.fraction, 10),
@@ -282,8 +283,7 @@ struct AtriaSleepNeedLedgerCard: View {
 
     private func legendRow(term: AtriaSleepNeedLedgerPresentation.Term,
                            name: String,
-                           value: String,
-                           valueTint: Color) -> some View {
+                           value: String) -> some View {
         HStack(spacing: AtriaDesignTokens.Spacing.sm) {
             swatch(for: term)
             Text(name)
@@ -292,7 +292,7 @@ struct AtriaSleepNeedLedgerCard: View {
             Spacer(minLength: AtriaDesignTokens.Spacing.sm)
             Text(value)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
-                .foregroundStyle(valueTint)
+                .foregroundStyle(.primary)
         }
     }
 
@@ -395,6 +395,17 @@ enum AtriaSleepDebtChartPresentation {
 
     static func realNightCount(_ slots: [NightSlot]) -> Int {
         slots.filter { $0.sleptHours != nil }.count
+    }
+
+    /// Axis domain for the 7-slot week, not the nights that happen to have a
+    /// reading (owner 2026-09-02: two recorded mornings must not stretch as a
+    /// full week). Padded half a day each side so edge points aren't clipped.
+    static func weekXDomain(slots: [NightSlot],
+                            calendar: Calendar = .current) -> ClosedRange<Date>? {
+        guard let first = slots.first?.day, let last = slots.last?.day else { return nil }
+        let lo = calendar.date(byAdding: .hour, value: -12, to: first) ?? first
+        let hi = calendar.date(byAdding: .hour, value: 12, to: last) ?? last
+        return lo...hi
     }
 
     /// GAP-01 gap grammar: contiguous runs of slots that actually carry a
@@ -548,9 +559,11 @@ struct AtriaSleepDebtChartCard: View {
             } else {
                 hoursVsNeedChart
                 dualLineLegend
+                // 2026-08-29 minimalism pass: one sentence per variant — the
+                // never-rebuilt honesty claim survives, elaboration goes.
                 Text(needPointCount == 0
-                     ? "Sleep Need will appear for nights frozen with the adaptive calculation. Older history stays blank rather than being rebuilt with today's baseline."
-                     : "Each Sleep Need point is the adaptive target frozen for that night. Missing historical targets stay blank.")
+                     ? "Sleep Need appears for nights frozen with the adaptive calculation; older history stays blank, never rebuilt."
+                     : "Each Sleep Need point is the target frozen for that night; missing targets stay blank.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -581,7 +594,9 @@ struct AtriaSleepDebtChartCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Debt chart building")
                 .font(.caption.weight(.semibold))
-            Text("Needs \(AtriaSleepDebtChartPresentation.minimumRealNights) confirmed nights — \(realNightCount) so far. Real nights only; nothing is filled in for you.")
+            // 2026-08-29 minimalism pass: one sentence keeps the real-nights-
+            // only honesty claim.
+            Text("Needs \(AtriaSleepDebtChartPresentation.minimumRealNights) confirmed nights — \(realNightCount) so far; nothing is filled in for you.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -616,11 +631,11 @@ struct AtriaSleepDebtChartCard: View {
                                                lineCap: .round,
                                                lineJoin: .round,
                                                dash: [4, 3]))
-                        .foregroundStyle(Metrics.electricGreen)
+                        .foregroundStyle(AtriaSleepLedgerPalette.needed)
                     PointMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours))
                         .symbol(Circle())
                         .symbolSize(44)
-                        .foregroundStyle(Metrics.electricGreen)
+                        .foregroundStyle(AtriaSleepLedgerPalette.needed)
                 }
             }
             ForEach(Array(sleptRuns.enumerated()), id: \.offset) { runIndex, run in
@@ -643,6 +658,7 @@ struct AtriaSleepDebtChartCard: View {
         }
         .atriaGraphPlotSurface()
         .chartYScale(domain: lowerBound...upperBound)
+        .chartXScale(domain: AtriaSleepDebtChartPresentation.weekXDomain(slots: slots) ?? Date()...Date())
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
@@ -680,7 +696,7 @@ struct AtriaSleepDebtChartCard: View {
             Label("Hours slept", systemImage: "circle")
                 .foregroundStyle(AtriaSleepLedgerPalette.slept)
             Label("Sleep needed", systemImage: "circle.dashed")
-                .foregroundStyle(Metrics.electricGreen)
+                .foregroundStyle(AtriaSleepLedgerPalette.needed)
             Spacer(minLength: 0)
         }
         .font(.caption2.weight(.semibold))
@@ -701,23 +717,37 @@ struct AtriaSleepDebtChartCard: View {
 struct AtriaSleepScoreCard: View {
     let score: AtriaSleepScore
 
+    /// 2026-08-29 minimalism pass: overnight load is excluded from the
+    /// composite until its model validates, so the card shows only the three
+    /// scoring components — the exclusion is disclosed in the caption instead
+    /// of an extra "Needs more evidence" row.
+    private var shownComponents: [AtriaSleepScore.ComponentValue] {
+        score.components.filter { $0.component != .overnightLoad }
+    }
+
     private func valueText(_ component: AtriaSleepScore.ComponentValue) -> String {
         if let percent = component.percent { return "\(Int(percent.rounded()))%" }
-        return component.component == .overnightLoad ? "Needs more evidence" : "Not yet"
+        return "Not yet"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sleep Score")
                         .font(.subheadline.weight(.bold))
+                    // 2026-08-29 minimalism pass: neutral capsule, secondary
+                    // text — the provisional claim, without an alarm hue.
                     Text("Early estimate")
-                        .font(.caption2.weight(.black))
-                        .foregroundStyle(.orange)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, AtriaDesignTokens.Spacing.sm)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.06),
+                                    in: Capsule(style: .continuous))
                         .accessibilityLabel("Early sleep score estimate")
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: AtriaDesignTokens.Spacing.sm)
                 if let value = score.score {
                     Text("\(value)")
                         .font(.system(size: 34, weight: .black, design: .rounded))
@@ -727,8 +757,8 @@ struct AtriaSleepScoreCard: View {
             }
 
             VStack(spacing: 6) {
-                ForEach(score.components, id: \.component) { component in
-                    HStack(spacing: 8) {
+                ForEach(shownComponents, id: \.component) { component in
+                    HStack(spacing: AtriaDesignTokens.Spacing.sm) {
                         Text(component.component.label)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(component.isPresent ? .primary : .secondary)
@@ -740,9 +770,11 @@ struct AtriaSleepScoreCard: View {
                 }
             }
 
+            // 2026-08-29 minimalism pass: one sentence per variant — the
+            // provisional/unvalidated honesty claims survive, prose goes.
             Text(score.score == nil
                  ? "Not enough qualified components yet — Sleep Sufficiency remains your primary measure."
-                 : "Provisional composite of the components above. The weights are not yet validated, and overnight load is excluded until its model is validated. Sleep Sufficiency stays the label for hours versus need.")
+                 : "Provisional composite — weights unvalidated, overnight load excluded until its model validates; Sleep Sufficiency stays the hours-versus-need measure.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -101,11 +101,72 @@ enum AtriaManualHistorySyncFeedback: Equatable {
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
+    // Large type (2026-09-02 XXXL screenshot): the two-column backup grid
+    // wrapped "Back / up now"; from XX-Large up the actions take one column.
+    @Environment(\.dynamicTypeSize) private var settingsDynamicTypeSize
+    @ViewBuilder private var backupActionButtons: some View {
+            if let onWriteBackup {
+                Button {
+                    startBackup(using: onWriteBackup)
+                } label: {
+                    HStack(spacing: 6) {
+                        if backupOperationInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Label(backupOperationInProgress ? "Working…" : "Back up now",
+                              systemImage: "arrow.down.doc.fill")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .blue)
+                .disabled(backupOperationInProgress)
+            }
+            if let onVerifyBackup {
+                Button {
+                    guard !backupOperationInProgress else { return }
+                    backupOperationInProgress = true
+                    backupActionMessage = nil
+                    Task { @MainActor in
+                        let status = await onVerifyBackup()
+                        backupStatus = status
+                        backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
+                        backupFeedbackTone = status.current ? .success : .failure
+                        backupOperationInProgress = false
+                    }
+                } label: {
+                    // Icon-only actions beside "Back up now" left sighted
+                    // users guessing what the seal and tray did
+                    // (2026-09-02 Settings audit); the words were only in
+                    // the accessibility labels.
+                    Label("Verify", systemImage: "checkmark.seal")
+                        .accessibilityLabel("Verify backup")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .green)
+                .disabled(backupOperationInProgress)
+            }
+            if onRestoreBackup != nil {
+                Button {
+                    backupImportPresented = true
+                } label: {
+                    Label("Restore", systemImage: "tray.and.arrow.down")
+                        .accessibilityLabel("Restore backup from Files")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .orange)
+                .disabled(backupOperationInProgress)
+            }
+    }
+
     /// One user-facing boundary for local storage ownership. The backup and raw
     /// export paths preserve durable session evidence and summaries; short-lived
     /// derived timelines remain display state rather than a second health archive.
     private enum DataCopy {
-        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+        // 2026-08-29: the Stress display cache retains seven days now
+        // (AtriaStressHistoryArchive.retentionWindow); the disclosure must
+        // name the real window.
+        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local seven-day Stress display cache is excluded from both."
     }
 
     private enum BackupFeedbackTone {
@@ -819,7 +880,9 @@ struct AtriaSettingsView: View {
                 maxHRSuggestionRow(maxHRSuggestion)
             }
             LabeledContent("Max heart rate") {
-                Text("\(draft.maxHR) bpm").monospacedDigit().foregroundStyle(.pink)
+                // A profile value, not a metric: every sibling value in this list
+                // is plain, and pink read as an alert (2026-09-02 Settings audit).
+                Text("\(draft.maxHR) bpm").monospacedDigit()
             }
             Picker("Set from", selection: $draft.maxHRSource) {
                 ForEach(AthleteProfile.HRMaxSource.allCases) { source in
@@ -1187,52 +1250,17 @@ struct AtriaSettingsView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                if let onWriteBackup {
-                    Button {
-                        startBackup(using: onWriteBackup)
-                    } label: {
-                        HStack(spacing: 6) {
-                            if backupOperationInProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Label(backupOperationInProgress ? "Working…" : "Back up now",
-                                  systemImage: "arrow.down.doc.fill")
-                        }
-                    }
-                    .atriaCardAction(prominent: false, tint: .blue)
-                    .disabled(backupOperationInProgress)
-                }
-                if let onVerifyBackup {
-                    Button {
-                        guard !backupOperationInProgress else { return }
-                        backupOperationInProgress = true
-                        backupActionMessage = nil
-                        Task { @MainActor in
-                            let status = await onVerifyBackup()
-                            backupStatus = status
-                            backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
-                            backupFeedbackTone = status.current ? .success : .failure
-                            backupOperationInProgress = false
-                        }
-                    } label: {
-                        Image(systemName: "checkmark.seal")
-                            .accessibilityLabel("Verify backup")
-                    }
-                    .atriaCardAction(prominent: false, tint: .green)
-                    .disabled(backupOperationInProgress)
-                }
-                if onRestoreBackup != nil {
-                    Button {
-                        backupImportPresented = true
-                    } label: {
-                        Image(systemName: "tray.and.arrow.down")
-                            .accessibilityLabel("Restore backup from Files")
-                    }
-                    .atriaCardAction(prominent: false, tint: .orange)
-                    .disabled(backupOperationInProgress)
-                }
+            // Three labeled actions do not always fit one row (2026-09-02
+            // screenshot: "Back up now" wrapped, "Restore" clipped). Fit them
+            // side by side when there is room; otherwise a two-column grid of
+            // equal-width buttons, not three capsules of different widths
+            // stacked at the left (later screenshot the same day).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { backupActionButtons }
+                LazyVGrid(columns: settingsDynamicTypeSize >= .xxLarge
+                            ? [GridItem(.flexible())]
+                            : [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],
+                          spacing: 8) { backupActionButtons }
             }
             .labelStyle(.titleAndIcon)
 
@@ -1562,7 +1590,7 @@ struct AtriaSettingsView: View {
                             detail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
-                            title: "Wrist temperature signal",
+                            title: "Skin temperature signal",
                             detail: "Relative wrist-skin deviation only; no core temperature or Health export.")
         } header: {
             Text("Sensors")
@@ -2342,7 +2370,9 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     }
                 }
 
-                Text("Uses RHR, lnRMSSD, zone 2+, and sleep consistency. These bands only tune guidance colors.")
+                // 2026-09-02: "lnRMSSD" is the engine's log-HRV; the footer names the
+                // metrics as the app shows them.
+                Text("Uses resting HR, HRV, zone 2+ minutes, and sleep consistency. These bands only tune guidance colors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

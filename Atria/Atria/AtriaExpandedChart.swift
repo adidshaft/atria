@@ -85,6 +85,7 @@ struct AtriaExpandedChartView: View {
     // toggle — so the prior-period overlay appears only when asked for.
     @State private var compareOn: Bool = false
     @State private var compareMode: AtriaGraphCompareMode = .previousPeriod
+    private let coverageNoun: String
     @State private var chartType: AtriaGraphChartType = .line
     @State private var markJournalEvents: Bool = true
     @State private var showCompareSheet: Bool = false
@@ -101,9 +102,13 @@ struct AtriaExpandedChartView: View {
          overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
          xDomain: ClosedRange<Date>? = nil,
          comparisonPeriodNoun: String = "period",
+         // Overnight metrics are read from a night's wear; counting them in
+         // days claims a measurement the strap never took (2026-09-03).
+         coverageNoun: String = "days",
          defaultChartType: AtriaGraphChartType = .line,
          onDismiss: @escaping () -> Void) {
         self.title = title
+        self.coverageNoun = coverageNoun
         self.unit = unit
         self.tint = tint
         self.points = points
@@ -318,8 +323,8 @@ struct AtriaExpandedChartView: View {
             Text("Building your history")
                 .font(.subheadline.weight(.semibold))
             Text(dataDayCount == 1
-                 ? "1 day of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore."
-                 : "\(dataDayCount) days of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore.")
+                 ? "1 \(coverageNoun.dropLast()) of \(title.lowercased()) recorded. The expanded view opens once there are a few to explore."
+                 : "\(dataDayCount) \(coverageNoun) of \(title.lowercased()) recorded. The expanded view opens once there are a few to explore.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

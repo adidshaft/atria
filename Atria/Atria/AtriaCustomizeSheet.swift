@@ -115,19 +115,18 @@ struct AtriaCustomizeSheet: View {
             }
             .pickerStyle(.segmented)
 
-            // Center metric + legend exist only in the concentric layout; the
-            // separate (WHOOP-style) layout gives each ring its own value+label.
+            // The center metric exists only in the concentric layout; the
+            // separate (WHOOP-style) layout gives each ring its own
+            // value+label. `legendStatStyle` used to sit here too, but it
+            // drives the caption line on EVERY glance tile and on only the
+            // ring chips — filed under "Rings" it mispredicted its own scope,
+            // and concentric-gating hid it from separate-layout users whose
+            // tiles it still governs. It now lives with the metrics list it
+            // actually controls (2026-08-28).
             if ringLayout == .concentric {
                 Picker("Center metric", selection: $draft.ringCenterMetric) {
                     ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
                         Label(metric.label, systemImage: metric.systemImage).tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker("Legend", selection: $draft.legendStatStyle) {
-                    ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
-                        Text(style.label).tag(style)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -171,7 +170,9 @@ struct AtriaCustomizeSheet: View {
                     .accessibilityLabel("Reorder metric cards")
             }
         } footer: {
-            Text("Tap Edit and drag by the handle. VoiceOver also offers Move Up and Move Down actions.")
+            // 2026-09-02: the VoiceOver sentence told sighted readers about
+            // rotor actions VoiceOver users already find; one instruction stays.
+            Text("Tap Edit, then drag rows by the handle.")
         }
     }
 
@@ -206,6 +207,13 @@ struct AtriaCustomizeSheet: View {
                 }
                 .disabled(!isSelected(metric) && draft.glanceMetrics.count >= AtriaHomeLayoutConfig.maxTodayCards)
             }
+
+            Picker("Card caption", selection: $draft.legendStatStyle) {
+                ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
+                    Text(style.label).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
         } header: {
             Text("Metrics")
         } footer: {
@@ -370,6 +378,14 @@ private struct AtriaCustomizePreview: View {
     let config: AtriaHomeLayoutConfig
 
     var body: some View {
+        // The miniature is illustrative ("Example data"), scaled to 60% in
+        // a fixed frame. At large type (2026-09-02 XXXL screenshot) its
+        // stacked legend and glance grid overflowed the frame and each
+        // other; the miniature keeps a standard text size at every setting.
+        previewContent.dynamicTypeSize(.large)
+    }
+
+    private var previewContent: some View {
         VStack(spacing: 14) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Layout preview")
@@ -424,7 +440,7 @@ private struct AtriaCustomizePreview: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: 20, tint: config.accent.color)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: config.accent.color)
     }
 
     private var sleepMetric: AtriaTriRingMetric {

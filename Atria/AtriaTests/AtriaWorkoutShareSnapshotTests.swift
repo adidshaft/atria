@@ -443,11 +443,13 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
 
         XCTAssertFalse(source.contains(".glassEffect(.regular.interactive(), in: Circle())"),
                        "The corner action label must not add a second glass circle")
+        // 2026-09-02: 6 (cancel + action per sheet) + 1 for AtriaShareEmptyStateView's
+        // close button, shown when a sheet has nothing real to put on a card.
         XCTAssertEqual(source.components(separatedBy: "AtriaGlassIconButtonStyle(tint: .white, size: 38)").count - 1,
-                       6,
+                       7,
                        "Daily, workout, and weekly share should each keep one cancel and one action circular")
         XCTAssertEqual(source.components(separatedBy: ".frame(width: 18, height: 18)").count - 1,
-                       6,
+                       7,
                        "All share icons and their preparing indicators should stay at native scale")
 
         let dailyStart = try XCTUnwrap(source.range(of: "struct AtriaShareSheet: View"))

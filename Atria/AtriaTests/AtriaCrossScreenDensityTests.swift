@@ -30,21 +30,27 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("previousCount: priorStrain.count"))
     }
 
-    func testTodayDailyBriefKeepsGuidanceVisibleAndCheckInActionable() throws {
-        let source = try source("AtriaTodayScreen.swift")
-        let planStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayPlanCard"))
-        let planEnd = try XCTUnwrap(source.range(of: "private struct AtriaStrainTargetCard", range: planStart.upperBound..<source.endIndex))
-        let plan = String(source[planStart.lowerBound..<planEnd.lowerBound])
+    /// Owner stack audit 2026-08-28: the Daily Brief left Today for the
+    /// Journal tab (badge = questions remaining), and the whiteboard's four
+    /// rows dissolved into the surfaces that already carried them (rings,
+    /// glance). Pin the departure so neither card quietly returns.
+    func testTodayCarriesNoDailyBriefOrWhiteboard() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertFalse(today.contains("AtriaTodayPlanCard"),
+                       "the Daily Brief moved to the Journal tab")
+        XCTAssertFalse(today.contains("Label(\"Daily brief\""))
+        XCTAssertFalse(today.contains("MorningWhiteboard"),
+                       "HRV/RHR live in glance tiles; Slept/Strain in the rings")
 
-        XCTAssertTrue(plan.contains("Label(\"Daily brief\""))
-        XCTAssertTrue(plan.contains("Text(detail)"))
-        XCTAssertTrue(plan.contains(".buttonStyle(.glass)"))
-        XCTAssertTrue(plan.contains("minHeight: 44"))
-        XCTAssertTrue(plan.contains("checkIn.actionLabel"))
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains(".badge(journalCheckInBadgeCount)"),
+                      "the pending check-in knocks from the Journal tab badge")
+        XCTAssertTrue(home.contains("progress.isComplete"),
+                      "a completed check-in hides the badge")
 
-        let weeklyStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayWeeklyPlanTargetRow"))
-        let weeklyEnd = try XCTUnwrap(source.range(of: "private struct AtriaTodayGlanceTile", range: weeklyStart.upperBound..<source.endIndex))
-        let weekly = String(source[weeklyStart.lowerBound..<weeklyEnd.lowerBound])
+        let weeklyStart = try XCTUnwrap(today.range(of: "private struct AtriaTodayWeeklyPlanTargetRow"))
+        let weeklyEnd = try XCTUnwrap(today.range(of: "private struct AtriaTodayGlanceTile", range: weeklyStart.upperBound..<today.endIndex))
+        let weekly = String(today[weeklyStart.lowerBound..<weeklyEnd.lowerBound])
         XCTAssertFalse(weekly.contains("Text(target.detail)"))
         XCTAssertTrue(weekly.contains("target.detail"), "VoiceOver should retain the target rationale")
     }
@@ -53,7 +59,14 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let source = try source("AtriaJournalTab.swift")
 
         XCTAssertFalse(source.contains("Unlocks after roughly 2–3 weeks of detailed answers."))
-        XCTAssertTrue(source.contains("Text(\"About 2–3 weeks of answers\")"))
+        // 2026-09-02: the "About 2–3 weeks" sentence became a progress track
+        // fed by the real answered-day count — a number in place of prose.
+        XCTAssertFalse(source.contains("About 2–3 weeks of answers"))
+        // 2026-09-02: the inline track became the shared AtriaLearningProgressTrack;
+        // the caption still comes from the same real answered-day count.
+        XCTAssertTrue(source.contains("caption: progressCaption)"))
+        XCTAssertTrue(source.contains("answeredDayCount: projection.answeredDayCount"),
+                      "the Patterns empty state must show the user's real answered days")
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))
         XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Check-in done\" : \"Check-in paused\")"))
         XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Review answers\" : \"Answer skipped questions\")"))
@@ -297,10 +310,13 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(section.contains("Move \\(metric.label) down"))
         XCTAssertFalse(section.contains("ForEach(Array(selectedMetrics.enumerated())"),
                        "Metric identity must not depend on mutable array offsets")
-        XCTAssertTrue(todaySource.contains("private var glanceKicker"))
-        XCTAssertTrue(todaySource.contains("accessibilityLabel(isEditingGlance ? \"Finish editing At a glance\" : \"Edit At a glance\")"))
-        XCTAssertTrue(todaySource.contains("accessibilityHint(\"Lets you drag cards to reorder and remove cards.\")"),
-                      "The live grid needs a visible compact path into drag-and-drop ordering")
+        // Strict declutter (owner 2026-08-28): the "At a glance" kicker row
+        // is gone; edit mode enters from the top action menu and exits via a
+        // compact Done control that exists only while editing.
+        XCTAssertFalse(todaySource.contains("private var glanceKicker"))
+        XCTAssertTrue(todaySource.contains("Label(isEditingGlance ? \"Finish editing glance\" : \"Edit glance cards\""))
+        XCTAssertTrue(todaySource.contains("accessibilityLabel(\"Finish editing glance cards\")"),
+                      "editing still needs an obvious visible exit")
     }
 
     func testCustomizeCanResetPersistedGlanceOrderToDefaults() throws {
@@ -511,12 +527,10 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
 
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
-        XCTAssertTrue(overview.contains("let unqualified = pending || strainIsPartial"))
-        XCTAssertTrue(overview.contains("stateTint: unqualified ? nil : qualifiedStrainZone?.tint"),
-                      "pending or partial strain must not receive a confident target-zone tint")
-        XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
+        // 2026-08-28: the Overview half of this pin scanned the dead
+        // Overview tree (deleted this commit). The SAME guarantee — the ring
+        // withholds its achievement tint until a real frozen target exists —
+        // is asserted against the live Today ring above.
 
         let home = try source("AtriaHomeView.swift")
         XCTAssertFalse(home.contains("switch recoveryPercent ?? 50"))
@@ -598,7 +612,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(host.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertTrue(host.contains(".scrollTargetBehavior(.paging)"))
         XCTAssertTrue(host.contains(".glassEffect(.regular, in: .rect(cornerRadius: 18))"))
-        XCTAssertTrue(host.contains(".frame(height: 40)"))
+        XCTAssertTrue(host.contains(".frame(height: 32)"))
         XCTAssertTrue(host.contains(".foregroundStyle(.primary)"))
 
         // The negative bottom padding existed only to close the void the

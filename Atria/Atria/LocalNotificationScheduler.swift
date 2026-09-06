@@ -2606,7 +2606,10 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         AtriaDebugLog("ATRIADBG notification_delivered kind=%@ id=%@ foreground=1",
               kind(for: request.identifier),
               request.identifier)
-        return [.banner, .sound]
+        // .list keeps a foreground delivery findable in Notification Center
+        // after the banner fades; without it the notification vanished
+        // entirely once missed.
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

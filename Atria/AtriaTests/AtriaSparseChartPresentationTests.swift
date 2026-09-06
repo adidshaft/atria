@@ -81,7 +81,9 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
         for width in [320.0, 390.0] {
             let content = AtriaStrainRecoveryComboChart(strain: strain,
                                                         recovery: recovery,
-                                                        rangeLabel: "This week")
+                                                        rangeLabel: "This week",
+                                                        now: day(6),
+                                                        calendar: calendar)
                 .frame(width: width)
                 .padding(16)
                 .background(Color.black)
@@ -108,7 +110,9 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
         let content = AtriaStrainRecoveryComboChart(
             strain: [point(0, 21), point(1, 20)],
             recovery: [point(0, 100), point(1, 97)],
-            rangeLabel: "This week"
+            rangeLabel: "This week",
+            now: day(1),
+            calendar: calendar
         )
         .frame(width: 360)
         let renderer = ImageRenderer(content: content)
@@ -175,6 +179,87 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
             cardTail.contains("private var pinnedXDomain: ClosedRange<Date>?"),
             "the card must derive a minimum-width pinned domain from its series"
         )
+    }
+
+    // MARK: - Trailing week (owner 2026-09-02/03: axis is the window)
+
+    func testTrailingWeekIncludesTodayWhenTheLastReadingIsYesterday() {
+        let today = day(10)
+        let days = AtriaStrainRecoveryComboChart.trailingWeekDays(now: today, calendar: calendar)
+        XCTAssertEqual(days.count, 7)
+        XCTAssertEqual(days.last, today)
+        XCTAssertEqual(days.first, day(4))
+
+        let strain = [point(8, 12), point(9, 9)]
+        let windowed = AtriaStrainRecoveryComboChart.pointsInTrailingWeek(strain,
+                                                                          now: today,
+                                                                          calendar: calendar)
+        XCTAssertEqual(windowed.map { calendar.startOfDay(for: $0.day) }, [day(8), day(9)])
+        XCTAssertTrue(days.contains(today),
+                      "today stays on the axis even with no closed point yet")
+    }
+
+    func testTrailingWeekDoesNotSlideBackToTheLastReading() {
+        let today = day(10)
+        let days = AtriaStrainRecoveryComboChart.trailingWeekDays(now: today, calendar: calendar)
+        XCTAssertFalse(days.contains(day(3)),
+                       "a reading eight days ago must not pull the window off today")
+        let old = [point(0, 8), point(1, 12), point(3, 6)]
+        XCTAssertTrue(
+            AtriaStrainRecoveryComboChart.pointsInTrailingWeek(old, now: today, calendar: calendar).isEmpty,
+            "history outside the last 7 days does not draw as if it were this week"
+        )
+    }
+
+    func testCoverageCaptionNamesBothSeriesAndStaysSilentWhenFull() {
+        let today = day(10)
+        // Window is day 4...10. Five strain days and four recovery nights.
+        let strain = [4, 5, 6, 7, 8].map { point($0, 10) }
+        let recovery = [5, 6, 7, 8].map { point($0, 70) }
+        XCTAssertEqual(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: strain,
+                                                          recovery: recovery,
+                                                          now: today,
+                                                          calendar: calendar),
+            "5 of 7 days · 4 of 7 nights recorded"
+        )
+
+        let full = (4...10).map { point($0, 10) }
+        XCTAssertNil(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: full,
+                                                          recovery: full,
+                                                          now: today,
+                                                          calendar: calendar),
+            "a complete window says nothing, matching Trends and the detail sheet"
+        )
+    }
+
+    func testCoverageCaptionCountsAnEmptySeriesAsZeroNotAsAbsent() {
+        let today = day(10)
+        let strain = [8, 9].map { point($0, 12) }
+        XCTAssertEqual(
+            AtriaStrainRecoveryComboChart.coverageCaption(strain: strain,
+                                                          recovery: [],
+                                                          now: today,
+                                                          calendar: calendar),
+            "2 of 7 days · 0 of 7 nights recorded"
+        )
+    }
+
+    func testDetailHostShowsTheComboWhenOnlyOneSeriesHasPoints() throws {
+        let overview = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
+        XCTAssertTrue(overview.contains("if !strainPoints.isEmpty || !recoveryPoints.isEmpty"),
+                      "a week of strain with recovery still learning must still draw")
+        XCTAssertFalse(overview.contains("if !strainPoints.isEmpty && !recoveryPoints.isEmpty"))
+
+        let combo = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaStrainRecoveryComboChart.swift"), encoding: .utf8)
+        XCTAssertFalse(combo.contains("as two lines"),
+                       "the how-to-read paragraph is gone; coverage says what is missing")
+        XCTAssertTrue(combo.contains("if let coverageText"))
     }
 
     private func healthScreenSource() throws -> String {

@@ -279,6 +279,9 @@ struct AtriaTodayScreen: View {
     @State private var showWeeklyReport = false
     @State private var showInsights = false
     @State private var showBreathworkSession = false
+    // The stress tile lands on stress INFORMATION (owner directive
+    // 2026-08-29); breathwork stays reachable via the detail's Relax action.
+    @State private var showStressDetail = false
     // Dedicated sheet for the Strap-steps tile (2026-08-08): the steps tile is
     // rendered by AtriaTodayLiveGlanceTileHost, which had no tap affordance, so
     // tapping it dead-ended and there was no way to view step history. Reuses
@@ -308,6 +311,10 @@ struct AtriaTodayScreen: View {
     /// rather than computed in `body`: the receipts live on disk, and the
     /// glance trend is read on every render.
     @State private var weekStepTrend: [Double] = []
+    /// Estimated steps in today's unarbitrated movement clusters — drives the
+    /// review banner in the plan section.
+    @State private var unverifiedMovementSteps = 0
+    @State private var showQuietNotificationUpgrade = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
@@ -315,9 +322,6 @@ struct AtriaTodayScreen: View {
     @AtriaDefault("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
-    /// Optional display name set elsewhere in the app. Empty -- the default
-    /// -- means no greeting is shown; never a fabricated name.
-    @AtriaDefault("atria.user.nickname") private var nickname: String = ""
     @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
     // Glance layout: false = 2-up box grid (default), true = one full-width
     // horizontal bar per metric. The "boxes vs bars" user choice.
@@ -346,30 +350,24 @@ struct AtriaTodayScreen: View {
             // sleep/recovery/strain numbers a second time -- pure
             // duplication -- and was removed; the ring hero plus its legend
             // chips are now the single source of truth for those values.
-            todayHeader
+            // Strict declutter (owner 2026-08-28): the greeting row spent
+            // 44 pt on literature. The action cluster rides the hero's own
+            // day-browser row instead; the greeting is gone.
             AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
                 triRingHero
                     .preference(key: AtriaTodayCompactRingPreferenceKey.self,
                                 value: compactRingPresentation)
+                    .overlay(alignment: .topTrailing) { topActionMenu }
             }
             // Says what the app is doing with last night instead of saying
             // nothing while it settles. Sits under the hero because it is about
             // the night the ring is already showing.
             sleepSettlementRow
 
-            // Assessment P0.4: the morning whiteboard — HRV vs band, RHR vs
-            // band, hours vs frozen need, yesterday's strain. Measured
-            // numbers lead; the Recovery ring above stays a secondary index.
-            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
-                morningWhiteboardCard
-            }
-
             // Shown only when the system route could not deliver this morning's
             // nudge. A notification the user switched off deliberately does NOT
             // reach here -- honouring that toggle is the point of it.
-            if !layoutConfig.showPlan {
-                journalFallbackPrompt
-            }
+            journalFallbackPrompt
 
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
@@ -425,7 +423,19 @@ struct AtriaTodayScreen: View {
                                        maxHeartRate: sessionProjectionStore.state.maxHeartRate,
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
-                                       provenance: provenance(for: detail))
+                                       provenance: provenance(for: detail),
+                                       // Cached, not forced: the same value Home
+                                       // hands Settings; refreshed on rollup/session.
+                                       maxHRSuggestion: detail == .strain
+                                           ? strainSheetMaxHRSuggestion
+                                           : nil,
+                                       onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) },
+                                       onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) },
+                                       // Read, not observed: republished in
+                                       // lockstep with dailyRollupHistory, whose
+                                       // revision already invalidates this sheet.
+                                       cycleStrainByDisplayDay:
+                                        store.physiologicalCycleStrainByDisplayDay)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
@@ -442,7 +452,13 @@ struct AtriaTodayScreen: View {
             AtriaStrapStepsDetailSheet(count: liveStore.state.strapStepResearchCount,
                                        validationState: liveStore.state.strapStepResearchState,
                                        presentation: liveStore.state.dailyStepPresentation,
-                                       goal: stepsGoal)
+                                       goal: stepsGoal,
+                                       nonGaitWindows: AtriaCivilDayStepAuthority
+                                           .nonGaitExclusionWindows(workouts: store.confirmedWorkouts),
+                                       explainedWindows: store.confirmedWorkouts.compactMap {
+                                           $0.end > $0.start
+                                               ? DateInterval(start: $0.start, end: $0.end) : nil
+                                       })
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -451,7 +467,9 @@ struct AtriaTodayScreen: View {
         }
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: weeklyReport,
-                                   rollups: highlightRollups)
+                                   rollups: highlightRollups,
+                                   cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay,
+                                   sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -482,10 +500,40 @@ struct AtriaTodayScreen: View {
                 showBreathworkSession = false
             }
         }
+        // Same presentation shape as AtriaHealthScreen's stress detail: the
+        // full measured surface (timeline, distribution, daily trend), with
+        // Relax handing off to the breathwork full-screen after this cover has
+        // finished dismissing.
+        .fullScreenCover(isPresented: $showStressDetail) {
+            AtriaStressDetailView(
+                input: AtriaStressDetailInput(state: stressMonitorStore.state,
+                                              history: stressMonitorStore.history,
+                                              heartRateHistory: stressMonitorStore.heartRateHistory,
+                                              updatedAt: stressMonitorStore.lastMeasuredAt,
+                                              distributionComparison: stressMonitorStore.distributionComparison(),
+                                              trendDays: stressMonitorStore.dailyTrendDays(),
+                                              loggedContext: todayStressLoggedContext),
+                onDismiss: { showStressDetail = false },
+                onRelax: {
+                    showStressDetail = false
+                    Task { @MainActor in
+                        await Task.yield()
+                        showBreathworkSession = true
+                    }
+                }
+            )
+        }
         // Refreshed whenever a step receipt publishes, so the sparkline follows
         // the same store the Strap steps card reads.
         .task(id: sessionProjectionStore.state.dailyRollupHistory.count) {
             await loadWeekStepTrend()
+        }
+        // An answer given in the steps sheet must clear the banner's count
+        // without waiting for the next receipt publication.
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaNonGaitArbitrationStore.didChangeNotification
+        )) { _ in
+            Task { await loadWeekStepTrend() }
         }
         .onAppear {
             #if DEBUG
@@ -505,27 +553,6 @@ struct AtriaTodayScreen: View {
 
     private static let heroMinScale: CGFloat = 0.6
 
-    /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
-    /// above the ring hero -- nil (and simply omitted) whenever no nickname
-    /// has been set, never a placeholder greeting.
-    // Perf (docs/26 follow-up): cached once instead of building a fresh
-    // autoupdating Calendar (NSCalendar + locale lookup) on every Today body
-    // pass (~700ms live tick + scroll). Coarse morning/afternoon/evening bucket.
-    private static let greetingCalendar = Calendar.current
-
-    private var greetingText: String? {
-        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let hour = Self.greetingCalendar.component(.hour, from: Date())
-        let timeOfDay: String
-        switch hour {
-        case 5..<12: timeOfDay = "morning"
-        case 12..<17: timeOfDay = "afternoon"
-        default: timeOfDay = "evening"
-        }
-        return "Good \(timeOfDay), \(trimmed)"
-    }
-
     private var glanceColumns: [GridItem] {
         if horizontalSizeClass == .regular {
             return Array(repeating: GridItem(.flexible(), spacing: AtriaDesignTokens.Spacing.md), count: 3)
@@ -539,6 +566,22 @@ struct AtriaTodayScreen: View {
 
     private func glanceColumnSpan(for metric: AtriaTodayMetric) -> Int {
         min(layoutSize(for: metric).columnSpan, glanceColumnCount)
+    }
+
+    /// Today's journal tags as displayed stress context — the same
+    /// dedup-by-tag projection AtriaHealthScreen feeds its stress detail
+    /// (context, never inferred cause: journal tags carry no timestamp
+    /// precise enough to attribute a stress peak).
+    private var todayStressLoggedContext: [AtriaStressLoggedContext] {
+        let calendar = Calendar.current
+        let tags = sessionProjectionStore.state.behaviorJournalEntries
+            .filter { calendar.isDateInToday($0.day) }
+            .flatMap(\.tags)
+        var seen = Set<String>()
+        return tags.compactMap { tag in
+            guard seen.insert(tag.rawValue).inserted else { return nil }
+            return AtriaStressLoggedContext(tag: tag)
+        }
     }
 
     /// Route audit (visibilitySpec §3, 2026-07-05): every glance tile used to
@@ -557,7 +600,7 @@ struct AtriaTodayScreen: View {
         .respiratoryRate: .respiratoryRate,
         .sleep: .sleep,
         .sleepHistory: .sleep,
-        .sleepEfficiency: .sleep,
+        .sleepEfficiency: .sleepEfficiency,
         .sleepPerformance: .sleepPerformance,
         .vo2max: .vo2max,
         .bioAge: .fitnessAge,
@@ -567,11 +610,14 @@ struct AtriaTodayScreen: View {
     ]
 
     /// Wraps a glance tile in whatever tap affordance it honestly supports.
-    /// Stress keeps its dedicated breathwork shortcut (previously gated on a
-    /// broken `item.id == "Stress"` string check -- `AtriaTodayMetric.stress`
-    /// raw-values to `"stress"`, never the capitalized literal, so that
-    /// branch never actually ran and Stress dead-ended along with everything
-    /// else). Insights opens the canonical ranked-insights card. Everything else
+    /// Stress opens the full stress detail (owner directive 2026-08-29: a
+    /// metric tap lands on information, not an exercise — the tile used to
+    /// jump straight into the breathwork full-screen; breathwork remains one
+    /// tap away via the detail's Relax action). The branch was previously
+    /// gated on a broken `item.id == "Stress"` string check --
+    /// `AtriaTodayMetric.stress` raw-values to `"stress"`, never the
+    /// capitalized literal, so it never ran and Stress dead-ended along with
+    /// everything else. Insights opens the canonical ranked-insights card. Everything else
     /// that has a real or honest-partial detail opens `metricDetail`; anything
     /// without one renders as a plain, non-tappable tile rather than a fake
     /// affordance.
@@ -580,26 +626,26 @@ struct AtriaTodayScreen: View {
         let metric = AtriaTodayMetric(rawValue: item.metricKey)
         if metric == .stress {
             Button {
-                showBreathworkSession = true
+                showStressDetail = true
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         } else if metric == .insights {
             Button {
                 showInsights = true
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
             .accessibilityHint("Shows ranked local insights.")
         } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
             Button {
                 metricDetail = detail
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         } else {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
@@ -619,7 +665,7 @@ struct AtriaTodayScreen: View {
                                              showsDetail: layoutConfig.legendStatStyle != .value,
                                              isBar: isBar)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         case .calories:
             AtriaTodayLiveGlanceTileHost(metric: metric,
                                          liveStore: liveStore,
@@ -751,19 +797,86 @@ struct AtriaTodayScreen: View {
                 systemNotifications
             }
 
-            if layoutConfig.showPlan {
-                AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
-                    AtriaTodayPlanCard(title: planTitle,
-                                       detail: planDetail,
-                                       target: planTargetText,
-                                       tint: dayStrainIsIncomplete
-                                        ? .secondary
-                                        : displayHero.guidance.color,
-                                       checkIn: journalCheckInProgress,
-                                       notificationFallback: morningCheckInNeedsFallback,
-                                       onOpenJournal: onOpenJournal)
+            // The unverified-movement review lived only inside the steps
+            // sheet, so a wearer who never opened it never saw it — the owner
+            // wore the strap all day and reported "no review cards" while
+            // ~5,000 unarbitrated counter-steps sat waiting. Reviews come to
+            // the wearer, like the workout and sleep banners above.
+            if unverifiedMovementSteps >= 300 {
+                Button {
+                    showStrapStepsDetail = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Unverified movement · ~\(unverifiedMovementSteps) steps")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Tell Atria which stretches were walks")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                 }
+                .buttonStyle(AtriaPressableCardStyle())
+                .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+                .accessibilityHint("Opens the steps sheet to review unverified movement.")
             }
+
+            // Notifications were delivered PROVISIONALLY (quietly) since first
+            // launch: they piled up in Notification Center but never popped
+            // (owner report 2026-08-28). One-shot card; the Settings row keeps
+            // the state visible forever after dismissal.
+            if showQuietNotificationUpgrade {
+                HStack(spacing: 10) {
+                    Button {
+                        LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                        AtriaNotificationProminenceUpgradeCard.dismiss()
+                        showQuietNotificationUpgrade = false
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "bell.badge")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Your notifications arrive silently")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Tap to let sleep and workout alerts pop up")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                    .buttonStyle(AtriaPressableCardStyle())
+
+                    Button {
+                        AtriaNotificationProminenceUpgradeCard.dismiss()
+                        showQuietNotificationUpgrade = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Dismiss. You can enable alerts later from Settings.")
+                }
+                .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+                .accessibilityHint("Asks iOS to show Atria's notifications as normal alerts.")
+            }
+
         case .shortcuts:
             AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)
         case .weeklyPlan:
@@ -773,7 +886,23 @@ struct AtriaTodayScreen: View {
                 }
             }
         case .glance:
-            glanceKicker
+            // Strict declutter (owner 2026-08-28): the "At a glance" kicker
+            // row is gone; entering edit mode lives in the top action menu,
+            // and a compact Done control appears only while editing.
+            if isEditingGlance {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button("Done") {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                            isEditingGlance = false
+                        }
+                    }
+                    .font(.caption.weight(.bold))
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .accessibilityLabel("Finish editing glance cards")
+                }
+            }
 
             AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
                 Group {
@@ -819,53 +948,8 @@ struct AtriaTodayScreen: View {
 
     /// Tiny uppercase group kicker: enough structure to breathe, not a
     /// full header card (UX audit 2026-07-07).
-    private func sectionKicker(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption2.weight(.black))
-            .foregroundStyle(.tertiary)
-            .kerning(0.8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-            .accessibilityAddTraits(.isHeader)
-    }
 
-    private var glanceKicker: some View {
-        HStack(spacing: 8) {
-            sectionKicker("At a glance")
-            Button {
-                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                    isEditingGlance.toggle()
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 32, height: 32)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.small)
-            .accessibilityLabel(isEditingGlance ? "Finish editing At a glance" : "Edit At a glance")
-            .accessibilityHint("Lets you drag cards to reorder and remove cards.")
-        }
-    }
 
-    /// Greeting and actions share one compact header row. Keeping them as two
-    /// vertically stacked rows spent 44 points on controls plus another stack
-    /// gap before the hero, even though both belong to the same hierarchy.
-    private var todayHeader: some View {
-        HStack(spacing: 8) {
-            if let greetingText {
-                Text(greetingText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            topActionMenu
-        }
-    }
 
     private var topActionMenu: some View {
         GlassEffectContainer(spacing: 4) {
@@ -882,6 +966,14 @@ struct AtriaTodayScreen: View {
                     } label: {
                         Label(glanceLayoutBars ? "Show as grid" : "Show as bars",
                               systemImage: glanceLayoutBars ? "square.grid.2x2" : "rectangle.grid.1x2")
+                    }
+                    Button {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                            isEditingGlance.toggle()
+                        }
+                    } label: {
+                        Label(isEditingGlance ? "Finish editing glance" : "Edit glance cards",
+                              systemImage: "arrow.up.arrow.down")
                     }
                     Menu {
                         ForEach(Array(ringSlots.enumerated()), id: \.offset) { position, current in
@@ -943,7 +1035,7 @@ struct AtriaTodayScreen: View {
             let tint = fill.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) } ?? .secondary
             return AtriaTriRingMetric(title: "Sleep",
                                       value: value,
-                                      detail: performance.map { "\($0)% of need" } ?? "Saved day",
+                                      detail: performance.map { "\($0)% of need" } ?? "need not scored",
                                       systemImage: "moon.fill",
                                       tint: tint,
                                       fill: fill,
@@ -955,9 +1047,12 @@ struct AtriaTodayScreen: View {
             let tint: Color = percent.map {
                 $0 < 34 ? .red : ($0 < 67 ? .yellow : .green)
             } ?? .secondary
+            // Past-day legends (2026-09-02): "Saved day" under a real value
+            // said nothing. Recovery reads its own state word, strain its
+            // band, and the overnight metrics say which night they belong to.
             return AtriaTriRingMetric(title: "Recovery",
                                       value: percent.map { "\($0)%" } ?? noValue,
-                                      detail: percent == nil ? "No saved score" : "Saved day",
+                                      detail: percent.map { recoveryState(percent: $0) } ?? "No saved score",
                                       systemImage: "heart.fill",
                                       tint: tint,
                                       fill: percent.map { min(max(Double($0) / 100.0, 0), 1) })
@@ -965,7 +1060,7 @@ struct AtriaTodayScreen: View {
             let strain = entry?.strain
             return AtriaTriRingMetric(title: "Strain",
                                       value: strain.map { String(format: "%.1f", $0) } ?? noValue,
-                                      detail: strain == nil ? "No saved value" : "Saved day",
+                                      detail: strain.map { Metrics.strainBandName($0) } ?? "No saved value",
                                       systemImage: "flame.fill",
                                       tint: Metrics.electricStrain,
                                       fill: strain.map { min(max($0 / 21.0, 0), 1) })
@@ -973,7 +1068,7 @@ struct AtriaTodayScreen: View {
             let ms = entry?.lnRMSSD.map { Int(exp($0).rounded()) }
             return AtriaTriRingMetric(title: "HRV",
                                       value: ms.map { "\($0)" } ?? noValue,
-                                      detail: ms == nil ? "No saved value" : "Saved day",
+                                      detail: ms == nil ? "No saved value" : "that night",
                                       systemImage: "waveform.path.ecg",
                                       tint: Metrics.electricHRV,
                                       fill: nil)
@@ -981,7 +1076,7 @@ struct AtriaTodayScreen: View {
             let rhr = entry?.rhr
             return AtriaTriRingMetric(title: "RHR",
                                       value: rhr.map { "\($0)" } ?? noValue,
-                                      detail: rhr == nil ? "No saved value" : "Saved day",
+                                      detail: rhr == nil ? "No saved value" : "that night",
                                       systemImage: "heart.circle",
                                       tint: .red,
                                       fill: nil)
@@ -1230,13 +1325,26 @@ struct AtriaTodayScreen: View {
     private var highlightRollups: [DailyRollupStoreEntry] {
         #if DEBUG
         if Self.debugShowsNorthStarHighlights(arguments: ProcessInfo.processInfo.arguments)
+            || Self.debugShowsDetailHistory(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsAICoachLocalFixture(arguments: ProcessInfo.processInfo.arguments)
             || Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments) {
-            return Self.debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments))
+            return Self.debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments),
+                                              warning: Self.debugShowsNorthStarWarnings(arguments: ProcessInfo.processInfo.arguments))
         }
         #endif
         return sessionProjectionStore.state.dailyRollupHistory
+    }
+
+    /// The strain sheet's max-HR offer. DEBUG launch flags can seed a fixture;
+    /// Release always uses the store's cached suggestion.
+    private var strainSheetMaxHRSuggestion: AtriaMaxHRSuggestion? {
+#if DEBUG
+        Self.debugMaxHRSuggestion(arguments: ProcessInfo.processInfo.arguments)
+            ?? store.cachedMaxHRSuggestion
+#else
+        store.cachedMaxHRSuggestion
+#endif
     }
 
     /// Perf (docs/26 follow-up): `AtriaHighlights.topTwo` derives from the
@@ -1261,7 +1369,26 @@ struct AtriaTodayScreen: View {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
         let valueIndex = arguments.index(after: fixtureIndex)
         return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "north-star-highlights"
+            && (arguments[valueIndex] == "north-star-highlights"
+                || arguments[valueIndex] == "north-star-warnings")
+    }
+
+    /// `north-star-warnings` (2026-09-02): the same rollups with the latest
+    /// morning's resting HR and HRV above the prior week, so the two warning
+    /// highlights render for screenshots; the sleep-need streak is off so
+    /// both fit in the top two.
+    /// `rhr-detail-history` (2026-09-02): the resting-HR sheet over the
+    /// fixture rollups, so trailing Week/Month windows have a picture.
+    private static func debugShowsDetailHistory(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex) && arguments[valueIndex] == "rhr-detail-history"
+    }
+
+    private static func debugShowsNorthStarWarnings(arguments: [String]) -> Bool {
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex) && arguments[valueIndex] == "north-star-warnings"
     }
 
     private static func debugShowsWeeklyReport(arguments: [String]) -> Bool {
@@ -1269,6 +1396,18 @@ struct AtriaTodayScreen: View {
         let valueIndex = arguments.index(after: fixtureIndex)
         return arguments.indices.contains(valueIndex)
             && arguments[valueIndex] == "weekly-report"
+    }
+
+    /// `--atria-ui-fixture strain-detail --atria-debug-max-hr-suggestion`
+    /// seeds the strain sheet's max-HR offer (the fixture slot is taken by
+    /// the sheet itself). DEBUG only.
+    private static func debugMaxHRSuggestion(arguments: [String]) -> AtriaMaxHRSuggestion? {
+#if DEBUG
+        guard arguments.contains("--atria-debug-max-hr-suggestion") else { return nil }
+        return AtriaMaxHRSuggestion(observedPeak: 193, currentMaxHR: 190)
+#else
+        return nil
+#endif
     }
 
     private static func debugShowsBreathwork(arguments: [String]) -> Bool {
@@ -1285,7 +1424,8 @@ struct AtriaTodayScreen: View {
             && arguments[valueIndex] == "recovery-detail-nutrition"
     }
 
-    private static func debugHighlightRollups(includeNutrition: Bool = false) -> [DailyRollupStoreEntry] {
+    private static func debugHighlightRollups(includeNutrition: Bool = false,
+                                              warning: Bool = false) -> [DailyRollupStoreEntry] {
         let calendar = Calendar(identifier: .gregorian)
         // Keep the fixture anchored to the current week. WeeklyReport's
         // navigation deliberately uses its generated-at date, so fixed future
@@ -1297,10 +1437,10 @@ struct AtriaTodayScreen: View {
         for offset in recoveries.indices {
             let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
             let recovery = recoveries[offset]
-            let rmssdSource = Double(58 - min(offset, 6))
-            let restingHeartRate = offset == 0 ? 52 : 58 + (offset % 2)
+            let rmssdSource = warning && offset == 0 ? 66 : Double(58 - min(offset, 6))
+            let restingHeartRate = offset == 0 ? (warning ? 62 : 52) : 58 + (offset % 2)
             let sleepSeconds: TimeInterval = 8 * 60 * 60
-            let sleepPerformance = offset < 3 ? 104 : 92
+            let sleepPerformance = offset < 3 && !warning ? 104 : 92
             let bedtimeMinutes = 22 * 60 + 20
             let strain = 10 + Double(offset) * 0.4
             rollups.append(DailyRollupStoreEntry(day: day,
@@ -1334,7 +1474,7 @@ struct AtriaTodayScreen: View {
         case "strain-detail": return .strain
         case "recovery-detail", "recovery-detail-nutrition": return .recovery
         case "hrv-detail", "chart-options": return .hrv
-        case "rhr-detail": return .restingHeartRate
+        case "rhr-detail", "rhr-detail-history": return .restingHeartRate
         case "respiratory-detail": return .respiratoryRate
         case "sleep-detail": return .sleep
         default: return nil
@@ -1524,7 +1664,7 @@ struct AtriaTodayScreen: View {
     /// freshness stamp are RELOCATED to `accessibilitySummary` below, not
     /// deleted (the sleep detail sheet lives in AtriaOverviewSections, outside
     /// this pass's files). `waitingForData` also stops rendering as a row: the
-    /// sleep chip's "Awaiting current sleep" detail already carries that state
+    /// sleep chip's "No sleep this cycle" detail already carries that state
     /// on-surface all day.
     @ViewBuilder
     private var sleepSettlementRow: some View {
@@ -1585,7 +1725,7 @@ struct AtriaTodayScreen: View {
                                 tint: .blue,
                                 hueTinted: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
             .accessibilityLabel("Morning check-in. Notifications are off, so this prompt is shown instead. Opens the journal.")
         }
     }
@@ -1594,50 +1734,6 @@ struct AtriaTodayScreen: View {
         AtriaOverviewCurrentSleep.resolveDisplayEvidence(
             from: sessionProjectionStore.state.sleepHistorySnapshot
         )
-    }
-
-    /// Today reads the sleep ring, center caption, and sleep-performance tile
-    /// several times per body pass. The underlying math scans recent sleep
-    /// nights for debt and rollups for yesterday's strain, so cache it behind
-    /// the existing source revisions instead of rebuilding it on live ticks.
-    /// Assessment P0.4: builds the whiteboard from values already computed by
-    /// the existing authorities — the cycle projection's displayed numbers,
-    /// the same baseline snapshot the detail sheets use, the frozen need via
-    /// sleepNeedSnapshot, and yesterday's persisted rollup row. Non-numeric
-    /// display strings ("Learning") fail safe to a neutral, band-less row.
-    private var morningWhiteboardCard: some View {
-        let cycle = AtriaHealthMetricAuthority.currentCycleProjection(
-            hero: displayHero,
-            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot)
-        let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
-        let night = latestSleep
-        let calendar = Calendar.current
-        // "Yesterday's strain" must be anchored on the current civil day, NOT on
-        // the latest confirmed sleep night. When sleep isn't detected (a degraded
-        // HR-only strap can stay unconfirmed for days) `latestSleep` is nil, and
-        // the old `night.flatMap` anchor collapsed to nil — so the row read "no
-        // strain recorded yesterday" even though a strain rollup for yesterday was
-        // persisted. Anchor on today-1 so the persisted prior-day strain surfaces
-        // regardless of sleep-detection state.
-        let today = calendar.startOfDay(for: Date())
-        let yesterdayRollup: DailyRollupStoreEntry? = calendar
-            .date(byAdding: .day, value: -1, to: today)
-            .flatMap { prior in
-                dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
-            }
-        let model = AtriaTodayMorningWhiteboardModel.make(
-            hrvMS: cycle.hrvMS,
-            restingHR: cycle.restingHeartRate,
-            baseline: baseline,
-            sleepDurationText: night?.durationText,
-            nightConfirmed: night?.confirmed,
-            needHours: sleepNeedSnapshot.needHours,
-            yesterdayTRIMP: yesterdayRollup?.trimp,
-            yesterdayStrain: yesterdayRollup?.strain,
-            yesterdayStrainIsPartial: yesterdayRollup?.strainEvidenceQuality == .partial)
-        return AtriaTodayMorningWhiteboardCard(model: model) { kind in
-            metricDetail = kind
-        }
     }
 
     private var sleepNeedSnapshot: AtriaTodaySleepNeedSnapshot {
@@ -2109,14 +2205,6 @@ struct AtriaTodayScreen: View {
         ) ?? (dayStrainIsIncomplete ? .incompleteEvidence : nil)
     }
 
-    private var currentStrainLimitationPresentation:
-        AtriaWorkoutMetricPresentation.StrainLimitationPresentation? {
-        guard dayStrainIsIncomplete else { return nil }
-        return AtriaWorkoutMetricPresentation.strainLimitationPresentation(
-            currentStrainLimitation ?? .incompleteEvidence
-        )
-    }
-
     private var dayStrainIsIncomplete: Bool {
         // Read from the confidence string only: the "≥" prefix it used to also
         // check was removed from strain on 2026-08-27, and it was always the
@@ -2217,7 +2305,8 @@ struct AtriaTodayScreen: View {
            let cached = glanceMemo.weeklyReportValue {
             return cached
         }
-        let report = WeeklyReport(rollups: highlightRollups)
+        let report = WeeklyReport(rollups: highlightRollups,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay)
         glanceMemo.weeklyReportRevision = revision
         glanceMemo.weeklyReportWeekStart = weekStart
         glanceMemo.weeklyReportValue = report
@@ -2369,58 +2458,6 @@ struct AtriaTodayScreen: View {
         displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Learning"
     }
 
-    private var planTitle: String {
-        if let limitation = currentStrainLimitationPresentation {
-            return limitation.compactState
-        }
-        return displayHero.guidance.headline
-    }
-
-    private var planDetail: String {
-        if let limitation = currentStrainLimitationPresentation {
-            return limitation.detailText
-        }
-        return displayHero.guidance.detail
-    }
-
-    private var planTargetText: String {
-        guard let target = displayHero.guidance.target else { return "Target building" }
-        // "N to go" is an arithmetic claim about measured strain. While the
-        // strain hero itself shows pending, day strain is unmeasured — the
-        // pill asserting "10.2 to go" beside a "--" strain chip contradicted
-        // it (2026-08-04 WHOOP-alignment review, rank 1).
-        if isPendingHeroValue(displayHero.strainValue) {
-            return String(format: "Target %.1f \u{00b7} strain pending", target)
-        }
-        if let limitation = currentStrainLimitationPresentation {
-            return String(format: "Target %.1f \u{00b7} %@", target, limitation.targetContext)
-        }
-        let remaining = target - displayHero.strain
-        if remaining > 0.05 {
-            return String(format: "Target %.1f \u{00b7} %.1f to go", target, remaining)
-        }
-        return String(format: "Target %.1f \u{00b7} met", target)
-    }
-
-    private var journalCheckInProgress: AtriaJournalCheckInProgress {
-        let calendar = Calendar.current
-        let localDay = sessionProjectionStore.state.localDay
-        let todayEntry = sessionProjectionStore.state.behaviorJournalEntries.first {
-            calendar.isDate($0.day, inSameDayAs: localDay)
-        }
-        return AtriaJournalCheckInProgress.resolve(
-            trackedTags: AtriaTrackedBehaviors.parse(trackedBehaviorsRaw),
-            todayEntry: todayEntry,
-            answersByQuestion: sessionProjectionStore.state.todayJournalAnswers
-        )
-    }
-
-    private var morningCheckInNeedsFallback: Bool {
-        AtriaNotificationAttemptStore.needsInAppFallback(
-            kind: LocalNotificationScheduler.morningCheckInKind
-        )
-    }
-
     private var coachContext: AtriaCoachContext {
         AtriaCoachContext(guidance: displayHero.guidance,
                           strain: displayHero.strain,
@@ -2532,7 +2569,15 @@ struct AtriaTodayScreen: View {
         case .sleep:
             return history.compactMap { $0.sleepSeconds.map { $0 / 3_600 } }
         case .strain, .strainCompare:
-            return history.compactMap(\.strain)
+            // Same overlay History, the strain chart, and the weekly/monthly
+            // reports use. The tile number is cycle strain; the sparkline
+            // used to plot the civil rollup, so a shifted sleeper's last bar
+            // could disagree with the number it sits under.
+            return WeeklyReport.applyingCycleStrain(
+                Array(history),
+                store.physiologicalCycleStrainByDisplayDay,
+                calendar: .current
+            ).compactMap(\.strain)
         case .hrv:
             return history.compactMap(\.lnRMSSD)
         case .rhr, .trend:
@@ -2568,13 +2613,68 @@ struct AtriaTodayScreen: View {
     private func loadWeekStepTrend() async {
         guard let identifier = AtriaWhoop4MotionTickDailyStore
             .persistedStrapIdentifiers().first else { return }
+        let now = Date()
         let receipts = AtriaWhoop4MotionTickDailyStore.shared
             .recentReceipts(strapIdentifier: identifier, limit: 14)
-        let totals = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: Date())
+        let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let days = (0..<7).compactMap {
+            calendar.date(byAdding: .day, value: -$0, to: today)
+        }
+        // Same authority as the week chart, so the corner sparkline and the
+        // sheet's bars cannot disagree about a day.
+        let totals = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+            days: days,
+            strapIdentifier: identifier,
+            nonGaitExclusions: AtriaCivilDayStepAuthority
+                .nonGaitExclusionWindows(workouts: store.confirmedWorkouts)
+                + AtriaNonGaitArbitrationStore.shared.notWalkingWindows(),
+            fallback: fallback,
+            now: now
+        )
         weekStepTrend = totals
             .sorted { $0.key < $1.key }
             .suffix(7)
             .map { Double($0.value) }
+
+        // Same detector the steps sheet reviews; the banner is only the knock
+        // on the door.
+        let explained: [DateInterval] = store.confirmedWorkouts.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        } + AtriaNonGaitArbitrationStore.shared.arbitratedWindows()
+        let clusterSteps: Int = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let points = AtriaWhoop4MotionTickCompactStore.shared
+                    .decodedPoints(start: now.addingTimeInterval(-24 * 3_600),
+                                   end: now,
+                                   strapIdentifier: identifier)
+                let clusters = AtriaUnattributedMotionRuns.clusters(
+                    minuteTicks: AtriaUnattributedMotionRuns
+                        .minuteTickTotals(points),
+                    explained: explained
+                )
+                // Only ASKABLE clusters knock; learned answers apply
+                // silently and minor noise never interrupts anyone.
+                let partition = AtriaUnattributedMotionRuns.partition(
+                    clusters: clusters, store: .shared, now: now
+                )
+                continuation.resume(
+                    returning: partition.askable
+                        .reduce(0) { $0 + $1.estimatedSteps }
+                )
+            }
+        }
+        unverifiedMovementSteps = clusterSteps
+
+        let prominence = await AtriaNotificationProminence.current()
+        showQuietNotificationUpgrade = AtriaNotificationProminenceUpgradeCard.shouldShow(
+            prominence: prominence,
+            hasDeliveredQuietly: AtriaNotificationProminenceUpgradeCard
+                .hasQuietDeliveryEvidence(),
+            dismissed: AtriaNotificationProminenceUpgradeCard.isDismissed(),
+            masterToggleOn: AtriaNotificationSettings.load().allowNotifications
+        )
     }
 
     /// Which shape a metric's corner chart takes — one per card, decided by how
@@ -2857,7 +2957,7 @@ struct AtriaTodayScreen: View {
                                         // Last em dash in the app; the glance grid
                                         // around it already speaks "--".
                                         value: AtriaCompactMetricPresentation.noValue,
-                                        detail: legendDetail("Decoder unavailable"),
+                                        detail: legendDetail(AtriaSpO2Copy.decoderNotVerified),
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
                                         layoutSize: layoutSize(for: metric),
@@ -2873,9 +2973,12 @@ struct AtriaTodayScreen: View {
                                                 summary: skinTemp,
                                                 decoderAvailable: decoderAvailable
                                             ),
-                                        detail: legendDetail(decoderAvailable
-                                            ? skinTemp.detailText
-                                            : "Decoder unavailable"),
+                                        detail: legendDetail(
+                                            AtriaExperimentalSensorCopy
+                                                .skinTemperatureStatus(
+                                                    summary: skinTemp,
+                                                    decoderAvailable: decoderAvailable
+                                                )),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric),
@@ -2986,10 +3089,11 @@ struct AtriaTodayScreen: View {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return [] }
-        return highlightRollups
-            .drop { $0.day >= today }
-            .prefix { $0.day >= cutoff }
-            .compactMap { $0.strain }
+        return WeeklyReport.applyingCycleStrain(
+            Array(highlightRollups.drop { $0.day >= today }.prefix { $0.day >= cutoff }),
+            store.physiologicalCycleStrainByDisplayDay,
+            calendar: calendar
+        ).compactMap(\.strain)
     }
 
     /// Measured-perf pass (2026-07-05): memoized behind
@@ -3342,6 +3446,11 @@ private struct AtriaTodayRingDayBrowser: View {
             .disabled(selectedIndex == 0)
             .accessibilityLabel("Next day")
         }
+        // Owner 2026-09-02: centred, the pager's right arrow ran under the
+        // share button that overlays the hero's top-trailing corner. The
+        // pager sits at the leading edge; the action cluster keeps the
+        // trailing corner to itself.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var historicalRing: some View {
@@ -3488,7 +3597,7 @@ struct AtriaTodayCompactRingRail: View {
         .padding(.leading, 12)
         .padding(.trailing, 8)
         .padding(.vertical, 7)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .glassEffect(.regular, in: .rect(cornerRadius: AtriaDesignTokens.Radius.tile))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Collapsed Today rings. \(accessibilitySummary)")
     }
@@ -3925,27 +4034,18 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
     let pulse: AtriaHomeModel.HeroPulseState
 
     var body: some View {
-        HStack(spacing: 10) {
-            AtriaTodayLivePill(title: "Live",
-                               value: liveStatusText,
-                               systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
-                               tint: pulse.heartRate > 0 ? .green : .secondary)
-            // A zone needs a pulse, not calibration. Without a live heart rate
-            // this pill could only ever read "Learning" — repeating, less
-            // precisely and less actionably, what the Live pill beside it
-            // already says ("Bluetooth off", "Disconnected"), and implying a
-            // calibration that is not happening. It appears only when there is
-            // a zone to show.
-            if let heartRateZone = pulse.heartRateZone {
-                AtriaTodayLivePill(title: "Zone",
-                                   value: heartRateZone.shortLabel,
-                                   systemImage: "waveform.path.ecg",
-                                   tint: heartRateZone.tint)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")")
+        // One pill, not two (owner stack audit 2026-08-28): the zone is a
+        // qualifier of the live pulse, so it rides inside the same pill as
+        // "72 bpm · Z3" instead of claiming its own row space. A zone needs a
+        // pulse — without one it would only repeat what the pill already says.
+        AtriaTodayLivePill(title: pulse.heartRateZone.map { "Live · \($0.compactLabel)" } ?? "Live",
+                           value: liveStatusText,
+                           systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
+                           tint: pulse.heartRateZone?.tint
+                               ?? (pulse.heartRate > 0 ? .green : .secondary))
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")")
     }
 
     private var liveStatusText: String {
@@ -3953,7 +4053,8 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
         return AtriaLiveSignalTruth.valueText(
             status: live.status,
             streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
+            hasRecentHeartRate: live.hasRecentHeartRateSample,
+            attribution: live.strapWearAttribution
         )
     }
 }
@@ -4000,126 +4101,6 @@ private struct AtriaTodayLivePill: View, Equatable {
     }
 }
 
-private struct AtriaTodayPlanCard: View, Equatable {
-    let title: String
-    let detail: String
-    let target: String
-    let tint: Color
-    let checkIn: AtriaJournalCheckInProgress
-    let notificationFallback: Bool
-    let onOpenJournal: () -> Void
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.title == rhs.title
-            && lhs.detail == rhs.detail
-            && lhs.target == rhs.target
-            && lhs.tint == rhs.tint
-            && lhs.checkIn == rhs.checkIn
-            && lhs.notificationFallback == rhs.notificationFallback
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            dailyBriefHeader
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-
-                Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // Once the brief is answered it stops taking room on Today. It was
-            // holding a 44pt row plus two lines to say "Done", which is the one
-            // state that needs no action — and Today is the screen with the
-            // least room to spare. The Journal tab is a permanent entry point,
-            // so the answers stay reachable; nothing is lost by clearing it.
-            if !checkIn.isComplete {
-                Button(action: onOpenJournal) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.subheadline.weight(.bold))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(checkIn.actionLabel)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(notificationFallback
-                                 ? "In-app reminder · \(checkIn.statusLabel)"
-                                 : checkIn.statusLabel)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer(minLength: 8)
-
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.roundedRectangle(radius: 16))
-                .tint(tint)
-                .accessibilityLabel("\(checkIn.actionLabel). \(notificationFallback ? "In-app reminder. " : "")\(checkIn.statusLabel).")
-                .accessibilityHint("Opens today's Journal check-in.")
-            }
-        }
-        .padding(14)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
-        .accessibilityElement(children: .contain)
-    }
-
-    @ViewBuilder
-    private var dailyBriefHeader: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 4) {
-                dailyBriefLabel
-                targetLabel
-            }
-        } else {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                dailyBriefLabel
-                Spacer(minLength: 8)
-                targetLabel
-            }
-        }
-    }
-
-    private var dailyBriefLabel: some View {
-        Label("Daily brief", systemImage: "sun.max.fill")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(.secondary)
-    }
-
-    private var targetLabel: some View {
-        Text(target)
-            .font(.caption.weight(.bold))
-            .foregroundStyle(tint)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .layoutPriority(1)
-    }
-}
-
-/// Compact strain-target progress card hosted directly under the ring hero.
-/// The target itself is never computed here -- it is `Coach.guide`'s
-/// existing recovery -> strain-target number (`displayHero.guidance.target`,
-/// the same value already driving `strainMetric`'s ring fill, the ring's
-/// legend chip, and the AI Coach narrative) passed straight through, so
-/// there is exactly one strain-target formula in the app.
 private struct AtriaStrainTargetCard: View, Equatable {
     let currentStrain: Double
     let target: Double?
@@ -4249,7 +4230,9 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                     .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
             }
         }
-        .buttonStyle(.plain)
+        // The whole card IS the button into the weekly report, so it presses
+        // like the glance tiles directly below it (UI-uniformity 2026-08-28).
+        .buttonStyle(AtriaPressableCardStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens the weekly report.")
@@ -4296,13 +4279,21 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 6)
-                    Text(target.progressText)
+                    // A learning target shows what it has counted so far
+                    // ("1 of 3 nights") on the same gauge, the shape every
+                    // other learning state uses (2026-09-02); "Learning"
+                    // stays the word VoiceOver hears and the fallback text.
+                    // A withheld target (no bedtime rhythm to name a time
+                    // from) is not ready either: "Learning", empty gauge.
+                    Text(target.isLearning ? (target.learningProgressText ?? "Learning")
+                         : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
+                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
                         .lineLimit(1)
                 }
 
-                Gauge(value: target.progress) {
+                Gauge(value: target.isLearning ? target.learningProgress
+                      : target.isWithheld ? 0 : target.progress) {
                     EmptyView()
                 }
                 .gaugeStyle(.accessoryLinearCapacity)
@@ -4312,7 +4303,10 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
         }
         .frame(minHeight: 42)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(target.title). \(target.progressText). \(target.detail).")
+        .accessibilityLabel(target.isLearning
+                            ? "\(target.title). Learning, \(target.learningProgressText ?? "no count yet"). \(target.detail)."
+                            : target.isWithheld ? "\(target.title). Learning. \(target.detail)."
+                            : "\(target.title). \(target.progressText). \(target.detail).")
     }
 }
 
@@ -4321,11 +4315,19 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     /// Horizontal "bar" layout (icon + label left, value right) for the
     /// one-per-row bars glance layout; false renders the default 2-up tile.
     var isBar: Bool = false
+    /// Route audit rule, already honoured by `AtriaTodayHighlightsStrip`: a
+    /// tile that opens something shows a disclosure chevron; a tile with no
+    /// honest route stays chevron-free. Opt-in, so a new construction site is
+    /// inert-looking until it is deliberately routed (2026-08-28: four
+    /// addable tiles opened nothing and looked identical to the fifteen that
+    /// do).
+    var showsDisclosure: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaTodayGlanceTile, rhs: AtriaTodayGlanceTile) -> Bool {
         lhs.item == rhs.item && lhs.isBar == rhs.isBar
+            && lhs.showsDisclosure == rhs.showsDisclosure
     }
 
     var body: some View {
@@ -4371,6 +4373,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .foregroundStyle(item.isPending ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(minHeight: 48)
         .padding(.horizontal, 12)
@@ -4407,6 +4414,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     AtriaGlanceSparkline(values: item.trend,
                                          tint: item.tint,
                                          style: item.trendStyle)
+                }
+                if showsDisclosure {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
                 }
             }
             // Emphasis follows whichever line actually carries information. Once
@@ -4482,7 +4494,7 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         Button(action: onStartWorkout) {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
-                Text("Start activity")
+                Text("Start workout")
             }
             .font(.subheadline.weight(.semibold))
             .frame(maxWidth: .infinity, minHeight: 54)
@@ -4490,197 +4502,7 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         .buttonStyle(.glassProminent)
         .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
         .tint(.blue)
-        .accessibilityLabel("Start activity")
-    }
-}
-
-/// Assessment P0.4 (2026-08-14): the morning whiteboard — measured numbers
-/// lead the day. Pure model, unit-testable without SwiftUI; every band comes
-/// from the SAME displayed baseline authority (AtriaBaselineTargetSnapshot),
-/// the sleep row reads only the frozen need, and nothing here recomputes.
-struct AtriaTodayMorningWhiteboardModel: Equatable {
-    enum Tone: Equatable { case supportive, caution, strained, neutral }
-
-    struct Row: Equatable, Identifiable {
-        let id: String
-        let systemImage: String
-        let valuePhrase: String
-        let sentence: String
-        let tone: Tone
-        let route: AtriaMetricDetailKind
-        /// VoiceOver copy when the visible sentence is a shortened form
-        /// (declutter R22): "calibrating" must survive in the spoken label
-        /// even though the row shows only the progress count.
-        var accessibilitySentence: String? = nil
-    }
-
-    let rows: [Row]
-
-    static func make(hrvMS: Int?,
-                     restingHR: Int?,
-                     baseline: AtriaBaselineTargetSnapshot,
-                     sleepDurationText: String?,
-                     nightConfirmed: Bool?,
-                     needHours: Double?,
-                     yesterdayTRIMP: Double?,
-                     yesterdayStrain: Double?,
-                     yesterdayStrainIsPartial: Bool) -> AtriaTodayMorningWhiteboardModel {
-        var rows: [Row] = []
-
-        // HRV vs the 14–30 night personal band.
-        let hrvSentence: String
-        let hrvTone: Tone
-        var hrvAccessibilitySentence: String? = nil
-        // §13.3 (2026-08-14): z comes from the shared band authority so the
-        // coach sentence and this row can never disagree.
-        if let z = baseline.hrvBandZ(hrvMS: hrvMS),
-           let mean = baseline.hrvLnMean,
-           let sd = baseline.hrvLnSD {
-            let lower = Int(exp(mean - sd).rounded())
-            let upper = Int(exp(mean + sd).rounded())
-            hrvSentence = "typical \(lower)–\(upper) ms"
-            hrvTone = z >= -1 ? .supportive : (z >= -2 ? .caution : .strained)
-        } else {
-            hrvSentence = "\(min(baseline.hrvSampleCount, 14)) of 14 nights"
-            hrvAccessibilitySentence = "calibrating · " + hrvSentence
-            hrvTone = .neutral
-        }
-        rows.append(Row(id: "hrv",
-                        systemImage: "waveform.path.ecg",
-                        valuePhrase: hrvMS.map { "HRV \($0) ms" } ?? "HRV —",
-                        sentence: hrvSentence,
-                        tone: hrvTone,
-                        route: .hrv,
-                        accessibilitySentence: hrvAccessibilitySentence))
-
-        // RHR vs the personal band (lower is supportive).
-        let rhrSentence: String
-        let rhrTone: Tone
-        var rhrAccessibilitySentence: String? = nil
-        if let z = baseline.restingBandZ(restingHR: restingHR),
-           let mean = baseline.restingMean,
-           let sd = baseline.restingSD {
-            rhrSentence = "typical \(Int((mean - sd).rounded()))–\(Int((mean + sd).rounded())) bpm"
-            rhrTone = z <= 1 ? .supportive : (z <= 2 ? .caution : .strained)
-        } else {
-            rhrSentence = "\(min(baseline.restingSampleCount, 14)) of 14 days"
-            rhrAccessibilitySentence = "calibrating · " + rhrSentence
-            rhrTone = .neutral
-        }
-        rows.append(Row(id: "rhr",
-                        systemImage: "heart",
-                        valuePhrase: restingHR.map { "RHR \($0) bpm" } ?? "RHR —",
-                        sentence: rhrSentence,
-                        tone: rhrTone,
-                        route: .restingHeartRate,
-                        accessibilitySentence: rhrAccessibilitySentence))
-
-        // Sleep hours vs THAT night's frozen need — never a recomputation.
-        let sleepSentence: String
-        var sleepAccessibilitySentence: String? = nil
-        if let needHours {
-            sleepSentence = "of \(AtriaMetricFormat.sleepHours(needHours)) need"
-        } else if nightConfirmed == true {
-            // Declutter R22: the legacy-night reason is RELOCATED to the
-            // spoken label (the sleep detail sheet the row routes to lives in
-            // AtriaOverviewSections, outside this pass's files), not deleted.
-            sleepSentence = "need unavailable"
-            sleepAccessibilitySentence = "need unavailable for this legacy night"
-        } else {
-            sleepSentence = "awaiting tonight's sleep"
-        }
-        rows.append(Row(id: "sleep",
-                        systemImage: "moon.zzz",
-                        valuePhrase: sleepDurationText.map { "Slept \($0)" } ?? "Sleep —",
-                        sentence: sleepSentence,
-                        tone: .neutral,
-                        route: .sleep,
-                        accessibilitySentence: sleepAccessibilitySentence))
-
-        // Assessment §13.2 (2026-08-14): yesterday leads with the persisted
-        // TRIMP truth (P1.7 rollup field); the 0–21 display score stays as a
-        // parenthetical skin, "TRIMP 188 (15.0)". Legacy rows without stored
-        // TRIMP keep the display score alone — TRIMP is never reconstructed
-        // by inverting the display curve.
-        let yesterdayHasTRIMP = yesterdayTRIMP.map { $0.isFinite && $0 > 0 } ?? false
-        let yesterdayValue: String
-        if let yesterdayTRIMP, yesterdayHasTRIMP {
-            yesterdayValue = yesterdayStrain.map {
-                String(format: "TRIMP %.0f (%.1f)", yesterdayTRIMP, $0)
-            } ?? String(format: "TRIMP %.0f", yesterdayTRIMP)
-        } else {
-            yesterdayValue = yesterdayStrain.map { String(format: "Strain %.1f", $0) } ?? "Strain —"
-        }
-        rows.append(Row(id: "yesterday",
-                        systemImage: "flame",
-                        valuePhrase: yesterdayValue,
-                        sentence: (yesterdayStrain == nil && !yesterdayHasTRIMP)
-                            ? "no strain recorded yesterday"
-                            : (yesterdayStrainIsPartial ? "yesterday · partial coverage" : "yesterday"),
-                        tone: .neutral,
-                        route: .strain))
-        return AtriaTodayMorningWhiteboardModel(rows: rows)
-    }
-}
-
-private struct AtriaTodayMorningWhiteboardCard: View, Equatable {
-    static func == (lhs: AtriaTodayMorningWhiteboardCard, rhs: AtriaTodayMorningWhiteboardCard) -> Bool {
-        lhs.model == rhs.model
-    }
-
-    let model: AtriaTodayMorningWhiteboardModel
-    let onOpen: (AtriaMetricDetailKind) -> Void
-
-    private func tint(_ tone: AtriaTodayMorningWhiteboardModel.Tone) -> Color {
-        switch tone {
-        case .supportive: return Metrics.electricGreen
-        case .caution: return .orange
-        case .strained: return Metrics.electricRed
-        case .neutral: return .secondary
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ForEach(model.rows) { row in
-                Button {
-                    onOpen(row.route)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: row.systemImage)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(tint(row.tone))
-                            .frame(width: 24, height: 24)
-                        Text(row.valuePhrase)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(row.tone == .neutral ? Color.primary : tint(row.tone))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                            .layoutPriority(2)
-                        Text(row.sentence)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.75)
-                            .layoutPriority(1)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(minHeight: 44)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(row.valuePhrase), \(row.accessibilitySentence ?? row.sentence)")
-            }
-        }
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemGroupedBackground))
-        )
+        .accessibilityLabel("Start workout")
     }
 }
 

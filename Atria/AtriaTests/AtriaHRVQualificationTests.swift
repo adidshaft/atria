@@ -519,6 +519,202 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertFalse(decoded.hasTrustedHRVBaseline(now: overnight.end))
     }
 
+    // MARK: - Pair-based window qualification (2026-08-29)
+
+    private func rrFixtureSession(rrPoints: [SavedSession.RRPoint],
+                                  duration: TimeInterval) -> SavedSession {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let start = calendar.date(bySettingHour: 23, minute: 0, second: 0, of: day)!
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(duration),
+                            label: "Pair qualification fixture",
+                            points: [SavedSession.Point(t: 0, bpm: 52),
+                                     SavedSession.Point(t: duration, bpm: 52)],
+                            rrPoints: rrPoints)
+    }
+
+    /// The device-measured dropout shape: ~1 Hz RR where the link loses a few
+    /// beats every ~25 s, leaving a 6 s hole (>3 s, so no pair may span it).
+    /// 19-beat runs restart their 980/1020 alternation, so a difference taken
+    /// across a hole would be 0 ms and measurably deflate the ±40 ms RMSSD.
+    private func dropoutShapedRRPoints(throughSecond limit: Int) -> [SavedSession.RRPoint] {
+        var rrPoints: [SavedSession.RRPoint] = []
+        for second in 1...limit {
+            let indexInBlock = (second - 1) % 25
+            guard indexInBlock < 19 else { continue }
+            rrPoints.append(SavedSession.RRPoint(
+                t: Double(second),
+                ms: indexInBlock.isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            ))
+        }
+        return rrPoints
+    }
+
+    func testDropoutShapedRRStreamStillQualifiesWindows() {
+        // 72% valid-pair coverage over 25 minutes: under full-window
+        // continuity this produced ZERO windows on nearly every real night;
+        // pair-based qualification must trust it.
+        let session = rrFixtureSession(
+            rrPoints: dropoutShapedRRPoints(throughSecond: 1_500),
+            duration: 1_500
+        )
+
+        XCTAssertGreaterThanOrEqual(session.localHRVWindowCount, 3)
+        XCTAssertEqual(session.localRMSSD, 40,
+                       "every valid adjacent-beat difference is ±40 ms; a hole-straddling 0 ms difference would drag this below 40")
+    }
+
+    func testWindowBelowValidPairCoverageFloorProducesNoWindow() {
+        // 200 s of clean beats, silence, then two trailing beats that stretch
+        // the span past one window position: ~201 s of valid pairs is below
+        // the 210 s (70% of 300 s) floor, so the window may not qualify.
+        var rrPoints = (1...200).map { second in
+            SavedSession.RRPoint(t: Double(second),
+                                 ms: second.isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        rrPoints.append(SavedSession.RRPoint(
+            t: 301, ms: 1_000, source: .standardHeartRateMeasurement2A37))
+        rrPoints.append(SavedSession.RRPoint(
+            t: 302, ms: 1_000, source: .standardHeartRateMeasurement2A37))
+        let session = rrFixtureSession(rrPoints: rrPoints, duration: 310)
+
+        XCTAssertEqual(session.localHRVWindowCount, 0)
+        XCTAssertNil(session.localRMSSD)
+    }
+
+    func testWindowBelowMinimumBeatCountProducesNoWindow() {
+        // 100 slow beats (3 s apart) cover 297 s of valid pairs — coverage
+        // passes, but 100 kept beats is under the 150-beat window minimum. The
+        // trailing cluster keeps the session above the session-level RR floor
+        // without ever forming a qualifying window of its own.
+        var rrPoints = (1...100).map { index in
+            SavedSession.RRPoint(t: Double(index) * 3,
+                                 ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        rrPoints.append(contentsOf: (400...460).map { second in
+            SavedSession.RRPoint(t: Double(second),
+                                 ms: second.isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        })
+        let session = rrFixtureSession(rrPoints: rrPoints, duration: 470)
+
+        XCTAssertEqual(session.localHRVWindowCount, 0)
+        XCTAssertNil(session.localRMSSD)
+    }
+
+    func testDifferencesNeverStraddleADropoutHole() throws {
+        // One 10 s hole with a 200 ms value step across it. Straddling the
+        // hole would add a single large difference; the correct RMSSD comes
+        // only from the 279 real adjacent-beat pairs.
+        var samples: [(t: Double, ms: Double)] = []
+        for second in 0...290 where !(140...149).contains(second) {
+            let ms: Double
+            switch second {
+            case 139: ms = 900
+            case 150: ms = 1_100
+            default: ms = second.isMultiple(of: 2) ? 980 : 1_020
+            }
+            samples.append((t: Double(second), ms: ms))
+        }
+
+        var squaredSum = 0.0
+        var pairCount = 0
+        var straddleSquaredSum = 0.0
+        var straddleCount = 0
+        for index in 1..<samples.count {
+            let diff = samples[index].ms - samples[index - 1].ms
+            straddleSquaredSum += diff * diff
+            straddleCount += 1
+            guard samples[index].t - samples[index - 1].t <= 3 else { continue }
+            squaredSum += diff * diff
+            pairCount += 1
+        }
+        let expected = sqrt(squaredSum / Double(pairCount))
+        let straddled = sqrt(straddleSquaredSum / Double(straddleCount))
+        XCTAssertGreaterThan(abs(straddled - expected), 0.5,
+                             "the fixture must make a straddling difference numerically visible")
+
+        let lnRMSSD = try XCTUnwrap(SavedSession.qualifiedLnRMSSD(samples))
+        XCTAssertEqual(exp(lnRMSSD), expected, accuracy: 0.000_001)
+    }
+
+    func testCleanContinuousWindowMatchesFullContinuityQualification() throws {
+        // Regression parity: a fully gap-free five-minute window must produce
+        // exactly what the previous all-pairs-continuous path produced.
+        let samples = (0...300).map { index in
+            (t: Double(index), ms: index.isMultiple(of: 2) ? 980.0 : 1_020.0)
+        }
+
+        let lnRMSSD = try XCTUnwrap(SavedSession.qualifiedLnRMSSD(samples))
+        XCTAssertEqual(exp(lnRMSSD), 40, accuracy: 0.000_001)
+    }
+
+    func testOverlappingWindowsCannotInflateEvidenceWithoutDistinctCoverage() {
+        // ~620 s of the dropout pattern places three half-stride windows that
+        // each qualify, but together they stand on only ~432 s of distinct
+        // valid-pair time — the same physiology counted through overlapping
+        // frames. The 600 s distinct floor must thin them below the
+        // three-window trust threshold.
+        let short = rrFixtureSession(
+            rrPoints: dropoutShapedRRPoints(throughSecond: 620),
+            duration: 620
+        )
+        XCTAssertEqual(short.localHRVWindowCount, 2)
+        XCTAssertNil(short.localRMSSD)
+
+        // The same pattern continued past 900 s carries over 600 s of
+        // distinct pair time, so the trust threshold is honestly reachable.
+        let long = rrFixtureSession(
+            rrPoints: dropoutShapedRRPoints(throughSecond: 1_000),
+            duration: 1_000
+        )
+        XCTAssertGreaterThanOrEqual(long.localHRVWindowCount, 3)
+        XCTAssertEqual(long.localRMSSD, 40)
+    }
+
+    func testVersionOnePersistedBaselineFailsClosedUntilRequalification() throws {
+        let overnight = session(dayOffset: 0,
+                                source: .standardHeartRateMeasurement2A37)
+        // A baseline persisted by the previous full-continuity qualification
+        // (version 1) carries window counts and RMSSDs that are not comparable
+        // to pair-based values; its HRV must fail closed on decode while the
+        // resting history is retained.
+        let versionOne = PersonalBaseline(restingHR: 52,
+                                          hrvEMA: 42,
+                                          sessions: 1,
+                                          updated: overnight.end,
+                                          samples: [
+                                            .init(date: overnight.end,
+                                                  restingHR: 52,
+                                                  rmssd: 42,
+                                                  overnight: true)
+                                          ],
+                                          hrvQualificationVersion: 1)
+        let decoded = try JSONDecoder().decode(
+            PersonalBaseline.self,
+            from: JSONEncoder().encode(versionOne)
+        )
+
+        XCTAssertEqual(decoded.restingInt, 52)
+        XCTAssertNil(decoded.hrvInt)
+        XCTAssertEqual(decoded.hrvSampleCount, 0)
+        XCTAssertEqual(decoded.freshHRVSampleCount(now: overnight.end), 0)
+
+        // The rebuild path recomputes HRV from raw RR through the current
+        // pair-based windowing and restores trust at the current version.
+        let rebuilt = rebuiltBaseline(
+            sessions: [overnight],
+            confirmedSleeps: [confirmedMainSleep(for: overnight)]
+        )
+        XCTAssertEqual(rebuilt.hrvQualificationVersion,
+                       PersonalBaseline.currentHRVQualificationVersion)
+        XCTAssertEqual(rebuilt.freshHRVSampleCount(now: overnight.end), 1)
+    }
+
     // MARK: - Recovery HRV window selection (last SWS before waking)
 
     private typealias RecoverySelection = AtriaRecoveryHRVWindowSelection

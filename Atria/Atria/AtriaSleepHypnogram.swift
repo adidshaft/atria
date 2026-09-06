@@ -7,7 +7,10 @@ import SwiftUI
 //   - segmented per-lane bars (radius 3) positioned on the real time axis
 //   - axis row with the exact clock at both ends and sparse whole hours
 //     between ("11:42p · 2a · 4a · 7:24a" — lowercase single-letter am/pm)
-//   - per-stage duration tiles under the graph ("1h 34m" / "Deep · 20%")
+//   - one compact per-stage legend line under the graph ("· Deep 1h 34m";
+//     2026-08-29 minimalism pass replaced the four tinted tiles — stage
+//     color survives only in the dot and the plot ribbons, and the lane
+//     labels read neutral)
 // Stage hues from the design's stage table: Awake #FFB340, REM #64D2FF,
 // Light #4C8DFF, Deep #7B6CF0 (the app's SWS band folds into Deep for
 // display, as everywhere else).
@@ -444,9 +447,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.sm) {
                 Text(sectionTitle)
-                    .font(.caption2.weight(.semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer(minLength: 0)
                 Text(provenanceText)
                     .font(.caption2.weight(.semibold))
@@ -494,15 +495,15 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             case .needsMotion:
                 honestState(title: "Stage analysis unavailable for this night",
                             detail: Self.unavailableStagesDetail(
-                                base: "Your sleep duration is saved. Heart rate alone cannot separate stages.",
+                                base: Self.needsMotionBase,
                                 motionAvailability: motionAvailability))
             case .manualEntry:
                 honestState(title: "No stages — manual entry",
-                            detail: "You entered this window by hand. Atria draws stage timelines only from sensor data. Duration and any overnight vitals for this window are kept.")
+                            detail: Self.manualEntryDetail)
             case .building:
                 honestState(title: "Stage analysis unavailable for this night",
                             detail: Self.unavailableStagesDetail(
-                                base: "Your sleep duration is saved. Hours asleep alone do not create a hypnogram.",
+                                base: Self.buildingBase,
                                 motionAvailability: motionAvailability))
             }
         }
@@ -515,16 +516,28 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     /// ITEM-3 2026-08-15: the unlock story for the honest empty states. Maps
     /// the strap motion transport to what will actually happen next — and
     /// never promises motion on a link that cannot deliver it (same doctrine
-    /// as the truthful step copy).
+    /// as the truthful step copy). 2026-08-29 minimalism pass: each appended
+    /// unlock clause compressed to one sentence; the per-transport honesty
+    /// substrings pinned by AtriaSleepDetailLegibilityTests survive verbatim.
+    /// 2026-08-29 minimalism pass: the two-sentence state bases collapse to
+    /// one sentence each — the saved-duration honesty claim and the reason
+    /// stay, the elaboration goes. Shared by the body and VoiceOver.
+    static let needsMotionBase =
+        "Your sleep duration is saved — heart rate alone cannot separate stages."
+    static let buildingBase =
+        "Your sleep duration is saved — hours asleep alone do not create a hypnogram."
+    static let manualEntryDetail =
+        "Entered by hand — stage timelines come only from sensor data; duration and overnight vitals are kept."
+
     static func unavailableStagesDetail(base: String,
                                         motionAvailability: AtriaStrapMotionAvailability?) -> String {
         switch motionAvailability {
         case .catchingUp:
-            return base + " Stages validate after the strap syncs motion for this night — motion sync is catching up now."
+            return base + " Stages validate after the strap syncs motion — catching up now."
         case .unavailableInCurrentTransport:
-            return base + " This strap link is heart-rate-only right now, so motion cannot sync; Atria may show a labeled HR-only estimate after its next stage pass instead."
+            return base + " This strap link is heart-rate-only, so Atria may show a labeled HR-only estimate instead."
         default:
-            return base + " Stages validate after the strap syncs motion evidence for this night; if motion isn't available, Atria may show a labeled HR-only estimate after its next stage pass."
+            return base + " Stages validate after the strap syncs motion; without it Atria may show a labeled HR-only estimate."
         }
     }
 
@@ -626,9 +639,11 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     private func estimatedAsleepWindow(windowStart: Date, windowEnd: Date) -> some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
             HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.sm) {
+                // 2026-08-29 minimalism pass: the label reads neutral — the
+                // electricSleep band below already carries the theme.
                 Text("Estimated asleep")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Metrics.electricSleep)
+                    .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 if let heartRateText = Self.measuredHeartRateText(measuredHeartRate) {
                     Text(heartRateText)
@@ -659,24 +674,19 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             // P8 sub-0.60 coarse fallback: a confirmed HR-only night whose
             // stage output stays withheld still gets honest sleep/wake
             // TOTALS from the saved record — never fabricated stages.
+            // 2026-08-29 minimalism pass: neutral compact rows, no tinted
+            // tiles — the numbers, not their color, are the content.
             if let totals = coarseTotals {
-                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
-                    coarseTotalTile(label: Self.coarseAsleepTotalLabel,
-                                    minutes: totals.asleepMinutes,
-                                    color: Metrics.electricSleep)
-                    coarseTotalTile(label: Self.coarseAwakeTotalLabel,
-                                    minutes: totals.awakeOrUnmeasuredMinutes,
-                                    color: AtriaSleepStagePalette.color(for: .awake))
+                HStack(spacing: AtriaDesignTokens.Spacing.md) {
+                    coarseTotalEntry(label: Self.coarseAsleepTotalLabel,
+                                     minutes: totals.asleepMinutes)
+                    coarseTotalEntry(label: Self.coarseAwakeTotalLabel,
+                                     minutes: totals.awakeOrUnmeasuredMinutes)
                 }
             }
 
-            Text(estimateDetail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            // P8 "why tonight is an estimate": always present in this
-            // estimate-titled state, naming the actual cause.
+            // P8 "why tonight is an estimate": the one sentence of prose in
+            // this state, naming the actual cause (pinned copy).
             Text(Self.whyEstimateLine(motionAvailability: motionAvailability))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -684,13 +694,13 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         }
     }
 
-    /// One coarse-total tile, styled like the legend tiles so the fallback
-    /// reads as the same card family — but only two totals, never stages.
-    private func coarseTotalTile(label: String, minutes: Int, color: Color) -> some View {
+    /// One coarse-total entry: neutral value + secondary label, no tinted
+    /// chrome (2026-08-29 minimalism pass — only two totals, never stages).
+    private func coarseTotalEntry(label: String, minutes: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(Self.coarseTotalText(minutes: minutes))
                 .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
-                .foregroundStyle(color)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.62)
             Text(label)
@@ -700,17 +710,6 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .minimumScaleFactor(0.62)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(color.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private var estimateDetail: String {
-        if Self.measuredHeartRateText(measuredHeartRate) != nil {
-            return "Estimate from the saved sleep window and measured heart rate. Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages."
-        }
-        return "Estimate from the saved sleep window. A measured resting-HR value is unavailable, and Awake, REM, Light, and Deep are not shown without qualified motion evidence."
     }
 
     private func sharedTimeline(windowStart: Date,
@@ -732,28 +731,25 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         )
     }
 
+    /// 2026-08-29 minimalism pass: the four tinted legend tiles collapse to
+    /// one compact line — only the small dot carries the stage color (a
+    /// legend key for the ribbons above), text stays neutral, no chrome.
     private var legendTiles: some View {
-        HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+        HStack(spacing: AtriaDesignTokens.Spacing.md) {
             ForEach(AtriaSleepHypnogramPresentation.legend(for: segments),
                     id: \.stage) { entry in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes))
-                        .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(Self.color(for: entry.stage))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.62)
-                    Text("\(entry.stage.label) · \(entry.percent)%")
-                        .font(.system(size: 9.5, weight: .semibold))
+                HStack(spacing: AtriaDesignTokens.Spacing.xs) {
+                    Circle()
+                        .fill(Self.color(for: entry.stage))
+                        .frame(width: 6, height: 6)
+                    Text("\(entry.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes))")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.62)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .padding(.horizontal, 8)
-                .background(Self.color(for: entry.stage).opacity(0.10),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
+            Spacer(minLength: 0)
         }
     }
 
@@ -795,21 +791,21 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 " \(Self.coarseAsleepTotalLabel) \(Self.coarseTotalText(minutes: $0.asleepMinutes))."
                     + " \(Self.coarseAwakeTotalLabel) \(Self.coarseTotalText(minutes: $0.awakeOrUnmeasuredMinutes))."
             } ?? ""
-            return "Estimated asleep window. \(provenanceText)\(heartRate).\(totalsText) Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages. "
+            return "Estimated asleep window. \(provenanceText)\(heartRate).\(totalsText) "
                 + Self.whyEstimateLine(motionAvailability: motionAvailability)
         case .needsMotion:
             // ITEM-3 2026-08-15: VoiceOver reads the same unlock story as the
             // visual copy so the two can never diverge.
             return "\(provenanceText). Stage analysis unavailable for this night. "
                 + Self.unavailableStagesDetail(
-                    base: "Your sleep duration is saved. Heart rate alone cannot separate stages.",
+                    base: Self.needsMotionBase,
                     motionAvailability: motionAvailability)
         case .manualEntry:
-            return "\(provenanceText). No stages — this window was entered by hand; stage timelines come only from sensor data."
+            return "\(provenanceText). No stages — manual entry. \(Self.manualEntryDetail)"
         case .building:
             return "\(provenanceText). Stage analysis unavailable for this night. "
                 + Self.unavailableStagesDetail(
-                    base: "Your sleep duration is saved. Hours asleep alone do not create a hypnogram.",
+                    base: Self.buildingBase,
                     motionAvailability: motionAvailability)
         }
     }
@@ -865,11 +861,11 @@ struct AtriaSleepStageTimelineChart: View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(AtriaSleepHypnogramPresentation.lanes.enumerated()),
                     id: \.element) { _, stage in
+                // 2026-08-29 minimalism pass: neutral lane labels — the
+                // ribbon beside each label already carries the stage color.
                 Text(stage.label)
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(
-                        AtriaSleepHypnogramCard.color(for: stage).opacity(0.9)
-                    )
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .frame(maxHeight: .infinity, alignment: .center)
@@ -922,18 +918,24 @@ struct AtriaSleepStageTimelineChart: View {
         .frame(height: 12)
     }
 
+    /// 2026-08-29 minimalism pass: the scrub callout uses the same neutral
+    /// glass chrome as the trend chart's scrub callout (primary text on
+    /// `atriaGlassCard`) instead of a stage-tinted capsule — a small stage
+    /// dot keys it to the ribbon, everything else stays neutral.
     private func selectionCallout(for run: AtriaSleepHypnogramPresentation.Run) -> some View {
         let range = "\(AtriaSleepHypnogramPresentation.clockLabel(run.start, calendar: calendar))–\(AtriaSleepHypnogramPresentation.clockLabel(run.end, calendar: calendar))"
         let provenance = isEstimate ? " · Estimated" : ""
-        return Text("\(range) · \(run.stage.displayStage.label)\(provenance)")
-            .font(.caption2.weight(.semibold).monospacedDigit())
-            .foregroundStyle(AtriaSleepHypnogramCard.color(for: run.stage.displayStage))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                AtriaSleepHypnogramCard.color(for: run.stage.displayStage).opacity(0.12),
-                in: Capsule(style: .continuous)
-            )
+        return HStack(spacing: AtriaDesignTokens.Spacing.xs) {
+            Circle()
+                .fill(AtriaSleepHypnogramCard.color(for: run.stage.displayStage))
+                .frame(width: 6, height: 6)
+            Text("\(range) · \(run.stage.displayStage.label)\(provenance)")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.chip)
     }
 
     private func laneCenterY(_ laneIndex: Int, height: CGFloat) -> CGFloat {

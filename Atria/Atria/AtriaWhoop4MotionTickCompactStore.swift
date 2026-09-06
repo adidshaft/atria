@@ -1891,6 +1891,23 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
     ///   the ~1.7-2.2 Hz needed to recover cadence. The user's own workout
     ///   label is therefore the only evidence available here that excludes the
     ///   arm-control shape, so the fallback rides on it and nothing else.
+    /// Decoded rows for one window, for consumers that need the per-minute
+    /// texture rather than a reduced total — today that is the unattributed-
+    /// motion detector. Same lock and decode path as every other read.
+    ///
+    /// PLACEMENT MATTERS: this first lived beside `decodedPointsForTesting`,
+    /// which sits inside a #if DEBUG fence — Debug test builds compiled and
+    /// the Release device build failed, and the stale previous binary nearly
+    /// shipped as if it were the new commit.
+    func decodedPoints(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> [Point] {
+        precondition(!Thread.isMainThread)
+        return read(start: start, end: end, strapIdentifier: strapIdentifier)
+    }
+
     func motionTickWindowRead(
         start: Date,
         end: Date,

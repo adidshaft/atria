@@ -456,7 +456,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "case \"sleep-detail\":",
             "debugMetricDetailRecoveryEstimate",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: AtriaDetailPeriodSummaryStrip (tinted
+            # card: gradient rail + change capsule + Avg/Range chips) was
+            # DELETED and replaced by the neutral one-line
+            # AtriaDetailPeriodSummaryLine under the chart. The rail/mini-stat
+            # pins migrated to the line's tokens; AtriaDetailPeriodSummary and
+            # its change-direction enum survive as the shared math.
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "AtriaDetailPeriodSummary(points: recoveryPoints, unit: \"%\")",
             "AtriaDetailPeriodSummary(points: hrvPoints, unit: \"ms\")",
             "AtriaDetailPeriodSummary(points: restingPoints, unit: \"bpm\")",
@@ -466,17 +472,16 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaDetailRangeDotStrip: View, Equatable",
             "private struct Bar: Equatable, Identifiable",
             "private let bars: [Bar]",
-            "AtriaDetailPeriodSummaryStrip(summary: summary,",
+            "AtriaDetailPeriodSummaryLine(summary: summary)",
             # 2026-07-06: AtriaDetailPeriodReportCard call removed from metricChart
             # (detail-sheet redesign collapsed 3 redundant latest/avg/change cards
-            # into the single AtriaDetailPeriodSummaryStrip). Struct definition kept
-            # as uncalled scaffolding, so its declaration/internal pins still hold.
+            # into one summary surface).
             "comparison: comparison,",
             "let latestPosition: Double",
             "private enum AtriaDetailPeriodChangeDirection",
-            "summaryRangeRail",
-            "summaryMiniStat(label: \"Avg\", value: summary.averageText)",
-            "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
+            "Latest \\(summary.latestText)\\(summary.changeDirection.triangleText)",
+            "Avg \\(summary.averageText)",
+            "Range \\(summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
             # added by the design-handoff chart-language pass.
             # 2026-07-07 (loop 3): domain also covers the dashed
@@ -1142,7 +1147,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, "return \"Beat-to-beat settling\"")
         assert_contains(self, hero, "return \"pending\"")
         assert_not_contains(self, hero, "return \"not yet\"")
-        assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
+        # 2026-09-02: the default HRV quality string was shortened so it no
+        # longer truncates on the Vitals HRV tile; same meaning, fewer words.
+        assert_contains(self, ble, "@Published var hrvQuality = \"no beat-to-beat yet\"")
 
         top_chrome = home[home.index("private struct AtriaHomeTopChrome: View"):]
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
@@ -7342,7 +7349,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct TrendMetricChartModel: Identifiable",
             "self.metricCards = [",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: the summary strip was replaced by the
+            # neutral AtriaDetailPeriodSummaryLine (see migration note above).
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "private struct AtriaDetailPeriodReportCard: View, Equatable",
             "Label(\"This period\", systemImage: \"chart.bar.xaxis\")",
             "reportChip(title: \"Latest\"",
@@ -9527,8 +9536,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "rrCount: rrPoints.count",
             "firstT: first?.t ?? 0",
             "lastT: last?.t ?? 0",
-            "while lowerIndex < segment.endIndex",
-            "while upperIndex < segment.endIndex",
+            # 2026-08-29 pair-based HRV qualification: windows slide over the
+            # whole sorted RR stream instead of per-gap segments, so the
+            # incremental two-pointer scan now walks `sorted`, not `segment`.
+            "while lowerIndex < sorted.endIndex",
+            "while upperIndex < sorted.endIndex",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -11834,7 +11846,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, corner_button, ".glassEffect(")
             assert_contains(self, corner_button, ".frame(width: 18, height: 18)")
             assert_not_contains(self, corner_button, ".contentShape(Circle())")
-        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 6)
+        # 2026-09-02: 6 (cancel + share per sheet) + 1 for AtriaShareEmptyStateView's
+        # close button, the state a sheet shows when nothing real exists yet.
+        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 7)
         self.assertEqual(share.count("GlassEffectContainer(spacing: 12)"), 3)
         self.assertEqual(share.count(".buttonBorderShape(.circle)"), 0)
         assert_contains(self, plist, "NSCameraUsageDescription")
@@ -11996,9 +12010,17 @@ class HandoffStaticChecks(unittest.TestCase):
         # so this branch never actually matched and the Stress tile silently
         # dead-ended like every other tile. Replaced with a real enum
         # comparison as part of routing every glance tile to its detail.
+        # Pin migrated again (2026-08-29, insight-detail directive): the tile
+        # now opens the full stress detail (information first); breathwork is
+        # reached through the detail's Relax action, and the breathwork
+        # full-screen host plus its debug fixture stay pinned below.
         for needle in [
             "@State private var showBreathworkSession = false",
+            "@State private var showStressDetail = false",
             "if metric == .stress {",
+            "showStressDetail = true",
+            ".fullScreenCover(isPresented: $showStressDetail) {",
+            "onRelax: {",
             "showBreathworkSession = true",
             "AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,",
             "currentRRSamples: pulseStore.state.recentRRSamples",

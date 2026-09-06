@@ -633,7 +633,7 @@ struct AtriaHomeView: View {
                 }
             }
             .padding(16)
-            .atriaGlassCard(cornerRadius: 24, emphasis: .strong)
+            .atriaGlassCard(emphasis: .strong)
             .accessibilityElement(children: .contain)
         }
 
@@ -1400,6 +1400,10 @@ struct AtriaHomeView: View {
                         journalContent
                     }
                 }
+                // The Daily Brief left Today (owner stack audit 2026-08-28);
+                // the pending check-in now knocks from the tab it lives in.
+                // Badge = questions remaining; hidden at zero.
+                .badge(journalCheckInBadgeCount)
 
                 Tab(HomeTab.plan.title,
                     systemImage: HomeTab.plan.systemImage,
@@ -1573,6 +1577,7 @@ struct AtriaHomeView: View {
                                      lowerTargetZone: session.lowerTargetZone,
                                      upperTargetZone: session.upperTargetZone,
                                      activityType: workoutActivityTypeBinding,
+                                     segments: session.segments,
                                      targetChoice: workoutTargetChoiceBinding,
                                      strengthHistory: liveWorkoutStrengthHistory,
                                      loggedSets: $liveWorkoutLoggedSets,
@@ -1987,7 +1992,13 @@ struct AtriaHomeView: View {
         Binding {
             workoutSession?.activityType ?? .other
         } set: { newType in
-            workoutSession?.activityType = newType
+            guard var session = workoutSession,
+                  session.activityType != newType else { return }
+            // Timestamped, user-declared switch: the first switch seeds the
+            // ORIGINAL type at session start, then the new type is appended
+            // at Date(). One session, one start, one TRIMP accumulator.
+            session.recordActivitySwitch(to: newType, at: Date())
+            workoutSession = session
             persistPendingWorkoutProgress()
             if let session = workoutSession, newType.supportsRouteRecording {
                 workoutRouteRecorder.start(activityType: newType, startedAt: session.start)
@@ -2343,7 +2354,8 @@ struct AtriaHomeView: View {
                                   stepAccountingIsComplete: session.stepAccountingIsComplete,
                                   startingDayStrain: session.startingDayStrain,
                                   calculationContext: session.calculationContext,
-                                  persistenceRevision: workoutPersistenceRevision)
+                                  persistenceRevision: workoutPersistenceRevision,
+                                  segments: session.segments)
         AtriaPendingWorkoutIntentStore.shared.enqueueProgress(intent) { saved in
             guard !saved else { return }
             let current = AtriaPendingWorkoutIntent.load()
@@ -2478,6 +2490,7 @@ struct AtriaHomeView: View {
         session.pauseStartedStepCount = pending.pauseStartedStepCount
         session.stepAccountingIsComplete = pending.stepAccountingIsComplete
         session.calculationContext = pending.calculationContext ?? session.calculationContext
+        session.segments = pending.segments ?? session.segments
         workoutSession = session
         liveWorkoutLoggedSets = pending.strengthSets
         liveWorkoutExcludedIntervals = pending.excludedIntervals
@@ -2515,7 +2528,8 @@ struct AtriaHomeView: View {
                                               pauseStartedStepCount: pending.pauseStartedStepCount,
                                               stepAccountingIsComplete: pending.stepAccountingIsComplete,
                                               startingDayStrain: pending.startingDayStrain,
-                                              calculationContext: pending.calculationContext)
+                                              calculationContext: pending.calculationContext,
+                                              segments: pending.segments)
         workoutPersistenceRevision = pending.persistenceRevision
         // Restored open workout: re-adopt the persisted motion ownership
         // lease (idempotent for the same start; a repeated lifecycle callback
@@ -2547,6 +2561,16 @@ struct AtriaHomeView: View {
         let rest = calculationContext?.restingHeartRate
             ?? store.baseline.restingInt
             ?? model.heroStore.state.restingHeartRate
+        // Recovery is also a finalize: with a switch timeline present the
+        // scalar resolves to the dominant declared segment, exactly as the
+        // in-app End path does. No timeline -> the checkpointed scalar.
+        let recoveredActivityType = WorkoutSegment.dominantActivityType(
+            segments: pending.segments,
+            sessionStart: pending.startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: pending.finalizedExcludedIntervals()
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? pending.resolvedActivityType
         if let confirmed = await store.confirmWorkoutWindowForUIAsync(start: pending.startedAt,
                                                                 end: endedAt,
                                                                 rest: rest,
@@ -2554,9 +2578,10 @@ struct AtriaHomeView: View {
                                                                     ?? store.profile.maxHR,
                                                                 source: "pending_live_workout_recovery",
                                                                 preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                                activityType: pending.resolvedActivityType == .other ? nil : pending.activityType,
+                                                                activityType: recoveredActivityType == .other ? nil : recoveredActivityType.rawValue,
                                                                 strengthSets: pending.strengthSets,
                                                                 excludedIntervals: pending.finalizedExcludedIntervals(),
+                                                                segments: pending.segments,
                                                                 workoutSteps: pending.completedStepCount,
                                                                 workoutStepsAreEstimated: pending.completedStepsAreEstimated,
                                                                 workoutStepsCapturedAt: pending.completedStepsCapturedAt) {
@@ -2846,7 +2871,7 @@ struct AtriaHomeView: View {
         let requestedOverviewSegment = Self.debugLaunchOverviewSegmentArgument(arguments: arguments)
         let metricDetailFixtures = ["recovery-detail", "recovery-detail-nutrition", "hrv-detail", "rhr-detail", "respiratory-detail", "sleep-detail", "strain-detail"]
         let shouldOpenMetricDetailFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { metricDetailFixtures.contains($0) } ?? false
-        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights"]
+        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights", "north-star-warnings"]
         let shouldShowOverviewFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { overviewContentFixtures.contains($0) } ?? false
         let shouldOpenShareSheet = arguments.contains("--atria-open-share-sheet")
         let shouldOpenCustomizeSheet = arguments.contains("--atria-open-customize")
@@ -3794,11 +3819,39 @@ struct AtriaHomeView: View {
         // A missing dense strap boundary stays unavailable; phone motion is
         // never promoted into a wrist-derived workout total.
         let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence)
+        // Stale-label seam (2026-08-30): the HUD's onStop closure passes the
+        // activity type captured at its last render. Finalize reads the OWNING
+        // session instead, so a switch racing the End tap can never save under
+        // the older label; with a switch timeline present, the persisted
+        // scalar is the DOMINANT segment (longest moving duration, tie: last).
+        let liveSession = workoutSession?.start == startedAt ? workoutSession : nil
+        let sessionSegments = liveSession?.segments
+        // Same freshness rule for the pause ledger: prefer the owning state
+        // over the closure-captured copy when this End belongs to the live
+        // session, so a pause closed after the HUD's last render still counts.
+        var dominantExclusions = liveSession != nil
+            ? liveWorkoutExcludedIntervals
+            : excludedIntervals
+        if let pauseStartedAt = liveWorkoutPauseStartedAt {
+            // Mirror finalizedExcludedIntervals(): an open pause ends at End.
+            let pauseStart = max(startedAt, pauseStartedAt)
+            if endedAt > pauseStart {
+                dominantExclusions.append(ExcludedInterval(start: pauseStart, end: endedAt))
+            }
+        }
+        let finalActivityType = WorkoutSegment.dominantActivityType(
+            segments: sessionSegments,
+            sessionStart: startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: dominantExclusions
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? liveSession?.activityType
+            ?? activityType
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
             endedAt: endedAt,
-            activityType: activityType.rawValue,
+            activityType: finalActivityType.rawValue,
             strengthSets: strengthSets,
             excludedIntervals: excludedIntervals,
             pauseStartedAt: liveWorkoutPauseStartedAt,
@@ -3816,7 +3869,8 @@ struct AtriaHomeView: View {
             completedStepsCapturedAt: stepEvidence?.capturedAt,
             startingDayStrain: workoutSession?.startingDayStrain ?? 0,
             calculationContext: workoutSession?.calculationContext,
-            persistenceRevision: .max
+            persistenceRevision: .max,
+            segments: sessionSegments
         )
         // Persist the user's intent before touching the live journal or UI. If
         // any later write fails, launch recovery can rebuild this exact window.
@@ -3849,7 +3903,16 @@ struct AtriaHomeView: View {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(50))
         let routeDraft: AtriaWorkoutRouteRecorder.Draft?
-        if finalIntent.resolvedActivityType.supportsRouteRecording {
+        // A dominant non-route type must not discard a route the user really
+        // recorded in an outdoor segment: any route-capable declared segment
+        // keeps the recorded route, matching the switcher's park-don't-erase
+        // contract.
+        let recordedRouteEligible = finalIntent.resolvedActivityType.supportsRouteRecording
+            || (finalIntent.segments ?? []).contains {
+                AtriaWorkoutActivityType(rawValue: $0.activityType)?
+                    .supportsRouteRecording == true
+            }
+        if recordedRouteEligible {
             routeDraft = workoutRouteRecorder.stop(at: endedAt)
         } else {
             workoutRouteRecorder.cancel()
@@ -3883,6 +3946,7 @@ struct AtriaHomeView: View {
                                                             : finalIntent.activityType,
                                                         strengthSets: finalIntent.strengthSets,
                                                         excludedIntervals: finalizedExcludedIntervals,
+                                                        segments: finalIntent.segments,
                                                         workoutSteps: finalIntent.completedStepCount,
                                                         workoutStepsAreEstimated: finalIntent.completedStepsAreEstimated,
                                                         workoutStepsCapturedAt: finalIntent.completedStepsCapturedAt)
@@ -4651,11 +4715,25 @@ struct AtriaHomeView: View {
                 // bottom padding on the notice, both existed only to close the
                 // void that a floating inset card opened above the greeting.
                 // Edge-to-edge chrome ends flush, so content spaces normally.
-                .padding(.top, 12)
+                .padding(.top, 4)
                 .padding(.bottom, scrollBottomClearance)
                 .frame(maxWidth: .infinity)
             }
             .navigationTitle(title)
+            // MEASURED 2026-09-02: the tab hosting paints an opaque system
+            // background behind every tab (pure white in light, pure black in
+            // dark), so the AtriaBackdropLayer under the TabView was never
+            // visible — light-mode white cards sat on a white field (tile 255,
+            // gap 255, margin 255) and the navy dark field never showed; a
+            // clear `.containerBackground(for: .navigation)` did not get past
+            // it either. Drawing the backdrop as the scroll surface's own
+            // background puts it above that layer, inside each tab. This is
+            // what the 2026-07-05 backdrop tuning could not reach.
+            .background {
+                AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
@@ -4935,8 +5013,8 @@ struct AtriaHomeView: View {
                                             .accessibilityHidden(true)
                                         }
                                     }
-                                    .padding(.horizontal, 14)
-                                    .frame(height: 40)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 32)
                                     .containerRelativeFrame(.horizontal)
                                     .glassEffect(.regular, in: .rect(cornerRadius: 18))
                                     .accessibilityElement(children: .combine)
@@ -4952,7 +5030,7 @@ struct AtriaHomeView: View {
                         .contentMargins(.horizontal, 16, for: .scrollContent)
                         .scrollIndicators(.hidden)
                     }
-                    .frame(height: 40)
+                    .frame(height: 32)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -4998,12 +5076,19 @@ struct AtriaHomeView: View {
             let live = coreLiveStore.state
             switch live.historicalRecoveryPresentation {
             case .syncing(let savedRecords):
+                let defaults = UserDefaults.standard
                 let copy = AtriaHomeRecoverySyncPresentation.copy(
                     savedRecords: savedRecords,
-                    drainedThroughUnix: UserDefaults.standard.object(
+                    drainedThroughUnix: defaults.object(
                         forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
                     ) as? Double,
-                    now: now
+                    now: now,
+                    abandonedThroughUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+                    ) as? Double,
+                    drainCursorUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+                    ) as? Double
                 )
                 return Status(title: copy.title,
                               symbol: "arrow.triangle.2.circlepath",
@@ -5117,12 +5202,33 @@ struct AtriaHomeView: View {
             if defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ) {
+                // Say HOW MUCH, and say WHICH KIND. The backlog that starved
+                // sleep confirmation grew to 15.5 h over three days behind this
+                // exact banner; a size that is visible cannot silently
+                // compound. The claim is split by wear verdict: only time the
+                // strap can still hand over counts as "filling", while proven
+                // off-wrist time is named and excluded instead of inflating
+                // the promise. The ledger read is memoised on the ledger
+                // generation plus the recoverability inputs.
+                let summary = AtriaHomeRecoverySyncPresentation
+                    .memoisedGapBacklogSummary(defaults: defaults, now: now)
+                let backlog = summary.recoverableText
+                let offWrist = summary.offWristExcludedText
+                var title = backlog.map { "Synced · filling \($0)" }
+                    ?? (summary.provenUnrecoverableSeconds >= 60
+                        ? "Synced · earlier gap can't be refilled"
+                        : "Synced · filling earlier gaps")
+                if let offWrist { title += " · \(offWrist)" }
                 return Status(
-                    title: "Synced · filling earlier gaps",
+                    title: title,
                     symbol: "checkmark.circle.badge.questionmark",
                     accessibilityLabel: "Strap history is synced through now, "
                         + "but an earlier stretch is known to be missing and is "
-                        + "still being refetched.",
+                        + "still being refetched."
+                        + (backlog.map { " About \($0.replacingOccurrences(of: " of gaps", with: "")) remain." } ?? "")
+                        + (AtriaHomeRecoverySyncPresentation.shortDuration(
+                            seconds: summary.offWristExcludedSeconds
+                        ).map { " Another \($0) was off the wrist and is excluded." } ?? ""),
                     compactTitle: "Synced · filling gaps"
                 )
             }
@@ -5460,14 +5566,38 @@ struct AtriaHomeView: View {
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
-            // Live strap catch-up progress, always the last row of Overview.
-            if !debugShowsNorthStarTodayFixture {
+            // Live strap catch-up progress, the last row of Overview — but
+            // only when no system banner is up: a banner plus this footer told
+            // the same sync story twice (owner stack audit 2026-08-28). The
+            // footer returns once the banner resolves or is dismissed.
+            if !debugShowsNorthStarTodayFixture,
+               connectionDiagnosis == nil, !shouldShowMissedDataBanner {
                 AtriaSyncProgressFooter(
                     liveHeartRateIsCurrent:
                         model.coreLiveStore.state.hasRecentHeartRateSample
                 )
             }
         }
+    }
+
+    /// Questions left in today's check-in, for the Journal tab badge. Zero
+    /// (hidden) once complete — the badge is the brief's only knock now.
+    private var journalCheckInBadgeCount: Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let entry = store.behaviorJournalEntries.first {
+            calendar.isDate($0.day, inSameDayAs: today)
+        }
+        let progress = AtriaJournalCheckInProgress.resolve(
+            trackedTags: AtriaTrackedBehaviors.parse(
+                UserDefaults.standard.string(
+                    forKey: AtriaTrackedBehaviors.storageKey) ?? ""),
+            todayEntry: entry,
+            answersByQuestion: store.journalAnswers.answersByQuestion(
+                for: today, calendar: calendar))
+        return progress.isComplete
+            ? 0
+            : max(0, progress.totalCount - progress.answeredCount)
     }
 
     @ViewBuilder
@@ -6030,6 +6160,197 @@ enum AtriaHomeRecoverySyncPresentation {
     /// could never read "Synced" between catch-up slices on a healthy link.
     /// Staleness fails closed: an old observation (link lost, app suspended)
     /// never fabricates a synced claim.
+    /// Per-window verdicts folded into the two numbers the status line can
+    /// honestly show. Indeterminate verdicts count as recoverable: missing
+    /// evidence must never shrink the visible backlog (the 15.5 h starvation
+    /// hid exactly this way), only proven off-wrist/dead time is excluded.
+    struct GapBacklogSummary: Equatable {
+        let recoverableSeconds: TimeInterval
+        /// Windows provably beyond recovery (behind the ACK cursor, behind the
+        /// Start-fresh watermark, or terminally stalled).
+        let provenUnrecoverableSeconds: TimeInterval
+        /// Time proven off-wrist at gap-open and never minted as a window.
+        let offWristExcludedSeconds: TimeInterval
+
+        /// "1.2h of gaps" — recoverable time only; nil under a minute.
+        var recoverableText: String? {
+            AtriaHomeRecoverySyncPresentation.gapBacklogText(
+                seconds: recoverableSeconds
+            )
+        }
+
+        /// "3.1h off wrist excluded" — nil under a minute.
+        var offWristExcludedText: String? {
+            guard let short = AtriaHomeRecoverySyncPresentation
+                .shortDuration(seconds: offWristExcludedSeconds) else { return nil }
+            return "\(short) off wrist excluded"
+        }
+    }
+
+    private struct GapBacklogMemoKey: Equatable {
+        let generation: Int
+        let drainCursorUnix: Double
+        let abandonedThroughUnix: Double
+        let terminallyStalled: Bool
+    }
+
+    private static var gapBacklogMemo: (key: GapBacklogMemoKey,
+                                        recoverableSeconds: TimeInterval,
+                                        provenUnrecoverableSeconds: TimeInterval)?
+
+    /// Memoised on the ledger generation plus the recoverability inputs, so the
+    /// status render only touches the ledger file when a drain actually changed
+    /// it. The off-wrist tally is read fresh — it moves without a ledger write.
+    static func memoisedGapBacklogSummary(defaults: UserDefaults,
+                                          now: Date) -> GapBacklogSummary {
+        let key = GapBacklogMemoKey(
+            generation: defaults.integer(
+                forKey: AtriaHistoricalGapLedger.generationKey
+            ),
+            drainCursorUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+            ),
+            abandonedThroughUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+            ),
+            terminallyStalled: terminallyStalledFromDefaults(defaults: defaults,
+                                                             now: now)
+        )
+        let offWrist = AtriaGapWearClassification.OffWristExclusion
+            .excludedSeconds(now: now, defaults: defaults)
+        if let memo = gapBacklogMemo, memo.key == key {
+            return GapBacklogSummary(
+                recoverableSeconds: memo.recoverableSeconds,
+                provenUnrecoverableSeconds: memo.provenUnrecoverableSeconds,
+                offWristExcludedSeconds: offWrist
+            )
+        }
+        let classified = classifiedGapBacklog(
+            windows: AtriaHistoricalGapLedger
+                .windowsForEvidence(defaults: defaults),
+            now: now,
+            drainCursorUnix: key.drainCursorUnix,
+            abandonedThroughUnix: key.abandonedThroughUnix,
+            terminallyStalled: key.terminallyStalled
+        )
+        gapBacklogMemo = (key,
+                          classified.recoverable,
+                          classified.provenUnrecoverable)
+        return GapBacklogSummary(
+            recoverableSeconds: classified.recoverable,
+            provenUnrecoverableSeconds: classified.provenUnrecoverable,
+            offWristExcludedSeconds: offWrist
+        )
+    }
+
+    /// Same persistent stall signals the missed-data banner uses; the render
+    /// path holds no in-memory drain state.
+    private static func terminallyStalledFromDefaults(defaults: UserDefaults,
+                                                      now: Date) -> Bool {
+        AtriaMissedDataBannerPresentation.gapIsTerminallyStalled(
+            backlogPending: defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            sequenceGapParkedTerminal: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
+            ) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+            ),
+            secondsSinceRangeLossRequested: (defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+            ) as? Double).map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+    }
+
+    /// Splits the ledger's missing time by per-window wear/recoverability
+    /// verdicts. Wear evidence is not gathered on this synchronous render path,
+    /// so the wear-side inputs stay nil and the core fails closed to
+    /// `.indeterminate` — which lands in the recoverable bucket. Only windows
+    /// the drain provably cannot refill move to the unrecoverable bucket.
+    static func classifiedGapBacklog(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date,
+        drainCursorUnix: Double,
+        abandonedThroughUnix: Double,
+        terminallyStalled: Bool
+    ) -> (recoverable: TimeInterval, provenUnrecoverable: TimeInterval) {
+        var recoverable: TimeInterval = 0
+        var unrecoverable: TimeInterval = 0
+        for window in windows {
+            let seconds = expectedMissingSeconds(window: window, now: now)
+            guard seconds > 0 else { continue }
+            let verdict = AtriaGapWearClassification.classify(.init(
+                windowStart: window.start,
+                windowEnd: window.end,
+                expectedMissingSeconds: seconds,
+                drainCursorUnix: drainCursorUnix > 0 ? drainCursorUnix : nil,
+                abandonedThroughUnix: abandonedThroughUnix > 0
+                    ? abandonedThroughUnix : nil,
+                terminallyStalled: terminallyStalled
+            ))
+            switch verdict {
+            case .offWrist, .charging, .unrecoverable,
+                 .wornUndrained(recoverable: false),
+                 .appOrRadioDown(recoverable: false):
+                unrecoverable += seconds
+            case .wornUndrained(recoverable: true),
+                 .appOrRadioDown(recoverable: true),
+                 .indeterminate:
+                recoverable += seconds
+            }
+        }
+        return (recoverable, unrecoverable)
+    }
+
+    /// Total genuinely-missing time across the gap ledger, in seconds.
+    ///
+    /// A coalesced envelope can SPAN days while missing only minutes — its
+    /// `expectedSecondBits` mask is the truth (device 2026-08-27: a 61.6 h
+    /// envelope whose mask held 15.52 h). An ordinary window with no mask is
+    /// missing end-to-end. `coveredSecondBits` is deliberately ignored: it is
+    /// unpopulated in production data, and treating empty as "no progress"
+    /// would overstate.
+    ///
+    /// This number existing on screen is the point. The 15.5 h backlog that
+    /// starved sleep confirmation for three days was reachable only by pulling
+    /// the container and decoding the mask by hand.
+    static func unresolvedGapSeconds(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date
+    ) -> TimeInterval {
+        windows.reduce(0) { total, window in
+            total + expectedMissingSeconds(window: window, now: now)
+        }
+    }
+
+    /// One window's genuinely-missing seconds: the exact mask when present,
+    /// the envelope duration otherwise (open windows run to `now`).
+    static func expectedMissingSeconds(
+        window: AtriaHistoricalGapLedger.Window,
+        now: Date
+    ) -> TimeInterval {
+        if let bits = window.expectedSecondBits {
+            return TimeInterval(bits.reduce(0) { $0 + $1.nonzeroBitCount })
+        }
+        let end = window.end ?? now
+        guard end > window.start else { return 0 }
+        return end.timeIntervalSince(window.start)
+    }
+
+    /// "12m of gaps" / "2.3h of gaps" / nil under a minute (not worth a claim).
+    static func gapBacklogText(seconds: TimeInterval) -> String? {
+        guard let short = shortDuration(seconds: seconds) else { return nil }
+        return "\(short) of gaps"
+    }
+
+    /// "12m" / "2.3h" / nil under a minute.
+    static func shortDuration(seconds: TimeInterval) -> String? {
+        guard seconds >= 60 else { return nil }
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m" }
+        return String(format: "%.1fh", seconds / 3_600)
+    }
+
     static func strapReportsCaughtUp(
         flushDebtLevelRaw: String?,
         flushDebtObservedAtUnix: Double?,
@@ -6045,16 +6366,75 @@ enum AtriaHomeRecoverySyncPresentation {
         return age >= 0 && age <= freshnessWindow
     }
 
+    /// Start fresh writes `drainedThroughUnix` and `historyAbandonedThroughUnix`
+    /// to the same instant. That pair is a watermark, not a newest saved
+    /// record. Device 2026-09-05: both sat at 09:19 while live HR was current
+    /// and the oldest-first cursor was still yesterday 09:44, so the footer
+    /// read "last 9:19 AM".
+    static func isSyntheticStartFreshFrontier(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double?
+    ) -> Bool {
+        guard let drained = drainedThroughUnix,
+              let abandoned = abandonedThroughUnix,
+              drained.isFinite, abandoned.isFinite,
+              drained > 0, abandoned > 0 else { return false }
+        return abs(drained - abandoned) <= 1
+    }
+
+    static func newestSavedRecordUnix(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if isSyntheticStartFreshFrontier(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        ) {
+            return nil
+        }
+        return drainedThroughUnix
+    }
+
+    static func fillThroughUnix(
+        drainCursorUnix: Double?,
+        drainedThroughUnix: Double? = nil,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if let cursor = drainCursorUnix, cursor.isFinite, cursor > 0 {
+            return cursor
+        }
+        return newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+    }
+
     static func copy(savedRecords: Int,
                      drainedThroughUnix: Double?,
                      now: Date,
                      calendar: Calendar = .current,
-                     locale: Locale = .current) -> Copy {
+                     locale: Locale = .current,
+                     abandonedThroughUnix: Double? = nil,
+                     drainCursorUnix: Double? = nil) -> Copy {
         let savedRecords = max(0, savedRecords)
-        let through = syncedThroughText(drainedThroughUnix: drainedThroughUnix,
-                                        now: now,
-                                        calendar: calendar,
-                                        locale: locale)
+        let newestUnix = newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let newest = syncedThroughText(drainedThroughUnix: newestUnix,
+                                       now: now,
+                                       calendar: calendar,
+                                       locale: locale)
+        let filled = syncedThroughText(
+            drainedThroughUnix: fillThroughUnix(
+                drainCursorUnix: drainCursorUnix,
+                drainedThroughUnix: drainedThroughUnix,
+                abandonedThroughUnix: abandonedThroughUnix
+            ),
+            now: now,
+            calendar: calendar,
+            locale: locale
+        )
 
         var titleParts = ["Syncing strap history"]
         // Keep the channel word in the compact fallback (shown when the full
@@ -6077,10 +6457,15 @@ enum AtriaHomeRecoverySyncPresentation {
         // So "through 7:02 PM" claimed a completeness the value never had, and
         // the owner's question — "idk when it's fully synced" — is exactly the
         // question this string appeared to answer and did not. It reports how
-        // far the drain has REACHED, not how much it has filled.
-        if let through {
-            titleParts.append("newest \(through)")
-            compactParts.append("newest \(through)")
+        // far the drain has REACHED, not how much it has filled. A Start-fresh
+        // watermark equal to abandoned-through is omitted; the fill cursor is
+        // the honest last page the strap actually ACKed.
+        if let newest {
+            titleParts.append("newest \(newest)")
+            compactParts.append("newest \(newest)")
+        } else if let filled {
+            titleParts.append("filled through \(filled)")
+            compactParts.append("filled through \(filled)")
         }
 
         var accessibilityParts = ["History sync in progress."]
@@ -6089,14 +6474,19 @@ enum AtriaHomeRecoverySyncPresentation {
                 "\(savedRecords) records durably saved in this recovery."
             )
         }
-        if let through {
+        if let newest {
             // The old VoiceOver line was the strongest claim of the three —
             // "Strap history is durably synced through X." — and was followed
             // immediately by "Missing data is not yet verified.", which
             // contradicted it. One honest sentence replaces both.
             accessibilityParts.append(
-                "The newest saved record is from \(through). Earlier stretches "
+                "The newest saved record is from \(newest). Earlier stretches "
                     + "may still be filling in."
+            )
+        } else if let filled {
+            accessibilityParts.append(
+                "History fill last reached \(filled). Older pages may no "
+                    + "longer be on the strap."
             )
         } else {
             accessibilityParts.append("Missing data is not yet verified.")
@@ -6193,7 +6583,10 @@ enum AtriaSyncProgressFooterPresentation {
                        backgroundLeaseActive: Bool,
                        liveHeartRateIsCurrent: Bool = false,
                        now: Date,
-                       calendar: Calendar = .current) -> Footer? {
+                       calendar: Calendar = .current,
+                       abandonedThroughUnix: Double? = nil,
+                       drainCursorUnix: Double? = nil,
+                       lastDrainYieldedRows: Bool? = nil) -> Footer? {
         let debtFresh = debtObservedAgeSeconds.map {
             $0.isFinite && $0 >= 0
                 && $0 <= AtriaMissedDataBannerPresentation.debtFreshnessWindow
@@ -6204,7 +6597,17 @@ enum AtriaSyncProgressFooterPresentation {
         // not missing strap data).
         let freshlyCaughtUp = debtFresh
             && (debtRecords ?? 0) <= caughtUpRecordFloor
-        let behindSeconds = drainedThroughUnix.map {
+        let newestUnix = AtriaHomeRecoverySyncPresentation.newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let fillUnix = AtriaHomeRecoverySyncPresentation.fillThroughUnix(
+            drainCursorUnix: drainCursorUnix,
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let displayUnix = newestUnix ?? fillUnix
+        let behindSeconds = displayUnix.map {
             now.timeIntervalSince1970 - $0
         }
         let visiblyBehind = !freshlyCaughtUp
@@ -6217,6 +6620,7 @@ enum AtriaSyncProgressFooterPresentation {
             return nil
         }
         let active: Bool = {
+            if lastDrainYieldedRows == false { return false }
             if let age = secondsSinceLastFlush,
                age <= AtriaMissedDataBannerPresentation.activeDrainRecencyWindow {
                 return true
@@ -6229,8 +6633,8 @@ enum AtriaSyncProgressFooterPresentation {
         let liveText = liveHeartRateIsCurrent
             ? "live HR current · "
             : ""
-        guard let drainedThroughUnix, drainedThroughUnix > 0,
-              drainedThroughUnix <= now.timeIntervalSince1970 else {
+        guard let displayUnix, displayUnix > 0,
+              displayUnix <= now.timeIntervalSince1970 else {
             // No trustworthy frontier yet — state only, never a made-up time.
             let detail = liveText + stateText
             let capitalized = detail.prefix(1).uppercased() + detail.dropFirst()
@@ -6239,7 +6643,7 @@ enum AtriaSyncProgressFooterPresentation {
                           accessibilityDetail: capitalized,
                           active: active)
         }
-        let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
+        let frontier = Date(timeIntervalSince1970: displayUnix)
         let timeFormatter = DateFormatter()
         timeFormatter.calendar = calendar
         timeFormatter.timeZone = calendar.timeZone
@@ -6260,11 +6664,25 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
+        let usingFillCursor = newestUnix == nil && fillUnix != nil
         // Same frontier, same correction as the banner above: this reads the
         // newest-ever watermark, so "through X" and "N behind" both overstated
         // it. `behind` is `now - frontier` — the AGE OF THE NEWEST RECORD, not
         // the size of the backlog, which is larger whenever holes remain behind
-        // the frontier.
+        // the frontier. A Start-fresh stamp equal to abandoned-through is not
+        // a record; the fill cursor is.
+        if usingFillCursor {
+            let strapEmpty = freshlyCaughtUp || lastDrainYieldedRows == false
+            let detail = strapEmpty
+                ? "Last fill \(throughText) · older pages aren't on the strap"
+                : "Last fill \(throughText) · \(behindText(behind)) old"
+            return Footer(
+                headline: "Last fill \(throughText)",
+                detail: detail,
+                accessibilityDetail: "History fill last reached \(throughText). \(liveText)\(stateText)",
+                active: active
+            )
+        }
         return Footer(
             headline: "Newest strap record \(throughText)",
             // Numbers-first visible line; the reassurance clauses live in
@@ -6347,7 +6765,16 @@ private struct AtriaSyncProgressFooter: View {
                 forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
             ) == "active",
             liveHeartRateIsCurrent: liveHeartRateIsCurrent,
-            now: now
+            now: now,
+            abandonedThroughUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+            ) as? Double,
+            drainCursorUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+            ) as? Double,
+            lastDrainYieldedRows: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows
+            ) as? Bool
         )
     }
 }
@@ -6360,6 +6787,12 @@ enum AtriaMissedDataBannerPresentation {
         /// honest). False when the gap is effectively lost — the view then hides
         /// the futile sync button and offers only dismissal / start-fresh.
         let offersRecovery: Bool
+        /// True for the oversized pre-Atria backlog: a DECISION the owner must
+        /// make (start fresh vs sync it all), so the banner shows the whole
+        /// sentence and two labeled actions instead of a status icon (device
+        /// 2026-09-02: the copy recommended "Start fresh" while the row offered
+        /// only a sync glyph and a snooze, with the sentence cut at one line).
+        var isDecision: Bool = false
     }
 
     /// ~5 min still bankable on the strap is the floor for calling catch-up
@@ -6436,6 +6869,63 @@ enum AtriaMissedDataBannerPresentation {
         return false
     }
 
+    /// Device 2026-09-05: range-loss backfill stayed pending after the strap
+    /// had already abandoned the missing interval, so Sync kept advertising
+    /// "filling" while every drain slice yielded zero rows. Accept the loss
+    /// without wiping nights, sessions, or pairing. Returns whether it cleared
+    /// a pending flag.
+    @discardableResult
+    static func acceptTerminalHistoryLossIfNeeded(
+        defaults: UserDefaults,
+        now: Date = Date(),
+        pendingKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending,
+        requestedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt,
+        startedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt,
+        reasonKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason,
+        parkedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt,
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices,
+        drainCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix,
+        acceptedCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+    ) -> Bool {
+        let pending = defaults.bool(forKey: pendingKey)
+        let stalled = gapIsTerminallyStalled(
+            backlogPending: pending,
+            sequenceGapParkedTerminal: defaults.object(forKey: parkedAtKey) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(forKey: zeroProgressKey),
+            secondsSinceRangeLossRequested: (defaults.object(forKey: requestedAtKey) as? Double)
+                .map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+        guard stalled else { return false }
+        let cursor = defaults.double(forKey: drainCursorKey)
+        if cursor > 0 {
+            defaults.set(cursor, forKey: acceptedCursorKey)
+        }
+        defaults.set(false, forKey: pendingKey)
+        defaults.removeObject(forKey: requestedAtKey)
+        defaults.removeObject(forKey: startedAtKey)
+        defaults.removeObject(forKey: reasonKey)
+        return true
+    }
+
+    /// After a terminal stall is accepted, do not re-arm the same unfillable
+    /// interval until the oldest-first cursor actually advances.
+    static func shouldSkipRangeLossRearm(
+        defaults: UserDefaults,
+        now: Date = Date()
+    ) -> Bool {
+        if acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now) {
+            return true
+        }
+        let accepted = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+        )
+        guard accepted > 0 else { return false }
+        let cursor = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        return cursor <= accepted + 1
+    }
+
     static func copy(strapPendingRecords: Int,
                      protectsLiveStream: Bool,
                      secondsSinceLastFlush: TimeInterval?,
@@ -6444,7 +6934,9 @@ enum AtriaMissedDataBannerPresentation {
                      backlogPending: Bool = false,
                      consecutiveZeroProgressSlices: Int = 0,
                      secondsSinceRangeLossRequested: TimeInterval? = nil,
-                     sequenceGapParkedTerminal: Bool = false) -> Copy {
+                     sequenceGapParkedTerminal: Bool = false,
+                     ledgerRecoverableSeconds: TimeInterval? = nil,
+                     ledgerProvenUnrecoverableSeconds: TimeInterval? = nil) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
@@ -6471,6 +6963,22 @@ enum AtriaMissedDataBannerPresentation {
             return Copy(
                 title: "Strap can't catch up",
                 subtitle: "No recent progress — start fresh to clear the gap. New data is unaffected.",
+                offersRecovery: false
+            )
+        }
+
+        // Every classified ledger window is provably beyond recovery (served
+        // past the ACK cursor, behind the Start-fresh watermark, or off-wrist)
+        // — a Sync tap cannot refill any of it, so no affordance is dangled.
+        // Fail-open by construction: indeterminate windows count as
+        // recoverable upstream and keep the Sync button, and callers that
+        // gathered no classification pass nil and change nothing.
+        if backlogPending,
+           let recoverable = ledgerRecoverableSeconds, recoverable < 60,
+           (ledgerProvenUnrecoverableSeconds ?? 0) >= 60 {
+            return Copy(
+                title: "Earlier gap can't be refilled",
+                subtitle: "That time is no longer available from the strap. New data is unaffected.",
                 offersRecovery: false
             )
         }
@@ -6541,12 +7049,19 @@ private struct AtriaMissedDataBanner: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            compactIcon
-            copyBlock
-            Spacer(minLength: 0)
-            compactState
-            dismissButton
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                compactIcon
+                copyBlock
+                Spacer(minLength: 0)
+                if !bannerCopy.isDecision {
+                    compactState
+                }
+                dismissButton
+            }
+            if bannerCopy.isDecision {
+                decisionActions
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -6554,6 +7069,21 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(bannerCopy.title). \(bannerCopy.subtitle).")
+    }
+
+    /// The oversized-backlog decision, spelled out: the recommended clean
+    /// slate first (its confirm dialog explains what is lost), the slow full
+    /// sync second. Both reuse the existing wiring; nothing new is minted.
+    private var decisionActions: some View {
+        HStack(spacing: 10) {
+            Button("Start fresh", action: onStartFresh)
+                .atriaCardAction(tint: .cyan)
+            Button("Sync all", action: handleSyncTap)
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel(protectsLiveStream
+                                    ? "Sync all history; live tracking stays uninterrupted"
+                                    : "Sync all history from before Atria")
+        }
     }
 
     private var compactIcon: some View {
@@ -6572,7 +7102,34 @@ private struct AtriaMissedDataBanner: View, Equatable {
     /// buffer pending, P6) AND whether the background drain is actively flushing
     /// (durable-flush recency + active lease) — NOT the stale pending count
     /// alone, which made a working drain read as "stuck at ~8 min".
+    /// A huge backlog is a DECISION, not a status. A fresh user pairing a
+    /// strap that lived with the official WHOOP app inherits weeks of foreign
+    /// flash history; at ~1x replay that backlog never converges, silently
+    /// starves sleep confirmation, and poisons the cycle boundary — the exact
+    /// failure the owner lived through at 15.5 h, met on day one at 10x. Over
+    /// a day of backlog, the banner leads with the choice instead of quietly
+    /// "filling".
+    private var oversizedBacklogText: String? {
+        let seconds = AtriaHomeRecoverySyncPresentation.unresolvedGapSeconds(
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(
+                defaults: .standard),
+            now: Date()
+        )
+        guard seconds >= 24 * 3_600 else { return nil }
+        return String(format: "%.0f days", (seconds / 86_400).rounded())
+    }
+
     private var bannerCopy: AtriaMissedDataBannerPresentation.Copy {
+        if let days = oversizedBacklogText {
+            return .init(
+                title: "This strap holds ~\(days) of history from before Atria",
+                subtitle: "Syncing it all is slow and delays sleep and step "
+                    + "accuracy. Start fresh keeps live tracking and lets "
+                    + "today work now — recommended for a newly paired strap.",
+                offersRecovery: true,
+                isDecision: true
+            )
+        }
         let defaults = UserDefaults.standard
         let pending = defaults.integer(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
@@ -6608,6 +7165,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let secondsSinceRangeLossRequested: TimeInterval? = rangeLossRequestedAt.map {
             max(0, Date().timeIntervalSince1970 - $0)
         }
+        // Per-window wear/recoverability verdicts (memoised on the ledger
+        // generation) so the Sync affordance reflects only time the strap can
+        // still hand over.
+        let gapSummary = AtriaHomeRecoverySyncPresentation
+            .memoisedGapBacklogSummary(defaults: defaults, now: Date())
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6621,7 +7183,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
             ),
             consecutiveZeroProgressSlices: zeroProgressSlices,
             secondsSinceRangeLossRequested: secondsSinceRangeLossRequested,
-            sequenceGapParkedTerminal: sequenceGapParked
+            sequenceGapParkedTerminal: sequenceGapParked,
+            ledgerRecoverableSeconds: gapSummary.recoverableSeconds,
+            ledgerProvenUnrecoverableSeconds: gapSummary.provenUnrecoverableSeconds
         )
     }
 
@@ -6657,12 +7221,13 @@ private struct AtriaMissedDataBanner: View, Equatable {
         VStack(alignment: .leading, spacing: 2) {
             Text(bannerCopy.title)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                // A status row stays one line; a decision gets its sentence.
+                .lineLimit(bannerCopy.isDecision ? 2 : 1)
                 .minimumScaleFactor(0.82)
             Text(syncTapFeedback ?? bannerCopy.subtitle)
                 .font(.caption)
                 .foregroundStyle(syncTapFeedback == nil ? Color.secondary : Color.cyan)
-                .lineLimit(1)
+                .lineLimit(bannerCopy.isDecision ? 4 : 1)
                 .minimumScaleFactor(0.82)
                 .task(id: syncTapFeedback) {
                     // Auto-clear the tap confirmation so the row returns to its
@@ -8424,7 +8989,7 @@ private struct AtriaWorkoutReviewFlow: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: 28, tint: .orange)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.card, tint: .orange)
         .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 10)
@@ -9075,7 +9640,7 @@ private struct AtriaStandByMetric: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.cardHeroValue)
                 .monospacedDigit()
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
@@ -9479,7 +10044,27 @@ final class AtriaHomeModel {
         var isLowBatteryLiveLimited: Bool {
             strapStreamState == .lowBatteryShutoff || strapStreamState == .lowBatteryReducedDetail
         }
+        /// Wear/charge re-attribution for the pulseless states. Device-proven
+        /// 2026-08-28: a charging off-wrist strap flapped "No signal"→"Live"
+        /// all night. Each claim here is evidence-backed (the strap's own
+        /// HR==0 stream, or the bounded charge proof); ambiguity falls
+        /// through to the unchanged honest copy below.
+        var strapWearAttribution: AtriaStrapWearAttribution {
+            AtriaStrapWearAttribution.classify(
+                streamState: strapStreamState,
+                hasFreshPulse: hasRecentHeartRateSample,
+                lastAcceptedPulseAt: lastReadingAt,
+                chargingProven: batteryIsCharging,
+                batteryRecentlyDropping: batteryRecentlyDropping
+            )
+        }
+
         var strapStreamConnectionLabel: String {
+            switch strapWearAttribution {
+            case .charging: return "Charging"
+            case .offWrist: return "Off wrist"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "Live"
@@ -9492,10 +10077,15 @@ final class AtriaHomeModel {
             case .warming:
                 return "Waiting"
             case .unknown:
-                return hasRecentHeartRateSample ? "Live" : "Pending"
+                return hasRecentHeartRateSample ? "Live" : "Waiting"
             }
         }
         var strapStreamConnectionDetail: String {
+            switch strapWearAttribution {
+            case .charging: return "No pulse while charging — resumes on wear"
+            case .offWrist: return "Strap streams but sees no pulse"
+            case .none: break
+            }
             // Per-state short forms; each keeps the honest state fact
             // (arriving / too low / reduced / connected-but-silent / pending).
             switch strapStreamState {
@@ -9510,10 +10100,15 @@ final class AtriaHomeModel {
             case .warming:
                 return "Waiting for live heart rate"
             case .unknown:
-                return hasRecentHeartRateSample ? "HR arriving" : "State pending"
+                return hasRecentHeartRateSample ? "HR arriving" : "Waiting for live heart rate"
             }
         }
         var strapStreamConnectionSymbol: String {
+            switch strapWearAttribution {
+            case .charging: return "battery.100percent.bolt"
+            case .offWrist: return "applewatch.slash"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "bolt.heart.fill"
@@ -9524,23 +10119,17 @@ final class AtriaHomeModel {
             case .warming:
                 return "waveform.path.ecg"
             case .unknown:
-                return hasRecentHeartRateSample ? "bolt.heart.fill" : "antenna.radiowaves.left.and.right"
+                return hasRecentHeartRateSample ? "bolt.heart.fill" : "waveform.path.ecg"
             }
         }
 
         /// SF Symbol matching the level, with the bolt overlay while charging.
+        /// One ladder for the whole app (AtriaBatteryIdentity); this file used
+        /// to carry two byte-identical copies (2026-08-28).
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "questionmark.circle" }
-            if batteryShowsPowered {
-                return "battery.100percent.bolt"
-            }
-            switch batteryLevel {
-            case ..<13: return "battery.0percent"
-            case ..<38: return "battery.25percent"
-            case ..<63: return "battery.50percent"
-            case ..<88: return "battery.75percent"
-            default: return "battery.100percent"
-            }
+            return AtriaBatteryIdentity.systemImage(percent: batteryLevel,
+                                                    isCharging: batteryShowsPowered)
         }
     }
 
@@ -13501,7 +14090,10 @@ enum AtriaHomeChromeLayout {
     /// small, explicit portrait lane clear of the Dynamic Island instead of
     /// relying on a nested scroll-view's safe-area propagation.
     static func topChromeClearance(verticalSizeClass: UserInterfaceSizeClass?) -> CGFloat {
-        verticalSizeClass == .regular ? 26 : 0
+        // 26 -> 8 (owner 2026-08-28 strict pass): the safe-area inset already
+        // clears the status bar; the extra clearance was dead air above the
+        // status chip.
+        verticalSizeClass == .regular ? 8 : 0
     }
 
     static func showsHomeStatusChip(workoutIsActive: Bool) -> Bool {
@@ -13577,12 +14169,12 @@ private struct AtriaHomeTopChrome: View {
             // existing sheets and keep the Today page's in-content actions.
             Menu {
                 Button(action: onStartActivity) {
-                    Label("Start Activity", systemImage: "figure.run")
+                    Label("Start workout", systemImage: "figure.run")
                 }
                 .disabled(!activityStartIsAvailable)
 
                 Button(action: onAddActivity) {
-                    Label("Add Activity", systemImage: "calendar.badge.plus")
+                    Label("Add workout", systemImage: "calendar.badge.plus")
                 }
             } label: {
                 AtriaToolbarIcon(symbol: "plus")
@@ -13758,10 +14350,13 @@ enum AtriaTopStatusProjection {
             displayStatus = input.status
         }
 
-        let freshPulseOverridesLaggingStream = hasPulseSignal
-            && (input.strapStreamState == .warming
-                || input.strapStreamState == .silentUnknown
-                || input.strapStreamState == .unknown)
+        // One shared rule for every connection surface (see
+        // AtriaLiveSignalTruth.freshPulseOverridesLaggingStream). This pill was
+        // the original owner of the rule; the Strap screen and the Overview
+        // card now read the same definition instead of each carrying its own.
+        let freshPulseOverridesLaggingStream = AtriaLiveSignalTruth
+            .freshPulseOverridesLaggingStream(hasPulseSignal: hasPulseSignal,
+                                              streamState: input.strapStreamState)
 
         var label: String
         if displayStatus == .connected {
@@ -13945,13 +14540,7 @@ enum AtriaTopStatusProjection {
     }
 
     private static func batterySymbol(level: Int) -> String {
-        switch level {
-        case ..<13: return "battery.0percent"
-        case ..<38: return "battery.25percent"
-        case ..<63: return "battery.50percent"
-        case ..<88: return "battery.75percent"
-        default: return "battery.100percent"
-        }
+        AtriaBatteryIdentity.systemImage(percent: level)
     }
 
     static func nextSemanticDeadline(input: AtriaTopStatusProjectionInput,

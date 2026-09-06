@@ -1125,17 +1125,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     var strapGenerationDetail: String {
         switch strapModel {
         case .strapMG:
-            return "Generation: WHOOP MG, explicit metadata"
+            return "WHOOP MG · explicit metadata"
         case .strap5:
-            return "Generation: WHOOP 5.0, explicit metadata"
+            return "WHOOP 5.0 · explicit metadata"
         case .strap4:
-            return "Generation: WHOOP 4.0, explicit metadata"
+            return "WHOOP 4.0 · explicit metadata"
         case .strap4Class:
-            return "Generation: unverified; 4.0-class protocol"
+            return "Unverified · 4.0-class protocol"
         case .strap3:
-            return "Generation: WHOOP 3.0, explicit metadata"
+            return "WHOOP 3.0 · explicit metadata"
         case .unknown:
-            return "Generation: unknown; heart rate only until layout is checked"
+            // The Settings row is already labeled "Generation" (2026-09-02 audit):
+            // the value no longer repeats the label, and reads as a value.
+            return "Unknown · heart rate only until the strap is checked"
         }
     }
 
@@ -1268,7 +1270,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private(set) var tachogram: [RRSample] = []
-    @Published var hrvQuality = "waiting for beat-to-beat samples"
+    // "waiting for beat-to-beat samples" truncated to "waiting for beat-to-b…"
+    // on the Vitals HRV tile (2026-09-02 screenshot); the shorter form says
+    // the same thing and fits the tile at the default text size.
+    @Published var hrvQuality = "no beat-to-beat yet"
     @Published var rrContinuityState = "learning"
     private(set) var rrContinuityDetail = "RR continuity waiting"
     private(set) var rrContinuityFraction = 0.0
@@ -1326,6 +1331,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingLiveHRVRefreshRequest: (now: Date, logKind: String, shouldLogConsole: Bool)?
     private var hrvLiveRefreshGeneration: UInt64 = 0
     private var contactStableSince: Date?
+    /// Zero-contact run evidence for gap-open suppression. The run start is the
+    /// first HR==0 after a worn period; the last value is the newest zero. Both
+    /// are bounded against the exact missing interval at every use
+    /// (`AtriaGapWearClassification.offWristProvenAcross`), so a stale run from
+    /// an earlier outage can never suppress a later window.
+    private var zeroContactRunStartedAt: Date?
+    private var lastZeroContactAt: Date?
     private var hrvGateWasOpen = false
     private nonisolated static let foregroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
     private nonisolated static let backgroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
@@ -18340,13 +18352,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func reconcileHistoricalRecoveryPresentation(reason: String) {
         guard !offlineHistoricalSyncInProgress,
               !historicalConsumerMaterializationInFlight else { return }
+        let defaults = UserDefaults.standard
+        if AtriaMissedDataBannerPresentation.acceptTerminalHistoryLossIfNeeded(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            historicalRecoveryPresentation = .idle
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=accepted_unrecoverable_history_loss reason=%@ action=clear_pending_keep_nights",
+                reason
+            )
+            return
+        }
         switch historicalRecoveryPresentation {
         case .needsAttention, .partial:
             break
         case .idle, .syncing, .verified:
             return
         }
-        let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         let actionable = AtriaHistoricalGapLedger
             .windows(defaults: defaults)
@@ -18359,6 +18382,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markRangeLossBackfillRequired(reason: String) {
         let defaults = UserDefaults.standard
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_rearm_unrecoverable_history reason=%@",
+                reason
+            )
+            return
+        }
         let alreadyPending = defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         if !alreadyPending || defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) == nil {
             defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt)
@@ -26532,7 +26565,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             hrv = 0
             assignIfChanged(\.hrvSnapshot, nil)
             tachogram.removeAll(keepingCapacity: true)
-            assignIfChanged(\.hrvQuality, "waiting for beat-to-beat samples")
+            assignIfChanged(\.hrvQuality, "no beat-to-beat yet")
             assignIfChanged(\.isRecording, true)
             let startedAtUTC = ISO8601DateFormatter().string(from: captureStart)
             let context = [
@@ -26818,7 +26851,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                    value: summaryLogValue)
         } else {
             ready = false
-            summary = String(format: "Still learning · saved %.0fs · waiting for beat-to-beat samples",
+            summary = String(format: "Still learning · saved %.0fs · no beat-to-beat yet",
                              captureElapsedSeconds)
             let reason = finalAbortReason ?? "no_realtime_rr"
             let cleanElapsed = Date().timeIntervalSince(captureCleanWindowStart)
@@ -27249,7 +27282,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // didDisconnect. Persist the exact consecutive-sample window;
                 // when an open disconnect window was just closed, do not add a
                 // duplicate interval for the same outage.
-                if continuityRelevant, !hadOpenMissingWindow,
+                //
+                // A zero-contact run bracketing this exact interval proves the
+                // strap was off the wrist, not out of range: its flash holds no
+                // pulse for unworn time, so a recoverable-history window would
+                // only inflate the backlog with unfillable time (the
+                // `off_wrist_no_recoverable_gap` rule the disconnect path
+                // already applies). Unknown contact keeps today's behavior.
+                let offWristProven = AtriaGapWearClassification.offWristProvenAcross(
+                    intervalStartUnix: lastAcceptedHRAt.timeIntervalSince1970,
+                    intervalEndUnix: sampleTime.timeIntervalSince1970,
+                    zeroContactRunStartUnix: zeroContactRunStartedAt?.timeIntervalSince1970,
+                    lastZeroContactUnix: lastZeroContactAt?.timeIntervalSince1970
+                )
+                if offWristProven {
+                    AtriaGapWearClassification.OffWristExclusion.recordExcludedSpan(
+                        startUnix: lastAcceptedHRAt.timeIntervalSince1970,
+                        endUnix: sampleTime.timeIntervalSince1970
+                    )
+                    AtriaDebugLog("ATRIADBG offline_sync status=range_loss_skipped reason=accepted_hr_gap detail=off_wrist_no_recoverable_gap gap_s=%.1f action=preserve_realtime_only",
+                                  gap)
+                }
+                if continuityRelevant, !hadOpenMissingWindow, !offWristProven,
                    AtriaHistoricalGapLedger.recordObservedGap(
                     start: lastAcceptedHRAt,
                     end: sampleTime,
@@ -27304,6 +27358,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             recordWorkoutPromptQualityEvent(.zero, at: sampleTime)
             sampleDiagnostics.zeroSamples += 1
             setSampleDiagnosticsStatus("zero_contact", reason: "hr_zero")
+            // Entry-time contact decides whether this zero starts a fresh run;
+            // stamp before the flag is cleared below.
+            if hasContact || zeroContactRunStartedAt == nil {
+                zeroContactRunStartedAt = sampleTime
+            }
+            lastZeroContactAt = sampleTime
             assignIfChanged(\.hasContact, false)
             contactStableSince = nil
             pendingHRJump = nil
@@ -44935,7 +44995,25 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             longWearEnabled: longWearModeEnabled,
             activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         )
-        let recordedGap = continuityRelevant && AtriaHistoricalGapLedger.recordObservedGap(
+        // Overflow while a zero-contact run brackets the dropped envelope means
+        // the flooding stream itself was reporting no skin: the dropped span is
+        // off-wrist, not missing pulse data, so no recoverable-history window
+        // is minted (same `off_wrist_no_recoverable_gap` rule as the disconnect
+        // path). Unknown contact keeps today's behavior.
+        let offWristProven = AtriaGapWearClassification.offWristProvenAcross(
+            intervalStartUnix: start.timeIntervalSince1970,
+            intervalEndUnix: end.timeIntervalSince1970,
+            zeroContactRunStartUnix: zeroContactRunStartedAt?.timeIntervalSince1970,
+            lastZeroContactUnix: lastZeroContactAt?.timeIntervalSince1970
+        )
+        if offWristProven {
+            AtriaGapWearClassification.OffWristExclusion.recordExcludedSpan(
+                startUnix: start.timeIntervalSince1970,
+                endUnix: end.timeIntervalSince1970
+            )
+        }
+        let recordedGap = continuityRelevant && !offWristProven
+            && AtriaHistoricalGapLedger.recordObservedGap(
             start: start,
             end: end,
             reason: "heart_rate_ingress_overflow",
@@ -44948,12 +45026,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             )
             scheduleRangeLossBackfillIfNeeded(reason: "heart_rate_ingress_overflow")
         }
-        AtriaDebugLog("ATRIADBG hr_ingress_overflow dropped=%d start_unix=%.3f end_unix=%.3f gap_s=%.3f ledger_gap=%d action=retain_missing_window_no_interpolation",
+        AtriaDebugLog("ATRIADBG hr_ingress_overflow dropped=%d start_unix=%.3f end_unix=%.3f gap_s=%.3f ledger_gap=%d off_wrist=%d action=retain_missing_window_no_interpolation",
                       overflow.droppedCount,
                       start.timeIntervalSince1970,
                       end.timeIntervalSince1970,
                       gap,
-                      recordedGap ? 1 : 0)
+                      recordedGap ? 1 : 0,
+                      offWristProven ? 1 : 0)
         persistActiveSessionJournalIfNeeded(reason: "heart_rate_ingress_overflow", force: true)
         flushSampleDiagnostics()
     }
@@ -48690,7 +48769,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         )
         let resolvedServiceOwnerEdge =
             "service_owner_resolved_\(strapDiscoveryOwner.rawValue)"
+        // Fence the breadcrumb too: a retired source's discovery callback
+        // must not stamp its edge onto the CURRENT generation's trace.
         Task { @MainActor in
+            guard self.acceptsBLECallback(
+                source: callbackSource,
+                peripheral: peripheral
+            ) else { return }
             self.recordProtectedV9BringUpEdge(resolvedServiceOwnerEdge)
         }
         for service in peripheral.services ?? [] {
@@ -48941,6 +49026,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             let resolvedCharacteristicOwnerEdge =
                 "characteristic_owner_resolved_\(strapDiscoveryOwner.rawValue)"
             Task { @MainActor in
+                guard self.acceptsBLECallback(
+                    source: callbackSource,
+                    peripheral: peripheral
+                ) else { return }
                 self.recordProtectedV9BringUpEdge(resolvedCharacteristicOwnerEdge)
             }
         }

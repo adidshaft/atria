@@ -299,6 +299,25 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
         XCTAssertTrue(snapshot.additionalMainNights.contains { $0.id == "early" })
     }
 
+    /// Device 2026-09-05: Aug 21 overnight was stamped `true` and the same-day
+    /// afternoon main stayed `nil`. The prompt never re-fired (any recorded
+    /// choice resolves the day) so the unmarked sibling still opened a second
+    /// cycle. A chosen primary demotes the unmarked sibling.
+    func testChosenPrimaryDemotesUnmarkedSameDaySibling() {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3))
+            .replacingDayPrimaryChoice(true)
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))
+        let now = date(11, 16)
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now, confirmedSleeps: [early, late], calendar: Self.utcCalendar)
+        XCTAssertFalse(boundaries.contains { $0.id == "late" },
+                       "an unmarked sibling on a chosen-primary day must not anchor")
+        XCTAssertEqual(boundaries.last?.id, "early")
+        XCTAssertEqual(AtriaPhysiologicalCycle.current(
+            now: now, confirmedSleeps: [early, late], calendar: Self.utcCalendar).start,
+                       early.end)
+    }
+
     // The additive field round-trips and defaults to nil for legacy records.
     func testDayPrimaryChoiceCodableRoundTripAndLegacyDefault() throws {
         let chosen = sleep(id: "chosen", start: date(10, 23), end: date(11, 7))

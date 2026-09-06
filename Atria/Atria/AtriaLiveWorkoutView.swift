@@ -47,6 +47,10 @@ struct AtriaWorkoutSession: Identifiable {
     /// Nil only for legacy in-memory/restored sessions created before this
     /// field existed; those use a one-time current-profile fallback.
     var calculationContext: AtriaWorkoutCalculationContext? = nil
+    /// User-declared activity switches (2026-08-30). Nil until the first
+    /// switch; the first switch seeds the ORIGINAL type at session start so
+    /// the timeline is complete from second zero.
+    var segments: [WorkoutSegment]? = nil
 
     init(start: Date,
          targetStrain: Double? = nil,
@@ -60,7 +64,8 @@ struct AtriaWorkoutSession: Identifiable {
          pauseStartedStepCount: Int? = nil,
          stepAccountingIsComplete: Bool = true,
          startingDayStrain: Double = 0,
-         calculationContext: AtriaWorkoutCalculationContext? = nil) {
+         calculationContext: AtriaWorkoutCalculationContext? = nil,
+         segments: [WorkoutSegment]? = nil) {
         self.start = start
         self.targetStrain = targetStrain
         self.targetZone = targetZone
@@ -74,6 +79,22 @@ struct AtriaWorkoutSession: Identifiable {
         self.stepAccountingIsComplete = stepAccountingIsComplete
         self.startingDayStrain = startingDayStrain
         self.calculationContext = calculationContext
+        self.segments = segments
+    }
+
+    /// Commits a user-declared in-workout activity switch. On the FIRST
+    /// switch the timeline is seeded with the original type at session start,
+    /// then the new type is appended at the switch moment. A same-type
+    /// "switch" is a no-op so menu re-taps cannot mint junk segments.
+    mutating func recordActivitySwitch(to newType: AtriaWorkoutActivityType,
+                                       at date: Date) {
+        guard newType != activityType else { return }
+        var timeline = segments
+            ?? [WorkoutSegment(activityType: activityType.rawValue, startedAt: start)]
+        timeline.append(WorkoutSegment(activityType: newType.rawValue,
+                                       startedAt: max(date, start)))
+        segments = timeline
+        activityType = newType
     }
 
     /// The user's target choice re-derived from the persisted fields, if any.
@@ -760,6 +781,67 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
     }
 }
 
+/// One user-declared activity stretch inside a single workout session
+/// (2026-08-30 in-workout switching). Records only what the USER declared and
+/// when they declared it — never an inferred boundary. A session that was
+/// never switched carries NO segments (nil), keeping every legacy record and
+/// its persisted bytes untouched.
+struct WorkoutSegment: Codable, Equatable {
+    let activityType: String
+    let startedAt: Date
+
+    /// The scalar `activityType` written at finalize is the DOMINANT segment:
+    /// longest by moving duration (wall span minus pause exclusions), ties
+    /// resolved toward the LAST such segment. Nil when there was no switch,
+    /// so single-type sessions keep today's scalar byte-for-byte.
+    static func dominantActivityType(segments: [WorkoutSegment]?,
+                                     sessionStart: Date,
+                                     sessionEnd: Date,
+                                     excludedIntervals: [ExcludedInterval]) -> String? {
+        guard let segments, segments.count >= 2, sessionEnd > sessionStart else {
+            return segments?.last?.activityType
+        }
+        let ordered = segments.sorted { $0.startedAt < $1.startedAt }
+        var best: (type: String, duration: TimeInterval)?
+        for (index, segment) in ordered.enumerated() {
+            let start = max(sessionStart, min(segment.startedAt, sessionEnd))
+            let end = index + 1 < ordered.count
+                ? max(start, min(ordered[index + 1].startedAt, sessionEnd))
+                : sessionEnd
+            let moving = movingDuration(start: start,
+                                        end: end,
+                                        excludedIntervals: excludedIntervals)
+            // ">=" makes a later equal-duration segment win: ties -> last.
+            if best == nil || moving >= best!.duration {
+                best = (segment.activityType, moving)
+            }
+        }
+        return best?.type
+    }
+
+    /// Wall duration of [start, end] minus its overlap with the excluded
+    /// (pause) intervals. Overlapping exclusions are merged first so a
+    /// double-counted pause cannot drive a duration below its true value.
+    static func movingDuration(start: Date,
+                               end: Date,
+                               excludedIntervals: [ExcludedInterval]) -> TimeInterval {
+        guard end > start else { return 0 }
+        var total = end.timeIntervalSince(start)
+        let merged = excludedIntervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        var cursor = start
+        for interval in merged {
+            let overlapStart = max(cursor, max(start, interval.start))
+            let overlapEnd = min(end, interval.end)
+            guard overlapEnd > overlapStart else { continue }
+            total -= overlapEnd.timeIntervalSince(overlapStart)
+            cursor = max(cursor, overlapEnd)
+        }
+        return max(0, total)
+    }
+}
+
 /// Small, durable description of a user-started workout. Heart-rate samples
 /// remain in the session journal; this record preserves the user's intent and
 /// editing state until a confirmed workout has been written. It deliberately
@@ -798,6 +880,11 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
     /// Monotonic per-workout checkpoint order. It prevents an older detached
     /// UI checkpoint from reverting newer sets, pauses or targets.
     var persistenceRevision: UInt64 = 0
+    /// User-declared in-workout activity switches (2026-08-30). Nil until the
+    /// first switch — synthesized encoding then omits the key entirely, so a
+    /// never-switched workout's persisted intent stays byte-identical to
+    /// pre-segment builds and older builds can still read it.
+    var segments: [WorkoutSegment]? = nil
 
     private enum CodingKeys: String, CodingKey {
         case startedAt
@@ -821,6 +908,7 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         case startingDayStrain
         case calculationContext
         case persistenceRevision
+        case segments
     }
 
     /// Workout recovery records can outlive the build that created them. New
@@ -864,6 +952,9 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         )
         persistenceRevision = try values.decodeIfPresent(UInt64.self,
                                                           forKey: .persistenceRevision) ?? 0
+        // Additive optional: a legacy payload without the key decodes to nil
+        // (no switch), never to a decode failure.
+        segments = try values.decodeIfPresent([WorkoutSegment].self, forKey: .segments)
     }
 
     init(startedAt: Date,
@@ -886,7 +977,8 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
          completedStepsCapturedAt: Date? = nil,
          startingDayStrain: Double,
          calculationContext: AtriaWorkoutCalculationContext? = nil,
-         persistenceRevision: UInt64 = 0) {
+         persistenceRevision: UInt64 = 0,
+         segments: [WorkoutSegment]? = nil) {
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.activityType = activityType
@@ -908,6 +1000,7 @@ struct AtriaPendingWorkoutIntent: Codable, Equatable {
         self.startingDayStrain = startingDayStrain
         self.calculationContext = calculationContext
         self.persistenceRevision = persistenceRevision
+        self.segments = segments
     }
 
     var resolvedActivityType: AtriaWorkoutActivityType {
@@ -2405,6 +2498,9 @@ struct AtriaLiveWorkoutView: View {
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
     @Binding var activityType: AtriaWorkoutActivityType
+    /// User-declared switch timeline (nil until the first switch). Read-only
+    /// here: switches are committed by the owning session via `activityType`.
+    let segments: [WorkoutSegment]?
     @Binding var targetChoice: AtriaWorkoutTargetChoice?
     let strengthHistory: StrengthHistoryProjection
     @Binding var loggedSets: [LoggedSet]
@@ -2564,6 +2660,22 @@ struct AtriaLiveWorkoutView: View {
     private var routeWorkoutActions: some View {
         GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
+                // Same availability rule as the standard lane: a route-type
+                // workout that logged sets earlier (or in a strength segment)
+                // keeps its logger reachable without leaving the map.
+                if showsSetLoggingControls {
+                    Button {
+                        primeLoggerFromLastSet()
+                        showSetLogger = true
+                    } label: {
+                        Label("Log set", systemImage: "plus.circle.fill")
+                            .font(.headline.weight(.black))
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .tint(.mint)
+                }
+
                 Button(action: toggleWorkoutPause) {
                     Label(isPaused ? "Resume" : "Pause",
                           systemImage: isPaused ? "play.fill" : "pause.fill")
@@ -2607,12 +2719,18 @@ struct AtriaLiveWorkoutView: View {
             .buttonBorderShape(.circle)
             .accessibilityLabel("Minimize workout")
 
+            // Discoverable switcher (2026-08-30): same Menu mechanics, but a
+            // visibly-chromed control instead of bare header text, and the
+            // section title states the contract — switching keeps one session,
+            // one start, one strain accumulator recording.
             Menu {
-                ForEach(AtriaWorkoutActivityType.allCases) { type in
-                    Button {
-                        activityType = type
-                    } label: {
-                        Label(type.rawValue, systemImage: type.icon)
+                Section("Switch activity — keeps recording") {
+                    ForEach(AtriaWorkoutActivityType.allCases) { type in
+                        Button {
+                            activityType = type
+                        } label: {
+                            Label(type.rawValue, systemImage: type.icon)
+                        }
                     }
                 }
                 Divider()
@@ -2623,6 +2741,11 @@ struct AtriaLiveWorkoutView: View {
                 HStack(spacing: 6) {
                     Label(activityType == .other ? "Workout" : activityType.rawValue,
                           systemImage: activityType.icon)
+                        // One line inside the capsule: the glass menu label
+                        // otherwise gets a compressed width proposal and wraps
+                        // or truncates even short names ("Stre…").
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.white.opacity(0.6))
@@ -2630,10 +2753,16 @@ struct AtriaLiveWorkoutView: View {
                 }
                 .font(.headline.weight(.bold))
                 .foregroundStyle(.white)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 44)
-                .contentShape(Rectangle())
+                .contentShape(Capsule())
             }
-            .accessibilityHint("Choose the workout activity type")
+            // Glass chrome consistent with the header's minimize button; the
+            // capsule makes the switcher read as a control, not a title.
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .accessibilityLabel("Activity: \(activityType == .other ? "Workout" : activityType.rawValue)")
+            .accessibilityHint("Switch the activity type. The workout keeps recording.")
             Spacer()
             TimelineView(.periodic(from: startDate, by: 1)) { context in
                 Text(elapsedText(context.date))
@@ -2644,6 +2773,30 @@ struct AtriaLiveWorkoutView: View {
         }
     }
 
+    /// Whether Log set is offered right now. The catalog's
+    /// `supportsExerciseSelection` stays untouched; switching mid-workout must
+    /// not strand sets already logged (or a strength segment's logging flow)
+    /// behind the CURRENT type's capability, so any logged set or any
+    /// exercise-capable segment — past or current — keeps the logger available.
+    nonisolated static func showsSetLoggingControls(
+        activityType: AtriaWorkoutActivityType,
+        loggedSets: [LoggedSet],
+        segments: [WorkoutSegment]?
+    ) -> Bool {
+        if activityType.supportsExerciseSelection { return true }
+        if !loggedSets.isEmpty { return true }
+        return (segments ?? []).contains {
+            AtriaWorkoutActivityType(rawValue: $0.activityType)?
+                .supportsExerciseSelection == true
+        }
+    }
+
+    private var showsSetLoggingControls: Bool {
+        Self.showsSetLoggingControls(activityType: activityType,
+                                     loggedSets: loggedSets,
+                                     segments: segments)
+    }
+
     /// The two frequent workout actions stay visible and glanceable without
     /// explanatory copy. Secondary state (recent sets, timers and HR broadcast)
     /// remains in the same compact surface.
@@ -2651,7 +2804,7 @@ struct AtriaLiveWorkoutView: View {
         VStack(alignment: .leading, spacing: 10) {
             GlassEffectContainer(spacing: 10) {
                 HStack(spacing: 10) {
-                    if activityType.supportsExerciseSelection {
+                    if showsSetLoggingControls {
                         Button {
                             primeLoggerFromLastSet()
                             showSetLogger = true
@@ -2675,10 +2828,10 @@ struct AtriaLiveWorkoutView: View {
                 }
             }
 
-            if (activityType.supportsExerciseSelection && restTimerEndsAt != nil)
+            if (showsSetLoggingControls && restTimerEndsAt != nil)
                 || pauseStartedAt != nil {
                 HStack(spacing: 8) {
-                    if activityType.supportsExerciseSelection, let restTimerEndsAt {
+                    if showsSetLoggingControls, let restTimerEndsAt {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             Label(restTimerText(now: context.date, end: restTimerEndsAt),
                                   systemImage: "timer")
@@ -2697,7 +2850,7 @@ struct AtriaLiveWorkoutView: View {
                 .padding(.horizontal, 4)
             }
 
-            if activityType.supportsExerciseSelection, !loggedSets.isEmpty {
+            if showsSetLoggingControls, !loggedSets.isEmpty {
                 VStack(spacing: 7) {
                     ForEach(loggedSets.suffix(1)) { set in
                         loggedSetRow(set)
@@ -2706,9 +2859,9 @@ struct AtriaLiveWorkoutView: View {
             }
         }
         .padding(12)
-        .atriaWorkoutContentSurface(cornerRadius: 22, tint: isPaused ? .orange : .mint)
+        .atriaWorkoutContentSurface(cornerRadius: AtriaDesignTokens.Radius.tile, tint: isPaused ? .orange : .mint)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(activityType.supportsExerciseSelection
+        .accessibilityLabel(showsSetLoggingControls
                             ? "Workout actions. \(loggedSets.count) sets logged. \(isPaused ? "Paused" : "Recording")."
                             : "Workout actions. \(isPaused ? "Paused" : "Recording").")
     }
@@ -3539,7 +3692,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .atriaWorkoutGlassSurface(cornerRadius: 24, tint: zone.color)
+        .atriaWorkoutGlassSurface(cornerRadius: AtriaDesignTokens.Radius.card, tint: zone.color)
         .accessibilityElement(children: .contain)
     }
 
@@ -3662,7 +3815,7 @@ private struct AtriaLiveWorkoutHeartBlock: View {
             }
         }
         .padding(14)
-        .atriaWorkoutContentSurface(cornerRadius: 22, tint: zone.color)
+        .atriaWorkoutContentSurface(cornerRadius: AtriaDesignTokens.Radius.tile, tint: zone.color)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Heart rate \(heartRate) beats per minute. Zone \(zone.rawValue), \(zone.name), \(zoneBandText(zone)).")
     }

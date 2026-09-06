@@ -124,242 +124,9 @@ extension EnvironmentValues {
 }
 
 
-@MainActor
-final class AtriaOverviewConnectionProjectionStore: ObservableObject {
-    @Published private(set) var status: AtriaBLEManager.Status
-
-    private var cancellable: AnyCancellable?
-
-    init(store: AtriaHomeModel.StatusStore) {
-        status = store.state.status
-        cancellable = store.$state
-            .map(\.status)
-            .removeDuplicates()
-            .sink { [weak self] status in
-                self?.refresh(status)
-            }
-    }
-
-    init(status: AtriaBLEManager.Status) {
-        self.status = status
-    }
-
-    @discardableResult
-    func refresh(_ next: AtriaBLEManager.Status) -> Bool {
-        guard next != status else { return false }
-        status = next
-        return true
-    }
-}
 
 
 
-@MainActor
-
-
-private struct AtriaDisconnectedOverviewPanel: View, Equatable {
-    let status: AtriaBLEManager.Status
-    let livePulseOverride: Bool
-    let stats: AtriaHomeModel.HomeStatsState
-    let snapshot: AtriaHomeModel.Snapshot
-    let context: AtriaConnectionGuideContext
-    let onShowConnectionGuide: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-
-    static func == (lhs: AtriaDisconnectedOverviewPanel, rhs: AtriaDisconnectedOverviewPanel) -> Bool {
-        lhs.status == rhs.status
-            && lhs.livePulseOverride == rhs.livePulseOverride
-            && lhs.stats == rhs.stats
-            && lhs.snapshot == rhs.snapshot
-            && lhs.context == rhs.context
-    }
-
-    private var effectiveStatus: AtriaBLEManager.Status {
-        switch status {
-        case .connecting, .scanning, .connected:
-            return livePulseOverride ? .connected : status
-        case .poweredOff, .disconnected:
-            return status
-        }
-    }
-
-    private var tint: Color {
-        switch effectiveStatus {
-        case .connecting, .scanning:
-            return .orange
-        case .poweredOff:
-            return .red
-        case .disconnected:
-            return .blue
-        case .connected:
-            return .green
-        }
-    }
-
-    private var systemImage: String {
-        switch effectiveStatus {
-        case .connecting:
-            return "bolt.horizontal.fill"
-        case .scanning:
-            return "dot.radiowaves.left.and.right"
-        case .poweredOff:
-            return "bolt.slash.fill"
-        case .disconnected:
-            return "bolt.horizontal.circle"
-        case .connected:
-            return "bolt.heart.fill"
-        }
-    }
-
-    private var title: String {
-        switch effectiveStatus {
-        case .connecting:
-            return "Connecting to your strap"
-        case .scanning:
-            return "Looking for your strap"
-        case .poweredOff:
-            return "Bluetooth is off"
-        case .disconnected:
-            return "Waiting for your strap"
-        case .connected:
-            return "Live data is flowing"
-        }
-    }
-
-    private var detail: String {
-        switch effectiveStatus {
-        case .connecting:
-            return "Linking with strap."
-        case .scanning:
-            return "Searching nearby."
-        case .poweredOff:
-            return "Turn Bluetooth on."
-        case .disconnected:
-            return "Keep strap nearby."
-        case .connected:
-            return "Saved insights prepare after the live connection settles."
-        }
-    }
-
-    private var setupDetail: String {
-        if context.officialAppInstalled && context.officialAppCoexistenceRisk == .suspected {
-            return "Remove the official strap app first."
-        }
-        switch status {
-        case .connecting:
-            return "Keep phone nearby."
-        case .scanning:
-            return "Scanning automatically."
-        case .poweredOff:
-            return "Bluetooth required."
-        case .disconnected:
-            return "Keep strap nearby."
-        case .connected:
-            return "Reconnects automatically."
-        }
-    }
-
-    private var setupItems: [String] {
-        if context.officialAppInstalled {
-            var items = [
-                "Remove the official strap app",
-                "Keep strap nearby",
-                "Let Atria scan"
-            ]
-            if context.officialAppCoexistenceRisk == .suspected {
-                items[2] = "Reconnect in Atria"
-            }
-            return items
-        }
-        return [
-            "Keep Bluetooth on",
-            "Keep strap nearby",
-            "Let Atria scan"
-        ]
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Overview", subtitle: title)
-                    .accessibilityHint(detail)
-
-                Spacer(minLength: 0)
-            }
-
-            // Single adaptive grid renders the tiles once, avoiding duplicate
-            // layout measurement during scroll.
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
-                AtriaInlineQuickStat(label: "Personal baseline", value: snapshot.referenceText)
-                AtriaInlineQuickStat(label: "Saved days", value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)")
-                AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
-                AtriaDisconnectedOverviewAutomaticCard(status: effectiveStatus,
-                                                       tint: tint,
-                                                       setupDetail: setupDetail,
-                                                       context: context,
-                                                       onShowConnectionGuide: onShowConnectionGuide)
-
-                AtriaDisconnectedOverviewChecklistCard(title: context.isFirstHandoff ? "Do once before Atria takes over" : "Only if another app grabs the strap again",
-                                                       items: setupItems,
-                                                       tint: .orange)
-
-                AtriaDisconnectedOverviewSavedStateCard(stats: stats,
-                                                        snapshot: snapshot,
-                                                        tint: tint)
-            }
-        }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
-    }
-}
-
-private struct AtriaOverviewLeadingHost: View {
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let store: SessionStore
-    let hasUnlockedSecondarySections: Bool
-    let aiCoachSettings: AtriaAICoachSettings
-    let aiCoachHasAPIKey: Bool
-    let hapticSettings: AtriaHapticAlertSettings
-    let suppressSleepSyncPrompt: Bool
-    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAICoachAPIKey: (String) -> Void
-    let onDeleteAICoachAPIKey: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-    let onOpenInsights: () -> Void
-    let onStartWorkout: () -> Void
-
-    var body: some View {
-        AtriaOverviewLeadingSection(liveStore: liveStore,
-                                   pulseStore: pulseStore,
-                                   heroStore: heroStore,
-                                   homeStatsStore: homeStatsStore,
-                                   profileMetricsStore: profileMetricsStore,
-                                   snapshotStore: snapshotStore,
-                                   store: store,
-                                   hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                   aiCoachSettings: aiCoachSettings,
-                                   aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                   hapticSettings: hapticSettings,
-                                   suppressSleepSyncPrompt: suppressSleepSyncPrompt,
-                                   onAICoachSettingsChange: onAICoachSettingsChange,
-                                   onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                   onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
-                                   onOpenVitals: onOpenVitals,
-                                   onOpenCollection: onOpenCollection,
-                                   onOpenInsights: onOpenInsights,
-                                   onStartWorkout: onStartWorkout)
-    }
-}
 
 
 /// Surfaces a real, auto-detected sleep/nap candidate awaiting confirmation as a
@@ -370,6 +137,14 @@ private struct AtriaSleepReviewHost: View {
     let store: SessionStore
     let state: AtriaTodaySleepReviewProjectionState
     @State private var adjustmentNight: SleepHistorySnapshot.Night?
+    // When a card settles, the next pending candidate re-arms this single-slot
+    // card IN PLACE, so a tap aimed at the settled card can land on its
+    // sibling's Dismiss (device-traced 2026-08-29: a confirmed nap's sibling
+    // gained an unexplained dismissal tombstone seconds after the confirm).
+    // Actions stay disarmed briefly whenever the displayed candidate changes
+    // while the host is mounted; the first card arms instantly.
+    @State private var armedNightID: String?
+    @State private var actionsArmed = true
 
     private var pending: SleepHistorySnapshot.Night? {
         if let debugFixtureSleepHistory {
@@ -391,6 +166,19 @@ private struct AtriaSleepReviewHost: View {
                                  },
                                  onAdjust: { adjustmentNight = night },
                                  onDismiss: { _ = store.dismissSleepCandidate(night) })
+                .disabled(!actionsArmed)
+                .opacity(actionsArmed ? 1 : 0.55)
+                .task(id: night.id) {
+                    if armedNightID == nil {
+                        armedNightID = night.id
+                        return
+                    }
+                    guard armedNightID != night.id else { return }
+                    armedNightID = night.id
+                    actionsArmed = false
+                    try? await Task.sleep(nanoseconds: 800_000_000)
+                    actionsArmed = true
+                }
                 .sheet(item: $adjustmentNight) { adjustment in
                     AtriaManualSleepSheet(initialStart: adjustment.start,
                                           initialEnd: adjustment.end,
@@ -529,212 +317,14 @@ private struct AtriaAutoSleepLoggedBanner: View {
     }
 }
 
-struct AtriaSleepSyncProjectionState: Equatable {
-    let hasLatestSleep: Bool
-    let candidateCount: Int
-    let hasPendingReview: Bool
-}
 
-/// Retained bridge for the two sleep facts that control the sync prompt. Live
-/// samples and unrelated dashboard publications must not re-evaluate this card.
-@MainActor
-final class AtriaSleepSyncProjectionStore: ObservableObject {
-    @Published private(set) var state: AtriaSleepSyncProjectionState
 
-    private var cancellables = Set<AnyCancellable>()
-
-    init(state: AtriaSleepSyncProjectionState) {
-        self.state = state
-    }
-
-    convenience init(store: SessionStore) {
-        self.init(state: Self.makeState(store: store))
-
-        Publishers.CombineLatest(
-            store.$sleepHistorySnapshot,
-            store.$pendingSleepReviewNightForUI
-        )
-        .dropFirst()
-        .map { snapshot, pendingReview in
-            AtriaSleepSyncProjectionState(
-                hasLatestSleep: snapshot.latestMainSleep != nil,
-                candidateCount: snapshot.candidateCount,
-                hasPendingReview: pendingReview != nil
-            )
-        }
-        .sink { [weak self] state in
-            self?.refresh(state)
-        }
-        .store(in: &cancellables)
-    }
-
-    @discardableResult
-    func refresh(_ next: AtriaSleepSyncProjectionState) -> Bool {
-        guard next != state else { return false }
-        state = next
-        return true
-    }
-
-    private static func makeState(store: SessionStore) -> AtriaSleepSyncProjectionState {
-        AtriaSleepSyncProjectionState(
-            hasLatestSleep: store.sleepHistorySnapshot.latestMainSleep != nil,
-            candidateCount: store.sleepHistorySnapshot.candidateCount,
-            hasPendingReview: store.pendingSleepReviewNightForUI != nil
-        )
-    }
-}
-
-private struct AtriaSleepSyncNeededHost: View {
-    @StateObject private var projectionStore: AtriaSleepSyncProjectionStore
-    let rangeLossBackfillPending: Bool
-    let suppressForPrimaryReview: Bool
-    let protectsLiveStream: Bool
-
-    init(store: SessionStore,
-         rangeLossBackfillPending: Bool,
-         suppressForPrimaryReview: Bool,
-         protectsLiveStream: Bool) {
-        _projectionStore = StateObject(wrappedValue: AtriaSleepSyncProjectionStore(store: store))
-        self.rangeLossBackfillPending = rangeLossBackfillPending
-        self.suppressForPrimaryReview = suppressForPrimaryReview
-        self.protectsLiveStream = protectsLiveStream
-    }
-
-    private var shouldShow: Bool {
-        if debugShowsPendingSleepReview { return false }
-        if debugShowsSleepSyncNeeded { return true }
-        guard !suppressForPrimaryReview else { return false }
-        guard rangeLossBackfillPending else { return false }
-        guard !projectionStore.state.hasLatestSleep else { return false }
-        guard projectionStore.state.candidateCount == 0 else { return false }
-        return !projectionStore.state.hasPendingReview
-    }
-
-    var body: some View {
-        if shouldShow {
-            AtriaSleepSyncNeededCard(protectsLiveStream: protectsLiveStream)
-        }
-    }
-
-    #if DEBUG
-    private var debugShowsPendingSleepReview: Bool {
-        Self.debugShowsPendingSleepReview(arguments: ProcessInfo.processInfo.arguments)
-    }
-
-    private var debugShowsSleepSyncNeeded: Bool {
-        Self.debugShowsSleepSyncNeeded(arguments: ProcessInfo.processInfo.arguments)
-    }
-
-    static func debugShowsPendingSleepReview(arguments: [String]) -> Bool {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "pending-sleep-review"
-    }
-
-    static func debugShowsSleepSyncNeeded(arguments: [String]) -> Bool {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "sleep-sync-needed"
-    }
-    #else
-    private var debugShowsPendingSleepReview: Bool { false }
-    static func debugShowsPendingSleepReview(arguments _: [String]) -> Bool { false }
-    private var debugShowsSleepSyncNeeded: Bool { false }
-    static func debugShowsSleepSyncNeeded(arguments _: [String]) -> Bool { false }
-    #endif
-}
-
-private struct AtriaSleepSyncNeededCard: View, Equatable {
-    let protectsLiveStream: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(tint.opacity(0.14))
-                    Image(systemName: protectsLiveStream ? "moon.zzz.fill" : "arrow.triangle.2.circlepath")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(tint)
-                }
-                .frame(width: 50, height: 50)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(protectsLiveStream ? "Sleep tracking continues" : "Sleep data gap")
-                        .font(.headline.weight(.semibold))
-                    // Only the gap branch gets a subtitle. The protected branch
-                    // read "Live data continues; missing time stays excluded.",
-                    // which restated the headline immediately above it AND two
-                    // of the three pills immediately below it (Live: On,
-                    // Metrics: Excluded) — three statements of one fact in one
-                    // card. The gap branch's line survives because it is the
-                    // only place that says what to DO about it.
-                    if !protectsLiveStream {
-                        Text("Check the strap for recoverable history.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-
-            HStack(spacing: 8) {
-                statusPill(symbol: protectsLiveStream ? "heart.fill" : "tray.and.arrow.down.fill",
-                           title: protectsLiveStream ? "Live" : "History",
-                           value: protectsLiveStream ? "On" : "Check")
-                statusPill(symbol: "bed.double.fill",
-                           title: "Gap",
-                           value: "Saved")
-                statusPill(symbol: "checkmark.circle",
-                           title: "Metrics",
-                           value: "Excluded")
-            }
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var tint: Color {
-        protectsLiveStream ? .green : .cyan
-    }
-
-    private var accessibilityLabel: String {
-        protectsLiveStream
-            ? "Sleep tracking continues. Live data continues; missing time stays excluded."
-            : "Sleep data gap. Check the strap for recoverable history. Missing time stays excluded until verified."
-    }
-
-    private func statusPill(symbol: String, title: String, value: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: symbol)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(value)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-    }
-}
 
 private struct AtriaSleepReviewCard: View {
+    // Large type (2026-09-02, XXXL screenshot): "Confirm" shrank to "Con…"
+    // beside its icon at a third of the card width. From XX-Large up the
+    // decorative icon goes and the word stays; the spoken label is unchanged.
+    @Environment(\.dynamicTypeSize) private var reviewDynamicTypeSize
     let night: SleepHistorySnapshot.Night
     let onConfirm: () async -> Bool
     let onAdjust: () -> Void
@@ -779,10 +369,17 @@ private struct AtriaSleepReviewCard: View {
         // it only restated the Confirm button sitting directly beneath it.
         // Keep the provenance — that is the part the user cannot infer — and
         // let the button speak for the action.
+        // Provenance must match the evidence. The quiescence lane's whole
+        // case IS motion — calling it "motion unverified" would invert it.
+        if night.source == AtriaDaytimeQuiescentSleepDetector.sourceName {
+            return "Motion-quiet estimate · confirm to save"
+        }
+        // 2026-09-02: "HR/RR" named the beat-to-beat channel in engineering
+        // shorthand; the wearer reads it as a heart-rate estimate.
         if night.motionValidated != true {
             return isNap
-                ? "HR/RR estimate · motion unverified · saves as a nap"
-                : "HR/RR estimate · motion unverified"
+                ? "Heart-rate estimate · motion unverified · saves as a nap"
+                : "Heart-rate estimate · motion unverified"
         }
         return isNap ? "Saves as a separate nap" : ""
     }
@@ -819,7 +416,7 @@ private struct AtriaSleepReviewCard: View {
                     Text(rangeText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(reviewDynamicTypeSize >= .xxLarge ? 2 : 1)
                         .minimumScaleFactor(0.85)
                     if !subtitleText.isEmpty {
                         Text(subtitleText)
@@ -834,7 +431,7 @@ private struct AtriaSleepReviewCard: View {
 
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(night.durationText)
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -881,10 +478,17 @@ private struct AtriaSleepReviewCard: View {
                 // "Confirm" alone — the card title already names what is
                 // being confirmed, and the full phrase cropped at a third of
                 // the card width (UX audit follow-up).
-                Label("Confirm", systemImage: "checkmark.circle")
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, minHeight: 28)
+                Group {
+                    if reviewDynamicTypeSize >= .xxLarge {
+                        Text("Confirm")
+                    } else {
+                        Label("Confirm", systemImage: "checkmark.circle")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 28)
             }
             .atriaCardAction(tint: Metrics.electricSleep)
             .disabled(isConfirming)
@@ -1304,169 +908,7 @@ final class AtriaTodaySleepReviewProjectionStore: ObservableObject {
     }
 }
 
-struct AtriaOverviewLeadingSection: View {
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let store: SessionStore
-    let hasUnlockedSecondarySections: Bool
-    let aiCoachSettings: AtriaAICoachSettings
-    let aiCoachHasAPIKey: Bool
-    let hapticSettings: AtriaHapticAlertSettings
-    let suppressSleepSyncPrompt: Bool
-    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAICoachAPIKey: (String) -> Void
-    let onDeleteAICoachAPIKey: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-    let onOpenInsights: () -> Void
-    let onStartWorkout: () -> Void
 
-    var body: some View {
-        VStack(spacing: 16) {
-            if debugShowsSleepPlanOnly {
-                AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
-                                                store: store)
-            } else {
-            // Morning sleep review belongs near Today's Plan so the first
-            // screen behaves like a decision point, not a buried archive task.
-            if !debugShowsDailyFocusOnly {
-                AtriaTodaySleepReviewSection(store: store, prioritizesPendingReview: false)
-                AtriaSleepSyncNeededHost(store: store,
-                                         rangeLossBackfillPending: liveStore.state.rangeLossBackfillPending,
-                                         suppressForPrimaryReview: suppressSleepSyncPrompt,
-                                         protectsLiveStream: liveStore.state.status == .connected
-                                            && liveStore.state.sessionSampleCount > 0)
-
-                AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
-                                                store: store)
-            }
-
-            if !AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
-                AtriaOverviewReadinessSectionHost(liveStore: liveStore,
-                                                 pulseStore: pulseStore,
-                                                 heroStore: heroStore,
-                                                 profileMetricsStore: profileMetricsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 store: store,
-                                                 hapticSettings: hapticSettings,
-                                                 subtitle: "",
-                                                 onOpenVitals: onOpenVitals,
-                                                 onOpenCollection: onOpenCollection,
-                                                 onOpenInsights: onOpenInsights,
-                                                 onStartWorkout: onStartWorkout)
-            }
-
-            if hasUnlockedSecondarySections {
-                if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
-                    AtriaOverviewBehaviorJournalSection(store: store)
-                } else {
-                    AtriaOverviewMorningJournalHost(snapshotStore: snapshotStore,
-                                                    store: store)
-
-                    AtriaOverviewBehaviorJournalSection(store: store)
-                }
-            }
-
-            if hasUnlockedSecondarySections && !AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture {
-                if AtriaOverviewTrendPresentation.showsContent(
-                    cachedPointCount: store.overviewTrendPoints.count,
-                    debugShowsTrendFixture: AtriaOverviewTrendChartHost.debugShowsTrendFixture
-                ) {
-                    AtriaOverviewTrendChartHost(store: store)
-                } else {
-                    AtriaLoadingPanel(title: "Preparing trends",
-                                      subtitle: "")
-                }
-            }
-            }
-        }
-    }
-
-    #if DEBUG
-    private var debugShowsSleepPlanOnly: Bool {
-        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
-            return false
-        }
-        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
-        return ProcessInfo.processInfo.arguments.indices.contains(valueIndex)
-            && ProcessInfo.processInfo.arguments[valueIndex] == "sleep-plan-bedtime"
-    }
-
-    private var debugShowsDailyFocusOnly: Bool {
-        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
-            return false
-        }
-        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
-        return ProcessInfo.processInfo.arguments.indices.contains(valueIndex)
-            && ["daily-focus-rail", "nap-only-morning"].contains(ProcessInfo.processInfo.arguments[valueIndex])
-    }
-    #else
-    private var debugShowsSleepPlanOnly: Bool { false }
-    private var debugShowsDailyFocusOnly: Bool { false }
-    #endif
-}
-
-struct AtriaOverviewReadinessProjectionState: Equatable {
-    let trendValues: [Int]
-    let dailyRollupHistory: [DailyRollupStoreEntry]
-    let dailyRollupHistoryRevision: Int
-    let weeklyReportHighlight: WeeklyReport?
-    let monthlyReportHighlight: MonthlyReport?
-    let strainCompareMedian: Double?
-    let confirmedWorkouts: [UserConfirmedWorkout]
-    let confirmedWorkoutsRevision: Int
-    /// Confirmed sleeps for the metric-detail day sheet's history model
-    /// (2026-07-31 audit item 11). Change-tracked by `sleepHistoryRevision`,
-    /// which every confirmed-sleep write bumps.
-    let confirmedSleeps: [UserConfirmedSleep]
-    let workoutsSummary: AtriaOverviewWorkoutsSummary
-    let dailyMetricSparklines: DailyMetricSparklineCache
-    let dailyMetricHistoryRevision: Int
-    let sensorSummary: IMUAuditSummary
-    let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
-    let sleepHistory: SleepHistorySnapshot
-    let pendingSleepReview: SleepHistorySnapshot.Night?
-    let sleepHistoryRevision: Int
-    let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus
-    let insights: [AtriaInsight]
-    let taggedDays: Int
-    let hrvBaseline: Int?
-    let hrvBaselineSamples: Int
-    let hrvBaselineTrusted: Bool
-    let baselineTarget: AtriaBaselineTargetSnapshot
-    let restingBaseline: Int?
-    let restingBaselineSamples: Int
-    let restingBaselineTrusted: Bool
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.trendValues == rhs.trendValues
-            && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
-            && lhs.weeklyReportHighlight == rhs.weeklyReportHighlight
-            && lhs.monthlyReportHighlight == rhs.monthlyReportHighlight
-            && lhs.strainCompareMedian == rhs.strainCompareMedian
-            && lhs.confirmedWorkoutsRevision == rhs.confirmedWorkoutsRevision
-            && lhs.workoutsSummary == rhs.workoutsSummary
-            && lhs.dailyMetricHistoryRevision == rhs.dailyMetricHistoryRevision
-            && lhs.sensorSummary == rhs.sensorSummary
-            && lhs.skinTemperatureSummary == rhs.skinTemperatureSummary
-            && lhs.pendingSleepReview == rhs.pendingSleepReview
-            && lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
-            && lhs.historicalArchiveStatus == rhs.historicalArchiveStatus
-            && lhs.insights == rhs.insights
-            && lhs.taggedDays == rhs.taggedDays
-            && lhs.hrvBaseline == rhs.hrvBaseline
-            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
-            && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
-            && lhs.baselineTarget == rhs.baselineTarget
-            && lhs.restingBaseline == rhs.restingBaseline
-            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
-            && lhs.restingBaselineTrusted == rhs.restingBaselineTrusted
-    }
-}
 
 /// Resolves the sleep that belongs to the live wake-to-wake cycle. Sleep History
 /// intentionally retains the newest confirmed night indefinitely; Today's
@@ -1504,7 +946,7 @@ enum AtriaOverviewCurrentSleep {
                                        // the reference-date comparison below.
                                        maximumCandidateAge: TimeInterval = 48 * 60 * 60) -> SleepHistorySnapshot.Night? {
         let snapshotCandidate = snapshot.latestDisplayEvidence
-        let candidate: SleepHistorySnapshot.Night?
+        var candidate: SleepHistorySnapshot.Night?
         if pendingReview != nil {
             let preferred = AtriaTodaySleepReviewProjectionState.preferredReview(
                 snapshot: snapshot,
@@ -1519,6 +961,17 @@ enum AtriaOverviewCurrentSleep {
             candidate = freshReview(snapshotCandidate, now: now, maximumAge: maximumCandidateAge)
         }
 
+        // A candidate that overlaps a confirmed night is the same sleep seen
+        // twice, never a second opinion to display. Device 2026-09-02: the
+        // overnight settlement re-minted the confirmed 15:38→02:59 window as
+        // a review candidate every hour, and Today swung between the
+        // candidate's gross span (11h 22m) and the confirmed night's staged
+        // time (9h 49m). The confirmed record is the only authority for its
+        // window: it shows while current, and its duplicate never does.
+        if let pending = candidate, Self.overlapsConfirmedNight(pending, in: snapshot) {
+            candidate = nil
+        }
+
         if let confirmed = resolve(from: snapshot, now: now, calendar: calendar) {
             if let candidate,
                candidate.reviewReferenceDate > confirmed.reviewReferenceDate {
@@ -1527,6 +980,16 @@ enum AtriaOverviewCurrentSleep {
             return confirmed
         }
         return candidate
+    }
+
+    static func overlapsConfirmedNight(_ candidate: SleepHistorySnapshot.Night,
+                                       in snapshot: SleepHistorySnapshot) -> Bool {
+        guard let start = candidate.start, let end = candidate.end, end > start else { return false }
+        return snapshot.nights.contains { night in
+            guard night.confirmed, !night.isNapEvidence,
+                  let nightStart = night.start, let nightEnd = night.end else { return false }
+            return start < nightEnd && end > nightStart
+        }
     }
 
     private static func freshReview(_ night: SleepHistorySnapshot.Night?,
@@ -1545,143 +1008,6 @@ enum AtriaOverviewCurrentSleep {
 
 /// Retained, equality-gated bridge for the slow SessionStore values rendered by
 /// the readiness section. The host keeps SessionStore only for user actions.
-@MainActor
-final class AtriaOverviewReadinessProjectionStore: ObservableObject {
-    @Published private(set) var state: AtriaOverviewReadinessProjectionState
-
-    private let store: SessionStore
-    private let strainCompareMemo = AtriaOverviewStrainCompareMemo()
-    private let workoutsMemo = AtriaOverviewWorkoutsMemo()
-    private let reportHighlightMemo = AtriaOverviewReportHighlightMemo()
-    private var cancellables = Set<AnyCancellable>()
-    private var refreshScheduled = false
-    private var pendingFullRefresh = false
-    private var behaviorJournalRevision: Int
-    #if DEBUG
-    private(set) var refreshAttemptCount = 0
-    #endif
-
-    init(store: SessionStore) {
-        self.store = store
-        behaviorJournalRevision = store.behaviorJournalRevision
-        state = Self.makeState(store: store,
-                               strainCompareMemo: strainCompareMemo,
-                               workoutsMemo: workoutsMemo,
-                               reportHighlightMemo: reportHighlightMemo)
-
-        Publishers.MergeMany([
-            store.$restingTrend14.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyMetricHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyMetricSparklines.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$pendingSleepReviewNightForUI.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$historicalArchiveStatus.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$behaviorInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-        ])
-        .sink { [weak self] in
-            self?.scheduleRefresh(full: true)
-        }
-        .store(in: &cancellables)
-
-        store.$dashboardRevision
-            .dropFirst()
-            .sink { [weak self] _ in
-                self?.scheduleRefresh(full: false)
-            }
-            .store(in: &cancellables)
-    }
-
-    @discardableResult
-    func refresh() -> Bool {
-        #if DEBUG
-        refreshAttemptCount += 1
-        #endif
-        let next = Self.makeState(store: store,
-                                  strainCompareMemo: strainCompareMemo,
-                                  workoutsMemo: workoutsMemo,
-                                  reportHighlightMemo: reportHighlightMemo)
-        behaviorJournalRevision = store.behaviorJournalRevision
-        guard next != state else { return false }
-        state = next
-        return true
-    }
-
-    /// Confirmed workouts and journal entries share the broad dashboard signal
-    /// and have no dedicated publisher. Their revisions let unrelated signals
-    /// avoid traversing the readiness snapshot entirely.
-    @discardableResult
-    func refreshForDashboardRevision() -> Bool {
-        guard store.confirmedWorkoutsRevision != state.confirmedWorkoutsRevision
-                || store.behaviorJournalRevision != behaviorJournalRevision else {
-            return false
-        }
-        return refresh()
-    }
-
-    private func scheduleRefresh(full: Bool) {
-        pendingFullRefresh = pendingFullRefresh || full
-        guard !refreshScheduled else { return }
-        refreshScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let shouldRefreshFully = self.pendingFullRefresh
-            self.pendingFullRefresh = false
-            self.refreshScheduled = false
-            if shouldRefreshFully {
-                self.refresh()
-            } else {
-                self.refreshForDashboardRevision()
-            }
-        }
-    }
-
-    private static func makeState(store: SessionStore,
-                                  strainCompareMemo: AtriaOverviewStrainCompareMemo,
-                                  workoutsMemo: AtriaOverviewWorkoutsMemo,
-                                  reportHighlightMemo: AtriaOverviewReportHighlightMemo) -> AtriaOverviewReadinessProjectionState {
-        let rollupRevision = store.dailyRollupHistoryRevision
-        let rollups = store.dailyRollupHistory
-        let workoutRevision = store.confirmedWorkoutsRevision
-        let workouts = store.confirmedWorkouts
-        let reportHighlights = reportHighlightMemo.highlights(rollupRevision: rollupRevision,
-                                                              sleepRevision: store.sleepHistorySnapshotRevision,
-                                                              rollups: rollups,
-                                                              sleepNights: store.sleepHistorySnapshot.nights)
-        let baseline = store.baseline
-        return AtriaOverviewReadinessProjectionState(
-            trendValues: store.restingTrend14,
-            dailyRollupHistory: rollups,
-            dailyRollupHistoryRevision: rollupRevision,
-            weeklyReportHighlight: reportHighlights.weekly,
-            monthlyReportHighlight: reportHighlights.monthly,
-            strainCompareMedian: strainCompareMemo.median(revision: rollupRevision, rollups: rollups),
-            confirmedWorkouts: workouts,
-            confirmedWorkoutsRevision: workoutRevision,
-            confirmedSleeps: store.confirmedSleeps,
-            workoutsSummary: workoutsMemo.summary(revision: workoutRevision, workouts: workouts),
-            dailyMetricSparklines: store.dailyMetricSparklines,
-            dailyMetricHistoryRevision: store.dailyMetricHistoryRevision,
-            sensorSummary: store.imuAuditSummary,
-            skinTemperatureSummary: store.skinTemperatureDeviationSummary,
-            sleepHistory: store.sleepHistorySnapshot,
-            pendingSleepReview: store.pendingSleepReviewNightForUI,
-            sleepHistoryRevision: store.sleepHistorySnapshotRevision,
-            historicalArchiveStatus: store.historicalArchiveStatus,
-            insights: store.behaviorInsights,
-            taggedDays: store.behaviorJournalEntries.count,
-            hrvBaseline: baseline.hrvInt,
-            hrvBaselineSamples: baseline.freshHRVSampleCount(),
-            hrvBaselineTrusted: baseline.hasTrustedHRVBaseline(),
-            baselineTarget: AtriaBaselineTargetSnapshot(baseline),
-            restingBaseline: baseline.restingInt,
-            restingBaselineSamples: baseline.freshRestingSampleCount(),
-            restingBaselineTrusted: baseline.hasTrustedRestingBaseline()
-        )
-    }
-}
 
 /// Equality-gated slice of `CoreLiveState` used by the large Today readiness
 /// tree. The strap can publish a new core state for every accepted sample, but
@@ -1714,339 +1040,7 @@ struct AtriaOverviewLiveProjectionState: Equatable {
     }
 }
 
-@MainActor
-final class AtriaOverviewLiveProjectionStore: ObservableObject {
-    @Published private(set) var state: AtriaOverviewLiveProjectionState
-    private var cancellable: AnyCancellable?
 
-    init(liveStore: AtriaHomeModel.CoreLiveStore) {
-        state = AtriaOverviewLiveProjectionState(live: liveStore.state)
-        cancellable = liveStore.$state
-            .map { AtriaOverviewLiveProjectionState(live: $0) }
-            .removeDuplicates()
-            .sink { [weak self] state in
-                self?.refresh(state)
-            }
-    }
-
-    init(state: AtriaOverviewLiveProjectionState) {
-        self.state = state
-    }
-
-    @discardableResult
-    func refresh(_ next: AtriaOverviewLiveProjectionState) -> Bool {
-        guard next != state else { return false }
-        state = next
-        return true
-    }
-}
-
-struct AtriaOverviewReadinessSectionHost: View {
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-    @ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    let store: SessionStore
-    @StateObject private var liveProjectionStore: AtriaOverviewLiveProjectionStore
-    @StateObject private var projectionStore: AtriaOverviewReadinessProjectionStore
-    var hapticSettings: AtriaHapticAlertSettings = AtriaHapticAlertSettings()
-    let subtitle: String
-    var onOpenVitals: () -> Void = {}
-    var onOpenCollection: () -> Void = {}
-    var onOpenInsights: () -> Void = {}
-    var onStartWorkout: () -> Void = {}
-
-    @AppStorage(AtriaTodayMetric.storageKey) private var hiddenCSV: String = ""
-    @AtriaDefault(AtriaTodayMetric.orderStorageKey) private var orderCSV: String = ""
-    @AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = ""
-    @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
-    @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
-    @AtriaDefault("atria.target.strain.greenBand") private var strainGreenBand: Double = 1.5
-    @AtriaDefault("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
-    @AtriaDefault("atria.target.load.acwr.watchLow") private var loadACWRWatchLow: Double = 0.80
-    @AtriaDefault("atria.target.load.acwr.watchHigh") private var loadACWRWatchHigh: Double = 1.30
-    @AtriaDefault("atria.target.load.acwr.badLow") private var loadACWRBadLow: Double = 0.60
-    @AtriaDefault("atria.target.load.acwr.badHigh") private var loadACWRBadHigh: Double = 1.50
-    @AtriaDefault("atria.target.load.monotony.watch") private var loadMonotonyWatch: Double = 2.0
-    @AtriaDefault("atria.target.load.monotony.bad") private var loadMonotonyBad: Double = 2.5
-    @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
-    @AtriaDefault("atria.target.calories.goal") private var caloriesGoal: Int = 500
-    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
-    @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
-    @AtriaDefault("atria.target.sleepEfficiency.greenLower") private var sleepEfficiencyGreenLower: Double = 90
-    @AtriaDefault("atria.target.sleepEfficiency.yellowLower") private var sleepEfficiencyYellowLower: Double = 80
-    @AtriaDefault("atria.target.hrv.greenRatio") private var hrvGreenRatio: Double = 0.95
-    @AtriaDefault("atria.target.hrv.yellowRatio") private var hrvYellowRatio: Double = 0.85
-    @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
-    @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
-    @AtriaDefault("atria.target.respiratory.greenDelta") private var respiratoryGreenDelta: Double = 1.5
-    @AtriaDefault("atria.target.respiratory.yellowDelta") private var respiratoryYellowDelta: Double = 3.0
-    @AtriaDefault("atria.target.skinTemp.greenDelta") private var skinTemperatureGreenDelta: Double = 0.5
-    @AtriaDefault("atria.target.skinTemp.yellowDelta") private var skinTemperatureYellowDelta: Double = 1.0
-    @AtriaDefault("atria.target.bloodOxygen.candidateFrames") private var bloodOxygenCandidateGoal: Int = 8
-    @AtriaDefault("atria.target.bioAge.greenOlderDelta") private var biologicalAgeGreenOlderDelta: Int = 0
-    @AtriaDefault("atria.target.bioAge.yellowOlderDelta") private var biologicalAgeYellowOlderDelta: Int = 3
-    @AtriaDefault("atria.target.vo2.greenDelta") private var vo2GreenDelta: Double = 0.2
-    @AtriaDefault("atria.target.vo2.redDelta") private var vo2RedDelta: Double = -0.2
-
-    init(liveStore: AtriaHomeModel.CoreLiveStore,
-         pulseStore: AtriaHomeModel.HeroPulseStore,
-         heroStore: AtriaHomeModel.HeroStore,
-         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
-         snapshotStore: AtriaHomeModel.SnapshotStore,
-         store: SessionStore,
-         hapticSettings: AtriaHapticAlertSettings = AtriaHapticAlertSettings(),
-         subtitle: String,
-         onOpenVitals: @escaping () -> Void = {},
-         onOpenCollection: @escaping () -> Void = {},
-         onOpenInsights: @escaping () -> Void = {},
-         onStartWorkout: @escaping () -> Void = {}) {
-        self.liveStore = liveStore
-        self.pulseStore = pulseStore
-        self.heroStore = heroStore
-        self.profileMetricsStore = profileMetricsStore
-        self.snapshotStore = snapshotStore
-        self.store = store
-        self.hapticSettings = hapticSettings
-        self.subtitle = subtitle
-        self.onOpenVitals = onOpenVitals
-        self.onOpenCollection = onOpenCollection
-        self.onOpenInsights = onOpenInsights
-        self.onStartWorkout = onStartWorkout
-        _liveProjectionStore = StateObject(
-            wrappedValue: AtriaOverviewLiveProjectionStore(liveStore: liveStore)
-        )
-        _projectionStore = StateObject(wrappedValue: AtriaOverviewReadinessProjectionStore(store: store))
-    }
-
-    var body: some View {
-        let projection = projectionStore.state
-        let live = liveProjectionStore.state.live
-        AtriaOverviewReadinessSection(hero: heroStore.state,
-                                     live: live,
-                                     pulseStore: pulseStore,
-                                     vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
-                                     biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary,
-                                     snapshot: snapshotStore.state,
-                                     trendValues: projection.trendValues,   // Phase-0 cache (no per-render sort)
-                                     dailyRollupHistory: projection.dailyRollupHistory,
-                                     dailyRollupHistoryRevision: projection.dailyRollupHistoryRevision,
-                                     weeklyReportHighlight: projection.weeklyReportHighlight,
-                                     monthlyReportHighlight: projection.monthlyReportHighlight,
-                                     strainCompareMedian: projection.strainCompareMedian,
-                                     confirmedWorkouts: projection.confirmedWorkouts,
-                                     confirmedWorkoutsRevision: projection.confirmedWorkoutsRevision,
-                                     confirmedSleeps: projection.confirmedSleeps,
-                                     workoutsSummary: projection.workoutsSummary,
-                                     dailyMetricSparklines: projection.dailyMetricSparklines,
-                                     dailyMetricHistoryRevision: projection.dailyMetricHistoryRevision,
-                                     sensorSummary: projection.sensorSummary,
-                                     skinTemperatureSummary: projection.skinTemperatureSummary,
-                                     hapticSettings: hapticSettings,
-                                     sleepHistory: debugSleepHistorySnapshot ?? projection.sleepHistory,
-                                     pendingSleepReview: debugSleepHistorySnapshot == nil
-                                        ? projection.pendingSleepReview
-                                        : nil,
-                                     sleepHistoryRevision: projection.sleepHistoryRevision,
-                                     historicalArchiveStatus: projection.historicalArchiveStatus,
-                                     insights: projection.insights,
-                                     taggedDays: projection.taggedDays,
-                                     subtitle: subtitle,
-                                     recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
-                                                                                yellowLower: recoveryYellowLower),
-                                     strainGreenBand: strainGreenBand,
-                                     strainYellowBand: strainYellowBand,
-                                     loadACWRWatchLow: loadACWRWatchLow,
-                                     loadACWRWatchHigh: loadACWRWatchHigh,
-                                     loadACWRBadLow: loadACWRBadLow,
-                                     loadACWRBadHigh: loadACWRBadHigh,
-                                     loadMonotonyWatch: loadMonotonyWatch,
-                                     loadMonotonyBad: loadMonotonyBad,
-                                     hrvBaseline: projection.hrvBaseline,
-                                     hrvBaselineSamples: projection.hrvBaselineSamples,
-                                     hrvBaselineTrusted: projection.hrvBaselineTrusted,
-                                     baselineTarget: projection.baselineTarget,
-                                     hrvGreenRatio: hrvGreenRatio,
-                                     hrvYellowRatio: hrvYellowRatio,
-                                     restingBaseline: projection.restingBaseline,
-                                     restingBaselineSamples: projection.restingBaselineSamples,
-                                     restingBaselineTrusted: projection.restingBaselineTrusted,
-                                     restingGreenDelta: restingGreenDelta,
-                                     restingYellowDelta: restingYellowDelta,
-                                     respiratoryGreenDelta: respiratoryGreenDelta,
-                                     respiratoryYellowDelta: respiratoryYellowDelta,
-                                     skinTemperatureGreenDelta: skinTemperatureGreenDelta,
-                                     skinTemperatureYellowDelta: skinTemperatureYellowDelta,
-                                     bloodOxygenCandidateGoal: bloodOxygenCandidateGoal,
-                                     biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta,
-                                     biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta,
-                                     vo2GreenDelta: vo2GreenDelta,
-                                     vo2RedDelta: vo2RedDelta,
-                                     stepsGoal: stepsGoal,
-                                     caloriesGoal: caloriesGoal,
-                                     sleepGoalHours: sleepGoalHours,
-                                     sleepBaseNeedHours: sleepBaseNeedHours,
-                                     sleepEfficiencyGreenLower: sleepEfficiencyGreenLower,
-                                     sleepEfficiencyYellowLower: sleepEfficiencyYellowLower,
-                                     visibleMetrics: AtriaTodayMetric.visibleOrdered(orderCSV: orderCSV,
-                                                                                    hiddenCSV: hiddenCSV),
-                                     hiddenMetrics: AtriaTodayMetric.hiddenOrdered(orderCSV: orderCSV,
-                                                                                  hiddenCSV: hiddenCSV),
-                                     sizeOverridesCSV: sizeCSV,
-                                     onMoveMetric: moveMetric,
-                                     onShiftMetric: shiftMetric,
-                                     onHideMetric: hideMetric,
-                                     onShowMetric: showMetric,
-                                     onToggleMetricSize: toggleMetricSize,
-                                     onResetMetrics: resetMetrics,
-                                     onOpenVitals: onOpenVitals,
-                                     onOpenCollection: onOpenCollection,
-                                     onOpenInsights: onOpenInsights,
-                                     onAddManualSleep: addManualSleep,
-                                     onStartWorkout: onStartWorkout)
-            .equatable()
-            .sensoryFeedback(.selection, trigger: orderCSV)
-            .sensoryFeedback(.selection, trigger: sizeCSV)
-    }
-
-    private func moveMetric(_ dragged: AtriaTodayMetric, before target: AtriaTodayMetric) {
-        orderCSV = AtriaTodayMetric.moving(dragged,
-                                           before: target,
-                                           in: orderCSV,
-                                           hiddenCSV: hiddenCSV)
-    }
-
-    private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int) {
-        orderCSV = AtriaTodayMetric.moving(metric,
-                                           direction: direction,
-                                           in: orderCSV,
-                                           hiddenCSV: hiddenCSV)
-    }
-
-    private func hideMetric(_ metric: AtriaTodayMetric) {
-        var hidden = AtriaTodayMetric.hidden(from: hiddenCSV)
-        hidden.insert(metric.rawValue)
-        hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
-    }
-
-    private func showMetric(_ metric: AtriaTodayMetric) {
-        var hidden = AtriaTodayMetric.hidden(from: hiddenCSV)
-        hidden.remove(metric.rawValue)
-        hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)
-    }
-
-    private func resetMetrics() {
-        orderCSV = AtriaTodayMetric.defaultGlanceOrder.map(\.rawValue).joined(separator: ",")
-        hiddenCSV = ""
-        sizeCSV = ""
-    }
-
-    private func toggleMetricSize(_ metric: AtriaTodayMetric) {
-        let current = metric.glanceGridSize(sizeOverridesCSV: sizeCSV)
-        // Cycle compact -> wide (tall) -> wideShort (compact row) -> compact.
-        let next: AtriaGlanceGridSize
-        if current.isWideShort {
-            next = .compact
-        } else if current.isWide {
-            next = .wideShort
-        } else {
-            next = .wide
-        }
-        sizeCSV = AtriaTodayMetric.sizeStorageValue(updating: metric, to: next, in: sizeCSV)
-    }
-
-    private func addManualSleep(start: Date, end: Date, isNap: Bool) async -> Bool {
-        await store.addManualSleep(start: start,
-                                   end: end,
-                                   isNap: isNap,
-                                   rest: store.baseline.restingInt ?? 60,
-                                   source: "manual_today_glance") != nil
-    }
-
-    #if DEBUG
-    private var debugSleepHistorySnapshot: SleepHistorySnapshot? {
-        Self.debugSleepHistorySnapshot(arguments: ProcessInfo.processInfo.arguments)
-    }
-
-    private static func debugSleepHistorySnapshot(arguments: [String]) -> SleepHistorySnapshot? {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        guard arguments.indices.contains(valueIndex) else { return nil }
-        let calendar = Calendar.current
-
-        if arguments[valueIndex] == "sleep-detail" {
-            let day = calendar.startOfDay(for: Date())
-            let end = calendar.date(bySettingHour: 7, minute: 12, second: 0, of: Date()) ?? Date()
-            let start = calendar.date(byAdding: .minute, value: -462, to: end) ?? end.addingTimeInterval(-462 * 60)
-            let main = SleepHistorySnapshot.Night(id: "debug-ui-fixture-sleep-detail-main",
-                                                  day: day,
-                                                  start: start,
-                                                  end: end,
-                                                  duration: 462 * 60,
-                                                  restingHR: 56,
-                                                  hrv: 64,
-                                                  respiratoryRate: 14.4,
-                                                  sleepEfficiency: 0.91,
-                                                  confidence: "debug_fixture_confirmed_sleep",
-                                                  source: "manual_sleep",
-                                                  confirmed: true,
-                                                  stageSegments: [])
-            let napStart = calendar.date(bySettingHour: 14, minute: 0, second: 0, of: Date()) ?? day.addingTimeInterval(14 * 3_600)
-            let nap = SleepHistorySnapshot.Night(id: "debug-ui-fixture-sleep-detail-nap",
-                                                 day: day,
-                                                 start: napStart,
-                                                 end: napStart.addingTimeInterval(30 * 60),
-                                                 duration: 30 * 60,
-                                                 restingHR: nil,
-                                                 hrv: nil,
-                                                 respiratoryRate: nil,
-                                                 sleepEfficiency: nil,
-                                                 confidence: "debug_fixture_confirmed_nap",
-                                                 source: "manual_nap",
-                                                 confirmed: true,
-                                                 stageSegments: [])
-            let olderDay = calendar.date(byAdding: .day, value: -1, to: day) ?? day.addingTimeInterval(-24 * 3_600)
-            let older = SleepHistorySnapshot.Night(id: "debug-ui-fixture-sleep-detail-prior-short",
-                                                   day: olderDay,
-                                                   start: olderDay.addingTimeInterval(23 * 3_600),
-                                                   end: olderDay.addingTimeInterval(29 * 3_600),
-                                                   duration: 6 * 3_600,
-                                                   restingHR: 58,
-                                                   hrv: 52,
-                                                   respiratoryRate: 14.8,
-                                                   sleepEfficiency: 0.84,
-                                                   confidence: "debug_fixture_confirmed_sleep",
-                                                   source: "manual_sleep",
-                                                   confirmed: true,
-                                                   stageSegments: [])
-            return SleepHistorySnapshot(nights: [main, nap, older], confirmedCount: 3, candidateCount: 0)
-        }
-
-        guard arguments[valueIndex] == "nap-only-morning" else { return nil }
-        let end = calendar.date(bySettingHour: 9, minute: 26, second: 0, of: Date()) ?? Date()
-        let start = calendar.date(byAdding: .minute, value: -24, to: end) ?? end.addingTimeInterval(-24 * 60)
-        let day = calendar.startOfDay(for: end)
-        let nap = SleepHistorySnapshot.Night(id: "debug-ui-fixture-nap-only-morning",
-                                             day: day,
-                                             start: start,
-                                             end: end,
-                                             duration: 24 * 60,
-                                             restingHR: 58,
-                                             hrv: nil,
-                                             respiratoryRate: nil,
-                                             sleepEfficiency: nil,
-                                             confidence: "debug_fixture_confirmed_nap",
-                                             source: "manual_nap",
-                                             confirmed: true,
-                                             stageSegments: [])
-        return SleepHistorySnapshot(nights: [nap], confirmedCount: 1, candidateCount: 0)
-    }
-    #else
-    private var debugSleepHistorySnapshot: SleepHistorySnapshot? { nil }
-    #endif
-
-}
 
 /// Metrics the user can show/hide on the Today glance (Settings → Today screen).
 enum AtriaTodayMetric: String, CaseIterable, Identifiable {
@@ -2073,7 +1067,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .vo2max: return "VO2max"
         case .bioAge: return "Fitness age"
         case .bloodOxygen: return "Blood oxygen"
-        case .bodyTemp: return "Wrist temp"
+        case .bodyTemp: return "Skin temp"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
         }
@@ -2087,12 +1081,12 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strapSteps: return "figure.walk.motion"
         */
         switch self {
-        case .recovery: return "gauge.with.dots.needle.67percent"
+        case .recovery: return "arrow.clockwise.heart.fill"
         case .strain: return "bolt.fill"
         case .load: return "chart.bar.xaxis"
         case .hrZones: return "chart.bar.fill"
         case .workouts: return "figure.mixed.cardio"
-        case .strainCompare: return "chart.bar.xaxis"
+        case .strainCompare: return "equal.circle"
         case .hrv: return "waveform.path.ecg"
         case .stress: return "bolt.heart.fill"
         case .sleep: return "bed.double.fill"
@@ -2100,10 +1094,10 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleepEfficiency: return "percent"
         case .sleepPerformance: return "gauge.with.dots.needle.50percent"
         case .rhr: return "heart.fill"
-        case .respiratoryRate: return "lungs"
+        case .respiratoryRate: return "lungs.fill"
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
-        case .vo2max: return "lungs.fill"
+        case .vo2max: return "figure.run"
         case .bioAge: return "figure.stand.line.dotted.figure.stand"
         case .bloodOxygen: return "drop.degreesign"
         case .bodyTemp: return "thermometer.variable"
@@ -2373,145 +1367,9 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
     }
 }
 
-struct AtriaOverviewWorkoutsSummary: Equatable {
-    let weekCount: Int
-    let latestOneLiner: String
 
-    static let empty = AtriaOverviewWorkoutsSummary(weekCount: 0,
-                                                   latestOneLiner: "No workouts yet")
-}
 
-private final class AtriaOverviewWorkoutsMemo {
-    private var revision: Int?
-    private var weekStart: Date?
-    private var value: AtriaOverviewWorkoutsSummary?
 
-    func summary(revision: Int,
-                 workouts: [UserConfirmedWorkout],
-                 now: Date = Date(),
-                 calendar: Calendar = .current) -> AtriaOverviewWorkoutsSummary {
-        let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? calendar.startOfDay(for: now)
-        if self.revision == revision,
-           weekStart == currentWeekStart,
-           let value {
-            return value
-        }
-
-        // Presentation gate (2026-07-31): accidental sub-minute live fragments
-        // must not become the week count or the "latest workout" one-liner.
-        let workouts = AtriaWorkoutMetricPresentation.presentableWorkouts(workouts)
-        let weekCount = workouts.prefix(while: { $0.start >= currentWeekStart }).count
-        let latestOneLiner: String
-        if let latest = workouts.first {
-            let title = latest.activitySubtype ?? latest.activityType ?? "Workout"
-            let strainText = latest.strain.map { String(format: "%.1f strain", $0) }
-            let dayText = Self.workoutDayFormatter.string(from: latest.start)
-            latestOneLiner = [title, strainText, dayText].compactMap { $0 }.joined(separator: " · ")
-        } else {
-            latestOneLiner = "No workouts yet"
-        }
-
-        let next = AtriaOverviewWorkoutsSummary(weekCount: weekCount,
-                                                latestOneLiner: latestOneLiner)
-        self.revision = revision
-        weekStart = currentWeekStart
-        value = next
-        return next
-    }
-
-    private static let workoutDayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("EEE")
-        return formatter
-    }()
-}
-
-private final class AtriaOverviewStrainCompareMemo {
-    private var revision: Int?
-    private var day: Date?
-    private var value: Double?
-
-    func median(revision: Int,
-                rollups: [DailyRollupStoreEntry],
-                now: Date = Date(),
-                calendar: Calendar = .current) -> Double? {
-        let today = calendar.startOfDay(for: now)
-        if self.revision == revision, day == today {
-            return value
-        }
-        self.revision = revision
-        day = today
-        value = Self.makeMedian(rollups: rollups, today: today, calendar: calendar)
-        return value
-    }
-
-    private static func makeMedian(rollups: [DailyRollupStoreEntry],
-                                   today: Date,
-                                   calendar: Calendar) -> Double? {
-        guard let cutoff = calendar.date(byAdding: .day, value: -14, to: today) else { return nil }
-        let strains = rollups
-            .drop { $0.day >= today }
-            .prefix { $0.day >= cutoff }
-            .compactMap { $0.strain }
-        guard strains.count >= 7 else { return nil }
-        let sorted = strains.sorted()
-        let mid = sorted.count / 2
-        return sorted.count.isMultiple(of: 2) ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
-    }
-}
-
-private final class AtriaOverviewReportHighlightMemo {
-    private var rollupRevision: Int?
-    private var sleepRevision: Int?
-    private var day: Date?
-    private var weekly: WeeklyReport?
-    private var monthly: MonthlyReport?
-
-    func highlights(rollupRevision: Int,
-                    sleepRevision: Int,
-                    rollups: [DailyRollupStoreEntry],
-                    sleepNights: [SleepHistorySnapshot.Night],
-                    now: Date = Date(),
-                    calendar: Calendar = .current) -> (weekly: WeeklyReport?, monthly: MonthlyReport?) {
-        let today = calendar.startOfDay(for: now)
-        if self.rollupRevision == rollupRevision,
-           self.sleepRevision == sleepRevision,
-           day == today {
-            return (weekly, monthly)
-        }
-
-        let weekday = calendar.component(.weekday, from: today)
-        let weekReport: WeeklyReport?
-        if weekday == 2 || weekday == 3 {
-            let report = WeeklyReport(rollups: rollups,
-                                      sleepNights: sleepNights,
-                                      calendar: calendar)
-            weekReport = report.recoveryAvg == nil ? nil : report
-        } else {
-            weekReport = nil
-        }
-
-        let dayOfMonth = calendar.component(.day, from: today)
-        let monthReport: MonthlyReport?
-        if dayOfMonth <= 5,
-           let priorMonthDate = calendar.date(byAdding: .month, value: -1, to: today) {
-            let report = MonthlyReport(rollups: rollups,
-                                       sleepNights: sleepNights,
-                                       now: priorMonthDate,
-                                       calendar: calendar)
-            monthReport = report.isBuilding ? nil : report
-        } else {
-            monthReport = nil
-        }
-
-        self.rollupRevision = rollupRevision
-        self.sleepRevision = sleepRevision
-        day = today
-        weekly = weekReport
-        monthly = monthReport
-        return (weekReport, monthReport)
-    }
-}
 
 private extension Array where Element == AtriaTodayMetric {
     var glanceRowID: String {
@@ -2539,2122 +1397,10 @@ enum AtriaRecoveryRingPresentation {
     }
 }
 
-struct AtriaOverviewReadinessSection: View, Equatable {
-    let hero: AtriaHomeModel.HeroSnapshot
-    let live: AtriaHomeModel.CoreLiveState
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    let vo2MaxEstimate: VO2MaxEstimateSummary
-    let biologicalAgeSummary: BiologicalAgeSummary
-    let snapshot: AtriaHomeModel.Snapshot
-    let trendValues: [Int]
-    let dailyRollupHistory: [DailyRollupStoreEntry]
-    let dailyRollupHistoryRevision: Int
-    let weeklyReportHighlight: WeeklyReport?
-    let monthlyReportHighlight: MonthlyReport?
-    let strainCompareMedian: Double?
-    let confirmedWorkouts: [UserConfirmedWorkout]
-    let confirmedWorkoutsRevision: Int
-    let confirmedSleeps: [UserConfirmedSleep]
-    let workoutsSummary: AtriaOverviewWorkoutsSummary
-    let dailyMetricSparklines: DailyMetricSparklineCache
-    let dailyMetricHistoryRevision: Int
-    let sensorSummary: IMUAuditSummary
-    let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
-    let hapticSettings: AtriaHapticAlertSettings
-    let sleepHistory: SleepHistorySnapshot
-    let pendingSleepReview: SleepHistorySnapshot.Night?
-    let sleepHistoryRevision: Int
-    let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus
-    let insights: [AtriaInsight]
-    let taggedDays: Int
-    let subtitle: String
-    let recoveryTarget: AtriaMetricTarget
-    let strainGreenBand: Double
-    let strainYellowBand: Double
-    let loadACWRWatchLow: Double
-    let loadACWRWatchHigh: Double
-    let loadACWRBadLow: Double
-    let loadACWRBadHigh: Double
-    let loadMonotonyWatch: Double
-    let loadMonotonyBad: Double
-    let hrvBaseline: Int?
-    let hrvBaselineSamples: Int
-    let hrvBaselineTrusted: Bool
-    let baselineTarget: AtriaBaselineTargetSnapshot
-    let hrvGreenRatio: Double
-    let hrvYellowRatio: Double
-    let restingBaseline: Int?
-    let restingBaselineSamples: Int
-    let restingBaselineTrusted: Bool
-    let restingGreenDelta: Int
-    let restingYellowDelta: Int
-    let respiratoryGreenDelta: Double
-    let respiratoryYellowDelta: Double
-    let skinTemperatureGreenDelta: Double
-    let skinTemperatureYellowDelta: Double
-    let bloodOxygenCandidateGoal: Int
-    let biologicalAgeGreenOlderDelta: Int
-    let biologicalAgeYellowOlderDelta: Int
-    let vo2GreenDelta: Double
-    let vo2RedDelta: Double
-    let stepsGoal: Int
-    let caloriesGoal: Int
-    let sleepGoalHours: Double
-    let sleepBaseNeedHours: Double
-    let sleepEfficiencyGreenLower: Double
-    let sleepEfficiencyYellowLower: Double
-    let visibleMetrics: [AtriaTodayMetric]
-    let hiddenMetrics: [AtriaTodayMetric]
-    let sizeOverridesCSV: String
-    let onMoveMetric: (AtriaTodayMetric, AtriaTodayMetric) -> Void
-    let onShiftMetric: (AtriaTodayMetric, Int) -> Void
-    let onHideMetric: (AtriaTodayMetric) -> Void
-    let onShowMetric: (AtriaTodayMetric) -> Void
-    let onToggleMetricSize: (AtriaTodayMetric) -> Void
-    let onResetMetrics: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-    let onOpenInsights: () -> Void
-    let onAddManualSleep: (Date, Date, Bool) async -> Bool
-    let onStartWorkout: () -> Void
-    @State private var isEditingGlance = false
-    @State private var showWidgetManager = false
-    // When true the glance renders every metric as a full-width horizontal bar
-    // (one per row) instead of the default 2-up box grid — the "boxes vs bars"
-    // user choice.
-    @AtriaDefault("atria.overview.glanceLayoutBars") private var glanceLayoutBars: Bool = false
-    // The Daily focus rail duplicates the tri-ring's Recovery/Strain/Sleep, so it
-    // is off by default; users can restore it from the Add-widget sheet.
-    @AtriaDefault("atria.overview.showDailyFocusRail") private var showDailyFocusRail: Bool = false
-    @State private var showManualSleepSheet = false
-    @State private var showWeeklyReport = false
-    @State private var showMonthlyReport = false
-    @State private var reportPeriod: AtriaReportPeriod = .week
-    @State private var targetEditorMetric: AtriaTodayMetric?
-    @State private var metricDetail: AtriaMetricDetailKind?
-    @State private var showStrapStepsDetail = false
-    @State private var showBreathworkSession = false
 
-    // Compare ONLY the values this card actually displays. Live pulse observation
-    // is isolated in two tiny leaves below, so ~1 Hz BPM/RR changes update the
-    // status strip (and an open breathwork session) without rebuilding the rings,
-    // reports, or customizable widget grid.
-    static func == (lhs: AtriaOverviewReadinessSection, rhs: AtriaOverviewReadinessSection) -> Bool {
-        lhs.subtitle == rhs.subtitle
-            && lhs.trendValues == rhs.trendValues
-            && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
-            && lhs.weeklyReportHighlight == rhs.weeklyReportHighlight
-            && lhs.monthlyReportHighlight == rhs.monthlyReportHighlight
-            && lhs.strainCompareMedian == rhs.strainCompareMedian
-            && lhs.confirmedWorkoutsRevision == rhs.confirmedWorkoutsRevision
-            && lhs.workoutsSummary == rhs.workoutsSummary
-            && lhs.dailyMetricHistoryRevision == rhs.dailyMetricHistoryRevision
-            && lhs.hero.recoveryEstimate.percent == rhs.hero.recoveryEstimate.percent
-            && lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence
-            && lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail
-            && lhs.hero.recoveryValue == rhs.hero.recoveryValue
-            && lhs.hero.strain == rhs.hero.strain
-            && lhs.hero.strainValue == rhs.hero.strainValue
-            && lhs.hero.guidance.target == rhs.hero.guidance.target
-            && lhs.hero.hrvValue == rhs.hero.hrvValue
-            && lhs.hero.hrvDetail == rhs.hero.hrvDetail
-            && lhs.hero.stressValue == rhs.hero.stressValue
-            && lhs.hero.stressDetail == rhs.hero.stressDetail
-            && lhs.hero.stressNarrative == rhs.hero.stressNarrative
-            && lhs.hero.stressEvidenceMode == rhs.hero.stressEvidenceMode
-            && lhs.hero.stressMetricTitle == rhs.hero.stressMetricTitle
-            && lhs.hero.restingHeartRateText == rhs.hero.restingHeartRateText
-            && lhs.hero.hrZoneMinutes == rhs.hero.hrZoneMinutes
-            && lhs.snapshot.sleepValue == rhs.snapshot.sleepValue
-            && lhs.live.status == rhs.live.status
-            && AtriaOverviewLiveProjectionState.sessionProgressBucket(lhs.live.sessionSampleCount)
-                == AtriaOverviewLiveProjectionState.sessionProgressBucket(rhs.live.sessionSampleCount)
-            && lhs.live.batteryStatusSummaryText == rhs.live.batteryStatusSummaryText
-            && lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText
-            && lhs.live.strapStepResearchCount == rhs.live.strapStepResearchCount
-            && lhs.live.strapStepResearchState == rhs.live.strapStepResearchState
-            && lhs.live.dailyStepPresentation == rhs.live.dailyStepPresentation
-            && lhs.biologicalAgeSummary == rhs.biologicalAgeSummary
-            && lhs.vo2MaxEstimate == rhs.vo2MaxEstimate
-            && lhs.sensorSummary == rhs.sensorSummary
-            && lhs.skinTemperatureSummary == rhs.skinTemperatureSummary
-            && lhs.hapticSettings == rhs.hapticSettings
-            && lhs.pendingSleepReview == rhs.pendingSleepReview
-            && lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
-            && lhs.historicalArchiveStatus == rhs.historicalArchiveStatus
-            && lhs.insights == rhs.insights
-            && lhs.taggedDays == rhs.taggedDays
-            && lhs.recoveryTarget == rhs.recoveryTarget
-            && lhs.strainGreenBand == rhs.strainGreenBand
-            && lhs.strainYellowBand == rhs.strainYellowBand
-            && lhs.loadACWRWatchLow == rhs.loadACWRWatchLow
-            && lhs.loadACWRWatchHigh == rhs.loadACWRWatchHigh
-            && lhs.loadACWRBadLow == rhs.loadACWRBadLow
-            && lhs.loadACWRBadHigh == rhs.loadACWRBadHigh
-            && lhs.loadMonotonyWatch == rhs.loadMonotonyWatch
-            && lhs.loadMonotonyBad == rhs.loadMonotonyBad
-            && lhs.hrvBaseline == rhs.hrvBaseline
-            && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
-            && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
-            && lhs.baselineTarget == rhs.baselineTarget
-            && lhs.hrvGreenRatio == rhs.hrvGreenRatio
-            && lhs.hrvYellowRatio == rhs.hrvYellowRatio
-            && lhs.restingBaseline == rhs.restingBaseline
-            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
-            && lhs.restingBaselineTrusted == rhs.restingBaselineTrusted
-            && lhs.restingGreenDelta == rhs.restingGreenDelta
-            && lhs.restingYellowDelta == rhs.restingYellowDelta
-            && lhs.respiratoryGreenDelta == rhs.respiratoryGreenDelta
-            && lhs.respiratoryYellowDelta == rhs.respiratoryYellowDelta
-            && lhs.skinTemperatureGreenDelta == rhs.skinTemperatureGreenDelta
-            && lhs.skinTemperatureYellowDelta == rhs.skinTemperatureYellowDelta
-            && lhs.bloodOxygenCandidateGoal == rhs.bloodOxygenCandidateGoal
-            && lhs.biologicalAgeGreenOlderDelta == rhs.biologicalAgeGreenOlderDelta
-            && lhs.biologicalAgeYellowOlderDelta == rhs.biologicalAgeYellowOlderDelta
-            && lhs.vo2GreenDelta == rhs.vo2GreenDelta
-            && lhs.vo2RedDelta == rhs.vo2RedDelta
-            && lhs.stepsGoal == rhs.stepsGoal
-            && lhs.caloriesGoal == rhs.caloriesGoal
-            && lhs.sleepGoalHours == rhs.sleepGoalHours
-            && lhs.sleepEfficiencyGreenLower == rhs.sleepEfficiencyGreenLower
-            && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
-            && lhs.visibleMetrics == rhs.visibleMetrics
-            && lhs.hiddenMetrics == rhs.hiddenMetrics
-            && lhs.sizeOverridesCSV == rhs.sizeOverridesCSV
-            && lhs.glanceLayoutBars == rhs.glanceLayoutBars
-            && lhs.showDailyFocusRail == rhs.showDailyFocusRail
-    }
 
-    var body: some View {
-        let glanceSizeOverrides = AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Today at a glance", subtitle: subtitle)
 
-                Spacer(minLength: 0)
 
-                addWidgetMenu
-            }
-
-            AtriaTriRing(sleep: triRingSleepMetric,
-                         recovery: triRingRecoveryMetric,
-                         strain: triRingStrainMetric,
-                         centerValue: triRingCenterValue,
-                         centerState: triRingCenterState,
-                         // The center numeral is always the recovery score
-                         // here (triRingCenterValue), but "61% / Fair" never
-                         // said so — name the metric (2026-08-01 ring fix).
-                         centerMetricName: AtriaTriRingSlot.recovery.label,
-                         accessibilitySummary: triRingAccessibilitySummary,
-                         onSleep: { metricDetail = .sleep },
-                         onRecovery: { metricDetail = .recovery },
-                         onStrain: { metricDetail = .strain })
-
-            AtriaTriRingLiveStatusHost(live: live, pulseStore: pulseStore)
-
-            if showDailyFocusRail {
-                AtriaDailyFocusRail(items: dailyFocusItems)
-            }
-
-            if weeklyReportHighlight != nil || monthlyReportHighlight != nil {
-                VStack(alignment: .leading, spacing: 8) {
-                    if weeklyReportHighlight != nil && monthlyReportHighlight != nil {
-                        AtriaTextSelector(items: [AtriaReportPeriod.week, .month],
-                                          title: { $0.label },
-                                          selection: $reportPeriod)
-                    }
-
-                    switch reportPeriod {
-                    case .week:
-                        if let report = weeklyReportHighlight {
-                            Button {
-                                showWeeklyReport = true
-                            } label: {
-                                AtriaWeeklyReportHighlightRow(report: report)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    case .month:
-                        if let report = monthlyReportHighlight {
-                            Button {
-                                showMonthlyReport = true
-                            } label: {
-                                AtriaMonthlyReportHighlightRow(report: report)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-                .onAppear {
-                    if weeklyReportHighlight == nil, monthlyReportHighlight != nil {
-                        reportPeriod = .month
-                    }
-                }
-            }
-
-            if visibleMetrics.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Add a widget to rebuild this view.")
-                        .font(.footnote.weight(.semibold))
-                    Text("Use the plus button to bring back recovery, strain, sleep, HRV, strap steps, and sensor cards.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-                .atriaInsetCard(tint: .secondary)
-            } else {
-                if isEditingGlance {
-                    HStack(spacing: 8) {
-                        Label("Editing widgets", systemImage: "square.grid.2x2")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-
-                        Spacer(minLength: 8)
-
-                        Button {
-                            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                                isEditingGlance = false
-                            }
-                        } label: {
-                            Text("Done")
-                                .font(.caption.weight(.bold))
-                        }
-                        .atriaCardAction(prominent: false, tint: .secondary)
-                    }
-                    .padding(.horizontal, 2)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
-                VStack(alignment: .leading, spacing: Self.glanceGridSpacing) {
-                    if glanceLayoutBars {
-                        VStack(spacing: Self.glanceGridSpacing) {
-                            ForEach(visibleMetrics) { metric in
-                                glanceBarCell(metric, sizeOverrides: glanceSizeOverrides)
-                            }
-                        }
-                    } else {
-                        VStack(spacing: Self.glanceGridSpacing) {
-                            ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \.glanceRowID) { row in
-                                let rowHeight = computedRowHeight(for: row, sizeOverrides: glanceSizeOverrides)
-                                HStack(spacing: Self.glanceGridSpacing) {
-                                    glanceRowContent(row, rowHeight: rowHeight, sizeOverrides: glanceSizeOverrides)
-                                }
-                                .frame(maxWidth: .infinity,
-                                       minHeight: rowHeight,
-                                       maxHeight: rowHeight,
-                                       alignment: .topLeading)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .onLongPressGesture(minimumDuration: 0.45) {
-                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                        isEditingGlance = true
-                    }
-                }
-            }
-        }
-        // 12pt gutter (2026-08-05 width audit): match the app-wide screen
-        // gutter horizontally; vertical inset stays 16.
-        .padding(.horizontal, 12)
-        .padding(.vertical, 16)
-        .atriaCard(emphasis: .strong)
-        .sheet(isPresented: $showManualSleepSheet) {
-            AtriaManualSleepSheet { start, end, isNap in
-                let saved = await onAddManualSleep(start, end, isNap)
-                if saved { showManualSleepSheet = false }
-                return saved
-            }
-        }
-        .sheet(item: $targetEditorMetric) { metric in
-            AtriaGlanceTargetEditorSheet(metric: metric)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showWidgetManager) {
-            AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics,
-                                          onEditWidgets: {
-                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                                                  isEditingGlance = true
-                                              }
-                                          },
-                                          onShowMetric: { metric in
-                                              withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                                                  onShowMetric(metric)
-                                              }
-                                          })
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showWeeklyReport) {
-            AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory,
-                                                                                                         sleepNights: sleepHistory.nights),
-                                   rollups: dailyRollupHistory)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showMonthlyReport) {
-            AtriaMonthlyReportSheet(report: monthlyReportHighlight ?? MonthlyReport(rollups: dailyRollupHistory,
-                                                                                      sleepNights: sleepHistory.nights))
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(item: $metricDetail) { detail in
-            let detailRollups = debugMetricDetailRollups ?? dailyRollupHistory
-            AtriaMetricDetailSheet(metric: detail,
-                                   rollups: detailRollups,
-                                   rollupsRevision: debugMetricDetailRollups == nil ? dailyRollupHistoryRevision : nil,
-                                   confirmedWorkouts: debugMetricDetailWorkouts ?? confirmedWorkouts,
-                                   confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil ? confirmedWorkoutsRevision : nil,
-                                   confirmedSleeps: confirmedSleeps,
-                                   baseline: baselineTarget,
-                                   sleepHistory: sleepHistory,
-                                   sleepHistoryRevision: sleepHistoryRevision,
-                                   guidance: hero.guidance,
-                                   recoveryEstimate: debugMetricDetailRecoveryEstimate ?? hero.recoveryEstimate,
-                                   currentCycleAuthority:
-                                    AtriaHealthMetricAuthority.currentCycleProjection(
-                                        hero: hero,
-                                        sleepHistory: sleepHistory
-                                    ),
-                                   sleepGoalHours: sleepGoalHours,
-                                   sleepBaseNeedHours: sleepBaseNeedHours,
-                                   skinTemperatureDeviation: skinTemperatureSummary)
-                // Metric detail is a data-reading surface, not a quick
-                // confirmation. Keep its graph and interpretation in view
-                // together instead of opening in a cramped half-sheet.
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showStrapStepsDetail) {
-            AtriaStrapStepsDetailSheet(count: live.strapStepResearchCount,
-                                       validationState: live.strapStepResearchState,
-                                       presentation: live.dailyStepPresentation,
-                                       goal: stepsGoal)
-                // The sheet carries a weekly chart plus its legend; a
-                // medium-only detent could not show them, so the chart was
-                // clipped and the sheet could not be dragged open.
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .fullScreenCover(isPresented: $showBreathworkSession) {
-            AtriaOverviewBreathworkSessionHost(pulseStore: pulseStore) {
-                showBreathworkSession = false
-            }
-        }
-        .onAppear {
-            #if DEBUG
-            if metricDetail == nil,
-               let debugDetail = Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) {
-                metricDetail = debugDetail
-            }
-            if Self.debugShowsWeeklyReportFixture(arguments: ProcessInfo.processInfo.arguments) {
-                showWeeklyReport = true
-            }
-            #endif
-        }
-    }
-
-    #if DEBUG
-    private var debugWeeklyReport: WeeklyReport? {
-        guard Self.debugShowsWeeklyReportFixture(arguments: ProcessInfo.processInfo.arguments) else {
-            return nil
-        }
-
-        return WeeklyReport(rollups: Self.debugWeeklyReportRollups(),
-                            now: Self.debugWeeklyReportNow())
-    }
-
-    private static func debugShowsWeeklyReportFixture(arguments: [String]) -> Bool {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "weekly-report"
-    }
-
-    private static func debugWeeklyReportNow() -> Date {
-        var calendar = Calendar(identifier: .iso8601)
-        calendar.timeZone = .current
-        return calendar.date(from: DateComponents(hour: 9,
-                                                  weekday: 2,
-                                                  weekOfYear: 27,
-                                                  yearForWeekOfYear: 2026)) ?? Date()
-    }
-
-    private static func debugWeeklyReportRollups() -> [DailyRollupStoreEntry] {
-        var calendar = Calendar(identifier: .iso8601)
-        calendar.timeZone = .current
-        let monday = calendar.date(from: DateComponents(weekday: 2,
-                                                        weekOfYear: 27,
-                                                        yearForWeekOfYear: 2026)) ?? Date()
-        let recovery = [71, 68, 55, 73, 64, 78, 66, 62, 61, 60, 59, 58, 57, 56]
-        let strain = [8.2, 6.1, 15.4, 7.0, 10.6, 5.8, 9.3, 7.4, 7.0, 6.8, 6.5, 6.2, 6.0, 5.8]
-        let bedtime = [1_380, 1_392, 1_370, 1_405, 1_386, 1_374, 1_398, 1_430, 1_402, 1_455, 1_390, 1_420, 1_448, 1_400]
-        return (0..<14).map { offset in
-            let day = calendar.date(byAdding: .day, value: -offset, to: monday) ?? monday
-            return DailyRollupStoreEntry(day: day,
-                                         recovery: recovery[offset],
-                                         sleepSeconds: TimeInterval((450 + offset % 3 * 12) * 60),
-                                         sleepPerformance: 88 - (offset % 4),
-                                         bedtimeMinutes: bedtime[offset],
-                                         strain: strain[offset],
-                                         calendar: calendar)
-        }
-    }
-
-    private var debugMetricDetailRollups: [DailyRollupStoreEntry]? {
-        guard Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) != nil else {
-            return nil
-        }
-
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        var rollups = (0..<42).map { offset in
-            let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
-            let hrv = 58 + ((offset * 5) % 22)
-            return DailyRollupStoreEntry(day: day,
-                                         recovery: 62 + ((offset * 7) % 24),
-                                         lnRMSSD: log(Double(hrv)),
-                                         rhr: 54 + (offset % 6),
-                                         sleepSeconds: TimeInterval((420 + (offset % 5) * 18) * 60),
-                                         strain: 5.0 + Double((offset * 3) % 11),
-                                         respiratoryRate: 14.4 + Double(offset % 4) * 0.2,
-                                         calendar: calendar)
-        }
-        guard Self.debugShowsNutritionRecoveryDetail(arguments: ProcessInfo.processInfo.arguments),
-              !rollups.isEmpty else {
-            return rollups
-        }
-        rollups[0].nutrition = AtriaNutritionSummary(kcal: 2140,
-                                                     proteinG: 132,
-                                                     carbsG: 210,
-                                                     fatG: 71,
-                                                     waterMl: 2300,
-                                                     caffeineMg: 180,
-                                                     lastCaffeineHour: 16,
-                                                     alcoholDrinks: 2)
-        return rollups
-    }
-
-    private var debugMetricDetailRecoveryEstimate: Metrics.RecoveryEstimate? {
-        guard Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) == .recovery else {
-            return nil
-        }
-
-        return Metrics.RecoveryEstimate(percent: 73,
-                                        confidence: .personalBaseline,
-                                        usesHRV: true,
-                                        detail: "debug recovery detail fixture",
-                                        contributors: [
-                                            Metrics.RecoveryEstimate.Contributor(kind: .hrv,
-                                                                                 zScore: 0.9,
-                                                                                 weight: 0.60,
-                                                                                 detail: "HRV above baseline"),
-                                            Metrics.RecoveryEstimate.Contributor(kind: .restingHeartRate,
-                                                                                 zScore: -0.4,
-                                                                                 weight: 0.20,
-                                                                                 detail: "RHR slightly elevated"),
-                                            Metrics.RecoveryEstimate.Contributor(kind: .sleep,
-                                                                                 zScore: 0.6,
-                                                                                 weight: 0.15,
-                                                                                 detail: "Sleep helped"),
-                                            Metrics.RecoveryEstimate.Contributor(kind: .respiration,
-                                                                                 zScore: 0.1,
-                                                                                 weight: 0.05,
-                                                                                 detail: "Resp neutral")
-                                        ])
-    }
-
-    private var debugMetricDetailWorkouts: [UserConfirmedWorkout]? {
-        guard Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) == .strain else {
-            return nil
-        }
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let firstStart = calendar.date(byAdding: .hour, value: 7, to: today) ?? today
-        let secondStart = calendar.date(byAdding: .hour, value: 17, to: today) ?? today
-        return [
-            UserConfirmedWorkout(id: "debug-strain-detail-strength",
-                                 createdAt: today,
-                                 start: firstStart,
-                                 end: firstStart.addingTimeInterval(46 * 60),
-                                 label: "Push strength",
-                                 source: "debug_fixture",
-                                 confidence: "fixture",
-                                 sessions: 1,
-                                 samples: 2_420,
-                                 avgHR: 136,
-                                 peakHR: 164,
-                                 p95HR: 158,
-                                 p99HR: 162,
-                                 thresholdHR: 126,
-                                 streamCoveragePercent: 92,
-                                 observedDuration: 46 * 60,
-                                 reason: "debug strain detail workout",
-                                 activityType: "Strength",
-                                 activitySubtype: "Push",
-                                 exerciseNames: ["Bench press", "Cable row"],
-                                 reviewSource: "debug_fixture",
-                                 strain: 8.8,
-                                 activeEnergyKilocalories: 420,
-                                 activeEnergyConfidence: "fixture",
-                                 zoneSeconds: ["warmup": 540, "fatBurn": 760, "aerobic": 980, "anaerobic": 420, "max": 60]),
-            UserConfirmedWorkout(id: "debug-strain-detail-cardio",
-                                 createdAt: today,
-                                 start: secondStart,
-                                 end: secondStart.addingTimeInterval(28 * 60),
-                                 label: "Tempo run",
-                                 source: "debug_fixture",
-                                 confidence: "fixture",
-                                 sessions: 1,
-                                 samples: 1_540,
-                                 avgHR: 148,
-                                 peakHR: 176,
-                                 p95HR: 169,
-                                 p99HR: 174,
-                                 thresholdHR: 126,
-                                 streamCoveragePercent: 95,
-                                 observedDuration: 28 * 60,
-                                 reason: "debug strain detail workout",
-                                 activityType: "Cardio",
-                                 activitySubtype: "Tempo",
-                                 exerciseNames: nil,
-                                 reviewSource: "debug_fixture",
-                                 strain: 7.1,
-                                 activeEnergyKilocalories: 310,
-                                 activeEnergyConfidence: "fixture",
-                                 zoneSeconds: ["warmup": 180, "fatBurn": 420, "aerobic": 600, "anaerobic": 420, "max": 60])
-        ]
-    }
-
-    private static func debugInitialMetricDetail(arguments: [String]) -> AtriaMetricDetailKind? {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        guard arguments.indices.contains(valueIndex) else { return nil }
-        switch arguments[valueIndex] {
-        case "recovery-detail", "recovery-detail-nutrition":
-            return .recovery
-        case "sleep-detail":
-            return .sleep
-        case "strain-detail":
-            return .strain
-        default:
-            return nil
-        }
-    }
-
-    private static func debugShowsNutritionRecoveryDetail(arguments: [String]) -> Bool {
-        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
-        let valueIndex = arguments.index(after: fixtureIndex)
-        return arguments.indices.contains(valueIndex)
-            && arguments[valueIndex] == "recovery-detail-nutrition"
-    }
-    #else
-    private var debugWeeklyReport: WeeklyReport? { nil }
-    private var debugMetricDetailRollups: [DailyRollupStoreEntry]? { nil }
-    private var debugMetricDetailRecoveryEstimate: Metrics.RecoveryEstimate? { nil }
-    private var debugMetricDetailWorkouts: [UserConfirmedWorkout]? { nil }
-    #endif
-
-    private var addWidgetMenu: some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 8) {
-                if isEditingGlance {
-                    Button {
-                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                            isEditingGlance = false
-                        }
-                    } label: {
-                        Image(systemName: "checkmark")
-                            .font(.caption.weight(.bold))
-                            .frame(width: 18, height: 18)
-                    }
-                    .atriaGlassIconAction(tint: .green, size: 38)
-                    .accessibilityLabel("Finish editing widgets")
-                    .transition(.scale.combined(with: .opacity))
-                }
-
-                if !isEditingGlance {
-                    Button {
-                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                            glanceLayoutBars.toggle()
-                        }
-                    } label: {
-                        Image(systemName: glanceLayoutBars ? "square.grid.2x2.fill" : "rectangle.grid.1x2.fill")
-                            .font(.callout.weight(.semibold))
-                            .frame(width: 20, height: 20)
-                    }
-                    .atriaGlassIconAction(tint: .secondary, size: 38)
-                    .accessibilityLabel(glanceLayoutBars ? "Show widgets as a grid" : "Show widgets as horizontal bars")
-                    .accessibilityHint("Switches the Today widgets between a two-up box grid and a single-column list of horizontal bars.")
-                }
-
-                Button {
-                    showWidgetManager = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.callout.weight(.semibold))
-                        .frame(width: 20, height: 20)
-                }
-                .atriaGlassIconAction(tint: .secondary, size: 38)
-                .accessibilityLabel("Add Today widget")
-                .accessibilityHint("Opens hidden Today widgets you can add. Long press a card to remove or resize it.")
-            }
-        }
-    }
-
-    private static let glanceGridSpacing: CGFloat = 10
-    private static let glanceGridColumnCount = 2
-    private static let glanceRowHeight = AtriaGlanceMetricCard.cardHeight
-
-    private var dailyFocusItems: [AtriaDailyFocusRail.Item] {
-        [
-            AtriaDailyFocusRail.Item(title: "Recovery",
-                                     value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? "Learning",
-                                     detail: recoveryDetailText,
-                                     systemImage: AtriaTodayMetric.recovery.systemImage,
-                                     tint: recoveryZone?.tint ?? .secondary,
-                                     progress: hero.recoveryEstimate.percent.map { Double($0) / 100.0 }),
-            AtriaDailyFocusRail.Item(title: "Strain",
-                                     value: hero.strainValue,
-                                     detail: strainEvidenceDetailText,
-                                     systemImage: AtriaTodayMetric.strain.systemImage,
-                                     tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
-                                     progress: metricIsPending(hero.strainValue)
-                                        ? nil
-                                        : (strainIsPartial
-                                            ? strainMeasuredFraction
-                                            : hero.guidance.target.map {
-                                                min(max(hero.strain / max($0, 0.1), 0), 1)
-                                            })),
-            AtriaDailyFocusRail.Item(title: sleepGlanceTitleText,
-                                     value: sleepGlanceValueText,
-                                     detail: sleepGlanceDetailText,
-                                     systemImage: sleepGlanceSystemImage,
-                                     tint: sleepGlanceTint,
-                                     progress: sleepFocusProgress),
-            AtriaDailyFocusRail.Item(title: "Live",
-                                     value: AtriaLiveSignalTruth.valueText(
-                                        status: live.status,
-                                        streamState: live.strapStreamState,
-                                        hasRecentHeartRate: live.hasRecentHeartRateSample
-                                     ),
-                                     detail: liveFocusDetailText,
-                                     systemImage: "waveform.path.ecg",
-                                     tint: liveFocusTint,
-                                     progress: live.sessionSampleCount > 0 ? min(Double(live.sessionSampleCount) / 720.0, 1) : nil)
-        ]
-    }
-
-    private var triRingSleepMetric: AtriaTriRingMetric {
-        let performanceTint = currentSleepPerformancePercent.map {
-            AtriaTriRing.zoneTint(.sleep, percent: Double($0))
-        }
-        return AtriaTriRingMetric(title: "Sleep",
-                           value: sleepGlanceValueText,
-                           detail: sleepTriRingDetailText,
-                           systemImage: sleepGlanceSystemImage,
-                           // Keep the ring body and its sleep-specific state color aligned.
-                           // A near-complete/healthy sleep night must not remain yellow merely
-                           // because the generic achievement tint requires exact closure.
-                           tint: performanceTint ?? sleepGlanceZone?.tint ?? .secondary,
-                           fill: sleepFocusProgress,
-                           stateTint: performanceTint ?? sleepGlanceZone?.tint,
-                           targetFraction: currentSleepNeedHours != nil ? 1.0 : nil)
-    }
-
-    private var triRingRecoveryMetric: AtriaTriRingMetric {
-        AtriaTriRingMetric(title: "Recovery",
-                           value: hero.recoveryEstimate.percent.map { "\($0)%" } ?? "Learning",
-                           detail: recoveryTriRingDetailText,
-                           systemImage: AtriaTodayMetric.recovery.systemImage,
-                           tint: recoveryZone?.tint ?? .secondary,
-                           fill: hero.recoveryEstimate.percent.map { Double($0) / 100.0 })
-    }
-
-    /// A lower-bound score is still measured load on the canonical 0...21
-    /// scale. Only a genuinely pending/non-numeric value withholds its fill;
-    /// partial evidence withholds target and zone authority, not magnitude.
-    private var strainMeasuredFraction: Double? {
-        AtriaRingMetricProjection.strainFill(
-            strain: hero.strain,
-            isPending: metricIsPending(hero.strainValue)
-        )
-    }
-
-    private var triRingStrainMetric: AtriaTriRingMetric {
-        let pending = metricIsPending(hero.strainValue)
-        let unqualified = pending || strainIsPartial
-        let fill = strainMeasuredFraction
-        let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
-            strain: hero.strain,
-            target: hero.guidance.target
-        )
-        return AtriaTriRingMetric(title: "Strain",
-                                  value: hero.strainValue,
-                                  detail: strainEvidenceDetailText,
-                                  systemImage: AtriaTodayMetric.strain.systemImage,
-                                  tint: AtriaRingMetricProjection.strainTint(
-                                    targetProgress: unqualified ? nil : targetProgress,
-                                    actualFill: fill
-                                  ),
-                                  fill: fill,
-                                  stateTint: unqualified ? nil : qualifiedStrainZone?.tint,
-                                  targetFraction: unqualified ? nil : AtriaRingMetricProjection.strainTargetFraction(hero.guidance.target))
-    }
-
-    private var triRingCenterValue: String {
-        hero.recoveryEstimate.percent.map { "\($0)%" } ?? "Learning"
-    }
-
-    private var triRingCenterState: String {
-        switch recoveryZone?.level {
-        case .green: return "Good"
-        case .yellow: return "Steady"
-        case .red: return "Low"
-        case nil: return "Calibrating"
-        }
-    }
-
-    private var recoveryTriRingDetailText: String {
-        guard hero.recoveryEstimate.percent != nil else {
-            return recoveryUnavailableDetail
-        }
-        if hero.recoveryIsFromPreviousSleep {
-            return hero.recoveryDetail
-        }
-        return AtriaRecoveryRingPresentation.detail(
-            zone: triRingCenterState,
-            confidence: hero.recoveryEstimate.confidence,
-            estimateDetail: hero.recoveryEstimate.detail,
-            isProvisional: hero.recoveryIsProvisional
-        )
-    }
-
-    private var sleepTriRingDetailText: String {
-        if let latest = currentMainSleep, latest.confirmed {
-            switch sleepGlanceZone?.level {
-            case .green: return "Good"
-            case .yellow: return "Fair"
-            case .red: return "Low"
-            case nil: return "Recorded"
-            }
-        }
-        return sleepGlanceDetailText
-    }
-
-    private var triRingAccessibilitySummary: String {
-        let strain: String
-        if strainIsPartial {
-            let limitation = overviewStrainLimitation?.compactState
-                ?? "Incomplete evidence"
-            strain = "Strain \(hero.strainValue). \(limitation)."
-        } else {
-            strain = hero.guidance.target.map {
-                "Strain \(hero.strainValue) of \(String(format: "%.1f", $0))."
-            } ?? "Strain \(hero.strainValue), target building."
-        }
-        return "Sleep \(sleepGlanceValueText), \(sleepTriRingDetailText). Recovery \(triRingRecoveryMetric.value), \(recoveryTriRingDetailText). \(strain)"
-    }
-
-    private var liveFocusTint: Color {
-        switch AtriaLiveSignalTruth.tone(
-            status: live.status,
-            streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
-        ) {
-        case .healthy:
-            return .green
-        case .waiting:
-            return .cyan
-        case .attention:
-            return .orange
-        case .unavailable:
-            return .secondary
-        }
-    }
-
-    private var liveFocusDetailText: String {
-        AtriaLiveSignalTruth.detailText(
-            status: live.status,
-            streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
-        )
-    }
-
-    private var targetValueText: String {
-        guard let target = hero.guidance.target else { return "Target Building" }
-        return String(format: "%.1f", target)
-    }
-
-    private var sleepFocusProgress: Double? {
-        currentSleepPerformancePercent.map {
-            min(max(Double($0) / 100.0, 0), 1)
-        }
-    }
-
-    /// Recompute from the current canonical sleep projection. Confirmation can
-    /// link a resumed segment immediately, while the persisted daily rollup is
-    /// deliberately refreshed in the background. Preferring that older row
-    /// made the duration jump at once while the ring retained the previous
-    /// night's fill/color until the derived refresh completed.
-    private var currentSleepPerformancePercent: Int? {
-        guard let latest = currentMainSleep, latest.confirmed else { return nil }
-        return sleepHistory.sleepPerformancePercent(for: latest,
-                                                     baseNeedHours: sleepBaseNeedHours,
-                                                     yesterdayStrain: yesterdayStrainForCurrentSleep)
-    }
-
-    private var currentSleepNeedHours: Double? {
-        guard let latest = currentMainSleep, latest.confirmed else { return nil }
-        return sleepHistory.sleepNeedHours(for: latest,
-                                           baseNeedHours: sleepBaseNeedHours,
-                                           yesterdayStrain: yesterdayStrainForCurrentSleep)
-    }
-
-    /// Same previous-civil-day input used by the rollup and Today projections.
-    /// Sleep Need is dynamic; dropping this term only on Overview made its
-    /// percent disagree after a high-strain day.
-    private var yesterdayStrainForCurrentSleep: Double? {
-        guard let latest = currentMainSleep else { return nil }
-        let calendar = Calendar.current
-        guard let priorDay = calendar.date(byAdding: .day,
-                                           value: -1,
-                                           to: calendar.startOfDay(for: latest.day)) else {
-            return nil
-        }
-        return dailyRollupHistory.first {
-            calendar.isDate($0.day, inSameDayAs: priorDay)
-        }?.strain
-    }
-
-    private func glanceRows(sizeOverrides: [String: AtriaGlanceGridSize]) -> [[AtriaTodayMetric]] {
-        var rows: [[AtriaTodayMetric]] = []
-        var pending: [AtriaTodayMetric] = []
-        for metric in visibleMetrics {
-            guard metric.glanceGridSize(sizeOverrides: sizeOverrides).isValidGlanceShape else { continue }
-            if metric.isWideGlanceCard(sizeOverrides: sizeOverrides) {
-                if !pending.isEmpty {
-                    rows.append(pending)
-                    pending.removeAll(keepingCapacity: true)
-                }
-                rows.append([metric])
-            } else {
-                pending.append(metric)
-                if pending.count == 2 {
-                    rows.append(pending)
-                    pending.removeAll(keepingCapacity: true)
-                }
-            }
-        }
-        if !pending.isEmpty {
-            rows.append(pending)
-        }
-        return rows.filter { rowFitsGlanceGrid($0, sizeOverrides: sizeOverrides) }
-    }
-
-    /// A row holding a half-height (wideShort) card renders at ~half the normal
-    /// height; every other row keeps the full card height.
-    private func computedRowHeight(for row: [AtriaTodayMetric],
-                                   sizeOverrides: [String: AtriaGlanceGridSize]) -> CGFloat {
-        let hasShort = row.contains { $0.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort }
-        return hasShort ? AtriaGlanceMetricCard.compactRowHeight : Self.glanceRowHeight
-    }
-
-    private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool {
-        var span = 0
-        for metric in row {
-            span += metric.glanceColumnSpan(sizeOverrides: sizeOverrides)
-        }
-        return span <= Self.glanceGridColumnCount
-    }
-
-    @ViewBuilder
-    private func glanceRowContent(_ row: [AtriaTodayMetric],
-                                  rowHeight: CGFloat,
-                                  sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
-        GeometryReader { proxy in
-            HStack(spacing: Self.glanceGridSpacing) {
-                ForEach(row) { metric in
-                    glanceCardCell(metric,
-                                   width: glanceCardWidth(for: metric,
-                                                          containerWidth: proxy.size.width,
-                                                          sizeOverrides: sizeOverrides),
-                                   rowHeight: rowHeight,
-                                   sizeOverrides: sizeOverrides)
-                }
-
-                if row.count == 1, row.first?.isWideGlanceCard(sizeOverrides: sizeOverrides) == false {
-                    AtriaGlanceMetricCard.placeholder
-                        .frame(width: glanceCardWidth(for: .recovery,
-                                                      containerWidth: proxy.size.width,
-                                                      sizeOverrides: sizeOverrides),
-                               height: rowHeight)
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-    }
-
-    private func glanceCardCell(_ metric: AtriaTodayMetric,
-                                width: CGFloat?,
-                                rowHeight: CGFloat,
-                                sizeOverrides: [String: AtriaGlanceGridSize],
-                                forceCompactRow: Bool = false) -> some View {
-        let upLabel = Text("Move \(metric.label) up")
-        let downLabel = Text("Move \(metric.label) down")
-        // In bars layout every metric is a full-width compact row regardless of
-        // its saved grid size; otherwise honour the wideShort override.
-        let isCompactRow = forceCompactRow || metric.glanceGridSize(sizeOverrides: sizeOverrides).isWideShort
-
-        return glanceCard(metric)
-            .environment(\.glanceCompactRow, isCompactRow)
-            .frame(width: width,
-                   height: rowHeight,
-                   alignment: .topLeading)
-            .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .overlay(glanceEditingBorder(for: metric))
-            .overlay(alignment: .topTrailing) {
-                if isEditingGlance {
-                    glanceRemoveControl(for: metric)
-                        .padding(6)
-                        .zIndex(3)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if isEditingGlance {
-                    glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)
-                        .padding(8)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .overlay(alignment: .bottomLeading) {
-                if isEditingGlance, metric.supportsGlanceTargetEditing {
-                    glanceTargetControl(for: metric)
-                        .padding(8)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .simultaneousGesture(
-                LongPressGesture(minimumDuration: 0.45)
-                    .onEnded { _ in
-                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                            isEditingGlance = true
-                        }
-                    }
-            )
-            .onTapGesture {
-                guard isEditingGlance, metric.supportsGlanceTargetEditing else { return }
-                targetEditorMetric = metric
-            }
-            .contextMenu {
-                if metric.supportsGlanceTargetEditing {
-                    Button {
-                        targetEditorMetric = metric
-                    } label: {
-                        Label("Edit target", systemImage: "target")
-                    }
-                }
-
-                Button {
-                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                        onToggleMetricSize(metric)
-                    }
-                } label: {
-                    Label(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides),
-                          systemImage: metric.nextGlanceSizeSystemImage(sizeOverrides: sizeOverrides))
-                }
-
-                Button(role: .destructive) {
-                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                        onHideMetric(metric)
-                        if visibleMetrics.count <= 1 {
-                            isEditingGlance = false
-                        }
-                    }
-                } label: {
-                    Label("Remove widget", systemImage: "xmark")
-                }
-            }
-            .layoutPriority(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? 2 : 1)
-            .modifier(AtriaConditionalStringDraggable(isEnabled: true,
-                                                       payload: metric.dragPayload))
-            .dropDestination(for: String.self) { items, _ in
-                guard let raw = items.first,
-                      let dragged = AtriaTodayMetric.draggedMetric(from: raw) else { return false }
-                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                    isEditingGlance = true
-                    onMoveMetric(dragged, metric)
-                }
-                return true
-            }
-            .accessibilityAction(named: upLabel) {
-                onShiftMetric(metric, -1)
-            }
-            .accessibilityAction(named: downLabel) {
-                onShiftMetric(metric, 1)
-            }
-            .accessibilityAction(named: Text("Edit \(metric.label) widget")) {
-                isEditingGlance = true
-            }
-            .accessibilityAction(named: Text("Edit \(metric.label) target")) {
-                if metric.supportsGlanceTargetEditing {
-                    targetEditorMetric = metric
-                }
-            }
-            .accessibilityAction(named: Text("\(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides)): \(metric.label)")) {
-                onToggleMetricSize(metric)
-            }
-            .accessibilityAction(named: Text("Remove \(metric.label) widget")) {
-                onHideMetric(metric)
-                if visibleMetrics.count <= 1 {
-                    isEditingGlance = false
-                }
-            }
-            .accessibilityHint("Drag to reorder, or long press to edit with target, resize, and remove controls.")
-    }
-
-    /// One metric rendered as a full-width horizontal bar (the "bars" layout).
-    /// Reuses `glanceCardCell` so editing, drag-reorder and target controls all
-    /// behave exactly as they do in the grid — only the shape changes.
-    private func glanceBarCell(_ metric: AtriaTodayMetric,
-                               sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
-        // Sleep-history / trend / insights are custom chart cards that ignore the
-        // compact-row layout -- keep them at their natural full-width height so
-        // bars mode doesn't squash a chart into a 76pt strip.
-        let isChartCard = [AtriaTodayMetric.sleepHistory, .trend, .insights].contains(metric)
-        return glanceCardCell(metric,
-                              width: nil,
-                              rowHeight: isChartCard ? Self.glanceRowHeight : AtriaGlanceMetricCard.compactRowHeight,
-                              sizeOverrides: sizeOverrides,
-                              forceCompactRow: !isChartCard)
-    }
-
-    @ViewBuilder
-    private func glanceEditingBorder(for metric: AtriaTodayMetric) -> some View {
-        if isEditingGlance {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(metric.targetEditorTint.opacity(0.32), lineWidth: 1.2)
-                .allowsHitTesting(false)
-        }
-    }
-
-    private func glanceCardWidth(for metric: AtriaTodayMetric,
-                                 containerWidth: CGFloat,
-                                 sizeOverrides: [String: AtriaGlanceGridSize]) -> CGFloat {
-        let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)
-        if metric.isWideGlanceCard(sizeOverrides: sizeOverrides) {
-            return (columnWidth * CGFloat(Self.glanceGridColumnCount)) + Self.glanceGridSpacing
-        }
-        return columnWidth
-    }
-
-    private func glanceTargetControl(for metric: AtriaTodayMetric) -> some View {
-        Button {
-            targetEditorMetric = metric
-        } label: {
-            Image(systemName: "target")
-                .font(.callout.weight(.bold))
-        }
-        .atriaGlassIconAction(tint: metric.targetEditorTint, size: 36)
-        .accessibilityLabel("Edit \(metric.label) target")
-        .accessibilityHint("Opens the target zone controls for this Today widget.")
-    }
-
-    private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View {
-        Button(role: .destructive) {
-            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                onHideMetric(metric)
-                if visibleMetrics.count <= 1 {
-                    isEditingGlance = false
-                }
-            }
-        } label: {
-            Image(systemName: "xmark.circle.fill")
-                .font(.callout.weight(.black))
-        }
-        .atriaGlassIconAction(tint: .red, size: 36)
-        .contentShape(Circle())
-        .accessibilityLabel("Remove \(metric.label) widget")
-        .accessibilityHint("Removes this card from Today at a glance. Use the plus button to add it back.")
-    }
-
-    private func glanceResizeControl(for metric: AtriaTodayMetric,
-                                     sizeOverrides: [String: AtriaGlanceGridSize]) -> some View {
-        Button {
-            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                onToggleMetricSize(metric)
-            }
-        } label: {
-            Image(systemName: metric.nextGlanceSizeSystemImage(sizeOverrides: sizeOverrides))
-                .font(.callout.weight(.bold))
-        }
-        .atriaGlassIconAction(tint: .secondary, size: 36)
-        .accessibilityLabel("\(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides)): \(metric.label)")
-    }
-
-    @ViewBuilder
-    private func glanceCard(_ metric: AtriaTodayMetric) -> some View {
-        switch metric {
-        case .recovery:
-            detailButton(.recovery) {
-                AtriaGlanceMetricCard(title: "Recovery",
-                                      value: hero.recoveryEstimate.percent == nil
-                                        ? AtriaCompactMetricPresentation.noValue
-                                        : hero.recoveryValue,
-                                      detail: recoveryDetailText,
-                                      systemImage: metric.systemImage,
-                                      tint: recoveryZone?.tint ?? .secondary,
-                                      ringFraction: hero.recoveryEstimate.percent.map { Double($0) / 100 },
-                                      sparklineValues: dailyMetricSparklines.recovery,
-                                      zone: recoveryZone)
-            }
-        case .strain:
-            detailButton(.strain) {
-                AtriaGlanceMetricCard(title: "Strain",
-                                      value: metricDisplayValue(hero.strainValue),
-                                      detail: strainEvidenceDetailText,
-                                      systemImage: metric.systemImage,
-                                      tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
-                                      ringFraction: strainMeasuredFraction,
-                                      sparklineValues: dailyMetricSparklines.strain,
-                                      zone: qualifiedStrainZone)
-            }
-        case .load:
-            AtriaGlanceMetricCard(title: "Training load",
-                                  value: hero.loadReadinessText,
-                                  detail: hero.loadConfidence == "learning" ? "Learning" : hero.loadSignalSummaryText,
-                                  systemImage: metric.systemImage,
-                                  tint: loadReadinessZone?.tint ?? loadReadinessTint,
-                                  ringFraction: loadReadinessFraction,
-                                  zone: loadReadinessZone)
-                .accessibilityLabel("Training load readiness \(hero.loadReadinessText). \(hero.loadSignalSummaryText). \(hero.loadNarrative)")
-        case .hrZones:
-            AtriaGlanceMetricCard(title: "HR Zones",
-                                  value: hero.hrZoneMinutes.valueText,
-                                  detail: hero.hrZoneMinutes.detailText,
-                                  systemImage: metric.systemImage,
-                                  tint: .orange,
-                                  accessibilityDetail: hero.hrZoneMinutes.accessibilityDetailText)
-        case .workouts:
-            detailButton(.strain) {
-                AtriaGlanceMetricCard(title: "Workouts",
-                                      value: "\(workoutsSummary.weekCount)",
-                                      detail: workoutsSummary.latestOneLiner,
-                                      systemImage: metric.systemImage,
-                                      tint: .mint,
-                                      accessibilityDetail: "\(workoutsSummary.weekCount) confirmed workouts this week. \(workoutsSummary.latestOneLiner).")
-            }
-        case .strainCompare:
-            detailButton(.strain) {
-                AtriaGlanceMetricCard(title: "Strain vs typical",
-                                      value: metricDisplayValue(hero.strainValue),
-                                      detail: strainCompareDetailText,
-                                      systemImage: metric.systemImage,
-                                      tint: Metrics.electricStrain,
-                                      accessibilityDetail: "Today's strain \(metricDisplayValue(hero.strainValue)). \(strainCompareDetailText).")
-            }
-        case .hrv:
-            detailButton(.hrv) {
-                AtriaGlanceMetricCard(title: "HRV",
-                                      value: hrvCalibratingValue ?? metricDisplayValue(hero.hrvValue),
-                                      detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText,
-                                      systemImage: metric.systemImage,
-                                      tint: (hrvCalibratingValue != nil ? nil : hrvZone)?.tint ?? Metrics.electricHRV,
-                                      sparklineValues: dailyMetricSparklines.hrv,
-                                      zone: hrvCalibratingValue != nil ? nil : hrvZone,
-                                      calibratingDay: hrvCalibratingValue != nil ? nil : hrvCalibratingDay,
-                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
-                                      calibratingUnit: "Night")
-            }
-        case .stress:
-            Button {
-                showBreathworkSession = true
-            } label: {
-                AtriaGlanceMetricCard(title: hero.stressMetricTitle,
-                                      value: hero.stressValue,
-                                      detail: hero.stressDetail,
-                                      systemImage: metric.systemImage,
-                                      tint: stressTint,
-                                      accessibilityDetail: "\(hero.stressNarrative) Opens guided breathwork.")
-            }
-            .buttonStyle(.plain)
-        case .sleep:
-            detailButton(.sleep) {
-                AtriaGlanceMetricCard(title: sleepGlanceTitleText,
-                                      value: sleepGlanceValueText,
-                                      detail: sleepGlanceDetailText,
-                                      systemImage: sleepGlanceSystemImage,
-                                      // Legacy handoff token retained for static audit context:
-                                      // tint: sleepDurationZone?.tint ?? sleepGlanceTint
-                                      tint: sleepGlanceTint,
-                                      sparklineValues: dailyMetricSparklines.sleep,
-                                      zone: sleepGlanceZone,
-                                      calibratingDay: sleepCalibratingDay)
-            }
-        case .sleepHistory:
-            sleepHistoryCard
-        case .sleepEfficiency:
-            AtriaGlanceMetricCard(title: "Sleep eff",
-                                  value: currentMainSleep?.sleepEfficiencyText
-                                    ?? AtriaCompactMetricPresentation.noValue,
-                                  // Plain-language pass (2026-07-31 device review):
-                                  // "Needs time in bed" read as a command; say
-                                  // when the number appears instead. HR-only
-                                  // honesty (2026-08-01): a night without
-                                  // validated motion shows "--" and says why.
-                                  detail: sleepEfficiencyGlanceDetail,
-                                  systemImage: metric.systemImage,
-                                  tint: sleepEfficiencyZone?.tint
-                                    ?? (currentMainSleep?.displaySleepEfficiency == nil ? .secondary : .cyan),
-                                  zone: sleepEfficiencyZone,
-                                  accessibilityDetail: sleepEfficiencyGlanceAccessibilityDetail,
-                                  calibratingDay: sleepEfficiencyCalibratingDay)
-        case .sleepPerformance:
-            detailButton(.sleepPerformance) {
-                AtriaGlanceMetricCard(title: "Sleep suff.",
-                                      value: currentSleepPerformancePercent.map { "\($0)%" }
-                                        ?? AtriaCompactMetricPresentation.noValue,
-                                      detail: currentSleepPerformancePercent == nil
-                                        ? "Save sleep to score"
-                                        : "of need",
-                                      systemImage: metric.systemImage,
-                                      tint: Metrics.electricSleep,
-                                      accessibilityDetail: "Sleep sufficiency, percent of nightly need.")
-            }
-        case .rhr:
-            detailButton(.restingHeartRate) {
-                AtriaGlanceMetricCard(title: "RHR",
-                                      value: restingCalibratingValue ?? metricDisplayValue(hero.restingHeartRateText),
-                                      detail: restingCalibratingValue != nil
-                                        ? calibratingProgressDetail(samples: restingBaselineSamples)
-                                        : AtriaOverviewMetricPresentation.currentCycleRHRDetail,
-                                      systemImage: metric.systemImage,
-                                      tint: (restingCalibratingValue != nil ? nil : restingHeartRateZone)?.tint ?? Metrics.electricRHR,
-                                      sparklineValues: dailyMetricSparklines.restingHeartRate,
-                                      zone: restingCalibratingValue != nil ? nil : restingHeartRateZone,
-                                      calibratingDay: restingCalibratingValue != nil ? nil : restingCalibratingDay,
-                                      calibratingTotal: PersonalBaseline.trustedMinimumSamples,
-                                      calibratingUnit: "Night")
-            }
-        case .respiratoryRate:
-            AtriaGlanceMetricCard(title: "Resp rate",
-                                  value: currentMainSleep?.respiratoryRateText
-                                    ?? AtriaCompactMetricPresentation.noValue,
-                                  detail: currentMainSleep?.respiratoryRate == nil
-                                    ? "Needs qualified sleep" : "Early",
-                                  systemImage: metric.systemImage,
-                                  tint: respiratoryRateZone?.tint
-                                    ?? (currentMainSleep?.respiratoryRate == nil
-                                        ? .secondary
-                                        : Metrics.electricRespiratory),
-                                  zone: respiratoryRateZone,
-                                  accessibilityDetail: currentMainSleep?.respiratoryRate == nil
-                                    ? "Respiratory rate needs qualified sleep evidence."
-                                    : "Respiratory rate early sleep-only signal \(currentMainSleep?.respiratoryRateText ?? "--") breaths per minute.")
-        case .steps:
-            Button { showStrapStepsDetail = true } label: {
-                TimelineView(.periodic(from: .now, by: 30)) { _ in
-                    let steps = live.dailyStepPresentation
-                    AtriaGlanceMetricCard(title: "Strap steps",
-                                          value: steps.valueText,
-                                          detail: steps.detailText,
-                                          systemImage: metric.systemImage,
-                                          tint: steps.count == nil ? .secondary
-                                            : (steps.completeness == .complete
-                                               ? (stepsZone?.tint ?? .green) : .orange),
-                                          zone: steps.count == nil ? nil : stepsZone,
-                                          accessibilityDetail: "\(steps.accessibilityText) Goal \(stepsGoal).")
-                }
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens strap-step freshness and goal status.")
-        case .calories:
-            AtriaGlanceMetricCard(title: "Calories",
-                                  value: live.liveActiveCaloriesText,
-                                  detail: live.liveActiveCalories == nil ? "Needs profile" : "Estimate",
-                                  systemImage: metric.systemImage,
-                                  tint: activeCaloriesZone?.tint ?? .orange,
-                                  zone: activeCaloriesZone,
-                                  accessibilityDetail: "Active calories estimate \(live.liveActiveCaloriesText).")
-        case .vo2max:
-            AtriaGlanceMetricCard(title: "VO2max",
-                                  value: vo2MaxEstimate.value.map { String(format: "%.1f", $0) } ?? "--",
-                                  detail: vo2MaxEstimate.value == nil
-                                    ? vo2MaxEstimate.compactStatusText
-                                    : vo2MaxDetailText,
-                                  systemImage: metric.systemImage,
-                                  tint: vo2TrendZone?.tint
-                                    ?? (vo2MaxEstimate.value == nil ? .secondary : .blue),
-                                  zone: vo2TrendZone,
-                                  accessibilityDetail: vo2MaxEstimate.value == nil
-                                    ? "VO2max unavailable. \(vo2MaxEstimate.compactStatusText). \(vo2MaxEstimate.narrative)"
-                                    : "VO2max \(vo2MaxEstimate.confidence) \(vo2MaxEstimate.valueText), trend \(vo2MaxEstimate.trendText), \(vo2MaxEstimate.trendDetail).")
-        case .bioAge:
-            AtriaGlanceMetricCard(title: "Fitness age",
-                                  value: biologicalAgeSummary.valueText,
-                                  detail: biologicalAgeSummary.compactStatusText,
-                                  systemImage: metric.systemImage,
-                                  tint: biologicalAgeZone?.tint
-                                    ?? (biologicalAgeSummary.isReady
-                                        ? (biologicalAgeSummary.isEarlyEstimate
-                                            ? .orange
-                                            : ((biologicalAgeSummary.ageDelta ?? 0) <= 0 ? .green : .orange))
-                                        : .secondary),
-                                  zone: biologicalAgeZone,
-                                  isLoading: biologicalAgeSummary.isRefreshing,
-                                  accessibilityDetail: biologicalAgeSummary.isReady
-                                    ? "Fitness age estimate \(biologicalAgeSummary.valueText), \(biologicalAgeSummary.detailText). \(biologicalAgeSummary.footnote)"
-                                    : biologicalAgeSummary.isRefreshing
-                                      ? "Updating your weekly fitness-age estimate. \(biologicalAgeSummary.footnote)"
-                                      : "Calibrating your fitness-age baseline. \(biologicalAgeSummary.blockerText). \(biologicalAgeSummary.footnote)")
-        case .bloodOxygen:
-            AtriaGlanceMetricCard(title: "Blood oxygen",
-                                  value: "--",
-                                  // The sensor exists on supported straps, but
-                                  // Atria has no verified decoder. Never invent %.
-                                  detail: AtriaSpO2Copy.decoderNotVerified,
-                                  systemImage: metric.systemImage,
-                                  tint: .orange,
-                                  zone: nil,
-                                  accessibilityDetail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
-        case .bodyTemp:
-            let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
-            AtriaGlanceMetricCard(title: "Wrist temp",
-                                  value: AtriaExperimentalSensorCopy.skinTemperatureValue(
-                                    summary: skinTemperatureSummary,
-                                    decoderAvailable: decoderAvailable),
-                                  detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(
-                                    summary: skinTemperatureSummary,
-                                    decoderAvailable: decoderAvailable),
-                                  systemImage: metric.systemImage,
-                                  tint: decoderAvailable
-                                    ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)
-                                    : .secondary,
-                                  zone: decoderAvailable
-                                    ? skinTemperatureDeviationZone
-                                    : nil,
-                                  accessibilityDetail: AtriaExperimentalSensorCopy.skinTemperatureAccessibilityDetail(
-                                    summary: skinTemperatureSummary,
-                                    decoderAvailable: decoderAvailable))
-        case .trend:
-            trendCard
-        case .insights:
-            insightsCard
-        }
-    }
-
-    private var sleepHistoryCard: some View {
-        AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,
-                                    sleepGoalHours: sleepGoalHours,
-                                    onOpenVitals: onOpenVitals,
-                                    onAddManualSleep: {
-                                        showManualSleepSheet = true
-                                    })
-        .accessibilityLabel(sleepHistory.nights.isEmpty
-                            ? "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap."
-                            : sleepHistory.latestDisplayEvidence.map {
-                                "Open Vitals. \($0.durationText), \($0.reviewContextText)"
-                            } ?? "Open Vitals. Sleep history is building.")
-    }
-
-    private var currentMainSleep: SleepHistorySnapshot.Night? {
-        AtriaOverviewCurrentSleep.resolve(from: sleepHistory)
-    }
-
-    private var currentDisplaySleep: SleepHistorySnapshot.Night? {
-        AtriaOverviewCurrentSleep.resolveDisplayEvidence(from: sleepHistory,
-                                                         pendingReview: pendingSleepReview)
-    }
-
-    private var sleepGlanceValueText: String {
-        if let latest = currentDisplaySleep {
-            return latest.durationText
-        }
-        if sleepHistory.candidateCount > 0 {
-            return "\(sleepHistory.candidateCount)"
-        }
-        // Canonical not-ready word. Sleep is available after one night (not a 4-night
-        // calibration like recovery), so it shows "Learning", not a "Day X" countdown.
-        return "Learning"
-    }
-
-    private var sleepGlanceTitleText: String {
-        "Sleep"
-    }
-
-    private var sleepGlanceSystemImage: String {
-        AtriaTodayMetric.sleep.systemImage
-    }
-
-    private var sleepGlanceDetailText: String {
-        if let latest = currentDisplaySleep {
-            if latest.confirmed {
-                if let performance = currentSleepPerformancePercent,
-                   let need = currentSleepNeedHours {
-                    return "\(performance)% of \(AtriaMetricFormat.sleepHours(need)) need"
-                }
-                return "Last"
-            }
-            return latest.isNapEvidence ? "Review nap" : "Review sleep"
-        }
-        if sleepHistory.candidateCount > 0 { return "Review" }
-        // Canonical not-ready word, and consistent with sleepGlanceValueText above:
-        // sleep is available after ONE night (not a 4-night calibration like
-        // recovery), so it shows "Learning" — never a "Day X of 4" countdown or the
-        // non-canonical "Calibrating".
-        return "Learning"
-    }
-
-    private var sleepGlanceTint: Color {
-        // Legacy handoff token retained for static audit context:
-        // sleepHistory.candidateCount > 0 ? .cyan : .orange
-        if let latest = currentDisplaySleep {
-            if !latest.confirmed {
-                return .cyan
-            }
-        } else if sleepHistory.candidateCount > 0 {
-            return .cyan
-        }
-        return sleepDurationZone?.tint ?? .secondary
-    }
-
-    private var sleepGlanceZone: AtriaMetricZone? {
-        return sleepDurationZone
-    }
-
-    private var trendCard: some View {
-        AtriaGlanceMetricCard(title: "Resting trend",
-                              value: trendValues.count > 1 ? "\(trendValues.last ?? 0)" : "--",
-                              // Empty-state honesty (2026-07-08): a trend line needs two
-                              // nights to plot, so say exactly how far off it is ("0 of 2
-                              // nights") instead of a bare "Learning" — matches the "N of M"
-                              // progress the RHR/HRV cards already show.
-                              //
-                              // 2026-07-31: the populated branch previously claimed a
-                              // hard-coded "14 sessions" for any count ≥ 2 and drew a
-                              // synthetic flat [0, 0] sparkline below two nights. Real
-                              // count, and nil (no line) until a line is real.
-                              detail: trendValues.count > 1
-                                ? "\(trendValues.count) nights"
-                                : "\(trendValues.count) of 2 nights",
-                              systemImage: AtriaTodayMetric.trend.systemImage,
-                              tint: .red,
-                              sparklineValues: trendValues.count > 1 ? trendValues : nil)
-    }
-
-    private var insightsCard: some View {
-        let topInsight = insights.first
-        return Button(action: onOpenInsights) {
-            AtriaGlanceMetricCard(title: "Insights",
-                                  value: insights.isEmpty ? "--" : "\(insights.count)",
-                                  detail: topInsight?.tagLabel ?? (taggedDays > 0 ? "Learning patterns" : "Tag today"),
-                                  systemImage: AtriaTodayMetric.insights.systemImage,
-                                  tint: topInsight?.isPositive == false ? .red : .purple)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(insights.isEmpty
-                            ? "Open Trends. Insights building from \(taggedDays) tagged days"
-                            : "Open Trends. \(insights.count) local insights ready")
-    }
-
-    private func detailButton<Content: View>(_ detail: AtriaMetricDetailKind,
-                                             @ViewBuilder content: () -> Content) -> some View {
-        Button {
-            metricDetail = detail
-        } label: {
-            content()
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var stressTint: Color {
-        AtriaOverviewMetricPresentation.stressTint(level: hero.stressLevel)
-    }
-
-    private var strainCompareDetailText: String {
-        // Plain-language pass (2026-07-31 device review): "Building baseline"
-        // under "Strain vs typical" told a first-time user nothing. Say what
-        // the card is waiting for — and say it with the same vocabulary the
-        // Today whiteboard uses for the identical >=7-day median gate
-        // (declutter batch 2b, 2026-08-20).
-        guard let median = strainCompareMedian else { return "Median needs 7 days" }
-        let medianText = String(format: "%.1f", median)
-        guard !metricIsPending(hero.strainValue) else { return "14-day median \(medianText)" }
-        let delta = hero.strain - median
-        let comparison: String
-        if abs(delta) < 0.5 {
-            comparison = "in line"
-        } else if delta < 0 {
-            comparison = "below typical"
-        } else {
-            comparison = "above typical"
-        }
-        return "14-day median \(medianText) · \(comparison)"
-    }
-
-    private var strainEvidenceDetailText: String {
-        if metricIsPending(hero.strainValue) { return "Learning" }
-        if strainIsPartial {
-            return overviewStrainLimitation?.compactState
-                ?? "Incomplete evidence"
-        }
-        // WHOOP's published band vocabulary gives the number a name
-        // (2026-08-05 parity): "Moderate · of 13.9" reads the effort level
-        // without opening the detail.
-        // §13.4: a fused value names itself as the labeled combined total.
-        let base = "\(Metrics.strainBandName(hero.strain)) · \(targetValueText)"
-        return hero.muscularTRIMP > 0
-            ? "\(base) · \(AtriaCompactMetricPresentation.combinedCardioLiftingMarker)"
-            : base
-    }
-
-    private var hrvDetailText: String {
-        if metricIsPending(hero.hrvValue) {
-            let detail = hero.hrvDetail.trimmingCharacters(in: .whitespacesAndNewlines)
-            return AtriaCompactMetricPresentation.isPendingValue(detail)
-                ? "Needs quiet rest or sleep"
-                : detail
-        }
-        let detail = hero.hrvDetail.lowercased()
-        if detail.contains("validated") { return "Checked" }
-        if detail.contains("personal baseline") || detail.contains("% kept") { return "Personal baseline" }
-        return hero.hrvDetail
-    }
-
-    private var vo2MaxDetailText: String {
-        // Calibration progress (2026-07-31 device review): a preliminary
-        // estimate names its real day count instead of a bare "Preliminary".
-        if let day = vo2MaxEstimate.preliminaryRestingDayCount {
-            return "Improving · day \(day) of \(PersonalBaseline.trustedMinimumSamples)"
-        }
-        let confidence = vo2MaxEstimate.confidence.capitalized
-        guard vo2MaxEstimate.trendText != "Learning" else { return confidence }
-        return "\(confidence) · \(vo2MaxEstimate.trendText)"
-    }
-
-    private var recoveryDetailText: String {
-        if hero.recoveryEstimate.percent == nil {
-            return recoveryUnavailableDetail
-        }
-        if hero.recoveryIsFromPreviousSleep {
-            return hero.recoveryDetail
-        }
-        if hero.recoveryEstimate.confidence == .unverified,
-           hero.recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV unavailable") {
-            return "Limited confidence · HRV unavailable"
-        }
-        let base: String
-        switch hero.recoveryEstimate.confidence {
-        case .validated:
-            // 2026-08-14 (assessment P0.3): reserved tier renders honestly.
-            base = "Personal baseline"
-        case .personalBaseline:
-            base = "Personal baseline"
-        case .unverified:
-            base = "Still improving"
-        case .learning:
-            if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains("HRV baseline") {
-                base = "Building baseline"
-            } else {
-                base = "Learning"
-            }
-        }
-        return hero.recoveryIsProvisional ? "\(base) · Early read" : base
-    }
-
-    private var recoveryUnavailableDetail: String {
-        AtriaRecoveryAvailabilityPresentation.detail(
-            estimateDetail: hero.recoveryEstimate.detail,
-            hrvBaselineSamples: hrvBaselineSamples,
-            restingBaselineSamples: restingBaselineSamples
-        )
-    }
-
-    // HRV/RHR baselines need trustedMinimumSamples (14) nights — so they carry
-    // the RAW recorded-night count (not the capped "day"), and their cards pass
-    // total: 14, unit: "Night" for honest "Night X of 14" progress (2026-07-08).
-    private var hrvCalibratingDay: Int? {
-        metricIsPending(hero.hrvValue) ? hrvBaselineSamples : nil
-    }
-
-    private var restingCalibratingDay: Int? {
-        metricIsPending(hero.restingHeartRateText) ? restingBaselineSamples : nil
-    }
-
-    // Partial data during calibration (user 2026-07-08 "start showing something
-    // when we can"): once a baseline value exists, show the real HRV/RHR built so
-    // far — a measured number — instead of hiding it behind the countdown ring.
-    // The detail says it's still calibrating and the zone judgment is suppressed
-    // (there is no trusted baseline to grade the number against yet), so nothing
-    // is fabricated or over-claimed.
-    private var hrvCalibratingValue: String? {
-        guard hrvCalibratingDay != nil, let hrv = baselineTarget.hrvBaseline else { return nil }
-        return "\(hrv)"
-    }
-
-    private var restingCalibratingValue: String? {
-        guard restingCalibratingDay != nil, let rhr = baselineTarget.restingBaseline else { return nil }
-        return "\(rhr)"
-    }
-
-    private func calibratingProgressDetail(samples: Int) -> String {
-        "Calibrating · night \(min(max(samples, 0), PersonalBaseline.trustedMinimumSamples)) of \(PersonalBaseline.trustedMinimumSamples)"
-    }
-
-    private var sleepCalibratingDay: Int? {
-        currentMainSleep == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
-    }
-
-    private var sleepEfficiencyCalibratingDay: Int? {
-        currentMainSleep?.sleepEfficiency == nil ? calibratingDay(sampleCount: sleepHistory.nights.count) : nil
-    }
-
-    private func calibratingDay(sampleCount: Int) -> Int {
-        min(max(sampleCount + 1, 1), 4)
-    }
-
-    private func metricDisplayValue(_ value: String) -> String {
-        metricIsPending(value) ? "--" : value
-    }
-
-    /// Delegates to the canonical check so this cannot miss "--" -- see
-    /// `AtriaCompactMetricPresentation.isPendingValue` for why the three copies
-    /// of this predicate had to be collapsed into one.
-    private func metricIsPending(_ value: String) -> Bool {
-        AtriaCompactMetricPresentation.isPendingValue(value)
-    }
-
-    private var recoveryZone: AtriaMetricZone? {
-        Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)
-    }
-
-    private var strainZone: AtriaMetricZone? {
-        Metrics.strainZone(strain: hero.strain,
-                           target: hero.guidance.target,
-                           greenBand: strainGreenBand,
-                           yellowBand: strainYellowBand)
-    }
-
-    private var strainIsPartial: Bool {
-        // The "≥" lower-bound marker was removed from strain 2026-08-27, at the
-        // owner's request and matching the same decision already made for steps.
-        // Partialness is still stated — `coverageText` prints "Partial · N%
-        // tracked" and the confidence string carries "partial" — so the honesty
-        // lives in words beside the number instead of a symbol glued to it.
-        // Partialness is read from the confidence string, which was always the
-        // real signal; the prefix check was a second, weaker copy of it.
-        hero.strainConfidence.localizedCaseInsensitiveContains("partial")
-    }
-
-    private var overviewStrainLimitation:
-        AtriaWorkoutMetricPresentation.StrainLimitation? {
-        guard strainIsPartial else { return nil }
-        let authority = AtriaHealthMetricAuthority.currentCycleProjection(
-            hero: hero,
-            sleepHistory: sleepHistory
-        )
-        guard let start = authority.cycleStart else {
-            return .incompleteEvidence
-        }
-        return AtriaWorkoutMetricPresentation.strainLimitation(
-            start: start,
-            end: Date(),
-            workouts: confirmedWorkouts,
-            dayWearCoverageFraction: authority.wearCoverageFraction
-        ) ?? .incompleteEvidence
-    }
-
-    private var qualifiedStrainZone: AtriaMetricZone? {
-        strainIsPartial ? nil : strainZone
-    }
-
-    private var loadReadinessTint: Color {
-        switch hero.loadReadinessText.lowercased() {
-        case "balanced", "primed":
-            return .green
-        case "strained":
-            return .orange
-        case "rundown":
-            return .red
-        default:
-            return .secondary
-        }
-    }
-
-    private var loadReadinessFraction: Double? {
-        switch hero.loadReadinessText.lowercased() {
-        case "primed":
-            return 0.88
-        case "balanced":
-            return 0.72
-        case "strained":
-            return 0.46
-        case "rundown":
-            return 0.22
-        default:
-            return nil
-        }
-    }
-
-    private var loadReadinessZone: AtriaMetricZone? {
-        let readiness = hero.loadReadinessText.lowercased()
-        guard readiness != "learning",
-              let level = loadReadinessZoneLevel else { return nil }
-
-        let recommendation: String
-        switch level {
-        case .green:
-            recommendation = readiness == "primed"
-                ? "Recent load is below your base. Add training gradually if recovery and schedule support it."
-                : "Training load is aligned with your longer baseline. Keep alternating hard and easy days."
-        case .yellow:
-            recommendation = "ACWR or monotony is near your watch band. Favor recovery, vary intensity, or keep the next session lighter."
-        case .red:
-            recommendation = "Training load is outside your edited red band. Keep the next session easy and rebuild gradually."
-        }
-
-        return AtriaMetricZone(level: level,
-                               title: "Training load readiness",
-                               current: hero.loadNarrative,
-                               targetSummary: loadTargetSummary,
-                               recommendation: recommendation,
-                               disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
-    }
-
-    private var loadReadinessZoneLevel: AtriaMetricZoneLevel? {
-        let ratio = parseDouble(hero.loadRatioText)
-        let monotony = parseDouble(hero.loadMonotonyText)
-        guard ratio != nil || monotony != nil else { return nil }
-
-        if let ratio,
-           ratio < loadACWRBadLow || ratio >= loadACWRBadHigh {
-            return .red
-        }
-        if let monotony, monotony >= loadMonotonyBad {
-            return .red
-        }
-        if let ratio,
-           ratio < loadACWRWatchLow || ratio > loadACWRWatchHigh {
-            return .yellow
-        }
-        if let monotony, monotony >= loadMonotonyWatch {
-            return .yellow
-        }
-        return .green
-    }
-
-    private var loadTargetSummary: String {
-        let target = String(format: "Editable target · ACWR green %.1f-%.1f, red <%.1f or >=%.1f; monotony watch %.1f, red %.1f.",
-                            loadACWRWatchLow,
-                            loadACWRWatchHigh,
-                            loadACWRBadLow,
-                            loadACWRBadHigh,
-                            loadMonotonyWatch,
-                            loadMonotonyBad)
-        return "\(target) Current: ACWR \(hero.loadRatioText) \(hero.loadACWRSignalText); monotony \(hero.loadMonotonyText) \(hero.loadMonotonySignalText)."
-    }
-
-    private func parseDouble(_ value: String) -> Double? {
-        Double(value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .filter { $0.isNumber || $0 == "." || $0 == "-" })
-    }
-
-    private var hrvZone: AtriaMetricZone? {
-        Metrics.hrvZone(parseInt(hero.hrvValue),
-                        baseline: hrvBaseline,
-                        baselineSamples: hrvBaselineSamples,
-                        baselineTrusted: hrvBaselineTrusted,
-                        baselineTarget: baselineTarget,
-                        greenRatio: hrvGreenRatio,
-                        yellowRatio: hrvYellowRatio)
-    }
-
-    private var restingHeartRateZone: AtriaMetricZone? {
-        Metrics.restingHeartRateZone(hero.restingHeartRate,
-                                     baseline: restingBaseline,
-                                     baselineSamples: restingBaselineSamples,
-                                     baselineTrusted: restingBaselineTrusted,
-                                     baselineTarget: baselineTarget,
-                                     greenDelta: restingGreenDelta,
-                                     yellowDelta: restingYellowDelta)
-    }
-
-    private var sleepEfficiencyZone: AtriaMetricZone? {
-        // Display authority: no zone color for an HR-only coverage number.
-        Metrics.sleepEfficiencyZone(currentMainSleep?.displaySleepEfficiency,
-                                    greenLower: sleepEfficiencyGreenLower,
-                                    yellowLower: sleepEfficiencyYellowLower)
-    }
-
-    private var sleepEfficiencyGlanceDetail: String {
-        guard let night = currentMainSleep else { return "After a confirmed sleep" }
-        if night.displaySleepEfficiency != nil { return "Duration-based" }
-        return night.sleepEfficiency == nil ? "After a confirmed sleep" : "Needs motion data"
-    }
-
-    private var sleepEfficiencyGlanceAccessibilityDetail: String {
-        guard let night = currentMainSleep else {
-            return "Sleep efficiency is building from saved sleep duration."
-        }
-        if night.displaySleepEfficiency != nil {
-            return "Sleep efficiency duration-based estimate \(night.sleepEfficiencyText)."
-        }
-        return night.sleepEfficiency == nil
-            ? "Sleep efficiency is building from saved sleep duration."
-            : "Sleep efficiency needs motion data for this night."
-    }
-
-    private var sleepDurationZone: AtriaMetricZone? {
-        // A nap or unconfirmed review item is not a deficient night — don't grade
-        // it against the nightly sleep goal (that turned "24m last nap" into a
-        // red alarm before the user had a chance to review it).
-        guard let latest = currentMainSleep,
-              latest.confirmed,
-              latest.isNapEvidence != true else { return nil }
-        return Metrics.sleepPerformanceZone(currentSleepPerformancePercent,
-                                            neededHours: currentSleepNeedHours)
-    }
-
-    private var stepsZone: AtriaMetricZone? {
-        let presentation = live.dailyStepPresentation
-        guard presentation.completeness != .partial
-                || presentation.source == .live,
-              let count = presentation.count,
-              count > 0 else { return nil }
-        let zone = Metrics.stepsZone(count, goal: stepsGoal)
-        return zone.map {
-            AtriaMetricZone(level: $0.level,
-                            title: "Strap steps goal",
-                            current: $0.current,
-                            targetSummary: $0.targetSummary,
-                            recommendation: $0.recommendation,
-                            disclaimer: "\(live.dailyStepPresentation.detailText). \(AtriaMetricZone.nonMedicalDisclaimer)")
-        }
-    }
-
-    private var strapStepsZone: AtriaMetricZone? {
-        guard sensorSummary.strapStepCount > 0 else { return nil }
-        let zone = Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)
-        return zone.map {
-            AtriaMetricZone(level: $0.level,
-                            title: "Strap movement goal",
-                            current: "\($0.current) Source: \(sensorSummary.agreementText).",
-                            targetSummary: $0.targetSummary,
-                            recommendation: "\($0.recommendation) Strap steps stay labeled as estimates until strap movement calibration is validated.",
-                            disclaimer: "Strap movement estimate. \(AtriaMetricZone.nonMedicalDisclaimer)")
-        }
-    }
-
-    private var activeCaloriesZone: AtriaMetricZone? {
-        Metrics.activeCaloriesZone(live.liveActiveCalories,
-                                   goal: caloriesGoal)
-    }
-
-    private var vo2TrendZone: AtriaMetricZone? {
-        Metrics.vo2TrendZone(vo2MaxEstimate,
-                             greenDelta: vo2GreenDelta,
-                             redDelta: vo2RedDelta)
-    }
-
-    private var biologicalAgeZone: AtriaMetricZone? {
-        Metrics.biologicalAgeZone(biologicalAgeSummary,
-                                  greenOlderDelta: biologicalAgeGreenOlderDelta,
-                                  yellowOlderDelta: biologicalAgeYellowOlderDelta)
-    }
-
-    private var respiratoryRateZone: AtriaMetricZone? {
-        return Metrics.respiratoryRateZone(currentMainSleep?.respiratoryRate,
-                                           baseline: sleepHistory.respiratoryBaselineMean,
-                                           baselineSamples: sleepHistory.respiratoryBaselineCount,
-                                           greenDelta: respiratoryGreenDelta,
-                                           yellowDelta: respiratoryYellowDelta)
-    }
-
-    private var skinTemperatureDeviationZone: AtriaMetricZone? {
-        Metrics.skinTemperatureDeviationZone(skinTemperatureSummary,
-                                             greenDelta: skinTemperatureGreenDelta,
-                                             yellowDelta: skinTemperatureYellowDelta)
-    }
-
-    private var bloodOxygenResearchZone: AtriaMetricZone? {
-        Metrics.bloodOxygenResearchZone(candidateFrames: sensorSummary.spo2CandidateFrames,
-                                        goalFrames: bloodOxygenCandidateGoal)
-    }
-
-    private func parseInt(_ value: String) -> Int? {
-        Int(value.trimmingCharacters(in: .whitespacesAndNewlines)
-            .filter { $0.isNumber })
-    }
-
-}
-
-private struct AtriaConditionalStringDraggable: ViewModifier {
-    let isEnabled: Bool
-    let payload: String
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isEnabled {
-            content.draggable(payload)
-        } else {
-            content
-        }
-    }
-}
-
-private struct AtriaDailyFocusRail: View, Equatable {
-    struct Item: Equatable, Identifiable {
-        let title: String
-        let value: String
-        let detail: String
-        let systemImage: String
-        let tint: Color
-        let progress: Double?
-
-        var id: String { title }
-    }
-
-    let items: [Item]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            focusBalanceLens
-
-            HStack(spacing: 8) {
-                ForEach(items) { item in
-                    focusCell(item)
-                }
-            }
-        }
-        .padding(8)
-        .atriaInsetCard(cornerRadius: 20, tint: .secondary)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var focusBalanceLens: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Daily lens")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(primaryReadout)
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            HStack(alignment: .bottom, spacing: 5) {
-                ForEach(items) { item in
-                    // `progress == nil` means unmeasured (learning/no samples);
-                    // render the 7pt base only — a fabricated 18%
-                    // fill under a "Learning" value implied real progress.
-                    Capsule(style: .continuous)
-                        .fill(item.tint.opacity(item.progress == nil ? 0.32 : 0.78))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 7 + CGFloat(
-                            item.progress.map { min(max($0, 0.06), 1) } ?? 0
-                        ) * 19)
-                        .accessibilityLabel("\(item.title) \(item.value)")
-                }
-            }
-            .frame(height: 28, alignment: .bottom)
-
-            Text("\(items.count)")
-                .font(.caption2.weight(.bold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 24)
-                .background(.secondary.opacity(0.10), in: Circle())
-                .accessibilityHidden(true)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Daily lens. \(items.map { "\($0.title) \($0.value)" }.joined(separator: ", ")).")
-    }
-
-    private var primaryReadout: String {
-        guard let first = items.first else { return "--" }
-        return "\(first.title) \(first.value)"
-    }
-
-    private func focusCell(_ item: Item) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 5) {
-                Image(systemName: item.systemImage)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(item.tint)
-                Text(item.title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            Text(item.value)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.66)
-
-            Text(item.detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.64)
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                Capsule(style: .continuous)
-                    .fill(item.tint.opacity(0.16))
-                    .overlay(alignment: .leading) {
-                        // Unmeasured (`nil`) draws no fill: the track alone is
-                        // the honest "no progress measured yet" state.
-                        if let progress = item.progress {
-                            Capsule(style: .continuous)
-                                .fill(item.tint.opacity(0.76))
-                                .frame(width: max(6, width * CGFloat(min(max(progress, 0.06), 1))))
-                        }
-                    }
-            }
-            .frame(height: 5)
-            .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 9)
-        .background(item.tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.title) \(item.value), \(item.detail)")
-    }
-}
-
-private struct AtriaTriRingLiveStatusHost: View {
-    let live: AtriaHomeModel.CoreLiveState
-    @ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore
-
-    var body: some View {
-        AtriaTriRingLiveStatusStrip(live: live, pulse: pulseStore.state)
-    }
-}
-
-private struct AtriaOverviewBreathworkSessionHost: View {
-    @ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore
-    let onDismiss: () -> Void
-
-    var body: some View {
-        AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,
-                               currentRRSamples: pulseStore.state.recentRRSamples,
-                               currentStress: nil,
-                               onSave: { _ in },
-                               onClose: onDismiss)
-    }
-}
 
 enum AtriaLiveSignalTruth {
     enum Tone: Equatable {
@@ -4664,20 +1410,57 @@ enum AtriaLiveSignalTruth {
         case unavailable
     }
 
+    /// THE single fresh-pulse rule, shared by every surface that renders the
+    /// connection state (Home pill, Strap screen, Overview focus card, Today
+    /// strip). An accepted pulse is stronger evidence than a lagging stream
+    /// projection: service discovery and the battery read can finish after HR
+    /// notifications resume, so no surface may say "Waiting"/"No signal" while
+    /// BPM is live.
+    ///
+    /// Before this was shared (owner UI-uniformity pass 2026-08-28) the three
+    /// surfaces each carried their own rule and provably disagreed at the same
+    /// instant — the Strap screen even contradicted itself, promoting its
+    /// status to "connected" BECAUSE a pulse existed and then labelling that
+    /// state "No signal".
+    ///
+    /// Low-battery states are deliberately NOT overridden: "Charge strap" and
+    /// "Low battery" outrank "Live" because they tell the wearer something the
+    /// pulse cannot.
+    static func freshPulseOverridesLaggingStream(
+        hasPulseSignal: Bool,
+        streamState: AtriaBLEManager.StrapStreamState
+    ) -> Bool {
+        guard hasPulseSignal else { return false }
+        switch streamState {
+        case .warming, .silentUnknown, .unknown: return true
+        case .live, .lowBatteryShutoff, .lowBatteryReducedDetail: return false
+        }
+    }
+
     static func isLive(status: AtriaBLEManager.Status,
                        streamState: AtriaBLEManager.StrapStreamState,
                        hasRecentHeartRate: Bool) -> Bool {
         guard status == .connected, hasRecentHeartRate else { return false }
-        return streamState == .live || streamState == .unknown
+        return streamState == .live
+            || freshPulseOverridesLaggingStream(hasPulseSignal: hasRecentHeartRate,
+                                                streamState: streamState)
     }
 
     static func valueText(status: AtriaBLEManager.Status,
                           streamState: AtriaBLEManager.StrapStreamState,
-                          hasRecentHeartRate: Bool) -> String {
+                          hasRecentHeartRate: Bool,
+                          attribution: AtriaStrapWearAttribution = .none) -> String {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
             return "Live"
+        }
+        if status == .connected {
+            switch attribution {
+            case .charging: return "Charging"
+            case .offWrist: return "Off wrist"
+            case .none: break
+            }
         }
         switch status {
         case .connected:
@@ -4694,7 +1477,10 @@ enum AtriaLiveSignalTruth {
         case .connecting, .scanning:
             return "Finding"
         case .disconnected:
-            return "Off"
+            // 2026-09-02: "Off" read as something the wearer switched off,
+            // and sat one word away from "Bluetooth off". The strap is
+            // simply not connected.
+            return "Not connected"
         case .poweredOff:
             return "Bluetooth off"
         }
@@ -4702,11 +1488,19 @@ enum AtriaLiveSignalTruth {
 
     static func detailText(status: AtriaBLEManager.Status,
                            streamState: AtriaBLEManager.StrapStreamState,
-                           hasRecentHeartRate: Bool) -> String {
+                           hasRecentHeartRate: Bool,
+                           attribution: AtriaStrapWearAttribution = .none) -> String {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
             return "Heart rate live"
+        }
+        if status == .connected {
+            switch attribution {
+            case .charging: return "No pulse while charging — resumes on wear"
+            case .offWrist: return "Strap streams but sees no pulse"
+            case .none: break
+            }
         }
         switch status {
         case .connected:
@@ -4731,7 +1525,8 @@ enum AtriaLiveSignalTruth {
 
     static func tone(status: AtriaBLEManager.Status,
                      streamState: AtriaBLEManager.StrapStreamState,
-                     hasRecentHeartRate: Bool) -> Tone {
+                     hasRecentHeartRate: Bool,
+                     attribution: AtriaStrapWearAttribution = .none) -> Tone {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
@@ -4740,6 +1535,8 @@ enum AtriaLiveSignalTruth {
         guard status == .connected else {
             return status == .connecting || status == .scanning ? .waiting : .unavailable
         }
+        // An attributed charging/off-wrist state is expected, not a fault.
+        if attribution != .none { return .waiting }
         switch streamState {
         case .lowBatteryShutoff, .lowBatteryReducedDetail, .silentUnknown:
             return .attention
@@ -4749,100 +1546,6 @@ enum AtriaLiveSignalTruth {
     }
 }
 
-private struct AtriaTriRingLiveStatusStrip: View, Equatable {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let live: AtriaHomeModel.CoreLiveState
-    let pulse: AtriaHomeModel.HeroPulseState
-
-    static func == (lhs: AtriaTriRingLiveStatusStrip, rhs: AtriaTriRingLiveStatusStrip) -> Bool {
-        lhs.live == rhs.live && lhs.pulse == rhs.pulse
-    }
-
-    private var tint: Color {
-        if let zone = pulse.heartRateZone { return zone.tint }
-        return pulse.hasPulseSignal ? .green : .secondary
-    }
-
-    private var zoneText: String {
-        pulse.heartRateZone?.shortLabel ?? (pulse.hasPulseSignal ? "Live" : "Waiting")
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Label {
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(pulse.heartRateText)
-                        .font(.subheadline.weight(.bold).monospacedDigit())
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: pulse.heartRateText)
-                        .foregroundStyle(pulse.heartRateZone != nil ? tint : .primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .layoutPriority(1)
-                    Text("bpm")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            } icon: {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
-            }
-            .labelStyle(.titleAndIcon)
-
-            Text(zoneText)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(tint.opacity(0.12), in: Capsule(style: .continuous))
-
-            if pulse.heartRateBroadcastActive {
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(Color.cyan)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.cyan.opacity(0.12), in: Capsule(style: .continuous))
-                    .accessibilityLabel("Broadcast heart rate active")
-            }
-
-            Spacer(minLength: 0)
-
-            if live.batteryLevel >= 0 {
-                Label {
-                    Text(live.batteryText)
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: live.batteryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                } icon: {
-                    Image(systemName: live.batterySymbol)
-                        .font(.caption.weight(.bold))
-                }
-                .foregroundStyle(live.batteryShowsPowered ? Color.green : .secondary)
-                .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        // HR-section accent: when a live zone is known, wash the strip in the
-        // zone tint so the current effort reads at a glance; stay neutral otherwise.
-        .background(pulse.heartRateZone != nil ? tint.opacity(0.10) : .secondary.opacity(0.06),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Live status. Heart rate \(pulse.heartRateText) beats per minute. Zone \(zoneText).\(pulse.heartRateBroadcastActive ? " Broadcast heart rate active." : "")\(batteryAccessibilitySuffix)")
-    }
-
-    private var batteryAccessibilitySuffix: String {
-        live.batteryLevel >= 0 ? " \(live.batteryAccessibilityText)" : ""
-    }
-}
 
 // Internal (was private) so the Plan tab can reuse it — see AtriaPlanTab.
 struct AtriaWeeklyPlanCard: View, Equatable {
@@ -4868,7 +1571,7 @@ struct AtriaWeeklyPlanCard: View, Equatable {
             }
         }
         .padding(14)
-        .atriaInsetCard(cornerRadius: 20, tint: Metrics.electricStrain)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: Metrics.electricStrain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
     }
@@ -4915,13 +1618,17 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 6)
-                    Text(target.progressText)
+                    // Learning and withheld targets are not ready: the same
+                    // words and empty gauge as the Today row (2026-09-02).
+                    Text(target.isLearning ? (target.learningProgressText ?? "Learning")
+                         : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
+                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
                         .lineLimit(1)
                 }
 
-                Gauge(value: target.progress) {
+                Gauge(value: target.isLearning ? target.learningProgress
+                      : target.isWithheld ? 0 : target.progress) {
                     EmptyView()
                 }
                 .gaugeStyle(.accessoryLinearCapacity)
@@ -4940,61 +1647,7 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
     }
 }
 
-private enum AtriaReportPeriod {
-    case week
-    case month
 
-    var label: String {
-        switch self {
-        case .week: return "Week"
-        case .month: return "Month"
-        }
-    }
-}
-
-private struct AtriaWeeklyReportHighlightRow: View, Equatable {
-    let report: WeeklyReport
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "calendar.badge.clock")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.cyan)
-                .frame(width: 34, height: 34)
-                .background(Color.cyan.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Weekly report")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(heroText)
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: .cyan)
-        .accessibilityLabel("Weekly report. \(heroText).")
-    }
-
-    private var heroText: String {
-        guard let recovery = report.recoveryAvg else { return "Recovery building" }
-        guard let delta = report.recoveryDeltaVsPriorWeek else { return "Recovery \(recovery)%" }
-        return delta >= 0 ? "Recovery \(recovery)% up \(delta)" : "Recovery \(recovery)% down \(abs(delta))"
-    }
-
-    private var consistencyText: String {
-        report.sleepConsistencyPct.map { "Routine \($0)%" } ?? "Routine building"
-    }
-}
 
 struct AtriaWeeklyReportSheet: View {
     let report: WeeklyReport
@@ -5002,8 +1655,17 @@ struct AtriaWeeklyReportSheet: View {
     /// fabricating any points. Existing callers that only have one report keep
     /// the current-week experience.
     var rollups: [DailyRollupStoreEntry] = []
+    /// Closed-cycle strain keyed by predominant civil day. Applied when this
+    /// sheet rebuilds a prior week so the average and hardest-day cannot
+    /// disagree with the strain chart for the same date.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
+    /// Qualified sleep windows for the monthly report's consistency score.
+    /// Empty means the monthly sheet says "Schedule building" rather than
+    /// guessing from bedtime-only rollups.
+    var sleepNights: [SleepHistorySnapshot.Night] = []
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
+    @State private var showMonthlyReport = false
     @State private var weekOffset = 0
     @State private var selectedTrend: WeeklyTrend = .recovery
 
@@ -5025,7 +1687,11 @@ struct AtriaWeeklyReportSheet: View {
                         // again as an eyebrow told the reader nothing they had
                         // not just read.
                         Text(heroText)
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            // Report headline (2026-09-02): the page's own
+                            // title under an inline nav bar, so it takes the
+                            // page-title token and scales with Dynamic Type;
+                            // it was a fixed 26pt on both report sheets.
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                             .lineLimit(3)
                             .minimumScaleFactor(0.8)
                             .fixedSize(horizontal: false, vertical: true)
@@ -5037,7 +1703,7 @@ struct AtriaWeeklyReportSheet: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
-                    .atriaInsetCard(cornerRadius: 18, tint: .cyan)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .cyan)
 
                     // Grouped stat rows (UX audit density tail): six identical
                     // boxes read as a wall; two kickers give the eye a rest.
@@ -5048,14 +1714,16 @@ struct AtriaWeeklyReportSheet: View {
                                                  detail: recoveryDeltaText,
                                                  systemImage: "heart.fill",
                                                  tint: .green)
+                        // Prior-week deltas on all three rows (2026-09-02):
+                        // the recovery row compared while these two described.
                         AtriaWeeklyReportStatRow(title: "Strain average",
                                                  value: strainAverageText,
-                                                 detail: "Daily strain across the week",
+                                                 detail: WeeklyReport.strainDeltaText(displayedReport.strainDeltaVsPriorWeek),
                                                  systemImage: "flame.fill",
                                                  tint: Metrics.electricStrain)
                         AtriaWeeklyReportStatRow(title: "Sleep average",
                                                  value: sleepAverageText,
-                                                 detail: "Nightly duration across the week",
+                                                 detail: WeeklyReport.sleepDeltaText(displayedReport.sleepDeltaVsPriorWeekSeconds),
                                                  systemImage: "bed.double.fill",
                                                  tint: Metrics.electricSleep)
                     }
@@ -5082,7 +1750,7 @@ struct AtriaWeeklyReportSheet: View {
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(14)
-                            .atriaInsetCard(cornerRadius: 16, tint: .orange)
+                            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .orange)
                     }
 
                     Button {
@@ -5100,6 +1768,15 @@ struct AtriaWeeklyReportSheet: View {
             .navigationTitle("Weekly report")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    // The monthly report engine (MonthlyReport) lost its only
+                    // surface when the unreachable Overview tree was deleted
+                    // (76737dd3). It lives here now, one tap from the weekly
+                    // view it extends.
+                    Button("Month") { showMonthlyReport = true }
+                        .font(.body.weight(.semibold))
+                        .accessibilityHint("Opens the monthly report")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .font(.body.weight(.semibold))
@@ -5107,6 +1784,13 @@ struct AtriaWeeklyReportSheet: View {
             }
             .sheet(isPresented: $showShareSheet) {
                 AtriaWeeklyShareSheet(snapshot: makeWeeklyShareSnapshot())
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $showMonthlyReport) {
+                AtriaMonthlyReportSheet(rollups: rollups,
+                                        sleepNights: sleepNights,
+                                        cycleStrainByDisplayDay: cycleStrainByDisplayDay)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
@@ -5142,7 +1826,10 @@ struct AtriaWeeklyReportSheet: View {
             return report
         }
         let window = rollups.filter { $0.day >= earliest && $0.day <= anchor }
-        return WeeklyReport(rollups: window, now: anchor, calendar: reportCalendar)
+        return WeeklyReport(rollups: window,
+                            now: anchor,
+                            calendar: reportCalendar,
+                            cycleStrainByDisplayDay: cycleStrainByDisplayDay)
     }
 
     private var canNavigateToPreviousWeek: Bool {
@@ -5258,27 +1945,40 @@ struct AtriaWeeklyReportSheet: View {
 
     private var displayedWeekRollups: [DailyRollupStoreEntry] {
         guard let start = displayedReport.weekStart, let end = displayedReport.weekEnd else { return [] }
-        return rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
+        let week = rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
+        // Same overlay the averages, hardest day, and strain chart use. The
+        // bars used to read the civil rollup, so a shifted sleeper's tallest
+        // bar could disagree with the hardest-day row above it.
+        return WeeklyReport.applyingCycleStrain(week, cycleStrainByDisplayDay, calendar: reportCalendar)
     }
 
-    private var selectedTrendPoints: [(day: Date, value: Double)] {
+    /// Each bar carries its own tint from the app's colour authorities
+    /// (2026-09-02): recovery through the zone palette, strain in its single
+    /// cool hue (recovery owns the green/amber/red axis), sleep by percent of
+    /// the night's own need when the rollup carries it — never fixed hours.
+    private var selectedTrendPoints: [(day: Date, value: Double, tint: Color)] {
         switch selectedTrend {
         case .recovery:
             if !displayedWeekRollups.isEmpty {
                 return displayedWeekRollups.compactMap { entry in
-                    entry.recovery.map { (entry.day, Double($0)) }
+                    entry.recovery.map { (entry.day, Double($0), Metrics.recoveryColor($0)) }
                 }
             }
             return (displayedReport.recoverySeries ?? []).compactMap { day in
-                day.recovery.map { (day.day, Double($0)) }
+                day.recovery.map { (day.day, Double($0), Metrics.recoveryColor($0)) }
             }
         case .strain:
             return displayedWeekRollups.compactMap { entry in
-                entry.strain.map { (entry.day, $0) }
+                entry.strain.map { (entry.day, $0, Metrics.strainColor($0)) }
             }
         case .sleep:
             return displayedWeekRollups.compactMap { entry in
-                entry.sleepSeconds.map { (entry.day, $0 / 3_600) }
+                entry.sleepSeconds.map { seconds in
+                    (entry.day,
+                     seconds / 3_600,
+                     entry.sleepPerformance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
+                        ?? Metrics.electricSleep)
+                }
             }
         }
     }
@@ -5291,20 +1991,31 @@ struct AtriaWeeklyReportSheet: View {
         }
     }
 
-    private func selectedTrendColor(_ value: Double) -> Color {
-        switch selectedTrend {
-        case .recovery: return Metrics.recoveryColor(Int(value.rounded()))
-        case .strain: return value >= 13 ? .red : (value >= 8 ? .yellow : .green)
-        case .sleep: return value >= 7.5 ? .green : (value >= 6.5 ? .yellow : .red)
-        }
-    }
-
     private var selectedTrendThresholdLabel: String {
         switch selectedTrend {
         case .recovery: return "Green 67–100 · yellow 34–66 · red 0–33"
-        case .strain: return "Green <8 · yellow 8–12.9 · red 13+"
-        case .sleep: return "Green 7.5h+ · yellow 6.5–7.4h · red <6.5h"
+        case .strain: return "One hue · bar height is the day's strain"
+        case .sleep: return "By % of sleep need · green 85–110 · yellow 70–84 · red <70"
         }
+    }
+
+    /// Seven ISO weekdays (Monday first) of the week containing `anchor`.
+    /// The axis is this window, not the days that happen to have a reading
+    /// (owner 2026-09-02: two recorded days must not stretch as a full week).
+    static func trendWeekDays(anchor: Date, calendar: Calendar) -> [Date] {
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return [] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: interval.start) }
+    }
+
+    /// Covers every `unit: .day` bar of that week. `DateInterval.end` is the
+    /// next Monday; Sunday's bar occupies [Sunday, next Monday).
+    static func trendWeekXDomain(anchor: Date, calendar: Calendar) -> ClosedRange<Date>? {
+        guard let interval = calendar.dateInterval(of: .weekOfYear, for: anchor) else { return nil }
+        return interval.start...interval.end
+    }
+
+    private var weeklyTrendDays: [Date] {
+        Self.trendWeekDays(anchor: displayedReport.generatedAt, calendar: reportCalendar)
     }
 
     private var weeklyTrendChart: some View {
@@ -5328,26 +2039,30 @@ struct AtriaWeeklyReportSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
             } else {
+                let weekDays = weeklyTrendDays
                 Chart {
                     ForEach(selectedTrendPoints, id: \.day) { point in
                         BarMark(x: .value("Day", point.day, unit: .day),
                                 y: .value(selectedTrend.rawValue, point.value),
                                 width: .fixed(18))
-                            .foregroundStyle(selectedTrendColor(point.value))
+                            .foregroundStyle(point.tint)
                             .cornerRadius(4)
                     }
                 }
                 .chartYScale(domain: selectedTrendDomain)
+                .chartXScale(domain: Self.trendWeekXDomain(anchor: displayedReport.generatedAt,
+                                                           calendar: reportCalendar) ?? Date()...Date())
                 .chartYAxis {
                     AxisMarks(position: .trailing, values: .automatic(desiredCount: 4))
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisMarks(values: weekDays) { _ in
                         AxisGridLine()
                         // Bars only here, and a `unit: .day` bar spans its
                         // whole day — so the weekday must sit at the middle of
                         // that span, not at midnight where the bar's left edge
-                        // is.
+                        // is. Marks are one day apart, so `centered:` is half
+                        // a day — noon — not half a week.
                         AxisValueLabel(format: .dateTime.weekday(.abbreviated),
                                        centered: true)
                     }
@@ -5402,7 +2117,7 @@ struct AtriaWeeklyReportSheet: View {
         AtriaWeeklyShareSnapshot(date: displayedReport.generatedAt,
                                  title: "My week on Atria",
                                  recoveryAverage: recoveryAverageText,
-                                 recoveryDelta: recoveryDeltaText,
+                                 recoveryDelta: displayedReport.recoveryDeltaVsPriorWeek == nil ? "" : recoveryDeltaText,
                                  sleepConsistency: consistencyText,
                                  bestDay: dayText(displayedReport.bestDay),
                                  hardestDay: dayText(displayedReport.hardestDay),
@@ -5416,128 +2131,312 @@ struct AtriaWeeklyReportSheet: View {
     }()
 }
 
-private struct AtriaMonthlyReportHighlightRow: View, Equatable {
-    let report: MonthlyReport
 
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "calendar")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(Color.cyan)
-                .frame(width: 34, height: 34)
-                .background(Color.cyan.opacity(0.12), in: Circle())
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Monthly report")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(heroText)
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            Spacer(minLength: 8)
-
-            Text(routineText)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.tertiary)
-        }
-        .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: .cyan)
-        .accessibilityLabel("Monthly report. \(heroText). \(routineText).")
-    }
-
-    private var heroText: String {
-        guard let recovery = report.recoveryAvg else { return "Recovery building" }
-        guard let delta = report.recoveryDeltaVsPriorMonth else { return "Recovery \(recovery)%" }
-        return delta >= 0 ? "Recovery \(recovery)% up \(delta)" : "Recovery \(recovery)% down \(abs(delta))"
-    }
-
-    private var routineText: String {
-        guard let score = report.consistencyScore else { return "Schedule building" }
-        switch score {
-        case 85...: return "Bed/wake steady"
-        case 65..<85: return "Bed/wake varies"
-        default: return "Bed/wake shifting"
-        }
-    }
-}
-
+/// Calendar-month report: the same honest stat rows as the weekly sheet,
+/// over the month, with a prior-month comparison. Below
+/// `MonthlyReport.minimumDaysForStats` days of data every stat is withheld
+/// and the hero says so — never a guess (2026-09-02; the engine had no
+/// surface since the Overview tree was removed).
 struct AtriaMonthlyReportSheet: View {
-    let report: MonthlyReport
+    var rollups: [DailyRollupStoreEntry] = []
+    var sleepNights: [SleepHistorySnapshot.Night] = []
+    /// Closed-cycle strain keyed by predominant civil day. Applied so the
+    /// monthly average, total, hardest week, and by-day strip cannot
+    /// disagree with the strain chart for the same date.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
+    var now: Date = Date()
     @Environment(\.dismiss) private var dismiss
+    @State private var monthOffset = 0
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar
+    }
+
+    private var anchor: Date {
+        calendar.date(byAdding: .month, value: -monthOffset, to: now) ?? now
+    }
+
+    private var report: MonthlyReport {
+        MonthlyReport(rollups: rollups,
+                      sleepNights: sleepNights,
+                      now: anchor,
+                      calendar: calendar,
+                      cycleStrainByDisplayDay: cycleStrainByDisplayDay)
+    }
+
+    private struct MonthDayCell: Identifiable {
+        let id: Int
+        let day: Date
+        let recovery: Int?
+        let strain: Double?
+        let sleepPerformance: Int?
+    }
+
+    /// One cell per calendar day of the displayed month. A day's recovery and
+    /// sleep are the rollup's own values or nil; strain is the same cycle
+    /// overlay the monthly totals use. Nothing is interpolated.
+    private var monthDayCells: [MonthDayCell] {
+        guard let interval = calendar.dateInterval(of: .month, for: anchor) else { return [] }
+        var recoveryByDay: [Date: Int] = [:]
+        var strainByDay: [Date: Double] = [:]
+        var sleepByDay: [Date: Int] = [:]
+        let strainAligned = MonthlyReport.applyingCycleStrain(rollups,
+                                                              cycleStrainByDisplayDay,
+                                                              calendar: calendar)
+        for entry in strainAligned {
+            let key = calendar.startOfDay(for: entry.day)
+            if let recovery = entry.recovery, recoveryByDay[key] == nil { recoveryByDay[key] = recovery }
+            if let strain = entry.strain, strainByDay[key] == nil { strainByDay[key] = strain }
+            if let sleep = entry.sleepPerformance, sleepByDay[key] == nil { sleepByDay[key] = sleep }
+        }
+        var cells: [MonthDayCell] = []
+        var day = interval.start
+        var index = 1
+        while day < interval.end {
+            let key = calendar.startOfDay(for: day)
+            cells.append(MonthDayCell(id: index, day: day,
+                                      recovery: recoveryByDay[key],
+                                      strain: strainByDay[key],
+                                      sleepPerformance: sleepByDay[key]))
+            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+            day = next
+            index += 1
+        }
+        return cells
+    }
+
+    private var scoredDayCount: Int {
+        monthDayCells.filter { $0.recovery != nil }.count
+    }
+
+    private var strainDayCount: Int {
+        monthDayCells.filter { $0.strain != nil }.count
+    }
+
+    private var sleepDayCount: Int {
+        monthDayCells.filter { $0.sleepPerformance != nil }.count
+    }
+
+    /// Days of the month that have happened: the whole month for a past
+    /// month, today's day-of-month for the current one.
+    private var elapsedDayCount: Int {
+        let cells = monthDayCells
+        guard let last = cells.last else { return 0 }
+        if last.day < calendar.startOfDay(for: now) { return cells.count }
+        return calendar.component(.day, from: now)
+    }
+
+    /// Month at a glance (2026-09-02): one cell per day, tinted by that day's
+    /// recovery zone through the same authority the Today ring uses. Unscored
+    /// days stay hollow; the block is omitted until one day has scored.
+    private var recoveryByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let recovery = cell.recovery {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill((Metrics.recoveryZone(recovery)?.tint ?? Color.secondary).opacity(0.9))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            monthDayLabels(count: cells.count)
+            Text("\(scoredDayCount) of \(elapsedDayCount) days scored")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricGreen)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Recovery by day, \(scoredDayCount) of \(elapsedDayCount) days scored")
+    }
+
+    /// Strain by day (2026-09-02): the same cells in strain's single cool
+    /// hue, magnitude as intensity — the palette rule keeps effort off the
+    /// recovery colour axis and lets the fill carry the size. Days without
+    /// a strain value stay hollow; the block is omitted until one has one.
+    private var strainByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let strain = cell.strain {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(Self.strainIntensity(strain)))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            monthDayLabels(count: cells.count)
+            Text("\(strainDayCount) of \(elapsedDayCount) days with strain")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricStrain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Strain by day, \(strainDayCount) of \(elapsedDayCount) days with strain")
+    }
+
+    /// Sleep by day (2026-09-02): each night's performance as a percent of
+    /// its own need, tinted through the same sleep zone function the ring
+    /// uses. Nights without a performance figure stay hollow; the block is
+    /// omitted until one night has one. Completes the ring trio at a glance.
+    private var sleepByDayStrip: some View {
+        let cells = monthDayCells
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 3) {
+                ForEach(cells) { cell in
+                    if let percent = cell.sleepPerformance {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(AtriaTriRing.zoneTint(.sleep, percent: Double(percent)).opacity(0.9))
+                    } else {
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .strokeBorder(.quaternary, lineWidth: 1)
+                    }
+                }
+            }
+            .frame(height: 18)
+            monthDayLabels(count: cells.count)
+            Text("\(sleepDayCount) of \(elapsedDayCount) nights with sleep")
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Metrics.electricSleep)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Sleep by day, \(sleepDayCount) of \(elapsedDayCount) nights with sleep")
+    }
+
+    /// Fill intensity for a strain cell: linear over the 0–21 scale with a
+    /// floor so a light day is still visibly a day, never a hollow cell.
+    static func strainIntensity(_ strain: Double) -> Double {
+        let fraction = max(0, min(1, strain / 21))
+        return 0.22 + 0.78 * fraction
+    }
+
+    private func monthDayLabels(count: Int) -> some View {
+        HStack {
+            Text("1")
+            Spacer(minLength: 0)
+            Text("15")
+            Spacer(minLength: 0)
+            Text("\(count)")
+        }
+        .font(.caption2.weight(.semibold).monospacedDigit())
+        .foregroundStyle(.secondary)
+    }
+
+    private var canNavigateToPreviousMonth: Bool {
+        guard let previous = calendar.date(byAdding: .month, value: -1, to: anchor),
+              let start = calendar.dateInterval(of: .month, for: previous)?.start else { return false }
+        return rollups.contains { $0.day < calendar.dateInterval(of: .month, for: anchor)!.start && $0.day >= start }
+            || rollups.contains { $0.day < start }
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Monthly report")
-                            .font(.headline.weight(.bold))
-                            .foregroundStyle(.secondary)
                         Text(heroText)
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                            // Report headline (2026-09-02): the page's own
+                            // title under an inline nav bar, so it takes the
+                            // page-title token and scales with Dynamic Type;
+                            // it was a fixed 26pt on both report sheets.
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                             .lineLimit(3)
                             .minimumScaleFactor(0.8)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(monthTitleText)
+                        Text(monthText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
+                        if report.isBuilding {
+                            Text("\(report.daysWithData) of \(MonthlyReport.minimumDaysForStats) days with data")
+                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        monthNavigator
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
-                    .atriaInsetCard(cornerRadius: 18, tint: .cyan)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: .cyan)
 
-                    // Same grouping idiom as the weekly report (UX audit
-                    // density tail): month load vs. body signals.
-                    monthlyKicker("Month at a glance")
-                    VStack(spacing: 10) {
-                        AtriaWeeklyReportStatRow(title: "Recovery average",
-                                                 value: recoveryAverageText,
-                                                 detail: recoveryDeltaText,
-                                                 systemImage: "heart.fill",
-                                                 tint: .green)
-                        AtriaWeeklyReportStatRow(title: "Total strain",
-                                                 value: totalStrainText,
-                                                 detail: hardestWeekText,
-                                                 systemImage: "flame.fill",
-                                                 tint: Metrics.electricStrain)
-                        AtriaWeeklyReportStatRow(title: "Sleep sufficiency",
-                                                 value: sleepPerformanceText,
-                                                 detail: sleepPerformanceDeltaText,
-                                                 systemImage: "moon.zzz.fill",
-                                                 tint: .indigo)
+                    if scoredDayCount > 0 {
+                        kicker("Recovery by day")
+                        recoveryByDayStrip
                     }
 
-                    monthlyKicker("Body signals")
-                    VStack(spacing: 10) {
-                        AtriaWeeklyReportStatRow(title: "Resting heart rate",
-                                                 value: rhrText,
-                                                 detail: rhrDeltaText,
-                                                 systemImage: "waveform.path.ecg",
-                                                 tint: .pink)
-                        AtriaWeeklyReportStatRow(title: "HRV",
-                                                 value: hrvText,
-                                                 detail: hrvDeltaText,
-                                                 systemImage: "waveform.path.ecg.rectangle",
-                                                 tint: .teal)
-                        AtriaWeeklyReportStatRow(title: "Bedtime consistency",
-                                                 value: consistencyText,
-                                                 detail: "Bedtime routine from daily rollups",
-                                                 systemImage: "clock.fill",
-                                                 tint: Metrics.electricYellow)
+                    if strainDayCount > 0 {
+                        kicker("Strain by day")
+                        strainByDayStrip
+                    }
+
+                    if sleepDayCount > 0 {
+                        kicker("Sleep by day")
+                        sleepByDayStrip
+                    }
+
+                    if !report.isBuilding {
+                        kicker("Month averages")
+                        VStack(spacing: 10) {
+                            AtriaWeeklyReportStatRow(title: "Recovery average",
+                                                     value: report.recoveryAvg.map { "\($0)%" } ?? "--",
+                                                     detail: deltaText(report.recoveryDeltaVsPriorMonth, unit: "%"),
+                                                     systemImage: "heart.fill",
+                                                     tint: Metrics.electricGreen)
+                            AtriaWeeklyReportStatRow(title: "Sleep performance",
+                                                     value: report.sleepPerformanceAvg.map { "\($0)%" } ?? "--",
+                                                     detail: deltaText(report.sleepPerformanceDeltaVsPriorMonth, unit: "%"),
+                                                     systemImage: "bed.double.fill",
+                                                     tint: Metrics.electricSleep)
+                            AtriaWeeklyReportStatRow(title: "Resting HR",
+                                                     value: report.rhrAvg.map { "\($0) bpm" } ?? "--",
+                                                     detail: deltaText(report.rhrDeltaVsPriorMonth, unit: " bpm"),
+                                                     systemImage: "heart.circle.fill",
+                                                     tint: Metrics.electricRHR)
+                            AtriaWeeklyReportStatRow(title: "HRV",
+                                                     value: report.hrvAvgMs.map { "\(Int($0.rounded())) ms" } ?? "--",
+                                                     detail: deltaText(report.hrvDeltaVsPriorMonthMs.map { Int($0.rounded()) }, unit: " ms"),
+                                                     systemImage: "waveform.path.ecg",
+                                                     tint: Metrics.electricHRV)
+                        }
+
+                        kicker("Load")
+                        VStack(spacing: 10) {
+                            AtriaWeeklyReportStatRow(title: "Total strain",
+                                                     value: report.totalStrain.map { String(format: "%.0f", $0) } ?? "--",
+                                                     detail: MonthlyReport.strainDetailText(dailyAverage: report.strainDailyAverage,
+                                                                                            delta: report.strainDailyAverageDeltaVsPriorMonth),
+                                                     systemImage: "flame.fill",
+                                                     tint: Metrics.electricStrain)
+                            AtriaWeeklyReportStatRow(title: "Hardest week",
+                                                     value: report.hardestWeek.map { "Week of \(Self.dayFormatter.string(from: $0.weekStart))" } ?? "--",
+                                                     detail: report.hardestWeek?.totalStrain.map { String(format: "%.0f strain that week", $0) } ?? "No strain recorded",
+                                                     systemImage: "calendar",
+                                                     tint: Metrics.electricStrain)
+                        }
+
+                        kicker("Schedule")
+                        AtriaWeeklyReportStatRow(title: "Sleep consistency",
+                                                 value: report.consistencyScore.map { "\($0)%" } ?? "--",
+                                                 detail: report.consistencyScore == nil
+                                                    ? "Schedule building · needs qualified nights"
+                                                    : "Bed and wake regularity across the month",
+                                                 systemImage: "moon.zzz.fill",
+                                                 tint: Metrics.electricSleep)
                     }
                 }
-                // 12pt gutter (2026-08-05 width audit); vertical inset stays 18.
                 .padding(.horizontal, 12)
                 .padding(.vertical, 18)
             }
@@ -5552,21 +2451,8 @@ struct AtriaMonthlyReportSheet: View {
         }
     }
 
-    private func monthlyKicker(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption2.weight(.black))
-            .foregroundStyle(.tertiary)
-            .kerning(0.8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    /// Narrative hero — same honesty-gated treatment as the weekly report
-    /// (dedup audit 2026-07-07): clauses only from real fields, associative
-    /// phrasing, numbers owned by the stat rows.
     private var heroText: String {
-        guard let _ = report.recoveryAvg else { return "Still building this month's picture" }
-
+        guard !report.isBuilding else { return "Building this month's picture" }
         var clauses: [String] = []
         if let delta = report.recoveryDeltaVsPriorMonth {
             if delta >= 3 { clauses.append("Recovery climbed") }
@@ -5575,68 +2461,68 @@ struct AtriaMonthlyReportSheet: View {
         } else {
             clauses.append("Recovery on the board")
         }
-        if let sleepDelta = report.sleepPerformanceDeltaVsPriorMonth {
-            if sleepDelta >= 3 { clauses.append("while sleep improved") }
-            else if sleepDelta <= -3 { clauses.append("while sleep slipped") }
-            else { clauses.append("with steady sleep") }
+        if let strain = report.totalStrain, strain > 0 {
+            clauses.append(String(format: "with %.0f strain across the month", strain))
+        }
+        if let sleep = report.sleepPerformanceAvg {
+            if sleep >= 85 { clauses.append("while sleep met need most nights") }
+            else if sleep >= 70 { clauses.append("while sleep hovered near need") }
+            else { clauses.append("while sleep ran short") }
         }
         return clauses.joined(separator: " ")
     }
 
-    private var monthTitleText: String {
-        Self.monthFormatter.string(from: report.generatedAt)
+    private var monthText: String {
+        Self.monthFormatter.string(from: anchor)
     }
 
-    private var recoveryAverageText: String {
-        report.recoveryAvg.map { "\($0)%" } ?? "--"
+    private func deltaText(_ delta: Int?, unit: String) -> String {
+        guard let delta else { return "No prior month to compare" }
+        if delta == 0 { return "Same as last month" }
+        return "\(delta > 0 ? "+" : "")\(delta)\(unit) vs last month"
     }
 
-    private var recoveryDeltaText: String {
-        guard let delta = report.recoveryDeltaVsPriorMonth else { return "Prior month comparison building" }
-        return delta >= 0 ? "+\(delta) vs prior month" : "\(delta) vs prior month"
-    }
+    private var monthNavigator: some View {
+        HStack(spacing: 4) {
+            Button {
+                guard canNavigateToPreviousMonth else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { monthOffset += 1 }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canNavigateToPreviousMonth)
+            .accessibilityLabel("Previous month")
 
-    private var totalStrainText: String {
-        report.totalStrain.map { String(format: "%.1f", $0) } ?? "--"
-    }
+            Spacer(minLength: 0)
+            Text(monthOffset == 0 ? "Current month" : "\(monthOffset) month\(monthOffset == 1 ? "" : "s") ago")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
 
-    private var hardestWeekText: String {
-        guard let hardestWeek = report.hardestWeek, let strain = hardestWeek.totalStrain else {
-            return "Hardest week building"
+            Button {
+                guard monthOffset > 0 else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { monthOffset -= 1 }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(monthOffset == 0)
+            .accessibilityLabel("Next month")
         }
-        return "Hardest week \(Self.weekFormatter.string(from: hardestWeek.weekStart)) · \(String(format: "%.1f", strain)) strain"
     }
 
-    private var sleepPerformanceText: String {
-        report.sleepPerformanceAvg.map { "\($0)%" } ?? "--"
-    }
-
-    private var sleepPerformanceDeltaText: String {
-        guard let delta = report.sleepPerformanceDeltaVsPriorMonth else { return "Prior month comparison building" }
-        return delta >= 0 ? "+\(delta) vs prior month" : "\(delta) vs prior month"
-    }
-
-    private var rhrText: String {
-        report.rhrAvg.map { "\($0) bpm" } ?? "--"
-    }
-
-    private var rhrDeltaText: String {
-        guard let delta = report.rhrDeltaVsPriorMonth else { return "Prior month comparison building" }
-        return delta >= 0 ? "+\(delta) bpm vs prior month" : "\(delta) bpm vs prior month"
-    }
-
-    private var hrvText: String {
-        report.hrvAvgMs.map { "\(Int($0.rounded())) ms" } ?? "--"
-    }
-
-    private var hrvDeltaText: String {
-        guard let delta = report.hrvDeltaVsPriorMonthMs else { return "Prior month comparison building" }
-        let rounded = Int(delta.rounded())
-        return rounded >= 0 ? "+\(rounded) ms vs prior month" : "\(rounded) ms vs prior month"
-    }
-
-    private var consistencyText: String {
-        report.consistencyScore.map { "\($0)%" } ?? "--"
+    private func kicker(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.caption2.weight(.black))
+            .foregroundStyle(.tertiary)
+            .kerning(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
     }
 
     private static let monthFormatter: DateFormatter = {
@@ -5645,7 +2531,7 @@ struct AtriaMonthlyReportSheet: View {
         return formatter
     }()
 
-    private static let weekFormatter: DateFormatter = {
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.setLocalizedDateFormatFromTemplate("MMM d")
         return formatter
@@ -5685,210 +2571,10 @@ private struct AtriaWeeklyReportStatRow: View {
                 .minimumScaleFactor(0.75)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
     }
 }
 
-private struct AtriaGlanceWidgetManagerSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let hiddenMetrics: [AtriaTodayMetric]
-    let onEditWidgets: () -> Void
-    let onShowMetric: (AtriaTodayMetric) -> Void
-
-    // Same key the Today screen reads; AtriaDefault syncs both instances via the
-    // UserDefaults change notification, so toggling here updates the rail live.
-    @AtriaDefault("atria.overview.showDailyFocusRail") private var showDailyFocusRail: Bool = false
-    @State private var showWidgetProof = false
-
-    private var hiddenMoreMetrics: [AtriaTodayMetric] {
-        hiddenMetrics.filter { AtriaTodayMetric.moreMetrics.contains($0) }
-    }
-
-    private var hiddenExperimentalMetrics: [AtriaTodayMetric] {
-        hiddenMetrics.filter { AtriaTodayMetric.experimentalMetrics.contains($0) }
-    }
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Said once. The section subtitle, the toggle's own caption
-                    // and the accessibility hint each explained the same rail in
-                    // one screenful; the subtitle is the only one that carries
-                    // the reason it defaults off, so it keeps the explanation
-                    // and the other two stop repeating it.
-                    managerSection(title: "Layout",
-                                   subtitle: "Repeats Recovery, Strain, Sleep and Live from the ring above, so it is off by default.") {
-                        Toggle(isOn: $showDailyFocusRail) {
-                            Text("Daily focus rail")
-                                .font(.footnote.weight(.bold))
-                        }
-                        .padding(12)
-                        .atriaInsetCard(tint: .secondary)
-                    }
-
-                    managerSection(title: "More metrics",
-                                   subtitle: hiddenMetrics.isEmpty ? "All glance widgets are already visible." : "Bring hidden cards back to Today at a glance.") {
-                        if hiddenMoreMetrics.isEmpty {
-                            Label("All widgets added", systemImage: "checkmark.circle.fill")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .atriaInsetCard(tint: .secondary)
-                        } else {
-                            ForEach(hiddenMoreMetrics) { metric in
-                                managerRow(metric: metric,
-                                           actionTitle: "Add",
-                                           actionImage: "plus.circle.fill",
-                                           tint: metric.targetEditorTint,
-                                           role: nil) {
-                                    onShowMetric(metric)
-                                }
-                            }
-                        }
-                    }
-
-                    managerSection(title: "Experimental",
-                                   subtitle: "Estimates are still improving. These stay opt-in until the signal is proven.") {
-                        if hiddenExperimentalMetrics.isEmpty {
-                            Label("Experimental cards added", systemImage: "checkmark.circle.fill")
-                                .font(.footnote.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(12)
-                                .atriaInsetCard(tint: .secondary)
-                        } else {
-                            ForEach(hiddenExperimentalMetrics) { metric in
-                                managerRow(metric: metric,
-                                           actionTitle: "Add",
-                                           actionImage: "plus.circle.fill",
-                                           tint: metric.targetEditorTint,
-                                           role: nil) {
-                                    onShowMetric(metric)
-                                }
-                            }
-                        }
-                    }
-
-                    managerSection(title: "Home & Lock Screen widgets",
-                                   subtitle: "Check exactly what the widget extension can read before adding it to the Home or Lock Screen.") {
-                        Button {
-                            showWidgetProof = true
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "checkmark.seal")
-                                    .font(.headline.weight(.bold))
-                                    .foregroundStyle(.cyan)
-                                    .frame(width: 34, height: 34)
-                                    .background(.cyan.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Widget proof")
-                                        .font(.subheadline.weight(.bold))
-                                    Text("Preview the shared snapshot, Home Screen families, and Lock Screen accessories.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                Spacer(minLength: 4)
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                        }
-                        .buttonStyle(.plain)
-                        .atriaInsetCard(tint: .cyan)
-                        .accessibilityHint("Shows the local snapshot and every supported widget family.")
-                    }
-
-                    Button {
-                        onEditWidgets()
-                        dismiss()
-                    } label: {
-                        Label("Edit on cards", systemImage: "square.grid.2x2")
-                            .font(.footnote.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .atriaCardAction(tint: .secondary)
-                    .accessibilityHint("Shows the remove, resize, and target controls directly on Today widgets.")
-                }
-                .padding(16)
-            }
-            .navigationTitle("Add widget")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                }
-            }
-        }
-        .sheet(isPresented: $showWidgetProof) {
-            AtriaWidgetProofSheet(snapshot: AtriaIntentSnapshotStore.loadLatestSnapshot(),
-                                  layoutConfig: .default)
-        }
-    }
-
-    private func managerSection<Content: View>(title: String,
-                                               subtitle: String,
-                                               @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.headline.weight(.bold))
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            VStack(spacing: 8) {
-                content()
-            }
-        }
-    }
-
-    private func managerRow(metric: AtriaTodayMetric,
-                            actionTitle: String,
-                            actionImage: String,
-                            tint: Color,
-                            role: ButtonRole?,
-                            action: @escaping () -> Void) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: metric.systemImage)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
-
-            Text(metric.label)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-
-            Spacer(minLength: 8)
-
-            Button(role: role) {
-                action()
-            } label: {
-                Label(actionTitle, systemImage: actionImage)
-                    .font(.caption.weight(.bold))
-                    .labelStyle(.titleAndIcon)
-                    .frame(minWidth: 96)
-            }
-            .atriaCardAction(tint: tint)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: tint)
-        .accessibilityElement(children: .combine)
-        .accessibilityAction(named: Text("\(actionTitle) \(metric.label) widget")) {
-            action()
-        }
-    }
-}
 
 struct AtriaStrapStepLiveStatus: Equatable {
     enum Freshness: Equatable {
@@ -6006,6 +2692,18 @@ struct AtriaStrapStepsDetailSheet: View {
     let validationState: String
     let presentation: AtriaDailyStepPresentation
     let goal: Int
+    /// Confirmed non-gait workout windows (Strength, Cycling) excluded from
+    /// the exact per-day computation, so labelled arm work does not read as
+    /// walking. Defaults empty: no exclusions is the pre-existing behaviour.
+    var nonGaitWindows: [DateInterval] = []
+    /// EVERY confirmed workout window, either kind — a labelled block already
+    /// explains its arm motion, so the unverified-movement review must not ask
+    /// about it again.
+    var explainedWindows: [DateInterval] = []
+    @State private var unverifiedClusters: [AtriaUnattributedMotionRuns.Cluster] = []
+    @State private var autoResolvedCount = 0
+    @State private var autoResolvedSteps = 0
+    @State private var minorMovementSteps = 0
 
     /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
     /// loaded once from the durable motion-tick day store. Days without a
@@ -6049,7 +2747,7 @@ struct AtriaStrapStepsDetailSheet: View {
                         Spacer(minLength: 8)
 
                         Text(presentation.valueText)
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(AtriaDesignTokens.Typography.cardHeroValue)
                             .monospacedDigit()
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: presentation.valueText)
@@ -6104,6 +2802,10 @@ struct AtriaStrapStepsDetailSheet: View {
                     .padding(12)
                     .atriaInsetCard(tint: status.tint)
 
+                    if !unverifiedClusters.isEmpty {
+                        unverifiedMovementCard
+                    }
+
                     stepsWeekChartCard
                   }
                   .padding()
@@ -6138,8 +2840,93 @@ struct AtriaStrapStepsDetailSheet: View {
         .atriaInsetCard(tint: .secondary)
     }
 
+    /// Sustained arm motion the strap counted that nothing explains. The
+    /// count above already INCLUDES it — include-with-disclosure, never
+    /// exclude-by-default — and one answer per cluster settles it: walking
+    /// keeps it and stops the asking; not-walking excludes the window
+    /// everywhere steps are computed, through the same machinery a labelled
+    /// Strength block uses. Only the wearer can make this call: on this
+    /// hardware a meal and a constrained-arm walk are the same signal.
+    private var unverifiedMovementCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle")
+                    .foregroundStyle(.orange)
+                Text("Unverified movement")
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 0)
+                Text("~\(unverifiedClusters.reduce(0) { $0 + $1.estimatedSteps }) steps")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            // Owner feedback (2026-08-28) drove this copy: it must say what
+            // an answer DOES and that the app LEARNS, or the question reads as
+            // busywork. And only a few major stretches are ever asked — the
+            // long list of small ones nobody remembers is gone.
+            Text("A few big stretches of movement aren't a confirmed walk or workout. Not walking removes those steps everywhere; after a few answers Atria learns your pattern and stops asking.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(unverifiedClusters) { cluster in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(cluster.start.formatted(date: .omitted, time: .shortened)) – \(cluster.end.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.weight(.semibold))
+                        Text("~\(cluster.estimatedSteps) steps · \(cluster.activeMinutes) active min")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 6)
+                    Button("Walking") {
+                        arbitrate(cluster, verdict: .walking)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                    Button("Not walking") {
+                        arbitrate(cluster, verdict: .notWalking)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Was this stretch a walk, or other movement like a meal or chores?")
+            }
+
+            if autoResolvedCount > 0 {
+                Text(autoResolvedSteps > 0
+                     ? "\(autoResolvedCount) stretch(es) auto-marked from your earlier answers (−\(autoResolvedSteps) steps). Changed your mind? Answer again above when one is asked."
+                     : "\(autoResolvedCount) stretch(es) auto-marked as walking from your earlier answers.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if minorMovementSteps > 0 {
+                Text("Smaller movement (~\(minorMovementSteps) steps) stays included — too scattered to be worth asking about.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(tint: .orange)
+    }
+
     private var stepsWeekChartCard: some View {
-        AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+        VStack(alignment: .leading, spacing: 6) {
+            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+            // The bars are CALENDAR days computed exactly from the strap's
+            // recorded rows; the count at the top of this sheet is since your
+            // wake. Saying so stops the two honest numbers reading as a bug
+            // when a cycle spans midnight.
+            Text("Bars are calendar days · the count above is since your wake")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// How close a receipt's end must be to now to count as the cycle still
@@ -6148,255 +2935,78 @@ struct AtriaStrapStepsDetailSheet: View {
 
     private func loadWeekSteps() async {
         guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
+        let now = Date()
         let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier,
                                                                             limit: 14)
-        // Day-folding lives in AtriaStepsWeekChart so Today's sparkline and this
-        // chart cannot drift apart — same metric, two surfaces, one rule.
-        weekSteps = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: Date())
+        // Receipt folding first, shown immediately: it is instant, and it is
+        // the fallback for days whose shards have rotated out.
+        let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
+        weekSteps = fallback
+        // Then the exact per-calendar-day totals from the shards themselves.
+        // Receipts are cycle-scoped, frozen at publication, and can be missing
+        // for whole days — the 2026-08-27 audit measured a day showing 505
+        // where the shards hold ~7,000, and another showing 0. The authority
+        // replaces every day the rows can answer and leaves the rest alone.
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let days = (0..<7).compactMap {
+            calendar.date(byAdding: .day, value: -$0, to: today)
+        }
+        weekSteps = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+            days: days,
+            strapIdentifier: identifier,
+            // The wearer's "Not walking" answers join the labelled non-gait
+            // blocks — same rule at every step surface.
+            nonGaitExclusions: nonGaitWindows
+                + AtriaNonGaitArbitrationStore.shared.notWalkingWindows(),
+            fallback: fallback,
+            now: now
+        )
+        await refreshUnverifiedClusters(identifier: identifier, now: now)
+    }
+
+    /// Sustained counter activity in the last 24 h that no workout label and
+    /// no prior answer explains — the review section's content.
+    private func refreshUnverifiedClusters(identifier: String, now: Date) async {
+        let explained = explainedWindows
+            + AtriaNonGaitArbitrationStore.shared.arbitratedWindows()
+        let partition = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let points = AtriaWhoop4MotionTickCompactStore.shared
+                    .decodedPoints(start: now.addingTimeInterval(-24 * 3_600),
+                                   end: now,
+                                   strapIdentifier: identifier)
+                let clusters = AtriaUnattributedMotionRuns.clusters(
+                    minuteTicks: AtriaUnattributedMotionRuns
+                        .minuteTickTotals(points),
+                    explained: explained
+                )
+                continuation.resume(
+                    returning: AtriaUnattributedMotionRuns.partition(
+                        clusters: clusters,
+                        store: .shared,
+                        now: now
+                    )
+                )
+            }
+        }
+        unverifiedClusters = partition.askable
+        autoResolvedCount = partition.autoResolved.count
+        autoResolvedSteps = partition.autoResolved
+            .filter { $0.verdict == .notWalking }
+            .reduce(0) { $0 + $1.cluster.estimatedSteps }
+        minorMovementSteps = partition.minorSteps
+    }
+
+    private func arbitrate(_ cluster: AtriaUnattributedMotionRuns.Cluster,
+                           verdict: AtriaNonGaitArbitrationStore.Verdict) {
+        AtriaNonGaitArbitrationStore.shared.record(window: cluster.window,
+                                                   verdict: verdict)
+        unverifiedClusters.removeAll { $0.id == cluster.id }
+        Task { await loadWeekSteps() }
     }
 }
 
-private struct AtriaGlanceMetricCard: View, Equatable {
-    static let cardHeight: CGFloat = 152
-    /// Full-width "2x0.5" compact row height — about half the tall card.
-    static let compactRowHeight: CGFloat = 76
-    private static let headerHeight: CGFloat = 44
-    private static let valueHeight: CGFloat = 38
-    private static let footerHeight: CGFloat = 30
-
-    @Environment(\.glanceCompactRow) private var isCompactRow
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let title: String
-    let value: String
-    let detail: String
-    let systemImage: String
-    let tint: Color
-    var ringFraction: Double? = nil
-    var sparklineValues: [Int]? = nil
-    var zone: AtriaMetricZone? = nil
-    var isLoading: Bool = false
-    var accessibilityDetail: String? = nil
-    var calibratingDay: Int? = nil
-    var calibratingTotal: Int = 4
-    var calibratingUnit: String = "Day"
-    @State private var showingZoneInfo = false
-
-    static func == (lhs: AtriaGlanceMetricCard, rhs: AtriaGlanceMetricCard) -> Bool {
-        lhs.title == rhs.title
-            && lhs.value == rhs.value
-            && lhs.detail == rhs.detail
-            && lhs.systemImage == rhs.systemImage
-            && lhs.tint == rhs.tint
-            && lhs.ringFraction == rhs.ringFraction
-            && lhs.sparklineValues == rhs.sparklineValues
-            && lhs.zone == rhs.zone
-            && lhs.isLoading == rhs.isLoading
-            && lhs.accessibilityDetail == rhs.accessibilityDetail
-            && lhs.calibratingDay == rhs.calibratingDay
-            && lhs.calibratingTotal == rhs.calibratingTotal
-            && lhs.calibratingUnit == rhs.calibratingUnit
-    }
-
-    static var placeholder: some View {
-        Color.clear
-            .frame(maxWidth: .infinity, minHeight: cardHeight, maxHeight: cardHeight)
-    }
-
-    private var hasProgressSignal: Bool {
-        ringFraction != nil
-    }
-
-    private var clampedRingFraction: Double? {
-        guard hasProgressSignal, let ringFraction else { return nil }
-        return min(max(ringFraction, 0), 1)
-    }
-
-    private var displayValue: String {
-        if calibratingDay != nil { return "" }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty || trimmed == "--" ? "" : value
-    }
-
-    private var accessibilityText: String {
-        var parts = [calibratingDay.map { "\(title) calibrating \(calibratingUnit.lowercased()) \(min(max($0, 0), calibratingTotal)) of \(calibratingTotal)" } ?? "\(title) \(displayValue)", detail]
-        if let accessibilityDetail,
-           !accessibilityDetail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            parts.append(accessibilityDetail)
-        }
-        if let zone, zone.showsWarning {
-            parts.append(zone.level.label)
-            parts.append(zone.targetSummary)
-            parts.append("Tap info for guidance.")
-        }
-        return parts.joined(separator: ", ")
-    }
-
-    var body: some View {
-        Group {
-            if isCompactRow {
-                compactRowBody
-            } else {
-                tallBody
-            }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
-        .sheet(isPresented: $showingZoneInfo) {
-            if let zone {
-                AtriaMetricZoneInfoSheet(zone: zone)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
-        }
-    }
-
-    private var tallBody: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .center, spacing: 10) {
-                AtriaGlanceMetricMarker(systemImage: systemImage,
-                                        tint: tint,
-                                        progressFraction: clampedRingFraction)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .allowsTightening(true)
-
-                    Text(detail)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(tint.opacity(0.82))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.74)
-                        .allowsTightening(true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                if let zone, zone.showsWarning {
-                    AtriaMetricZoneInfoButton(zone: zone) {
-                        showingZoneInfo = true
-                    }
-                    .frame(width: 44, height: 44)
-                }
-            }
-            .frame(height: Self.headerHeight, alignment: .center)
-
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(tint)
-                } else if let calibratingDay {
-                    AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
-                } else {
-                    Text(displayValue)
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.58)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .frame(height: Self.valueHeight, alignment: .bottom)
-
-            footer
-        }
-        .frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)
-        .padding(12)
-        .atriaInsetCard(tint: tint, hueTinted: true)
-        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    // WHOOP-style compact row: one horizontal scan line — color/identity marker,
-    // quiet name + context, then the hero value flush right. One metric, one job.
-    private var compactRowBody: some View {
-        HStack(alignment: .center, spacing: 12) {
-            AtriaGlanceMetricMarker(systemImage: systemImage,
-                                    tint: tint,
-                                    progressFraction: clampedRingFraction)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                    .allowsTightening(true)
-
-                Text(detail)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(tint.opacity(0.82))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                    .allowsTightening(true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(tint)
-                    .layoutPriority(1)
-            } else if let calibratingDay {
-                AtriaCalibratingLabel(day: calibratingDay, total: calibratingTotal, unit: calibratingUnit, tint: tint)
-                    .layoutPriority(1)
-            } else {
-                Text(displayValue)
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .layoutPriority(1)
-            }
-
-            if let zone, zone.showsWarning {
-                AtriaMetricZoneInfoButton(zone: zone) {
-                    showingZoneInfo = true
-                }
-                .frame(width: 44, height: 44)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: Self.compactRowHeight, maxHeight: Self.compactRowHeight, alignment: .center)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .atriaInsetCard(tint: tint, hueTinted: true)
-        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    @ViewBuilder
-    private var footer: some View {
-        if let sparklineValues {
-            Sparkline(values: sparklineValues, tint: tint)
-                .frame(height: Self.footerHeight)
-                .opacity(sparklineValues.count > 1 ? 1 : 0.28)
-                .accessibilityLabel("\(title) sparkline")
-        } else if hasProgressSignal, let ringFraction {
-            HStack(spacing: 6) {
-                ProgressView(value: min(max(ringFraction, 0), 1))
-                    .tint(tint)
-                    .controlSize(.mini)
-                Text("\(Int((min(max(ringFraction, 0), 1) * 100).rounded()))%")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(tint.opacity(0.9))
-            }
-            .frame(height: Self.footerHeight, alignment: .center)
-            .accessibilityHidden(true)
-        } else {
-            // The header already renders this card's detail string; keep the
-            // footer slot empty so tall cards stay row-aligned in the grid.
-            Color.clear
-                .frame(height: Self.footerHeight)
-        }
-    }
-}
 
 struct AtriaGlanceTargetEditorSheet: View {
     let metric: AtriaTodayMetric
@@ -6440,7 +3050,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                             .font(.title3.weight(.bold))
                             .foregroundStyle(metric.targetEditorTint)
                             .frame(width: 42, height: 42)
-                            .background(AtriaIconTileBackground(cornerRadius: 14, tint: metric.targetEditorTint))
+                            .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: metric.targetEditorTint))
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(metric.label) target")
@@ -6939,18 +3549,11 @@ struct AtriaGlanceTargetEditorSheet: View {
 
 private extension AtriaTodayMetric {
     var targetEditorTint: Color {
-        switch self {
-        case .recovery, .steps: return .green
-        case .strain, .load, .calories: return .orange
-        case .hrv, .stress: return .pink
-        case .rhr: return .red
-        case .bioAge: return .purple
-        case .vo2max: return .blue
-        case .respiratoryRate, .bodyTemp: return .teal
-        case .bloodOxygen: return .blue
-        case .sleep, .sleepHistory, .sleepEfficiency: return .cyan
-        default: return .blue
-        }
+        // Settings painted every row in a raw hue that contradicted the
+        // metric's identity colour elsewhere — HRV pink and Resting HR RED,
+        // when the documented rule is HRV rose and RHR blue. One table now
+        // (AtriaMetricIdentity, 2026-08-28).
+        identityTint()
     }
 
     var targetEditorSummary: String {
@@ -6991,436 +3594,10 @@ private extension AtriaTodayMetric {
     }
 }
 
-private struct AtriaGlanceMetricMarker: View, Equatable {
-    private static let size: CGFloat = 38
-    private static let iconCircleSize: CGFloat = 26
-    private static let iconSize: CGFloat = 14
-    private static let ringLineWidth: CGFloat = 3
 
-    let systemImage: String
-    let tint: Color
-    let progressFraction: Double?
 
-    private var clampedProgress: Double {
-        min(max(progressFraction ?? 0, 0), 1)
-    }
 
-    private var ringEnd: Double {
-        progressFraction == nil ? 1 : clampedProgress
-    }
 
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(tint.opacity(0.10))
-
-            Circle()
-                .stroke(Color.primary.opacity(0.09), lineWidth: Self.ringLineWidth)
-
-            markerRing
-
-            Circle()
-                .fill(Color(.systemBackground).opacity(0.78))
-                .frame(width: Self.iconCircleSize, height: Self.iconCircleSize)
-                .overlay {
-                    Circle()
-                        .stroke(tint.opacity(0.26), lineWidth: 1)
-                }
-
-            Image(systemName: systemImage)
-                .font(.system(size: Self.iconSize, weight: .bold, design: .rounded))
-                .foregroundStyle(tint)
-                .symbolRenderingMode(.hierarchical)
-                .frame(width: Self.iconCircleSize, height: Self.iconCircleSize)
-        }
-        .frame(width: Self.size, height: Self.size)
-        .accessibilityHidden(true)
-    }
-
-    @ViewBuilder
-    private var markerRing: some View {
-        if progressFraction == nil {
-            // Building / indeterminate: a calm clean ring (no busy dashes). A short
-            // tinted cap hints "in progress" without spinning or dashing.
-            Circle()
-                .trim(from: 0, to: 0.16)
-                .stroke(tint.opacity(0.85),
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-        } else {
-            Circle()
-                .trim(from: 0, to: ringEnd)
-                .stroke(tint,
-                        style: StrokeStyle(lineWidth: Self.ringLineWidth, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-        }
-    }
-}
-
-private struct AtriaSleepHistoryGlanceCard: View, Equatable {
-    let snapshot: SleepHistorySnapshot
-    let sleepGoalHours: Double
-    let onOpenVitals: () -> Void
-    let onAddManualSleep: () -> Void
-
-    static func == (lhs: AtriaSleepHistoryGlanceCard, rhs: AtriaSleepHistoryGlanceCard) -> Bool {
-        lhs.snapshot == rhs.snapshot
-            && lhs.sleepGoalHours == rhs.sleepGoalHours
-    }
-
-    private var latest: SleepHistorySnapshot.Night? {
-        snapshot.latestDisplayEvidence
-    }
-
-    private var tint: Color {
-        latest == nil ? .orange : .cyan
-    }
-
-    private var valueText: String {
-        guard let latest else {
-            return snapshot.candidateCount > 0 ? "\(snapshot.candidateCount)" : "--"
-        }
-        if !latest.confirmed { return latest.durationText }
-        return snapshot.averageDurationText
-    }
-
-    private var detailText: String {
-        guard let latest else {
-            if snapshot.candidateCount > 0 {
-                return snapshot.candidateCount == 1 ? "Sleep/nap candidate" : "Sleep/nap candidates"
-            }
-            return "Wear strap overnight or nap"
-        }
-        if latest.isNapEvidence {
-            return latest.confirmed ? "Nap · saved separate" : "Nap · review separate"
-        }
-        if !latest.confirmed {
-            return "Sleep · review before recovery"
-        }
-        return "\(latest.evidenceLabel) · debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours))"
-    }
-
-    private var morningStatus: AtriaSleepMorningStatus {
-        if snapshot.candidateCount > 0,
-           latest?.confirmed != true {
-            return .review
-        }
-        guard let latest else { return .wear }
-        if latest.isNapEvidence {
-            return latest.confirmed ? .sync : .review
-        }
-        return latest.confirmed ? .complete : .review
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 10) {
-                AtriaGlanceMetricMarker(systemImage: AtriaTodayMetric.sleepHistory.systemImage,
-                                        tint: tint,
-                                        progressFraction: nil)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Sleep history")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Text(detailText)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(tint.opacity(0.82))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button {
-                    onAddManualSleep()
-                } label: {
-                    Image(systemName: "moon.zzz.badge.plus")
-                        .font(.caption.weight(.bold))
-                }
-                .atriaGlassIconAction(tint: .cyan, size: 32)
-                .accessibilityLabel("Add sleep manually")
-            }
-            .frame(height: 42, alignment: .center)
-
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(valueText)
-                    .font(.system(size: 30, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.58)
-                Spacer(minLength: 0)
-            }
-            .frame(height: 32, alignment: .bottom)
-
-            if morningStatus == .complete {
-                stageLegend
-            } else {
-                AtriaSleepMorningStatusStrip(status: morningStatus)
-            }
-
-            stageStrip
-        }
-        .frame(maxWidth: .infinity,
-               minHeight: AtriaGlanceMetricCard.cardHeight,
-               maxHeight: AtriaGlanceMetricCard.cardHeight,
-               alignment: .leading)
-        .padding(12)
-        .atriaInsetCard(tint: tint)
-        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .onTapGesture(perform: onOpenVitals)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
-    }
-
-    @ViewBuilder
-    private var stageLegend: some View {
-        if let latest, !latest.displayStageSegments.isEmpty {
-            HStack(spacing: 5) {
-                ForEach(SleepStageKind.displayOrder) { stage in
-                    HStack(spacing: 3) {
-                        Image(systemName: AtriaSleepStageGlyph.symbol(for: stage))
-                            .font(.system(size: 8, weight: .bold))
-                        Text(stage.shortLabel)
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.62)
-                            .allowsTightening(true)
-                    }
-                    .foregroundStyle(AtriaSleepStageGlyph.color(for: stage))
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .accessibilityLabel("\(stage == .deep ? "Deep (SWS)" : stage.label) \(latest.stageText(stage))")
-                }
-            }
-            .frame(height: 14, alignment: .center)
-            .accessibilityElement(children: .combine)
-        } else {
-            HStack(spacing: 8) {
-                Text("Consistency \(snapshot.sleepConsistencyText)")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 0)
-                Text("Debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours))")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint.opacity(0.82))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-            .frame(height: 14, alignment: .center)
-        }
-    }
-
-    @ViewBuilder
-    private var stageStrip: some View {
-        if let latest, !latest.displayStageSegments.isEmpty {
-            HStack(spacing: 6) {
-                if latest.isEstimatedStageDisplay {
-                    // Mandatory estimate marker, compacted for the glance
-                    // card but always rendered WITH the bars (the full
-                    // AtriaSleepStageEstimateLabel appears on detail views).
-                    Text("Estimated · HR-only")
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
-                                        duration: latest.duration)
-            }
-            .frame(height: 18, alignment: .center)
-        } else if latest?.isManualEntry == true {
-            // Manual honesty (2026-08-05): a hand-typed window never grows
-            // stages, so "calibrating" plus decorative stage capsules read as
-            // a preview of something that will not arrive. Plain words only.
-            Text("Manual entry — no stages")
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.62)
-                .frame(height: 18, alignment: .center)
-        } else if let latest, latest.confirmed, !latest.hasValidatedMotionEvidence {
-            // Motion honesty (HR-only strap): a confirmed night with no validated
-            // motion evidence will never grow a stage timeline, so "calibrating"
-            // plus decorative capsules promise a hypnogram that cannot arrive.
-            // State the terminal blocker instead — duration and qualified nightly
-            // metrics still show elsewhere on the card.
-            Text("Stages unavailable — needs motion")
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.62)
-                .frame(height: 18, alignment: .center)
-        } else {
-            HStack(spacing: 6) {
-                Text("Stages calibrating")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.62)
-
-                HStack(alignment: .center, spacing: 2) {
-                    ForEach(Array(SleepStageKind.displayOrder.enumerated()), id: \.element) { index, stage in
-                        Capsule(style: .continuous)
-                            .fill(AtriaSleepStageGlyph.color(for: stage).opacity(0.28))
-                            .frame(width: index == 1 ? 18 : 12,
-                                   height: fallbackStageHeight(stage))
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .accessibilityHidden(true)
-            }
-            .frame(height: 18, alignment: .center)
-        }
-    }
-
-    private func fallbackStageHeight(_ stage: SleepStageKind) -> CGFloat {
-        switch stage {
-        case .awake: return 7
-        case .light: return 12
-        case .rem: return 10
-        case .sws: return 14
-        case .deep: return 16
-        }
-    }
-
-    private var accessibilityText: String {
-        guard let latest else {
-            if snapshot.candidateCount > 0 {
-                return "Sleep history has \(snapshot.candidateCount) sleep or nap candidate\(snapshot.candidateCount == 1 ? "" : "s") ready to review. Morning status \(morningStatus.accessibilityText)."
-            }
-            return "Sleep history building. Wear the strap overnight or during a nap. Morning status \(morningStatus.accessibilityText)."
-        }
-        guard !latest.displayStageSegments.isEmpty else {
-            let stageNote = latest.isManualEntry
-                ? "Manual entry — stage timelines come only from sensor data."
-                : "Sleep stages unavailable: Atria has not qualified a stage timeline for this night."
-            return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(stageNote)"
-        }
-        let estimateNote = latest.isEstimatedStageDisplay
-            ? " \(AtriaSleepStageEstimateLabel.title): \(AtriaSleepStageEstimateLabel.caption)"
-            : ""
-        return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)).\(estimateNote) Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
-    }
-}
-
-private enum AtriaSleepMorningStatus: String, Equatable {
-    case wear
-    case sync
-    case review
-    case complete
-
-    var activeStepIndex: Int {
-        switch self {
-        case .wear: return 0
-        case .sync: return 1
-        case .review: return 2
-        case .complete: return 2
-        }
-    }
-
-    var accessibilityText: String {
-        switch self {
-        case .wear:
-            return "Wear, waiting for overnight sleep."
-        case .sync:
-            return "Sync, nap saved separately and main sleep still needs overnight evidence."
-        case .review:
-            return "Review, sleep or nap candidate needs confirmation."
-        case .complete:
-            return "Review complete, main sleep saved."
-        }
-    }
-}
-
-private struct AtriaSleepMorningStatusStrip: View, Equatable {
-    let status: AtriaSleepMorningStatus
-
-    private let steps: [(title: String, symbol: String)] = [
-        ("Wear", "moon.zzz.fill"),
-        ("Sync", "arrow.triangle.2.circlepath"),
-        ("Review", "checkmark.seal.fill")
-    ]
-
-    static func == (lhs: AtriaSleepMorningStatusStrip, rhs: AtriaSleepMorningStatusStrip) -> Bool {
-        lhs.status == rhs.status
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(steps.indices, id: \.self) { index in
-                sleepStatusStep(steps[index], index: index)
-            }
-        }
-        .frame(height: 18, alignment: .center)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Morning sleep status. \(status.accessibilityText)")
-    }
-
-    private func sleepStatusStep(_ step: (title: String, symbol: String), index: Int) -> some View {
-        let active = index == status.activeStepIndex
-        let complete = status == .complete && index <= status.activeStepIndex
-        let tint: Color = active || complete ? .cyan : .secondary
-        return HStack(spacing: 3) {
-            Image(systemName: step.symbol)
-                .font(.system(size: 7, weight: .bold))
-            Text(step.title)
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-                .lineLimit(1)
-                .minimumScaleFactor(0.66)
-        }
-        .foregroundStyle(tint)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
-        .background(tint.opacity(active || complete ? 0.14 : 0.06),
-                    in: Capsule(style: .continuous))
-    }
-}
-
-private struct AtriaSleepMiniHypnogram: View, Equatable {
-    let segments: [SleepStageSegment]
-    let duration: TimeInterval
-
-    var body: some View {
-        Canvas { context, size in
-            guard duration > 0, !segments.isEmpty else { return }
-            let laneHeight = max(4, size.height / 6)
-            var elapsed: TimeInterval = 0
-            for segment in segments {
-                let width = max(1, size.width * segment.duration / duration)
-                let x = size.width * elapsed / duration
-                let y = stageY(segment.stage, height: size.height) - laneHeight / 2
-                let rect = CGRect(x: x,
-                                  y: y,
-                                  width: min(width, max(0, size.width - x)),
-                                  height: laneHeight)
-                context.fill(Path(roundedRect: rect, cornerRadius: laneHeight / 2),
-                             with: .color(AtriaSleepStageGlyph.color(for: segment.stage)))
-                elapsed += segment.duration
-            }
-        }
-        .background(Color.primary.opacity(0.035),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private func stageY(_ stage: SleepStageKind, height: CGFloat) -> CGFloat {
-        switch stage {
-        case .awake: return height * 0.14
-        case .light: return height * 0.34
-        case .rem: return height * 0.52
-        case .sws: return height * 0.70
-        case .deep: return height * 0.88
-        }
-    }
-}
 
 enum AtriaSleepStageGlyph {
     static func symbol(for stage: SleepStageKind) -> String {
@@ -7457,848 +3634,16 @@ private extension SleepStageKind {
 }
 
 
-struct AtriaOverviewLaunchChecklist: View, Equatable {
-    let live: AtriaHomeModel.CoreLiveState
-    let stats: AtriaHomeModel.HomeStatsState
-    let snapshot: AtriaHomeModel.Snapshot
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
 
-    static func == (lhs: AtriaOverviewLaunchChecklist, rhs: AtriaOverviewLaunchChecklist) -> Bool {
-        lhs.live == rhs.live
-            && lhs.stats == rhs.stats
-            && lhs.snapshot == rhs.snapshot
-    }
 
-    private var completeCount: Int {
-        checklistItems.filter(\.isComplete).count
-    }
 
-    private var checklistItems: [AtriaLaunchChecklistItem] {
-        [
-            // Connection status lives in the toolbar chip; not repeated here.
-            AtriaLaunchChecklistItem(id: "baseline",
-                                     title: "HRV baseline",
-                                     value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
-                                     detail: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? "Trusted personal baseline is ready." : "Wear overnight to build a trusted recovery baseline.",
-                                     systemImage: "waveform.path.ecg",
-                                     tint: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? .green : .pink,
-                                     isComplete: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples,
-                                     actionTitle: nil,
-                                     action: nil),
-            AtriaLaunchChecklistItem(id: "capture",
-                                     title: "Live recording",
-                                     value: snapshot.loggingText,
-                                     detail: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? "Atria is saving your readings." : stats.nextAction,
-                                     systemImage: "waveform.badge.plus",
-                                     tint: snapshot.loggingText.localizedCaseInsensitiveContains("samples") ? .green : .orange,
-                                     isComplete: snapshot.loggingText.localizedCaseInsensitiveContains("samples"),
-                                     actionTitle: "Strap",
-                                     action: onOpenCollection)
-        ]
-    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Getting set up", subtitle: "")
 
-                Spacer(minLength: 0)
 
-                readinessDots
-            }
 
-            VStack(spacing: 8) {
-                ForEach(checklistItems) { item in
-                    AtriaLaunchChecklistRow(item: item)
-                }
-            }
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
 
-    private var readinessDots: some View {
-        HStack(spacing: 5) {
-            ForEach(checklistItems.indices, id: \.self) { index in
-                Circle()
-                    .fill(index < completeCount ? Color.green : Color.secondary.opacity(0.22))
-                    .frame(width: 8, height: 8)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .atriaInsetCard(tint: completeCount == checklistItems.count ? .green : .orange)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(completeCount) of \(checklistItems.count) setup steps ready")
-    }
-}
 
-private struct AtriaLaunchChecklistItem: Identifiable {
-    let id: String
-    let title: String
-    let value: String
-    let detail: String
-    let systemImage: String
-    let tint: Color
-    let isComplete: Bool
-    let actionTitle: String?
-    let action: (() -> Void)?
-}
-
-private struct AtriaLaunchChecklistRow: View {
-    let item: AtriaLaunchChecklistItem
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Image(systemName: item.isComplete ? "checkmark.circle.fill" : item.systemImage)
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(item.tint)
-                .frame(width: 34, height: 34)
-                .background(AtriaIconTileBackground(cornerRadius: 11, tint: item.tint))
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(item.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(item.value)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(item.tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-
-                if !item.isComplete {
-                    Text(item.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            if let actionTitle = item.actionTitle, let action = item.action {
-                Button(action: action) {
-                    Text(actionTitle)
-                        .font(.caption.weight(.semibold))
-                }
-                .atriaCardAction(prominent: false, tint: item.tint)
-            }
-        }
-        .padding(10)
-        .atriaInsetCard(tint: item.tint)
-        .accessibilityElement(children: .combine)
-        .accessibilityHint(item.detail)
-    }
-}
-
-struct AtriaOverviewGuidanceSectionHost: View {
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-    @StateObject private var projectionStore: AtriaOverviewGuidanceProjectionStore
-
-    init(heroStore: AtriaHomeModel.HeroStore, store: SessionStore) {
-        self.heroStore = heroStore
-        _projectionStore = StateObject(wrappedValue: AtriaOverviewGuidanceProjectionStore(store: store))
-    }
-
-    var body: some View {
-        let projection = projectionStore.state
-        AtriaOverviewGuidanceSection(hero: heroStore.state,
-                                     sleepHistory: debugSleepHistorySnapshot ?? projection.sleepHistory,
-                                     sleepHistoryRevision: projection.sleepHistoryRevision,
-                                     dailyRollupHistory: projection.dailyRollupHistory,
-                                     dailyRollupHistoryRevision: projection.dailyRollupHistoryRevision,
-                                     weeklyPlan: projection.weeklyPlan)
-            .equatable()
-    }
-
-    #if DEBUG
-    private var debugSleepHistorySnapshot: SleepHistorySnapshot? {
-        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
-            return nil
-        }
-        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
-        guard ProcessInfo.processInfo.arguments.indices.contains(valueIndex),
-              ProcessInfo.processInfo.arguments[valueIndex] == "sleep-plan-bedtime" else {
-            return nil
-        }
-        var calendar = Calendar.current
-        calendar.timeZone = TimeZone.current
-        let today = calendar.startOfDay(for: Date())
-        let wakeMinutes = [7 * 60 + 30, 7 * 60 + 40, 7 * 60 + 50]
-        let nights = wakeMinutes.enumerated().map { index, wakeMinute in
-            let day = calendar.date(byAdding: .day, value: -index - 1, to: today) ?? today
-            let end = day.addingTimeInterval(TimeInterval(wakeMinute * 60))
-            return SleepHistorySnapshot.Night(id: "debug-ui-fixture-sleep-plan-bedtime-\(index)",
-                                              day: day,
-                                              start: end.addingTimeInterval(-8 * 3_600),
-                                              end: end,
-                                              duration: 8 * 3_600,
-                                              restingHR: 56,
-                                              hrv: 64,
-                                              respiratoryRate: 14.2,
-                                              sleepEfficiency: 0.91,
-                                              confidence: "debug_fixture_confirmed_sleep",
-                                              source: "manual_sleep",
-                                              confirmed: true,
-                                              stageSegments: [])
-        }
-        return SleepHistorySnapshot(nights: nights, confirmedCount: nights.count, candidateCount: 0)
-    }
-    #else
-    private var debugSleepHistorySnapshot: SleepHistorySnapshot? { nil }
-    #endif
-}
-
-struct AtriaOverviewGuidanceProjectionState: Equatable {
-    let sleepHistory: SleepHistorySnapshot
-    let sleepHistoryRevision: Int
-    let dailyRollupHistory: [DailyRollupStoreEntry]
-    let dailyRollupHistoryRevision: Int
-    let weeklyPlan: WeeklyPlan
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
-            && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
-            && lhs.weeklyPlan == rhs.weeklyPlan
-    }
-}
-
-@MainActor
-final class AtriaOverviewGuidanceProjectionStore: ObservableObject {
-    @Published private(set) var state: AtriaOverviewGuidanceProjectionState
-
-    private let store: SessionStore?
-    private var cancellables = Set<AnyCancellable>()
-    private var refreshScheduled = false
-
-    init(store: SessionStore) {
-        self.store = store
-        state = Self.makeState(store: store)
-        bind(to: store)
-    }
-
-    init(state: AtriaOverviewGuidanceProjectionState) {
-        self.state = state
-        store = nil
-    }
-
-    @discardableResult
-    func refresh(_ next: AtriaOverviewGuidanceProjectionState) -> Bool {
-        guard next != state else { return false }
-        state = next
-        return true
-    }
-
-    private func bind(to store: SessionStore) {
-        Publishers.Merge(
-            store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher()
-        )
-        .sink { [weak self] in self?.scheduleRefresh() }
-        .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
-            .sink { [weak self] _ in self?.scheduleRefresh() }
-            .store(in: &cancellables)
-    }
-
-    private func scheduleRefresh() {
-        guard !refreshScheduled else { return }
-        refreshScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.refreshScheduled = false
-            guard let store = self.store else { return }
-            self.refresh(Self.makeState(store: store))
-        }
-    }
-
-    private static func makeState(store: SessionStore) -> AtriaOverviewGuidanceProjectionState {
-        AtriaOverviewGuidanceProjectionState(
-            sleepHistory: store.sleepHistorySnapshot,
-            sleepHistoryRevision: store.sleepHistorySnapshotRevision,
-            dailyRollupHistory: store.dailyRollupHistory,
-            dailyRollupHistoryRevision: store.dailyRollupHistoryRevision,
-            weeklyPlan: store.currentWeeklyPlan()
-        )
-    }
-}
-
-struct AtriaOverviewGuidanceSection: View, Equatable {
-    let hero: AtriaHomeModel.HeroSnapshot
-    let sleepHistory: SleepHistorySnapshot
-    let sleepHistoryRevision: Int
-    let dailyRollupHistory: [DailyRollupStoreEntry]
-    let dailyRollupHistoryRevision: Int
-    let weeklyPlan: WeeklyPlan
-    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
-    @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
-
-    private var readinessTint: Color {
-        hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .secondary
-    }
-
-    private var readinessTitle: String {
-        guard let recovery = hero.recoveryEstimate.percent else {
-            return "Baseline forming"
-        }
-        return "Recovery \(recovery)%"
-    }
-
-    private var planActionText: String {
-        guard hero.recoveryEstimate.percent != nil else {
-            return "Keep wearing today"
-        }
-        // §13.3 2026-08-14: reason vocabulary moved from strain-vs-target to
-        // whiteboard bands.
-        switch hero.guidance.reason {
-        case "whiteboard_lighter":
-            return "Go lighter"
-        case "whiteboard_match":
-            return "Match yesterday"
-        case "whiteboard_calibrating":
-            return "Calibrating"
-        case "whiteboard_awaiting":
-            return "Waiting on today"
-        default:
-            return hero.guidance.headline.isEmpty ? "Check in" : hero.guidance.headline
-        }
-    }
-
-    private var planHintText: String {
-        guard hero.recoveryEstimate.percent != nil else {
-            return "Wear a few mornings to unlock targets."
-        }
-        // §13.3 2026-08-14: the whiteboard sentence's own detail is the hint —
-        // one voice, no second strain-vs-target paraphrase.
-        return hero.guidance.detail
-    }
-
-    private var targetText: String {
-        guard let target = hero.guidance.target else { return "Target strain building" }
-        return String(format: "Target strain %.1f", target)
-    }
-
-    private var targetValueText: String {
-        guard let target = hero.guidance.target else { return "Building" }
-        return String(format: "%.1f", target)
-    }
-
-    private var sleepDebtValueText: String {
-        if let latest = sleepHistory.latestMainSleep, !latest.confirmed {
-            return latest.isNapEvidence ? "Nap separate" : "Review"
-        }
-        let debt = sleepHistory.sleepDebtText(goalHours: sleepGoalHours)
-        return debt == "--" ? "Building" : debt
-    }
-
-    private var sleepPlanTargetHours: Double {
-        if let latest = sleepHistory.latestMainSleep, latest.confirmed {
-            return sleepHistory.sleepNeedHours(
-                for: latest,
-                baseNeedHours: sleepBaseNeedHours,
-                yesterdayStrain: yesterdayStrainForLatestSleep
-            ) ?? sleepBaseNeedHours
-        }
-        let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
-        return AtriaSleepBudget.sleepNeed(baseHours: sleepBaseNeedHours,
-                                          yesterdayStrain: nil,
-                                          debtHours: debt,
-                                          sameDayNapHours: 0)
-    }
-
-    private var yesterdayStrainForLatestSleep: Double? {
-        guard let latest = sleepHistory.latestMainSleep else { return nil }
-        let calendar = Calendar.current
-        guard let priorDay = calendar.date(
-            byAdding: .day,
-            value: -1,
-            to: calendar.startOfDay(for: latest.day)
-        ) else { return nil }
-        return dailyRollupHistory.first {
-            calendar.isDate($0.day, inSameDayAs: priorDay)
-        }?.strain
-    }
-
-    private var sleepPlanTargetText: String {
-        let rounded = (sleepPlanTargetHours * 2).rounded() / 2
-        return AtriaMetricFormat.sleepHours(rounded)
-    }
-
-    private var sleepPlanProgress: Double {
-        guard let average = sleepHistory.recentSleepAverageDurationHours,
-              sleepPlanTargetHours > 0 else { return 0.18 }
-        return min(max(average / sleepPlanTargetHours, 0.08), 1)
-    }
-
-    private var sleepPlanStatusText: String {
-        if let latest = sleepHistory.latestMainSleep, !latest.confirmed {
-            return latest.isNapEvidence ? "Nap separate" : "Review"
-        }
-        return "Need \(sleepPlanTargetText)"
-    }
-
-    private var sleepPlanDebtText: String {
-        if let latest = sleepHistory.latestMainSleep, !latest.confirmed {
-            return latest.isNapEvidence ? "Main sleep safe" : "Confirm window"
-        }
-        if sleepDebtValueText == "Met" { return "Debt clear" }
-        if sleepDebtValueText == "Building" { return "Debt building" }
-        return "Debt \(sleepDebtValueText)"
-    }
-
-    private var sleepPlanRoutineText: String {
-        // Plain-language pass (2026-07-31 device review): "Routine 46%" did
-        // not say what the percentage measures. Name the measurement.
-        sleepHistory.sleepConsistencyText == "--"
-            ? "Routine consistency building"
-            : "Routine consistency \(sleepHistory.sleepConsistencyText)"
-    }
-
-    private var sleepPlanBedtimeText: String? {
-        sleepHistory.bedtimeSuggestionText(now: debugFixtureNow,
-                                           targetHours: sleepPlanTargetHours)
-    }
-
-    private var debugFixtureNow: Date {
-        #if DEBUG
-        guard let index = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-now"),
-              ProcessInfo.processInfo.arguments.indices.contains(ProcessInfo.processInfo.arguments.index(after: index)) else {
-            return Date()
-        }
-        let value = ProcessInfo.processInfo.arguments[ProcessInfo.processInfo.arguments.index(after: index)]
-        return ISO8601DateFormatter().date(from: value) ?? Date()
-        #else
-        return Date()
-        #endif
-    }
-
-    private var baselineValueText: String {
-        guard hero.recoveryEstimate.confidence == .learning else {
-            return hero.recoveryValue
-        }
-        if let range = hero.recoveryEstimate.detail.range(of: #"\d+/\d+"#, options: .regularExpression) {
-            return String(hero.recoveryEstimate.detail[range])
-        }
-        return "Building"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Legacy handoff token retained for static audit context:
-            // AtriaPanelSectionHeader(title: "Today's Plan", subtitle: "What to do today")
-            AtriaPanelSectionHeader(title: "Today's Plan", subtitle: "")
-
-            HStack(alignment: .center, spacing: 14) {
-                AtriaPlanReadinessMark(percent: hero.recoveryEstimate.percent,
-                                       baselineText: baselineValueText,
-                                       tint: readinessTint)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(planActionText)
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(planHintText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            AtriaDayPlanLane(position: dayLanePosition,
-                             cueText: planActionText,
-                             detailText: dayLaneDetailText,
-                             tint: readinessTint)
-
-            AtriaSleepPlanStrip(statusText: sleepPlanStatusText,
-                                debtText: sleepPlanDebtText,
-                                routineText: sleepPlanRoutineText,
-                                bedtimeText: sleepPlanBedtimeText,
-                                progress: sleepPlanProgress)
-
-            planBalanceRail
-
-            AtriaWeeklyPlanCard(plan: weeklyPlan)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Today's plan. \(readinessTitle). \(planActionText). \(targetText). Sleep \(sleepDebtValueText). \(hero.recoveryEstimate.confidence == .learning ? "Baseline" : "Recovery") \(baselineValueText). \(hero.guidance.detail)")
-    }
-
-    private var dayLanePosition: Double {
-        guard hero.recoveryEstimate.percent != nil else { return 0.50 }
-        // §13.3 2026-08-14: reason vocabulary moved from strain-vs-target to
-        // whiteboard bands.
-        switch hero.guidance.reason {
-        case "whiteboard_lighter": return 0.25
-        case "whiteboard_match": return 0.70
-        case "whiteboard_calibrating", "whiteboard_awaiting": return 0.50
-        default: return 0.50
-        }
-    }
-
-    private var dayLaneDetailText: String {
-        guard hero.recoveryEstimate.percent != nil else { return "Baseline forming" }
-        switch hero.guidance.reason {
-        case "whiteboard_lighter": return "Lighter"
-        case "whiteboard_match": return "Match"
-        case "whiteboard_calibrating": return "Calibrating"
-        case "whiteboard_awaiting": return "Waiting"
-        default: return "Check"
-        }
-    }
-
-    static func == (lhs: AtriaOverviewGuidanceSection, rhs: AtriaOverviewGuidanceSection) -> Bool {
-        lhs.hero == rhs.hero
-            && lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
-            && lhs.sleepGoalHours == rhs.sleepGoalHours
-            && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
-            && lhs.weeklyPlan == rhs.weeklyPlan
-    }
-
-    private var planBalanceRail: some View {
-        HStack(spacing: 7) {
-            planBalanceStep(systemImage: hero.recoveryEstimate.confidence == .learning ? "clock.badge.checkmark" : "heart.circle.fill",
-                            title: hero.recoveryEstimate.confidence == .learning ? "Baseline" : "Recovery",
-                            value: baselineValueText,
-                            tint: readinessTint)
-            planBalanceStep(systemImage: "bolt.heart.fill",
-                            title: "Target",
-                            value: targetValueText,
-                            tint: Metrics.electricStrain)
-            planBalanceStep(systemImage: "moon.zzz.fill",
-                            title: "Tonight",
-                            value: sleepPlanStatusText.replacingOccurrences(of: "Aim ", with: ""),
-                            tint: .cyan)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Plan balance. \(hero.recoveryEstimate.confidence == .learning ? "Baseline" : "Recovery") \(baselineValueText). Target strain \(targetValueText). Tonight \(sleepPlanStatusText).")
-    }
-
-    private func planBalanceStep(systemImage: String, title: String, value: String, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(tint.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.70)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(tint.opacity(0.11), lineWidth: 1)
-        }
-    }
-}
-
-private struct AtriaDayPlanLane: View, Equatable {
-    let position: Double
-    let cueText: String
-    let detailText: String
-    let tint: Color
-
-    private var clampedPosition: Double {
-        min(max(position, 0), 1)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .top) {
-                Label("Day lane", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Text(detailText)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
-                    .multilineTextAlignment(.trailing)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let markerX = width * clampedPosition
-                ZStack(alignment: .leading) {
-                    HStack(spacing: 4) {
-                        laneSegment(label: "Recover", tint: .cyan)
-                        laneSegment(label: "Hold", tint: .secondary)
-                        laneSegment(label: "Push", tint: Metrics.electricStrain)
-                    }
-
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 16, height: 16)
-                        .overlay {
-                            Circle()
-                                .stroke(Color.primary.opacity(0.16), lineWidth: 1)
-                        }
-                        .shadow(color: tint.opacity(0.24), radius: 8, y: 3)
-                        .offset(x: min(max(markerX - 8, 0), width - 16))
-                }
-            }
-            .frame(height: 28)
-            .accessibilityHidden(true)
-            // The cue renders once in the card headline and the scale in the
-            // lane segments; the combined accessibilityLabel keeps both here.
-        }
-        .padding(11)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Day lane. \(cueText). \(detailText). Recover, hold, push scale.")
-    }
-
-    private func laneSegment(label: String, tint: Color) -> some View {
-        Capsule(style: .continuous)
-            .fill(tint.opacity(0.34))
-            .overlay(alignment: .center) {
-                Text(label)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.primary.opacity(0.62))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.62)
-            }
-            .frame(maxWidth: .infinity)
-    }
-}
-
-private struct AtriaSleepPlanStrip: View, Equatable {
-    let statusText: String
-    let debtText: String
-    let routineText: String
-    let bedtimeText: String?
-    let progress: Double
-    @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
-    @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
-    @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
-    @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
-    @State private var alarmStatusText: String?
-    /// Efficiencies of the user's real confirmed nights, for the planner's
-    /// time-in-bed assumption. Passed in so this card stays store-free.
-    var nightEfficiencies: [Double] = []
-
-    static func == (lhs: AtriaSleepPlanStrip, rhs: AtriaSleepPlanStrip) -> Bool {
-        lhs.statusText == rhs.statusText
-            && lhs.debtText == rhs.debtText
-            && lhs.routineText == rhs.routineText
-            && lhs.bedtimeText == rhs.bedtimeText
-            && lhs.progress == rhs.progress
-    }
-
-    private var clampedProgress: Double {
-        min(max(progress, 0), 1)
-    }
-
-    private var wakeAlarmPlan: AtriaWakeAlarmPlan {
-        AtriaWakeAlarmPlan(mode: AtriaWakeAlarmPlan.Mode(rawValue: wakeAlarmMode) ?? .smartWindow,
-                           wakeByHour: wakeByMinutes / 60,
-                           wakeByMinute: wakeByMinutes % 60)
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.cyan.opacity(0.14))
-                Image(systemName: "moon.zzz.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.cyan)
-            }
-            .frame(width: 42, height: 42)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text("Tonight")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Text(statusText)
-                        .font(.headline.weight(.bold).monospacedDigit())
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                }
-
-                ProgressView(value: clampedProgress)
-                    .tint(.cyan)
-                    .scaleEffect(x: 1, y: 1.12, anchor: .center)
-                    .accessibilityHidden(true)
-
-                if let bedtimeText {
-                    Text(bedtimeText)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.74)
-                }
-
-                HStack(spacing: 8) {
-                    Button {
-                        wakeAlarmEnabled.toggle()
-                        if wakeAlarmEnabled {
-                            scheduleWakeAlarm()
-                        } else {
-                            AtriaWakeAlarmScheduler.cancelLast()
-                            alarmStatusText = "Alarm off"
-                        }
-                    } label: {
-                        Label(wakeAlarmEnabled ? "Wake \(wakeAlarmPlan.displayTime)" : "Set wake alarm",
-                              systemImage: wakeAlarmEnabled ? "alarm.fill" : "alarm")
-                            .font(.caption2.weight(.bold))
-                    }
-                    .atriaCardAction(prominent: false, tint: .cyan)
-
-                    Menu {
-                        Picker("Wake mode", selection: $wakeAlarmMode) {
-                            ForEach(AtriaWakeAlarmPlan.Mode.allCases, id: \.rawValue) { mode in
-                                Text(mode.title).tag(mode.rawValue)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "chevron.up.chevron.down.circle")
-                            .font(.caption.weight(.bold))
-                    }
-                    .atriaGlassIconAction(tint: .cyan, size: 30)
-                    .onChange(of: wakeAlarmMode) { _, _ in
-                        if wakeAlarmEnabled { scheduleWakeAlarm() }
-                    }
-                }
-
-                if let alarmStatusText {
-                    Text(alarmStatusText)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.74)
-                }
-            }
-
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(debtText)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Text(routineText)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(cornerRadius: 20, tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Tonight sleep plan. \(statusText). \(debtText). \(routineText). \(bedtimeText ?? ""). Wake alarm \(wakeAlarmEnabled ? "on" : "off").")
-    }
-
-    private func scheduleWakeAlarm() {
-        let plan = wakeAlarmPlan
-        AtriaWakeAlarmStore.save(plan)
-        Task {
-            let result = await AtriaWakeAlarmScheduler.scheduleHardAlarm(plan: plan)
-            await MainActor.run {
-                switch result {
-                case .scheduled(_, let fireDate):
-                    alarmStatusText = "AlarmKit set \(fireDate.formatted(date: .omitted, time: .shortened))"
-                    AtriaDebugLog("ATRIADBG wake_alarm_schedule status=scheduled mode=%@ wake_by=%@ fire=%@",
-                                  plan.mode.rawValue,
-                                  plan.displayTime,
-                                  fireDate.formatted(date: .numeric, time: .shortened))
-                case .denied:
-                    wakeAlarmEnabled = false
-                    alarmStatusText = "Alarm permission needed"
-                case .unavailable(let reason):
-                    wakeAlarmEnabled = false
-                    alarmStatusText = "Alarm unavailable"
-                    AtriaDebugLog("ATRIADBG wake_alarm_schedule status=unavailable reason=%@",
-                                  reason)
-                }
-            }
-        }
-    }
-}
-
-private struct AtriaPlanReadinessMark: View, Equatable {
-    let percent: Int?
-    let baselineText: String
-    let tint: Color
-
-    private var ringFraction: CGFloat {
-        guard let percent else { return 0.22 }
-        return CGFloat(min(max(Double(percent) / 100.0, 0), 1))
-    }
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(tint.opacity(0.14), lineWidth: 6)
-
-            Circle()
-                .trim(from: 0, to: ringFraction)
-                .stroke(tint, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-
-            if let percent {
-                Text("\(percent)")
-                    .font(.headline.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.primary)
-                    .contentTransition(.numericText())
-            } else {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(tint)
-                    .accessibilityHidden(true)
-            }
-        }
-        .frame(width: 62, height: 62)
-        .overlay(alignment: .bottomTrailing) {
-            if percent == nil {
-                Text(baselineText)
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.72))
-                    )
-                    .offset(x: 5, y: 5)
-            }
-        }
-        .accessibilityLabel(percent.map { "Recovery \($0) percent" } ?? "Baseline \(baselineText)")
-    }
-}
-
-enum AtriaMetricDetailKind: String, Identifiable {
+enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
     case recovery
     case hrv
     case restingHeartRate
@@ -8326,10 +3671,39 @@ enum AtriaMetricDetailKind: String, Identifiable {
     ///
     /// Expanding a chart opens in this form so the full-screen view shows the
     /// same shape that was tapped rather than silently switching to a line.
+    /// What one recorded point is. Everything read from a night's wear
+    /// counts nights; anything accumulated across a waking day counts days.
+    var coverageNoun: String {
+        switch self {
+        case .recovery, .hrv, .restingHeartRate, .respiratoryRate,
+             .sleep, .sleepPerformance, .sleepEfficiency:
+            return "nights"
+        default:
+            return "days"
+        }
+    }
+
     var rendersAsDailyBar: Bool {
         switch self {
-        case .recovery, .sleep, .strain, .sleepPerformance:
+        // The owner's chart grammar (2026-08-26): a metric that resolves to
+        // ONE value per day draws as bars; a metric that moves through the day
+        // draws as a line. The corner sparklines followed it from the start —
+        // HRV, resting HR and respiratory rate drew bars on the tile and then
+        // silently switched to lines when tapped open, which is exactly the
+        // unpredictability the 2026-08-27 goal names. Aligned here so the
+        // full-screen shape is the shape that was tapped.
+        case .recovery, .sleep, .strain, .sleepPerformance,
+             .hrv, .restingHeartRate, .respiratoryRate, .sleepEfficiency:
             return true
+        // Stated exclusions, each for a reason rather than by omission:
+        //  .stress          intra-day — the rule's own line case
+        //  .skinTemperature a signed DEVIATION; the bar y-domain is anchored
+        //                   at zero and would clip a negative night
+        //  .fitnessAge      an age in years — a bar from zero makes a one-year
+        //                   change invisible, defeating the chart
+        //  .vo2max, .bloodOxygen, .hrZones  render honest no-trend templates;
+        //                   they gain the bar form when a stored per-day
+        //                   series exists to draw
         default:
             return false
         }
@@ -8543,17 +3917,25 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
     let sleepGoalHours: Double
     let referenceDate: Date
     let calendar: Calendar
+    /// Closed physiological cycles' strain keyed by predominant civil day
+    /// (2026-08-30, SessionStore.physiologicalCycleStrainByDisplayDay).
+    /// Overrides the civil rollup VALUE for matching strain chart days so a
+    /// shifted sleep schedule is not shredded across two civil bars; days
+    /// absent here keep the civil value (no claim of cycle precision).
+    let cycleStrainByDisplayDay: [Date: Double]
 
     init(rollups: [DailyRollupStoreEntry],
          rollupsRevision: Int?,
          baseline: AtriaBaselineTargetSnapshot,
          sleepGoalHours: Double,
+         cycleStrainByDisplayDay: [Date: Double] = [:],
          referenceDate: Date = Date(),
          calendar: Calendar = .current) {
         self.rollupsRevision = rollupsRevision
         self.rollups = rollups.map(Rollup.init)
         self.baseline = Baseline(baseline)
         self.sleepGoalHours = sleepGoalHours
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
         self.referenceDate = calendar.startOfDay(for: referenceDate)
         self.calendar = calendar
     }
@@ -8564,6 +3946,7 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
             rollups: rollups,
             baseline: baseline,
             sleepGoalHours: sleepGoalHours,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay,
             referenceDate: calendar.startOfDay(for: date),
             calendar: calendar
         )
@@ -8573,12 +3956,14 @@ private struct AtriaMetricDetailPreparationInput: Equatable, Sendable {
                  rollups: [Rollup],
                  baseline: Baseline,
                  sleepGoalHours: Double,
+                 cycleStrainByDisplayDay: [Date: Double],
                  referenceDate: Date,
                  calendar: Calendar) {
         self.rollupsRevision = rollupsRevision
         self.rollups = rollups
         self.baseline = baseline
         self.sleepGoalHours = sleepGoalHours
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
         self.referenceDate = referenceDate
         self.calendar = calendar
     }
@@ -8716,6 +4101,33 @@ struct AtriaMetricDetailSheet: View {
     /// provenance to show, in which case the section is simply absent rather
     /// than rendered empty.
     var provenance: AtriaMetricProvenance? = nil
+    /// Self-improving zones (2026-09-02): the max-HR suggestion the engine
+    /// learns from sustained session peaks, offered beside the zone card it
+    /// would change instead of only deep in Settings. nil = nothing to offer.
+    var maxHRSuggestion: AtriaMaxHRSuggestion? = nil
+    var onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil
+    var onDismissMaxHRSuggestion: ((Int) -> Void)? = nil
+    @State private var maxHRSuggestionHandled = false
+
+    #if DEBUG
+    /// `--atria-ui-range week` (or day/month/quarter/six-months/year/all).
+    /// DEBUG only, and read once at init so it behaves like the user's own
+    /// first choice rather than pinning the picker.
+    static func debugRequestedInitialRange(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> AtriaTrendRange? {
+        guard let index = arguments.firstIndex(of: "--atria-ui-range"),
+              arguments.indices.contains(index + 1) else { return nil }
+        switch arguments[index + 1].lowercased() {
+        case "day": return .day
+        case "week": return .week
+        case "month": return .month
+        case "quarter": return .quarter
+        case "sixmonths", "six-months": return .sixMonths
+        case "year": return .year
+        case "all": return .all
+        default: return nil
+        }
+    }
+    #endif
 
     private final class ExpandedChartEventsCache {
         private var key: Int?
@@ -8779,12 +4191,25 @@ struct AtriaMetricDetailSheet: View {
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
          strapMotionAvailability: AtriaStrapMotionAvailability? = nil,
          provenance: AtriaMetricProvenance? = nil,
+         maxHRSuggestion: AtriaMaxHRSuggestion? = nil,
+         onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil,
+         onDismissMaxHRSuggestion: ((Int) -> Void)? = nil,
+         // Cycle-truth strain series (2026-08-30). Default [:] keeps every
+         // caller without it byte-identical: absent days chart civil values.
+         cycleStrainByDisplayDay: [Date: Double] = [:],
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
          initialShowMinMaxBand: Bool = true) {
-        let resolvedInitialRange: AtriaTrendRange =
+        var resolvedInitialRange: AtriaTrendRange =
             metric == .fitnessAge && initialRange == .day ? .week : initialRange
+        #if DEBUG
+        // Screenshot support (2026-09-03): the trailing-window label and the
+        // "N of M nights recorded" coverage line only exist once a multi-day
+        // range is chosen, and a scripted launch cannot tap the segmented
+        // control. Honour a launch argument so those states can be captured.
+        if let forced = Self.debugRequestedInitialRange() { resolvedInitialRange = forced }
+        #endif
         _range = State(initialValue: resolvedInitialRange)
         let currentPeriodAnchor: Date
         switch metric {
@@ -8798,6 +4223,9 @@ struct AtriaMetricDetailSheet: View {
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.provenance = provenance
+        self.maxHRSuggestion = maxHRSuggestion
+        self.onAcceptMaxHRSuggestion = onAcceptMaxHRSuggestion
+        self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
         self.metric = metric
         self.confirmedWorkouts = confirmedWorkouts
         self.confirmedWorkoutsRevision = confirmedWorkoutsRevision
@@ -8822,7 +4250,8 @@ struct AtriaMetricDetailSheet: View {
             rollups: rollups,
             rollupsRevision: rollupsRevision,
             baseline: baseline,
-            sleepGoalHours: sleepGoalHours
+            sleepGoalHours: sleepGoalHours,
+            cycleStrainByDisplayDay: cycleStrainByDisplayDay
         )
     }
 
@@ -8843,11 +4272,16 @@ struct AtriaMetricDetailSheet: View {
                             // chart.bar.xaxis (not the slider glyph — that
                             // bare literal is banned by the removed-customize
                             // guard in this file).
+                            // Ink, not accent blue (2026-08-29 theme pass).
                             Image(systemName: "chart.bar.xaxis")
                                 .font(.headline.weight(.semibold))
+                                .foregroundStyle(.secondary)
                                 .padding(10)
                                 .background(.quaternary.opacity(0.22), in: Circle())
                         }
+                        // .plain, like the period chevrons: the default
+                        // borderless style paints accent blue over the ink.
+                        .buttonStyle(.plain)
                         .accessibilityLabel("Chart options: bucketing and min-max band")
                     }
                     Button {
@@ -8855,9 +4289,11 @@ struct AtriaMetricDetailSheet: View {
                     } label: {
                         Image(systemName: "info.circle")
                             .font(.headline.weight(.semibold))
+                            .foregroundStyle(.secondary)
                             .padding(10)
                             .background(.quaternary.opacity(0.22), in: Circle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("\(metric.title) meaning and coaching")
                 }
 
@@ -8910,6 +4346,7 @@ struct AtriaMetricDetailSheet: View {
                                        overlays: expandedChartOverlays,
                                        xDomain: expandedChartXDomain,
                                        comparisonPeriodNoun: range.narrativeLabel,
+                                       coverageNoun: metric.coverageNoun,
                                        // Open in the form the user just tapped.
                                        defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
                                        onDismiss: { showExpandedChart = false })
@@ -8933,11 +4370,16 @@ struct AtriaMetricDetailSheet: View {
             #endif
         }
         .sheet(item: $openedHistoryDay) { day in
+            let historyModel = AtriaHistoryModel.make(rollups: rollups,
+                                                      workouts: confirmedWorkouts,
+                                                      sleeps: confirmedSleeps,
+                                                      cycleStrainByDisplayDay: preparationBaseInput.cycleStrainByDisplayDay)
             AtriaHistoryDayDetailSheet(day: day,
-                                       medians: AtriaHistoryModel.make(rollups: rollups,
-                                                                       workouts: confirmedWorkouts,
-                                                                       sleeps: confirmedSleeps).medianWindow(around: day),
-                                       nights: sleepHistory.confirmedNights(on: day.date))
+                                       medians: historyModel.medianWindow(around: day),
+                                       nights: sleepHistory.confirmedNights(on: day.date),
+                                       allDays: historyModel.days,
+                                       mediansForDay: { historyModel.medianWindow(around: $0) },
+                                       nightsForDay: { sleepHistory.confirmedNights(on: $0.date) })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -8968,10 +4410,16 @@ struct AtriaMetricDetailSheet: View {
 
     private var preparationShell: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ProgressView()
-                .tint(metric.tint)
-            Text("Preparing trend")
-                .font(.headline.weight(.semibold))
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(metric.tint)
+                Text("Preparing trend")
+                    .font(.headline.weight(.semibold))
+            }
+            // Chart-shaped placeholder: the trend lands in this exact slot, so
+            // the card holds its height and nothing jumps when data arrives.
+            AtriaSkeletonBlock(height: 108)
             Text("Your saved metric history will appear here in a moment.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -9021,7 +4469,7 @@ struct AtriaMetricDetailSheet: View {
             // hypnogram and strain's gauge — not behind "Show details"
             // (2026-07-07, design handoff full-scroll mock).
             AtriaMetricDetailTemplate(heroValue: recoveryHeroValue,
-                                      heroState: recoveryHeroState,
+                                      heroState: periodHeroState(recoveryHeroState),
                                       // Missing Recovery is neutral. Green is
                                       // reserved for an actual qualified score.
                                       tint: recoveryHeroRawPercent.map {
@@ -9029,14 +4477,16 @@ struct AtriaMetricDetailSheet: View {
                                       } ?? .secondary,
                                       heroStyle: .recoveryRing(score: recoveryHeroRawPercent,
                                                                baselineComparison: recoveryBaselineComparisonText)) {
+                contributorCard
+                strainRecoveryComboCard
+            } contributors: {
+                // 2026-08-29 minimalism restructure: provenance + behaviors
+                // moved behind the "Show details" reveal; the contributor map
+                // (the signature visual) stays on the first screen.
                 if let provenance {
                     AtriaMetricProvenanceCard(provenance: provenance)
                 }
-                contributorCard
-                strainRecoveryComboCard
                 behaviorsMoveYouCard
-            } contributors: {
-                EmptyView()
             } chart: {
                 chartSlot {
                     metricChart(title: "Recovery",
@@ -9049,6 +4499,7 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: recoveryComparisonForSelectedPeriod,
                                 baselineBand: nil,
                                 accessibilitySummary: "Recovery over \(range.label).",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.recoveryPrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
@@ -9056,16 +4507,17 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .hrv:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: hrvSummaryForSelectedPeriod,
                                                                 points: hrvAutoPointsForSelectedPeriod,
                                                                 unit: "ms"),
-                                      heroState: hrvBand == nil
-                                        ? learningNightsState(baseline.hrvSampleCount)
-                                        : "Typical",
-                                      tint: metric.tint) {
+                                      heroState: periodHeroState(hrvBand == nil ? "Learning" : "Typical"),
+                                      tint: metric.tint,
+                                      heroLearning: hrvBand == nil
+                                        ? learningNights(baseline.hrvSampleCount)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
                                               name: "HRV",
@@ -9085,6 +4537,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: hrvBand,
                                 accessibilitySummary: "HRV over \(range.label) with your baseline band.",
                                 emptyExplanation: "HRV is read from steady overnight wear — each clean night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.hrvPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
@@ -9092,16 +4545,17 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .restingHeartRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: restingHeartRateSummaryForSelectedPeriod,
                                                                 points: restingHeartRateAutoPointsForSelectedPeriod,
                                                                 unit: "bpm"),
-                                      heroState: restingBand == nil
-                                        ? learningNightsState(baseline.restingSampleCount)
-                                        : "Typical",
-                                      tint: metric.tint) {
+                                      heroState: periodHeroState(restingBand == nil ? "Learning" : "Typical"),
+                                      tint: metric.tint,
+                                      heroLearning: restingBand == nil
+                                        ? learningNights(baseline.restingSampleCount)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
                                               name: "Resting HR",
@@ -9121,6 +4575,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: restingBand,
                                 accessibilitySummary: "Resting heart rate over \(range.label) with your baseline band.",
                                 emptyExplanation: "Resting heart rate is read from overnight wear — each night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.restingHeartRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
@@ -9128,12 +4583,16 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .respiratoryRate:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.respiratoryRateSummary[range], points: preparedHistory.respiratoryRate[range] ?? [], unit: "/min"),
-                                      heroState: respiratoryBand == nil ? "Learning" : "Typical",
-                                      tint: metric.tint) {
+                                      heroState: periodHeroState(respiratoryBand == nil ? "Learning" : "Typical"),
+                                      tint: metric.tint,
+                                      heroLearning: respiratoryBand == nil
+                                        ? learningNights(respiratoryQualifiedNightCount,
+                                                         cap: Self.respiratoryBandMinimumNights)
+                                        : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "lungs.fill",
                                               name: "Respiratory rate",
@@ -9152,6 +4611,7 @@ struct AtriaMetricDetailSheet: View {
                                 baselineBand: respiratoryBand,
                                 accessibilitySummary: "Respiratory rate over \(range.label) with your typical range.",
                                 emptyExplanation: "Respiratory rate is derived from steady overnight wear — each night adds a point here.",
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.respiratoryRatePrior[range] ?? [],
                                 companions: [("That day's HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
@@ -9159,11 +4619,17 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .sleep:
+            // Minimalism restructure (owner directive 2026-08-29, "the sleep
+            // tab has 1000s of things"): above the fold = hero, chart,
+            // hypnogram, one neutral 4-up stat row, reveal — 5 blocks. The
+            // plan card, need ledger and About live behind the reveal. The
+            // debt-trend card mount was DELETED: it re-plotted the same data
+            // the main chart already shows in W/M.
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
-                                      heroState: sleepHeroState,
+                                      heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
@@ -9171,6 +4637,10 @@ struct AtriaMetricDetailSheet: View {
                     // building states itself for unvalidated nights.
                     AtriaSleepHypnogramCard(night: latest,
                                             motionAvailability: strapMotionAvailability)
+                }
+                sleepStatSummaryRow
+            } contributors: {
+                if let latest = sleepHistory.latestMainSleep {
                     AtriaSleepPlanCard(night: latest,
                                        neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                 baseNeedHours: sleepBaseNeedHours,
@@ -9179,10 +4649,7 @@ struct AtriaMetricDetailSheet: View {
                                        tonightProjection: tonightProjectedNeed,
                                        nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
-                    sleepDebtTrendCard
                 }
-            } contributors: {
-                AtriaMetricContributorRows(rows: sleepContributorRows, tint: Metrics.electricSleep)
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep duration",
@@ -9197,6 +4664,7 @@ struct AtriaMetricDetailSheet: View {
                                 accessibilitySummary: "Sleep duration over \(range.label).",
                                 emptyTitle: sleepTrendEmptyTitle,
                                 emptyExplanation: sleepTrendEmptyExplanation,
+                                coverageNoun: "nights",
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("HRV", "ms", Metrics.electricHRV, hrvAutoPointsForSelectedPeriod)],
@@ -9204,7 +4672,7 @@ struct AtriaMetricDetailSheet: View {
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .strain:
             AtriaMetricDetailTemplate(heroValue: strainHeroValue,
@@ -9215,30 +4683,38 @@ struct AtriaMetricDetailSheet: View {
                                                             && !dayStrainMetricsIncomplete
                                                             ? guidance.target
                                                             : nil)) {
+                // 2026-08-29 minimalism restructure: only the combo card stays
+                // above the fold; the workout/zone/mix/split cards moved
+                // behind the "Show details" reveal (contributors slot).
                 strainRecoveryComboCard
+                // Rare, dismissible, and asking for a decision: the learned
+                // max-HR offer stays above the fold when present (2026-09-02).
+                maxHRSuggestionCard
+            } contributors: {
                 if showsCurrentPhysiologicalCycleContext {
                     strainWorkoutSection
                     strainZoneHistogramCard
                     strainActivityMixCard
                     strainCardioLiftingSplitCard
-                }
-            } contributors: {
-                if showsCurrentPhysiologicalCycleContext {
                     AtriaMetricContributorRows(rows: strainContributorRows,
                                                tint: Metrics.electricStrain)
                 }
             } chart: {
-                if range == .day, showsCurrentPhysiologicalCycleContext {
-                    if let currentCycleStrainProvenance {
-                        AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)
+                // Live-day provenance renders INSIDE the chart slot (2026-08-29):
+                // returning the card instead of chartSlot dropped the D/W/M range
+                // selector and the prev/next chevrons, so a live strain sheet had
+                // no way to reach past days.
+                chartSlot {
+                    if range == .day, showsCurrentPhysiologicalCycleContext {
+                        if let currentCycleStrainProvenance {
+                            AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)
+                        } else {
+                            honestPartialCard(
+                                tint: Metrics.electricStrain,
+                                bodyText: "Strain needs heart-rate evidence from this physiological day."
+                            )
+                        }
                     } else {
-                        honestPartialCard(
-                            tint: Metrics.electricStrain,
-                            bodyText: "Strain needs heart-rate evidence from this physiological day."
-                        )
-                    }
-                } else {
-                    chartSlot {
                         metricChart(title: "Strain",
                                 // Per-day bar: accumulates from 0 each physiological day.
                                 rendersAsDailyBar: true,
@@ -9257,11 +4733,11 @@ struct AtriaMetricDetailSheet: View {
                     }
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .sleepPerformance:
             AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepPerformanceSummary[range], points: preparedHistory.sleepPerformance[range] ?? [], unit: "%"),
-                                      heroState: sleepPerformanceHeroState,
+                                      heroState: periodHeroState(sleepPerformanceHeroState),
                                       tint: Metrics.electricSleep) {
                 EmptyView()
             } chart: {
@@ -9276,22 +4752,23 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.sleepPerformanceComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep sufficiency, percent of nightly need, over \(range.label).",
+                                coverageNoun: "nights",
                                 companions: [("Sleep duration", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? []),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
                                 onExpand: { showExpandedChart = true })
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .fitnessAge:
             AtriaMetricDetailTemplate(heroValue: fitnessAgeHeroValue,
                                       heroState: fitnessAgeHeroState,
                                       tint: fitnessAgeTint) {
                 if preparedHistory.paceOfAging.isReady {
+                    // 2026-08-29 theme pass: ink outside the hero and chart.
                     Text(preparedHistory.paceOfAging.copyText)
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(fitnessAgeTint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } chart: {
@@ -9313,7 +4790,7 @@ struct AtriaMetricDetailSheet: View {
                                       bodyText: "Calibrating a 28-day baseline before showing your pace of aging \u{2014} \(preparedHistory.fitnessAgeEntryCount) of 4 weekly checks saved so far.")
                 }
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .stress:
             // Copy updated 2026-08-04: a daily stress history DOES exist now
@@ -9321,7 +4798,8 @@ struct AtriaMetricDetailSheet: View {
             // monitor). This compact sheet stays chart-free and points there.
             honestPartialDetail(heroValue: "Live read",
                                 heroState: "Live estimate",
-                                tint: .orange,
+                                // 2026-08-29 theme pass: identity hue, not raw .orange.
+                                tint: metric.identity.identityTint(),
                                 bodyText: "A live read from heart rate and beat-to-beat timing. Open the Stress tile for the full timeline and trend \u{2014} breathwork can bring an elevated read down.")
         case .vo2max:
             honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
@@ -9344,7 +4822,7 @@ struct AtriaMetricDetailSheet: View {
                                        title: "LAST 30 NIGHTS",
                                        subject: "Sleep efficiency")
                 } about: {
-                    aboutDisclosure
+                    aboutSection
                 }
             } else {
                 honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
@@ -9366,8 +4844,9 @@ struct AtriaMetricDetailSheet: View {
             honestPartialDetail(heroValue: AtriaExperimentalSensorCopy.skinTemperatureValue(
                                     summary: summary,
                                     decoderAvailable: decoderAvailable),
-                                heroState: hasReading ? "vs sleep baseline" : (decoderAvailable ? "Building baseline" : "Decoder not verified"),
-                                tint: .teal,
+                                heroState: hasReading ? "vs sleep baseline" : (decoderAvailable ? "Learning" : "Decoder not verified"),
+                                // 2026-08-29 theme pass: identity hue, not raw .teal.
+                                tint: metric.identity.identityTint(),
                                 bodyText: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                     summary: summary,
                                     decoderAvailable: decoderAvailable))
@@ -9378,21 +4857,24 @@ struct AtriaMetricDetailSheet: View {
             // unknown (never a fabricated boundary).
             AtriaMetricDetailTemplate(heroValue: hrZoneMinutes.valueText,
                                       heroState: hrZoneMinutes.hasSamples ? "today" : "No wear today",
-                                      tint: .orange) {
+                                      // 2026-08-29 theme pass: identity hue, not raw .orange.
+                                      tint: metric.identity.identityTint()) {
                 hrZoneBoundariesCard
             } contributors: {
                 EmptyView()
             } chart: {
-                honestPartialCard(tint: .orange, bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
+                honestPartialCard(tint: metric.identity.identityTint(), bodyText: "Time-in-zone minutes for today, split across Z2\u{2013}Z5. Atria doesn't save a day-by-day zone-minutes trend here yet.")
             } about: {
-                aboutDisclosure
+                aboutSection
             }
         case .bloodOxygen:
             // The hero stays empty until a decoder is verified; never render an
             // experimental candidate as a blood-oxygen percentage.
             honestPartialDetail(heroValue: "\u{2014}",
                                 heroState: AtriaSpO2Copy.decoderNotVerified,
-                                tint: .pink,
+                                // 2026-08-29 theme pass: identity authority says
+                                // blood oxygen has no earned hue (.secondary).
+                                tint: metric.identity.identityTint(),
                                 bodyText: AtriaSpO2Copy.longUnavailable)
         }
     }
@@ -9409,7 +4891,7 @@ struct AtriaMetricDetailSheet: View {
         } chart: {
             honestPartialCard(tint: tint, bodyText: bodyText)
         } about: {
-            aboutDisclosure
+            aboutSection
         }
     }
 
@@ -9446,7 +4928,8 @@ struct AtriaMetricDetailSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
-            .atriaInsetCard(tint: .orange)
+            // 2026-08-29 theme pass: card chrome uses the identity hue.
+            .atriaInsetCard(tint: metric.identity.identityTint())
         }
     }
 
@@ -9830,8 +5313,13 @@ struct AtriaMetricDetailSheet: View {
                         offset: -1
                     )
                 } label: {
+                    // 40pt circular affordance — matches the header buttons
+                    // (2026-08-29 controls audit: bare glyphs read as text).
                     Image(systemName: "chevron.left")
-                        .frame(width: 32, height: 32)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                        .background(.quaternary.opacity(0.22), in: Circle())
+                        .contentShape(Circle())
                 }
                 .accessibilityLabel("Previous \(range.narrativeLabel)")
 
@@ -9860,7 +5348,10 @@ struct AtriaMetricDetailSheet: View {
                     )
                 } label: {
                     Image(systemName: "chevron.right")
-                        .frame(width: 32, height: 32)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 40, height: 40)
+                        .background(.quaternary.opacity(0.22), in: Circle())
+                        .contentShape(Circle())
                 }
                 .disabled(nextMetricPeriodIsUnavailable)
                 .accessibilityLabel("Next \(range.narrativeLabel)")
@@ -9883,18 +5374,15 @@ struct AtriaMetricDetailSheet: View {
         }
     }
 
-    private var aboutDisclosure: some View {
-        DisclosureGroup {
-            AtriaMetricMeaningInline(metric: metric,
-                                     guidance: guidance,
-                                     recoveryEstimate: recoveryEstimate,
-                                     sleepGoalHours: sleepGoalHours)
-        } label: {
-            Label("Learn", systemImage: "info.circle")
-                .font(.subheadline.weight(.semibold))
-        }
-        .padding(14)
-        .atriaInsetCard(tint: metric.tint)
+    /// About block, minimalism pass (owner directive 2026-08-29, supersedes
+    /// the same-day always-visible directive): two plain secondary sentences
+    /// inside the "Show details" reveal — no card, no Label header. The
+    /// template renders a hairline divider above it.
+    private var aboutSection: some View {
+        AtriaMetricMeaningInline(metric: metric,
+                                 guidance: guidance,
+                                 recoveryEstimate: recoveryEstimate,
+                                 sleepGoalHours: sleepGoalHours)
     }
 
     /// The recovery number behind the hero, per selected period, read from the
@@ -9966,7 +5454,12 @@ struct AtriaMetricDetailSheet: View {
         }
         guard showsCurrentPhysiologicalCycleContext,
               let target = guidance.target else {
-            return range == .day ? "Saved day" : "Period average"
+            // A live cycle is still accumulating; "Saved day" belongs to
+            // dated history only (2026-09-02 fixture screenshot).
+            if range == .day {
+                return currentCycleDetailProjection.usesCurrentCycle ? "So far today" : "Saved day"
+            }
+            return "Period average"
         }
         if latest >= target + 1 { return "Strained" }
         if latest >= target - 1 { return "On target" }
@@ -10080,13 +5573,33 @@ struct AtriaMetricDetailSheet: View {
             todayStrainFallback: currentCycleAuthority?.strain ?? todayRollup?.strain)
     }
 
-    /// Seven-night hours-vs-need chart. It uses the exact same sleep-need
-    /// target as the ledger and supports adjacent observed weeks; no missing
-    /// sleep is invented to keep a line visually continuous.
-    private var sleepDebtTrendCard: some View {
-        return AtriaSleepDebtChartCard(
-            nights: sleepHistory.nights,
-            rollups: rollups)
+    /// Compact neutral 4-up stat row for the sleep sheet's first screen
+    /// (2026-08-29 minimalism restructure): label + value only — no icons,
+    /// no color — replacing the four full contributor rows above the fold.
+    /// Values come from the SAME sleepContributorRows source so the numbers
+    /// cannot drift from the detailed rows behind the reveal. Local copy of
+    /// the Activity Monitor vitalsCell pattern (that file is owned elsewhere).
+    private var sleepStatSummaryRow: some View {
+        HStack(alignment: .top, spacing: AtriaDesignTokens.Spacing.sm) {
+            ForEach(sleepContributorRows) { row in
+                VStack(spacing: 2) {
+                    Text(row.name)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Text(row.value)
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(row.name) \(row.value)")
+            }
+        }
+        .padding(.vertical, 10)
+        .atriaInsetCard(tint: Metrics.electricSleep)
     }
 
     /// "How we got <total>" ledger (design 6a, 2026-08-01 parity slice):
@@ -10192,7 +5705,9 @@ struct AtriaMetricDetailSheet: View {
 
     private var sleepTrendEmptyTitle: String {
         switch range {
-        case .day: "Today's sleep is ready"
+        // "Ready" only when a night exists; the hero shows "--" otherwise and
+        // the title must not contradict it (2026-09-02).
+        case .day: sleepHistory.latestMainSleep == nil ? "No sleep saved yet" : "Today's sleep is ready"
         case .week: "This week's trend is building"
         case .month: "This month's trend is building"
         default: "This trend is building"
@@ -10202,7 +5717,9 @@ struct AtriaMetricDetailSheet: View {
     private var sleepTrendEmptyExplanation: String {
         switch range {
         case .day:
-            "Your latest sleep is available above. A daily trend point appears after this night is saved to history."
+            sleepHistory.latestMainSleep == nil
+                ? "Save a night and it appears here as today's point."
+                : "Your latest sleep is available above. A daily trend point appears after this night is saved to history."
         case .week:
             "Your latest sleep is available above. Save more nights this week to see a meaningful weekly trend."
         case .month:
@@ -10220,7 +5737,17 @@ struct AtriaMetricDetailSheet: View {
             baseNeedHours: sleepBaseNeedHours,
             yesterdayStrain: yesterdayStrainForLatestNight
         )
-        return performance.map { "\($0)% of need" } ?? "Need unavailable"
+        // Device 2026-09-02: a week of fragmented nights pinned the debt adder
+        // at its maximum and the need at the 10 h ceiling, so "100% of need"
+        // read as a need that never changes. The ledger behind "Show details"
+        // already says "Capped"; the hero now says it where the number is.
+        let capped = sleepHistory.sleepNeedComponents(
+            for: latest,
+            baseNeedHours: sleepBaseNeedHours,
+            yesterdayStrain: yesterdayStrainForLatestNight
+        )?.isClamped ?? false
+        return performance.map { capped ? "\($0)% of need \u{00b7} need capped" : "\($0)% of need" }
+            ?? "Need unavailable"
     }
 
     private var strainContributorRows: [AtriaMetricContributorRow] {
@@ -10279,6 +5806,46 @@ struct AtriaMetricDetailSheet: View {
 
     /// Strain time-in-zones histogram (design backlog item 5): minutes per
     /// percent-of-max zone across today's confirmed workouts.
+    /// The learned max-HR offer, one glance and two actions: the same
+    /// profile write as Settings, hidden as soon as either is taken.
+    @ViewBuilder
+    private var maxHRSuggestionCard: some View {
+        if metric == .strain, !maxHRSuggestionHandled, let suggestion = maxHRSuggestion {
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+                Text("Max heart rate")
+                    .atriaEyebrow()
+                Text("Observed \(suggestion.observedPeak) bpm · set to \(suggestion.currentMaxHR)")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                Text(suggestion.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+                    Button {
+                        maxHRSuggestionHandled = true
+                        onAcceptMaxHRSuggestion?(suggestion.observedPeak)
+                    } label: {
+                        Label("Update to \(suggestion.observedPeak)", systemImage: "checkmark.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: Metrics.electricStrain)
+
+                    Button {
+                        maxHRSuggestionHandled = true
+                        onDismissMaxHRSuggestion?(suggestion.observedPeak)
+                    } label: {
+                        Text("Not now")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(prominent: false, tint: .secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+        }
+    }
+
     @ViewBuilder
     private var strainZoneHistogramCard: some View {
         let histogram = todayZoneHistogram
@@ -10322,11 +5889,13 @@ struct AtriaMetricDetailSheet: View {
     /// days that actually have a recovery score (missing ≠ zero); strain is the
     /// drained/lagged value the rest of this sheet already shows — never a
     /// fabricated live point.
-    // The combo chart is a FIXED 7-day frame (see AtriaStrainRecoveryComboChart),
-    // so it must be fed a week of history regardless of the selected detail
-    // period. Feeding it the selected-period series meant a `.day` selection
-    // handed it a single point — strain's LineMark runs were length 1 and drew
-    // nothing, so the card rendered empty (2026-08-08 field report).
+    // The combo chart is a trailing 7-day frame ending today
+    // (AtriaStrainRecoveryComboChart), so it must be fed a week of history
+    // regardless of the selected detail period. Feeding it the selected-period
+    // series meant a `.day` selection handed it a single point — strain's
+    // LineMark runs were length 1 and drew nothing, so the card rendered empty
+    // (2026-08-08 field report). The axis is that window, not the last day
+    // that happens to have a reading (2026-09-03).
     private var strainComboWeekPoints: [AtriaDetailChartPoint] {
         replacingCurrentCyclePoint(
             in: preparedHistory.strain[.week] ?? [],
@@ -10349,7 +5918,10 @@ struct AtriaMetricDetailSheet: View {
     private var strainRecoveryComboCard: some View {
         let strainPoints = strainComboWeekPoints
         let recoveryPoints = recoveryComboWeekPoints
-        if !strainPoints.isEmpty && !recoveryPoints.isEmpty {
+        // Either series is enough: a week of strain with recovery still
+        // learning used to hide the whole card, and the empty series already
+        // draws as a gap rather than a fabricated zero.
+        if !strainPoints.isEmpty || !recoveryPoints.isEmpty {
             AtriaStrainRecoveryComboChart(strain: strainPoints,
                                           recovery: recoveryPoints,
                                           rangeLabel: "the last 7 days")
@@ -10516,6 +6088,20 @@ struct AtriaMetricDetailSheet: View {
     /// (2026-07-08: the headline was the latest point for every range, identical
     /// across Day/Week/Month, so the number looked frozen to the selector — the same
     /// class of bug the user reported for recovery.)
+    /// A multi-day range plots an aggregate and `periodHeroText` puts that
+    /// aggregate in the hero — so the state word beside it must stop
+    /// describing a single day. Strain has always said "Period average" here;
+    /// every other metric kept its day word over a number that was already an
+    /// average, so Recovery read "59% Moderate" on a month whose latest day
+    /// was 38%, and Sleep read a 30-day mean under last night's "98% of need"
+    /// (2026-09-03 render). "Learning" survives: it describes calibration, not
+    /// the number.
+    private func periodHeroState(_ dayState: @autoclosure () -> String) -> String {
+        let state = dayState()
+        guard range != .day, state != "Learning" else { return state }
+        return "Period average"
+    }
+
     private func periodHeroText(summary: AtriaDetailPeriodSummary?,
                                 points: [AtriaDetailChartPoint],
                                 unit: String) -> String {
@@ -10593,37 +6179,53 @@ struct AtriaMetricDetailSheet: View {
               let sd = baseline.hrvLnSD else { return nil }
         return AtriaDetailBaselineBand(lower: exp(mean - sd),
                                        upper: exp(mean + sd),
-                                       tint: .pink)
+                                       tint: AtriaMetricDetailKind.hrv.tint)
     }
 
     private var restingBand: AtriaDetailBaselineBand? {
         guard baseline.restingTrusted,
               let mean = baseline.restingMean,
               let sd = baseline.restingSD else { return nil }
+        // One identity hue per metric: a pink "typical" band under a cyan
+        // resting-HR chart read as a warning stripe rather than as this
+        // metric's own normal range (2026-09-03 render).
         return AtriaDetailBaselineBand(lower: mean - sd,
                                        upper: mean + sd,
-                                       tint: .pink)
+                                       tint: AtriaMetricDetailKind.restingHeartRate.tint)
+    }
+
+    /// Nights of overnight respiration a typical range needs before it is
+    /// drawn; the hero's learning track counts toward the same number.
+    private static let respiratoryBandMinimumNights = 3
+
+    private var respiratoryQualifiedNightCount: Int {
+        sleepHistory.respiratoryBaselineStats?.count ?? 0
     }
 
     private var respiratoryBand: AtriaDetailBaselineBand? {
         guard let stats = sleepHistory.respiratoryBaselineStats,
-              stats.count >= 3,
+              stats.count >= Self.respiratoryBandMinimumNights,
               stats.sd > 0 else { return nil }
         return AtriaDetailBaselineBand(lower: stats.mean - 1.5 * stats.sd,
                                        upper: stats.mean + 1.5 * stats.sd,
-                                       tint: .teal)
+                                       tint: AtriaMetricDetailKind.respiratoryRate.tint)
     }
 
     private func contributorTitle(_ contributor: Metrics.RecoveryEstimate.Contributor) -> String {
         switch contributor.kind {
         case .hrv: return "HRV"
-        case .restingHeartRate: return "RHR"
+        case .restingHeartRate: return "Resting HR"
         case .sleep: return "Sleep"
-        case .respiration: return "Respiration"
+        case .respiration: return "Resp rate"
         }
     }
 
     private func contributorNote(_ contributor: Metrics.RecoveryEstimate.Contributor) -> String {
+        // An excluded contributor carries weight 0 and a placeholder zScore of
+        // 0, which the directional grammar below reads as "at or above
+        // baseline" — so the HRV row said "Above baseline" beside its own
+        // value of "HRV unavailable" (2026-09-03 render).
+        guard contributor.weight > 0 else { return "Not included in this score" }
         switch contributor.kind {
         case .hrv:
             return contributor.zScore >= 0 ? "Above baseline" : "Below baseline"
@@ -10640,10 +6242,13 @@ struct AtriaMetricDetailSheet: View {
     /// progress ("Learning \u{00b7} night 3 of 14") once a night is recorded,
     /// so a bare "Learning" never hides how far along calibration is
     /// (2026-07-07, design handoff).
-    private func learningNightsState(_ samples: Int) -> String {
-        guard samples > 0 else { return "Learning" }
-        let cap = PersonalBaseline.trustedMinimumSamples
-        return "Learning \u{00b7} night \(min(samples, cap)) of \(cap)"
+    /// The 14-night baseline progress as the shared learning track under the
+    /// hero (2026-09-02; supersedes the text pill "Learning · night 3 of 14"
+    /// from the 2026-07-07 handoff with the same real count as a visual).
+    private func learningNights(_ samples: Int,
+                                cap: Int = PersonalBaseline.trustedMinimumSamples) -> AtriaMetricDetailHeroLearning {
+        let recorded = min(max(samples, 0), cap)
+        return .init(current: recorded, target: cap, caption: "\(recorded) of \(cap) nights")
     }
 
     private func metricChart(title: String,
@@ -10657,6 +6262,8 @@ struct AtriaMetricDetailSheet: View {
                              accessibilitySummary: String,
                              emptyTitle: String = "No saved observations",
                              emptyExplanation: String? = nil,
+                             // Overnight metrics count nights, not days.
+                             coverageNoun: String = "days",
                              priorPoints: [AtriaDetailChartPoint] = [],
                              companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
                              onOpenDay: ((Date) -> Void)? = nil,
@@ -10727,6 +6334,7 @@ struct AtriaMetricDetailSheet: View {
             accessibilitySummary: accessibilitySummary,
             emptyTitle: emptyTitle,
             emptyExplanation: emptyExplanation,
+            coverageNoun: coverageNoun,
             priorPoints: priorPoints,
             companions: companions.map {
                 AtriaPreparedMetricChart.Companion(title: $0.title,
@@ -10976,7 +6584,8 @@ struct AtriaMetricDetailSheet: View {
     private func openHistoryDay(for date: Date) {
         let model = AtriaHistoryModel.make(rollups: rollups,
                                            workouts: confirmedWorkouts,
-                                           sleeps: confirmedSleeps)
+                                           sleeps: confirmedSleeps,
+                                           cycleStrainByDisplayDay: preparationBaseInput.cycleStrainByDisplayDay)
         guard let day = model.days.first(where: { Calendar.current.isDate($0.date, inSameDayAs: date) }) else { return }
         openedHistoryDay = day
     }
@@ -11039,7 +6648,14 @@ struct AtriaMetricChartPreparedData {
             include(point.bandLower)
             include(point.bandUpper)
         }
-        for point in priorPoints { include(point.value) }
+        // Prior-period points are deliberately NOT drawn in this card (see the
+        // ghost-line note in chartContent), so letting them set the scale sized
+        // the axis to data the reader cannot see: a strain month topping out at
+        // 3.2 was plotted on an axis reaching 14 because some day in the prior
+        // month was that hard, leaving the real bars in the bottom fifth
+        // (2026-09-03 render). The prior AVERAGE still counts — its dashed rule
+        // is on screen. The expanded chart, which does draw the prior series,
+        // computes its own scale.
         include(baselineBounds?.lowerBound)
         include(baselineBounds?.upperBound)
         include(priorAverage)
@@ -11117,6 +6733,10 @@ private struct AtriaPreparedMetricChart: View {
     let accessibilitySummary: String
     let emptyTitle: String
     let emptyExplanation: String?
+    /// What one plotted point counts as. Overnight metrics are read from a
+    /// night's wear, so claiming "days recorded" would overstate what the
+    /// strap actually measured.
+    let coverageNoun: String
     let priorPoints: [AtriaDetailChartPoint]
     let companions: [Companion]
     let onOpenDay: ((Date) -> Void)?
@@ -11135,6 +6755,7 @@ private struct AtriaPreparedMetricChart: View {
          accessibilitySummary: String,
          emptyTitle: String,
          emptyExplanation: String?,
+         coverageNoun: String,
          priorPoints: [AtriaDetailChartPoint],
          companions: [Companion],
          prepared: AtriaMetricChartPreparedData,
@@ -11152,6 +6773,7 @@ private struct AtriaPreparedMetricChart: View {
         self.accessibilitySummary = accessibilitySummary
         self.emptyTitle = emptyTitle
         self.emptyExplanation = emptyExplanation
+        self.coverageNoun = coverageNoun
         self.priorPoints = priorPoints
         self.companions = companions
         self.prepared = prepared
@@ -11169,13 +6791,18 @@ private struct AtriaPreparedMetricChart: View {
                 // in the dated row below; the header caption repeated it
                 // verbatim (hero + header + Latest + Avg + row = 5 renders).
                 if let latest = latestVisiblePoint, points.count >= 2 {
-                    Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(tint)
+                    // Ink, not tint (2026-08-29 theme): hue lives in the plot.
+                    Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if let onExpand, points.count >= 2 {
+                    // 40pt circular affordance — same chrome as the sheet's
+                    // header buttons (2026-08-29 controls audit).
                     Button(action: onExpand) {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.caption.weight(.bold)).foregroundStyle(.secondary)
-                            .frame(width: 32, height: 32).contentShape(Rectangle())
+                            .frame(width: 40, height: 40)
+                            .background(.quaternary.opacity(0.22), in: Circle())
+                            .contentShape(Circle())
                     }
                     .accessibilityLabel("Expand chart: landscape, zoom, range selection, activity markers")
                 }
@@ -11183,14 +6810,6 @@ private struct AtriaPreparedMetricChart: View {
 
             if points.count >= 2, summary == nil {
                 AtriaDetailRangeDotStrip(points: points, fallbackTint: tint)
-            }
-            // 2026-08-15 dedup: with one rendered observation and zero spread,
-            // Latest == Avg == the observation and change == 0 — nothing the
-            // dated row doesn't already say. `summary.hasSpread` keeps the
-            // strip when a bucket override collapses a real multi-day window
-            // into one displayed point (Latest vs Avg still differ there).
-            if let summary, points.count >= 2 || summary.hasSpread {
-                AtriaDetailPeriodSummaryStrip(summary: summary, tint: tint)
             }
 
             if points.isEmpty {
@@ -11212,6 +6831,21 @@ private struct AtriaPreparedMetricChart: View {
                 chartContent
                 chartLegendAndCompanions
             }
+
+            // 2026-08-29 minimalism pass: the tinted three-surface summary
+            // strip (rail + chips) restated the chart; one neutral line under
+            // the plot carries Latest/Avg/Range. `summary.hasSpread` keeps it
+            // when a bucket override collapses a multi-day window into one
+            // displayed point (Latest vs Avg still differ there).
+            if let summary, points.count >= 2 || summary.hasSpread {
+                AtriaDetailPeriodSummaryLine(summary: summary)
+            }
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         // 12pt gutter (2026-08-05 width audit): match the app-wide screen
         // gutter horizontally; vertical inset stays 14. Reduced padding only —
@@ -11221,6 +6855,35 @@ private struct AtriaPreparedMetricChart: View {
         .padding(.vertical, 14)
         .atriaInsetCard(tint: tint)
     }
+
+    /// How much of the plotted window holds a reading, in the same words the
+    /// Trends card uses. A month with six readings looked like a drawing
+    /// fault rather than six recorded days (owner report 2026-09-02).
+    /// Silent on a full window, on a single day, and on the long ranges whose
+    /// points are weekly buckets rather than days.
+    /// Days in the plotted window that carry no reading. Bucketed series are
+    /// excluded: their points are weekly averages, so counting them against
+    /// calendar days would report "5 of 30 nights" for a fully covered month.
+    private var windowMissingDayCount: Int? {
+        guard !prepared.hasMinMaxBand, let xDomain = prepared.xDomain else { return nil }
+        let days = Calendar.current.dateComponents([.day],
+                                                   from: xDomain.lowerBound,
+                                                   to: xDomain.upperBound).day ?? 0
+        guard days > 1, points.count < days else { return nil }
+        return days
+    }
+
+    private var coverageText: String? {
+        guard let days = windowMissingDayCount, days <= 31 else { return nil }
+        return "\(points.count) of \(days) \(coverageNoun) recorded"
+    }
+
+    /// The gradient under the line is decoration, and it can only be drawn
+    /// across a run of two or more consecutive days. On a window with holes it
+    /// therefore shades some points and not others, which reads as a solid
+    /// block sitting under an arbitrary part of the chart (2026-09-03 render).
+    /// Draw it only when the window is completely covered.
+    private var rendersAreaFill: Bool { windowMissingDayCount == nil }
 
     /// The chart clips to `prepared.xDomain`; the header must quote the last
     /// point actually drawn, never one that fell outside the domain
@@ -11241,8 +6904,12 @@ private struct AtriaPreparedMetricChart: View {
     private var chartContent: some View {
         Chart {
             if let baselineBand {
-                RectangleMark(xStart: .value("Start", points.first?.day ?? Date()),
-                              xEnd: .value("End", points.last?.day ?? Date()),
+                // The band is a property of the metric, not of where the
+                // data happens to stop. Spanning it to the last point drew a
+                // shaded rectangle that ended mid-chart with the remaining
+                // days bare beside it (2026-09-03 render).
+                RectangleMark(xStart: .value("Start", prepared.xDomain?.lowerBound ?? points.first?.day ?? Date()),
+                              xEnd: .value("End", prepared.xDomain?.upperBound ?? points.last?.day ?? Date()),
                               yStart: .value("Lower", baselineBand.lower),
                               yEnd: .value("Upper", baselineBand.upper))
                     .foregroundStyle(baselineBand.tint.opacity(0.12))
@@ -11279,7 +6946,7 @@ private struct AtriaPreparedMetricChart: View {
                 // A filled region is a stronger claim than a stroke, not a
                 // weaker one: it shades area under days that were never
                 // measured.
-                ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+                ForEach(rendersAreaFill ? points.contiguousDayRuns() : [], id: \.point.day) { entry in
                     AreaMark(x: .value("Day", entry.point.day, unit: .day),
                              y: .value(title, entry.point.value),
                              series: .value("Fill run", "fill-\(entry.runID)"))
@@ -11323,9 +6990,16 @@ private struct AtriaPreparedMetricChart: View {
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
                     .foregroundStyle(point.tint)
             }
-            if let last = points.last, selectedPoint == nil {
+            // A bar already carries its own emphasis, and this dot was not
+            // gated with the point layer above it, so every bar chart drew one
+            // unexplained circle on top of its last bar (2026-09-03 render).
+            if let last = points.last, selectedPoint == nil, !rendersAsDailyBar {
+                // Emphasise the newest reading by SIZE, not by hue. Painting it
+                // in the metric's identity colour over its own status colour
+                // made the one point a reader cares about most the only one
+                // whose colour said nothing about the value (2026-09-03).
                 PointMark(x: .value("Day", last.day, unit: .day), y: .value(title, last.value))
-                    .foregroundStyle(tint).symbolSize(110)
+                    .foregroundStyle(last.tint).symbolSize(110)
             }
             if let selectedPoint {
                 RuleMark(x: .value("Day", selectedPoint.day, unit: .day))
@@ -11410,6 +7084,21 @@ private struct AtriaPreparedMetricChart: View {
             if let target = scrubbedDay, let onOpenDay { onOpenDay(target) }
         }
         .accessibilityLabel(accessibilitySummary)
+        // The double-tap above is not published as an accessibility
+        // activation, and `scrubbedDay` is only ever set by the drag-based
+        // scrub, so VoiceOver could reach neither the gesture nor the hint
+        // documenting it. The action exists only where the route does, and
+        // falls back to the latest drawn point because a VoiceOver user has
+        // no way to scrub one (2026-08-28).
+        .accessibilityActions {
+            if let onOpenDay {
+                Button("Open this day") {
+                    if let target = scrubbedDay ?? latestVisiblePoint?.day {
+                        onOpenDay(target)
+                    }
+                }
+            }
+        }
     }
 
     /// Handoff-10 CP3: one observation renders a compact terminal summary
@@ -11521,6 +7210,16 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         ]
     }
 
+    /// Zone presence is independent of HR density. `zoneSeconds` can be
+    /// non-nil and still carry no Z1+ time — an entirely-Z0 session stores
+    /// only "rest", which this bar does not draw — and legacy rows carry no
+    /// breakdown at all. Measured over the SAME segments the bar draws, so a
+    /// row without zone time no longer paints a complete-looking five-colour
+    /// distribution it does not have (blank beats invented, 2026-08-28).
+    private var hasZoneTime: Bool {
+        zoneSegments.contains { $0.seconds > 0 }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -11565,7 +7264,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                       systemImage: "waveform.path.badge.minus")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.orange)
-            } else {
+            } else if hasZoneTime {
                 GeometryReader { proxy in
                     HStack(spacing: 2) {
                         ForEach(zoneSegments, id: \.key) { segment in
@@ -11576,6 +7275,12 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                     }
                 }
                 .frame(height: 8)
+            } else {
+                Label("Zone distribution unavailable for this recording",
+                      systemImage: "waveform.path.ecg.rectangle")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -11608,11 +7313,14 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
             return "Zones incomplete"
         }
+        // A building/calibrating phrasing here claimed progress that is not
+        // happening: a recording with no zone breakdown will never grow one.
+        guard hasZoneTime else { return "Zones unavailable" }
         let highSeconds = (workout.zoneSeconds?["aerobic"] ?? 0)
             + (workout.zoneSeconds?["anaerobic"] ?? 0)
             + (workout.zoneSeconds?["max"] ?? 0)
         let minutes = Int((highSeconds / 60).rounded())
-        return minutes > 0 ? "\(minutes)m Z3+" : "Zones building"
+        return minutes > 0 ? "\(minutes)m Z3+" : "No Z3+ time"
     }
 }
 
@@ -11720,7 +7428,9 @@ private struct AtriaRecoveryScoreHero: View {
                 }
                 VStack(spacing: 2) {
                     Text(score.map { "\(Int($0.rounded()))%" } ?? "--")
-                        .font(.system(size: 40, weight: .bold, design: .rounded))
+                        // Ring centre value (2026-09-02): the card hero token
+                        // scales with Dynamic Type; the hand-set 40pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .contentTransition(reduceMotion ? .identity : .numericText())
                         .lineLimit(1)
@@ -11744,7 +7454,12 @@ private struct AtriaRecoveryScoreHero: View {
                     .padding(.horizontal, 11).padding(.vertical, 6)
                     .background(tint.opacity(0.12), in: Capsule(style: .continuous))
             } else {
-                Text("Today's score is ready · comparison is still building")
+                // The ring above already says "--" / Learning when there is no
+                // score; claiming "Today's score is ready" beneath it
+                // contradicted the number (2026-09-02 fixture screenshot).
+                Text(score == nil
+                     ? "Comparison builds after your first scored night"
+                     : "Today's score is ready · comparison is still building")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
         }
@@ -11786,15 +7501,19 @@ private struct AtriaStrainScoreHero: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 12) {
-            VStack(spacing: 1) {
-                Text(displayValue)
-                    .font(.system(size: 48, weight: .bold, design: .rounded))
-                    .monospacedDigit().foregroundStyle(score == nil ? Color.secondary : tint)
+        // Strain hero anatomy (2026-09-02): the same left-aligned value and
+        // state as the Resting HR, HRV, respiratory and sleep heroes, on the
+        // shared value component, with the target gauge beneath. It was a
+        // centred hand-set 48pt while its three siblings sat left at 56pt.
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+                AtriaMetricHeroValueText(text: displayValue, tint: score == nil ? Color.secondary : tint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
                 Text(state)
-                    .font(.caption.weight(.semibold))
+                    .font(AtriaDesignTokens.Typography.metricLabel)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
@@ -11838,11 +7557,22 @@ private struct AtriaStrainScoreHero: View {
     }
 }
 
+/// A learning hero's real progress toward its baseline minimum, shown on
+/// the shared track under the state word (2026-09-02) — the same shape the
+/// Sleep schedule and Journal learning states use. File-scope rather than
+/// nested: a type nested in a generic view is distinct per specialization.
+private struct AtriaMetricDetailHeroLearning: Equatable {
+    let current: Int
+    let target: Int
+    let caption: String
+}
+
 private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, ChartContent: View, About: View>: View {
     let heroValue: String
     let heroState: String
     let tint: Color
     let heroStyle: AtriaMetricDetailHeroStyle
+    var heroLearning: AtriaMetricDetailHeroLearning? = nil
     let betweenHeroAndContributors: BetweenHero
     let contributors: Contributors
     let chart: ChartContent
@@ -11854,6 +7584,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          heroState: String,
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
+         heroLearning: AtriaMetricDetailHeroLearning? = nil,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
          @ViewBuilder about: () -> About) where BetweenHero == EmptyView {
@@ -11861,6 +7592,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.heroState = heroState
         self.tint = tint
         self.heroStyle = heroStyle
+        self.heroLearning = heroLearning
         self.betweenHeroAndContributors = EmptyView()
         self.contributors = contributors()
         self.chart = chart()
@@ -11871,6 +7603,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          heroState: String,
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
+         heroLearning: AtriaMetricDetailHeroLearning? = nil,
          @ViewBuilder betweenHeroAndContributors: () -> BetweenHero,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
@@ -11879,6 +7612,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.heroState = heroState
         self.tint = tint
         self.heroStyle = heroStyle
+        self.heroLearning = heroLearning
         self.betweenHeroAndContributors = betweenHeroAndContributors()
         self.contributors = contributors()
         self.chart = chart()
@@ -11886,12 +7620,13 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     var body: some View {
-        // Real progressive disclosure: the first screen is the WHOOP-like simple
-        // view — value, graph, and the metric's own signature visual (hypnogram /
-        // strain gauge / contributor map). The generic contributor rows and the
-        // education copy are collapsed behind an explicit "Show details" tap, so a
-        // metric tap no longer dumps every stat in one long scroll.
-        VStack(alignment: .leading, spacing: 16) {
+        // Minimalism pass (owner directive 2026-08-29, supersedes the same-day
+        // About-always-visible directive): the first screen is value, graph,
+        // and the metric's own signature visual only. EVERYTHING textual —
+        // contributor rows, heavy per-metric cards, and the About copy — sits
+        // behind the single "Show details" reveal, so a metric tap never dumps
+        // a wall of literature.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
             hero
             chart
             betweenHeroAndContributors
@@ -11904,22 +7639,36 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showDetails)
     }
 
+    /// Static type check, not a runtime one: templates without contributor rows
+    /// pass `EmptyView` for the slot; the reveal then holds About alone.
+    private var hasContributors: Bool {
+        Contributors.self != EmptyView.self
+    }
+
     private var revealAffordance: some View {
+        // Visible button chrome (2026-08-29 controls audit): the old flat
+        // 5%-primary capsule read as a label. Explicit bordered capsule —
+        // the same quaternary fill the header/chevron circles use — so the
+        // control reads as tappable in every render context (glass effects
+        // do not paint in headless layer renders).
         Button {
             showDetails.toggle()
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.black))
-                    .rotationEffect(.degrees(showDetails ? 180 : 0))
                 Text(showDetails ? "Hide details" : "Show details")
+                    .font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.down")
                     .font(.caption.weight(.bold))
-                Spacer(minLength: 0)
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(showDetails ? 180 : 0))
             }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(.primary.opacity(0.05), in: Capsule(style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .background(.quaternary.opacity(0.22), in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(.quaternary.opacity(0.6), lineWidth: 1)
+            }
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -11927,30 +7676,23 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     }
 
     private var detailPanel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label("Details", systemImage: "slider.horizontal.3")
-                    .font(.headline.weight(.semibold))
-                Spacer(minLength: 0)
-                Text("Deeper context")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
+        // Un-nested (2026-08-29 minimalism pass): no header row, no outer card
+        // wrapping cards — contributors render directly, then a hairline
+        // divider and the plain About lines.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
+            if hasContributors {
+                contributors
             }
-
-            contributors
+            Divider()
             about
         }
-        .padding(16)
-        .atriaInsetCard(tint: tint)
     }
 
-    /// Confidence-ladder hero (design-handoff detail template): the big number
-    /// is painted in the metric's identity hue and the state sits in a small
-    /// dot+capsule confidence pill — the SAME hue the ring and chips use, so
-    /// the whole sheet reads as one metric. HONESTY GUARD: when there's no
-    /// trusted value yet (empty / "—" placeholder, or a Learning state) the
-    /// number and pill fall back to neutral grey — a colored number never
-    /// implies a confidence the data hasn't earned.
+    /// Hero honesty guard: the numeral is painted in the metric's identity
+    /// hue — the ONE tinted element of the standard hero (2026-08-29 theme).
+    /// When there's no trusted value yet (empty / "—" placeholder, or a
+    /// Learning state) the numeral falls back to neutral grey — a colored
+    /// number never implies a confidence the data hasn't earned.
     private var heroIsUncertain: Bool {
         let v = heroValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if v.isEmpty || v == "—" || v == "--" { return true }
@@ -11965,30 +7707,33 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     private var hero: some View {
         switch heroStyle {
         case .standard:
-            VStack(alignment: .leading, spacing: 10) {
+            // One hue per sheet (2026-08-29 minimalism pass): the numeral is
+            // the ONLY tinted element of the hero. The state is a plain
+            // secondary caption — no dot, no tinted capsule fill.
+            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
                 AtriaMetricHeroValueText(text: heroValue, tint: heroTint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: heroValue)
 
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(heroTint)
-                        .frame(width: 6, height: 6)
-                    Text(heroState)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(heroTint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
+                Text(heroState)
+                    .font(AtriaDesignTokens.Typography.metricLabel)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                if let heroLearning {
+                    AtriaLearningProgressTrack(current: heroLearning.current,
+                                               target: heroLearning.target,
+                                               caption: heroLearning.caption,
+                                               tint: heroTint)
+                        .padding(.top, 2)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(heroTint.opacity(0.14), in: Capsule(style: .continuous))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
             .atriaInsetCard(tint: tint)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(heroValue), \(heroState)")
+            .accessibilityLabel(heroLearning.map { "\(heroValue), \(heroState), \($0.caption)" }
+                                ?? "\(heroValue), \(heroState)")
         case .recoveryRing(let score, let baselineComparison):
             AtriaRecoveryScoreHero(score: score,
                                    state: heroState,
@@ -12079,12 +7824,10 @@ struct AtriaMetricContributorRows: View, Equatable {
         lhs.rows == rhs.rows
     }
 
-    // WHOOP stat-row grammar (2026-08-05 design-language pass): ALL-CAPS
-    // letterspaced micro-labels, numerals louder than labels, ▲▼ triangle
-    // qualifiers, flat rows with hairline dividers instead of chip-boxes
-    // (lesser nested boxes), and a recessed legend strip. The legend says
-    // what the triangles actually MEAN here — band judgments, not a prior-
-    // period delta — because `direction` is band-based at every call site.
+    // WHOOP stat-row grammar (2026-08-05), de-colored 2026-08-29 minimalism
+    // pass ("one hue per sheet, ink otherwise"): icons and ▲▼ triangles are
+    // secondary ink, no tinted circles, and the green/red legend strip is
+    // gone — name/comparison/value carry the judgment in words.
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("CONTRIBUTORS")
@@ -12098,9 +7841,8 @@ struct AtriaMetricContributorRows: View, Equatable {
                     HStack(spacing: 10) {
                         Image(systemName: row.systemImage)
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(rowTint(row))
+                            .foregroundStyle(.secondary)
                             .frame(width: 28, height: 28)
-                            .background(rowTint(row).opacity(0.12), in: Circle())
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.name)
@@ -12126,7 +7868,7 @@ struct AtriaMetricContributorRows: View, Equatable {
                                 if row.direction != 0 {
                                     Image(systemName: directionSymbol(row.direction))
                                         .font(.caption2.weight(.bold))
-                                        .foregroundStyle(rowTint(row))
+                                        .foregroundStyle(.secondary)
                                 } else {
                                     Color.clear
                                 }
@@ -12137,31 +7879,9 @@ struct AtriaMetricContributorRows: View, Equatable {
                     .padding(.vertical, 10)
                 }
             }
-
-            if rows.contains(where: { $0.direction != 0 }) {
-                HStack(spacing: 12) {
-                    Label("On target", systemImage: "arrowtriangle.up.fill")
-                        .foregroundStyle(Metrics.electricGreen)
-                    Label("Needs attention", systemImage: "arrowtriangle.down.fill")
-                        .foregroundStyle(Metrics.electricRed)
-                }
-                .font(.caption2.weight(.semibold))
-                .imageScale(.small)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-                .padding(.horizontal, 10)
-                .background(.primary.opacity(0.045),
-                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            }
         }
         .padding(14)
         .atriaInsetCard(tint: tint)
-    }
-
-    private func rowTint(_ row: AtriaMetricContributorRow) -> Color {
-        if row.direction > 0 { return Metrics.electricGreen }
-        if row.direction < 0 { return Metrics.electricRed }
-        return tint
     }
 
     private func directionSymbol(_ direction: Int) -> String {
@@ -12175,15 +7895,29 @@ private struct AtriaMetricMeaningInline: View {
     let recoveryEstimate: Metrics.RecoveryEstimate
     let sleepGoalHours: Double
 
+    // Minimalism pass (2026-08-29): the two sentences render as plain
+    // secondary text — no card, no "What it means"/"What to do" headers.
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            detailBlock(title: "What it means", body: meaning)
-            detailBlock(title: "What to do", body: coaching)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(AtriaMetricMeaningCopy.meaning(metric: metric,
+                                                recoveryEstimate: recoveryEstimate,
+                                                sleepGoalHours: sleepGoalHours))
+            Text(AtriaMetricMeaningCopy.coaching(metric: metric, guidance: guidance))
         }
-        .padding(.top, 8)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
 
-    private var meaning: String {
+/// One authored copy of the meaning/coaching sentences (2026-08-29 dedup):
+/// the inline About and AtriaMetricMeaningSheet both read from here — the
+/// sheet's near-verbatim paraphrase switches were deleted.
+enum AtriaMetricMeaningCopy {
+    static func meaning(metric: AtriaMetricDetailKind,
+                        recoveryEstimate: Metrics.RecoveryEstimate,
+                        sleepGoalHours: Double) -> String {
         switch metric {
         case .recovery:
             let contributorSummary = recoveryEstimate.contributors.isEmpty
@@ -12223,7 +7957,8 @@ private struct AtriaMetricMeaningInline: View {
         }
     }
 
-    private var coaching: String {
+    static func coaching(metric: AtriaMetricDetailKind,
+                         guidance: Coach.Guidance) -> String {
         switch metric {
         case .recovery:
             return guidance.headline.isEmpty ? guidance.detail : "\(guidance.headline) \(guidance.detail)"
@@ -12257,18 +7992,6 @@ private struct AtriaMetricMeaningInline: View {
         case .bloodOxygen:
             return "There's no verified blood-oxygen reading to act on."
         }
-    }
-
-    private func detailBlock(title: String, body: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.caption.weight(.bold))
-            Text(body)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -12342,8 +8065,16 @@ private struct AtriaRecoveryContributorMap: View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Why today's recovery landed here")
-                        .font(.subheadline.weight(.semibold))
+                    // With nothing scored, "landed here" presumes a landing
+                    // (2026-09-02 fixture screenshot); the empty card names
+                    // what it will hold and lets the notice below speak alone.
+                    if contributors.isEmpty {
+                        Text("Recovery contributors")
+                            .font(.subheadline.weight(.semibold))
+                    } else {
+                        Text("Why today's recovery landed here")
+                            .font(.subheadline.weight(.semibold))
+                    }
                     Spacer(minLength: 8)
                     if let dominantContributor {
                         Text(titleForContributor(dominantContributor))
@@ -12355,9 +8086,14 @@ private struct AtriaRecoveryContributorMap: View {
                     }
                 }
 
-                Text("Baseline sits in the middle. Factors to the right supported recovery; factors to the left pulled it down.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // The legend explains the diverging rows below; with no rows
+                // it was a second paragraph about a chart that is not there
+                // (2026-09-02 fixture screenshot). The empty notice speaks alone.
+                if !contributors.isEmpty {
+                    Text("Baseline sits in the middle. Factors to the right supported recovery; factors to the left pulled it down.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if contributors.isEmpty {
@@ -12375,9 +8111,13 @@ private struct AtriaRecoveryContributorMap: View {
                 }
             }
 
-            Text("Recovery blends HRV, resting HR, sleep, and respiration against your personal baseline.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // The blend sentence explains rows; with none it was a third
+            // paragraph under an empty notice that already said what is missing.
+            if !contributors.isEmpty {
+                Text("Recovery blends HRV, resting HR, sleep, and respiration against your personal baseline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricGreen)
@@ -12511,8 +8251,16 @@ private struct AtriaMetricMeaningSheet: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    detailBlock(title: "What it means", body: meaning)
-                    detailBlock(title: "What to do", body: coaching)
+                    // 2026-08-29 dedup: the sheet's own near-verbatim
+                    // meaning/coaching paraphrases were deleted; it now
+                    // renders the SAME strings the inline About shows.
+                    detailBlock(title: "What it means",
+                                body: AtriaMetricMeaningCopy.meaning(metric: metric,
+                                                                     recoveryEstimate: recoveryEstimate,
+                                                                     sleepGoalHours: sleepGoalHours))
+                    detailBlock(title: "What to do",
+                                body: AtriaMetricMeaningCopy.coaching(metric: metric,
+                                                                      guidance: guidance))
                 }
                 .padding(18)
             }
@@ -12591,79 +8339,6 @@ private struct AtriaMetricMeaningSheet: View {
         case .bloodOxygen:
             // SpO2 copy consolidation (2026-08-01): canonical honesty line.
             return AtriaSpO2Copy.wontFakeAPercentage
-        }
-    }
-
-    private var meaning: String {
-        switch metric {
-        case .recovery:
-            let contributorSummary = recoveryEstimate.contributors.isEmpty
-                ? "Recovery is still building toward a stable baseline."
-                : "The contributor list shows which terms pushed the score up or down today."
-            return "\(contributorSummary) Recovery is morning-frozen so it does not drift all day."
-        case .hrv:
-            return "HRV is most useful as a trend. Compare today with your baseline band instead of chasing someone else’s 'good' number."
-        case .restingHeartRate:
-            return "Resting HR is a context metric. A sudden rise versus your normal can line up with stress, illness, poor sleep, or hard training."
-        case .respiratoryRate:
-            return "Respiratory rate is compared with your own sleep baseline. Sustained shifts can line up with stress, travel, environment, or feeling off."
-        case .sleep:
-            return String(format: "Sleep sufficiency compares your night with a %.1f hour goal while consistency tracks how stable your recent timing has been.", sleepGoalHours)
-        case .strain:
-            return "Light, Moderate, High, and All-Out bands make it easier to read the number as a coaching zone instead of raw effort."
-        case .stress:
-            return "This estimates autonomic load right now from heart rate and beat-to-beat timing, not a lab cortisol measurement."
-        case .vo2max:
-            return "VO2max is derived from your resting heart-rate baseline and measured max heart rate, refined as more sessions come in."
-        case .sleepPerformance:
-            return String(format: "Sleep sufficiency compares last night's duration against a need that adjusts for sleep debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
-        case .sleepEfficiency:
-            return "Sleep efficiency is time asleep divided by time in bed, estimated from duration rather than a checked sleep study."
-        case .skinTemperature:
-            return "This metric stays empty until Atria can read it reliably."
-        case .fitnessAge:
-            return "Fitness age blends your recovery, training, and VO2max-adjacent signals into one younger/older-than-your-years read."
-        case .hrZones:
-            return "Zone minutes show how much of today was spent in each heart-rate effort band, from resting to max."
-        case .bloodOxygen:
-            // SpO2 copy consolidation (2026-08-01): canonical hardware copy.
-            return AtriaSpO2Copy.longUnavailable
-        }
-    }
-
-    private var coaching: String {
-        switch metric {
-        case .recovery:
-            return guidance.headline.isEmpty ? guidance.detail : "\(guidance.headline) \(guidance.detail)"
-        case .hrv:
-            return "Look for multi-day direction. If HRV is suppressed and recovery is also down, favor easier training and protect tonight’s sleep."
-        case .restingHeartRate:
-            return "Treat a higher-than-normal RHR as a reason to reduce intensity, hydrate, and keep an eye on how you feel."
-        case .respiratoryRate:
-            return "Watch the trend, not one night. If respiratory rate stays outside your usual range, take it as a wellness signal and compare with how you feel."
-        case .sleep:
-            return "If debt is climbing, buy back time tonight before trying to force a bigger strain score tomorrow."
-        case .strain:
-            if let target = guidance.target {
-                return String(format: "Aim for the target arc around %.1f today. If recovery is still building, use the band label to stay controlled instead of pushing for max load.", target)
-            }
-            return "Use the active band to stay controlled while Atria learns your recovery-scaled target."
-        case .stress:
-            return "If it stays elevated, a few minutes of slow paced breathing is the fastest lever — open guided breathwork from the Stress tile."
-        case .vo2max:
-            return "Consistent aerobic training over weeks moves this more than any single session."
-        case .sleepPerformance:
-            return "A run of nights under 100% compounds as debt — pay it back with an earlier bedtime rather than one long catch-up night."
-        case .sleepEfficiency:
-            return "Low efficiency alongside normal duration usually means restless time in bed — a cooler, darker, screen-free wind-down tends to help."
-        case .skinTemperature:
-            return "There is no temperature reading to act on."
-        case .fitnessAge:
-            return "This moves slowly by design — consistent sleep and aerobic training are what shift the pace of aging over months."
-        case .hrZones:
-            return "More Z2–Z3 time builds an aerobic base; keep Z4–Z5 minutes purposeful rather than accidental."
-        case .bloodOxygen:
-            return "There's no verified blood-oxygen reading to act on."
         }
     }
 
@@ -12767,194 +8442,46 @@ private enum AtriaDetailPeriodChangeDirection: Sendable {
         case .down: return "arrow.down.right"
         }
     }
-}
 
-
-private struct AtriaDetailComparisonSeesaw: View, Equatable {
-    let comparison: AtriaDetailComparisonSummary
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("This vs prior", systemImage: comparison.changeDirection.symbolName)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(comparison.deltaText)
-                    .font(.caption2.weight(.black).monospacedDigit())
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .layoutPriority(1)
-            }
-
-            HStack(alignment: .center, spacing: 8) {
-                comparisonBar(title: "Prior",
-                              value: comparison.priorText,
-                              share: comparison.priorShare,
-                              tint: .secondary,
-                              alignment: .trailing)
-                Circle()
-                    .fill(tint.opacity(0.22))
-                    .frame(width: 18, height: 18)
-                    .overlay {
-                        Circle()
-                            .stroke(tint.opacity(0.20), lineWidth: 1)
-                    }
-                    .accessibilityHidden(true)
-                comparisonBar(title: "This",
-                              value: comparison.currentText,
-                              share: comparison.currentShare,
-                              tint: tint,
-                              alignment: .leading)
-            }
+    /// Plain-text triangle for the neutral one-line period summary
+    /// (2026-08-29 minimalism pass); flat renders nothing.
+    var triangleText: String {
+        switch self {
+        case .up: return " ▲"
+        case .flat: return ""
+        case .down: return " ▼"
         }
-        .padding(10)
-        .background(tint.opacity(0.055), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("This versus prior. This \(comparison.currentText), prior \(comparison.priorText), change \(comparison.deltaText).")
-    }
-
-    private func comparisonBar(title: String,
-                               value: String,
-                               share: Double,
-                               tint: Color,
-                               alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 5) {
-            HStack(spacing: 4) {
-                if alignment == .trailing { Spacer(minLength: 0) }
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                if alignment == .leading { Spacer(minLength: 0) }
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: alignment == .leading ? .leading : .trailing) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.10))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.62))
-                        .frame(width: max(8, width * min(max(share, 0), 1)))
-                }
-            }
-            .frame(height: 8)
-            .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
     }
 }
 
 
-private struct AtriaDetailPeriodSummaryStrip: View {
+
+
+/// 2026-08-29 minimalism pass: replaces AtriaDetailPeriodSummaryStrip — the
+/// tinted card (gradient rail, change capsule, two chips: 10 tinted elements
+/// across 3 nested surfaces) restated what the chart already draws. One
+/// neutral secondary line now carries the same numbers; the change direction
+/// survives as a plain ▲/▼ next to Latest.
+private struct AtriaDetailPeriodSummaryLine: View {
     let summary: AtriaDetailPeriodSummary
-    let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Latest")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(summary.latestText)
-                        .font(.title3.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                }
-
-                Spacer(minLength: 0)
-
-                HStack(spacing: 6) {
-                    Image(systemName: summary.changeDirection.symbolName)
-                        .font(.caption.weight(.bold))
-                    Text(summary.changeText)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-                .foregroundStyle(tint)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(tint.opacity(0.12), in: Capsule())
-                .layoutPriority(1)
-            }
-
-            if summary.hasSpread {
-                summaryRangeRail
-            }
-
-            HStack(spacing: 8) {
-                summaryMiniStat(label: "Avg", value: summary.averageText)
-                if summary.hasSpread {
-                    summaryMiniStat(label: "Range", value: summary.rangeText)
-                }
-            }
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.16), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).")
+        Text(lineText)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).")
     }
 
-    private var summaryRangeRail: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let markerX = width * summary.latestPosition
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(tint.opacity(0.12))
-                    .frame(height: 8)
-
-                Capsule()
-                    .fill(LinearGradient(colors: [tint.opacity(0.28), tint.opacity(0.76)],
-                                         startPoint: .leading,
-                                         endPoint: .trailing))
-                    .frame(width: max(8, markerX), height: 8)
-
-                Circle()
-                    .fill(tint)
-                    .frame(width: 14, height: 14)
-                    .shadow(color: tint.opacity(0.28), radius: 6, y: 2)
-                    .offset(x: min(max(markerX - 7, 0), max(width - 14, 0)))
-            }
-            .frame(maxHeight: .infinity, alignment: .center)
+    private var lineText: String {
+        var parts = ["Latest \(summary.latestText)\(summary.changeDirection.triangleText)",
+                     "Avg \(summary.averageText)"]
+        if summary.hasSpread {
+            parts.append("Range \(summary.rangeText)")
         }
-        .frame(height: 18)
-    }
-
-    private func summaryMiniStat(label: String, value: String) -> some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-            Text(value)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.74)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -13280,15 +8807,28 @@ private struct AtriaPreparedMetricHistory: Sendable {
                     persistedQuality: item.strainEvidenceQuality
                 ).quality == .exact
             }
+            // Cycle-truth value swap (2026-08-30): a day covered by the
+            // closed-cycle series charts that cycle strain (wake-to-wake,
+            // labelled by predominant civil day) instead of the civil-sliced
+            // rollup value, so a shifted sleeper's pre-wake load stays with
+            // its own physiological day. The exact-trend GATE above still
+            // runs on the civil row's coverage/quality — the series swaps a
+            // value, it never draws a bar the rollup evidence would withhold,
+            // and days absent from the series keep the civil value with no
+            // claim of cycle precision.
+            func strainTrendValue(_ item: AtriaMetricDetailPreparationInput.Rollup) -> Double? {
+                input.cycleStrainByDisplayDay[calendar.startOfDay(for: item.day)]
+                    ?? item.strain
+            }
             let strainPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 guard strainEntersExactTrend(item) else { return nil }
-                return item.strain.map {
+                return strainTrendValue(item).map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
             }
             let priorStrainPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
                 guard strainEntersExactTrend(item) else { return nil }
-                return item.strain.map {
+                return strainTrendValue(item).map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
             }
@@ -13297,7 +8837,8 @@ private struct AtriaPreparedMetricHistory: Sendable {
             strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, from: previousInterval, to: interval, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
-            latestStrainByRange[range] = filtered.last(where: { strainEntersExactTrend($0) })?.strain
+            latestStrainByRange[range] = filtered.last(where: { strainEntersExactTrend($0) })
+                .flatMap { strainTrendValue($0) }
 
             let sleepPerformancePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }
@@ -13499,20 +9040,12 @@ private struct AtriaSleepPlanCard: View {
             // contributor rows below the chart own both values. The footer
             // keeps only the need context — duration and performance live
             // on the hero.
+            // 2026-08-29 minimalism trim: the frozen-receipt itemization line
+            // went — the need ledger card behind the reveal owns that "why".
             Text(neededHours.map { "Needed \(AtriaMetricFormat.sleepHours($0)) last night" }
                  ?? "Last night's target was not saved")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-
-            // ITEM-2 2026-08-15: the "why" behind the number — the frozen
-            // receipt's own itemization, never a recomputation.
-            if let receipt = frozenReceipt {
-                Text(AtriaSleepNeedLedgerPresentation.componentsSummaryText(for: receipt)
-                     + " · frozen when this night was saved")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             wakeAlarmCard
 
@@ -13520,7 +9053,8 @@ private struct AtriaSleepPlanCard: View {
 
         }
         .padding(14)
-        .atriaInsetCard(tint: .cyan)
+        // 2026-08-29 theme pass: sleep's identity hue, not raw .cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
     }
 
     /// Sleep Planner (2026-07-07, WHOOP-research adaptation): pick a goal,
@@ -13552,24 +9086,14 @@ private struct AtriaSleepPlanCard: View {
                 Spacer(minLength: 0)
             }
 
-            if let projection = tonightProjection {
-                Text("Tonight's need so far: \(AtriaMetricFormat.sleepHours(projection.totalHours)) projected — moves as today's strain accrues; frozen only when tonight is saved"
-                     + (projection.isClamped ? " · capped to the 6\u{2013}10h range" : ""))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
+            // 2026-08-29 minimalism trim: the projected-need and efficiency
+            // explanation sentences went; the "In bed by" caption above is
+            // this surface's one caption. The plan math is unchanged.
             AtriaTextSelector(items: AtriaSleepPlannerGoal.allCases,
                               title: { $0.title },
                               selection: Binding(
                                   get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
                                   set: { plannerGoalRaw = $0.rawValue }))
-
-            Text("\(goal.detail) tonight, assuming your \(plan.efficiencyIsDefault ? "typical-population" : "own typical") efficiency (\(Int((plan.assumedEfficiency * 100).rounded()))%)\(plan.efficiencyIsDefault ? " \u{2014} learning yours" : ""). Anchored to your wake-by time above.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
         .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -13581,7 +9105,8 @@ private struct AtriaSleepPlanCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "alarm.fill")
-                    .foregroundStyle(.cyan)
+                    // 2026-08-29 theme pass: sleep's identity hue, not .cyan.
+                    .foregroundStyle(Metrics.electricSleep)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Wake alarm")
                         .font(.caption.weight(.bold))
@@ -13601,7 +9126,7 @@ private struct AtriaSleepPlanCard: View {
                     }
                     .font(.caption2.weight(.bold))
                 }
-                .atriaCardAction(prominent: false, tint: .cyan)
+                .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
                 .sheet(isPresented: $showsSmartWakeSheet) {
                     AtriaSmartWakeSheet()
                         .presentationDetents([.medium, .large])
@@ -13639,16 +9164,20 @@ private struct AtriaSleepPlanCard: View {
                 } label: {
                     Label(wakeAlarmEnabled ? "On" : "Set", systemImage: wakeAlarmEnabled ? "checkmark.circle.fill" : "alarm")
                 }
-                .atriaCardAction(tint: .cyan)
+                .atriaCardAction(tint: Metrics.electricSleep)
             }
 
-            Text(alarmStatusText ?? "Phone alarm uses AlarmKit. Smart window can wake early during light or awake sleep; hard wake-by remains the fallback.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            // 2026-08-29 minimalism trim: the standing AlarmKit explainer
+            // went; only live scheduling feedback renders here.
+            if let alarmStatusText {
+                Text(alarmStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private func scheduleWakeAlarm() {
@@ -13699,86 +9228,6 @@ private struct AtriaSleepNeedUnavailableCard: View {
     }
 }
 
-struct AtriaStrainScaleRail: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let displayValue: String
-    let strain: Double
-    let target: Double?
-    let limitation: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Strain")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Text(displayValue)
-                    .font(.title2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(Metrics.electricStrain)
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.09))
-                    if let target {
-                        let range = AtriaStrainTargetPresentation.targetRange(for: target)
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricStrain.opacity(0.16))
-                            .frame(width: width * (range.upperBound - range.lowerBound)
-                                / AtriaStrainTargetPresentation.maximum)
-                            .offset(x: width * range.lowerBound
-                                / AtriaStrainTargetPresentation.maximum)
-                    }
-                    if strain > 0 {
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricStrain)
-                            .frame(width: max(6, width * AtriaStrainTargetPresentation.progress(for: strain)))
-                    }
-                    if let target {
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricStrain)
-                            .frame(width: 2, height: 16)
-                            .offset(x: width * AtriaStrainTargetPresentation.progress(for: target) - 1)
-                    }
-                }
-            }
-            .frame(height: 12)
-
-            HStack {
-                Text("0")
-                Spacer(minLength: 0)
-                if let target {
-                    Text("Target \(String(format: "%.1f", target))")
-                    Spacer(minLength: 0)
-                }
-                Text("21")
-            }
-            .font(.caption2.weight(.semibold).monospacedDigit())
-            .foregroundStyle(.secondary)
-
-            if let limitation {
-                Text(limitation)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Strain \(accessibilityValue). \(limitation ?? "Measured locally.")")
-    }
-
-    private var accessibilityValue: String {
-        let trimmed = displayValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("≥") else { return trimmed }
-        return "at least " + trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
-    }
-}
 
 struct AtriaOverviewMorningJournalHost: View {
     @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
@@ -14361,9 +9810,9 @@ private struct AtriaJournalTodayTagStrip: View, Equatable {
             }
         }
         .padding(10)
-        .background(.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(.cyan.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -14831,7 +10280,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
         .padding(10)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     private func glanceChip(title: String,
@@ -15007,320 +10456,14 @@ private struct AtriaJournalImpactBar: View, Equatable {
 
 
 
-struct AtriaOverviewCollectionSectionHost: View {
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    let onOpenCollection: () -> Void
-
-    var body: some View {
-        AtriaOverviewCollectionSection(stats: homeStatsStore.state,
-                                      snapshot: snapshotStore.state,
-                                      onOpenCollection: onOpenCollection)
-            .equatable()
-    }
-}
-
-struct AtriaOverviewCollectionSection: View, Equatable {
-    let stats: AtriaHomeModel.HomeStatsState
-    let snapshot: AtriaHomeModel.Snapshot
-    let onOpenCollection: () -> Void
-
-    static func == (lhs: AtriaOverviewCollectionSection, rhs: AtriaOverviewCollectionSection) -> Bool {
-        lhs.stats == rhs.stats
-            && lhs.snapshot == rhs.snapshot
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "internaldrive.fill")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.blue)
-                    .frame(width: 38, height: 38)
-                    .background(AtriaIconTileBackground(cornerRadius: 12, tint: .blue))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Local backup")
-                        .font(.headline.weight(.semibold))
-                    Text(backupDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            HStack(alignment: .center, spacing: 10) {
-                AtriaInlineQuickStat(label: "HRV window", value: stats.rrPackageText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Button(action: onOpenCollection) {
-                    // Static handoff compatibility marker for the old IA label:
-                    // Label("Data", systemImage: "arrow.right.circle.fill")
-                    Label("Strap", systemImage: "arrow.right.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .labelStyle(.titleAndIcon)
-                        .frame(minWidth: 88)
-                }
-                .atriaCardAction(tint: .blue)
-                .accessibilityLabel("Open Strap")
-            }
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var backupDetail: String {
-        if snapshot.loggingText.localizedCaseInsensitiveContains("samples") {
-            return "Saving readings locally. Open Data when you want exports or saved sessions."
-        }
-        if stats.backupValue.localizedCaseInsensitiveContains("ready") {
-            return "Saved sessions are on device. Open Data when you want exports."
-        }
-        return "Atria is preparing local backup while your baseline settles."
-    }
-}
 
 
-struct AtriaOverviewBackupSectionHost: View {
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-
-    var body: some View {
-        AtriaOverviewBackupSection(stats: homeStatsStore.state,
-                                  snapshot: snapshotStore.state)
-            .equatable()
-    }
-}
-
-struct AtriaOverviewBackupSection: View, Equatable {
-    let stats: AtriaHomeModel.HomeStatsState
-    let snapshot: AtriaHomeModel.Snapshot
-
-    private var confirmedTotal: Int {
-        snapshot.confirmedWorkouts + snapshot.confirmedSleeps
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(Color.cyan.opacity(0.12))
-                    Image(systemName: "internaldrive.fill")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.cyan)
-                }
-                .frame(width: 46, height: 46)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Saved on device")
-                        .font(.headline.weight(.bold))
-                        .lineLimit(1)
-                    Text(backupCue)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 8)
-
-                Text("\(confirmedTotal)")
-                    .font(.title2.weight(.black).monospacedDigit())
-                    .foregroundStyle(.cyan)
-            }
-
-            HStack(spacing: 8) {
-                backupMetaChip(title: "Workouts",
-                               value: "\(snapshot.confirmedWorkouts)",
-                               systemImage: "figure.mixed.cardio",
-                               tint: .cyan)
-                backupMetaChip(title: "Sleeps",
-                               value: "\(snapshot.confirmedSleeps)",
-                               systemImage: "bed.double.fill",
-                               tint: .cyan)
-                backupMetaChip(title: "State",
-                               value: stats.backupValue,
-                               systemImage: "checkmark.seal.fill",
-                               tint: .secondary)
-            }
-
-            Text(stats.backupDetail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var backupCue: String {
-        confirmedTotal > 0 ? "Confirmed sessions stay local." : "Atria is preparing local history."
-    }
-
-    private func backupMetaChip(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(tint.opacity(0.10), in: Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-}
-
-private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
-    let status: AtriaBLEManager.Status
-    let tint: Color
-    let setupDetail: String
-    let context: AtriaConnectionGuideContext
-    let onShowConnectionGuide: () -> Void
-
-    static func == (lhs: AtriaDisconnectedOverviewAutomaticCard, rhs: AtriaDisconnectedOverviewAutomaticCard) -> Bool {
-        lhs.status == rhs.status
-            && lhs.setupDetail == rhs.setupDetail
-            && lhs.context == rhs.context
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "gearshape.2.fill")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
-                    .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(context.isFirstHandoff ? "Automatic setup" : "Automatic reconnect")
-                        .font(.subheadline.weight(.semibold))
-                    Text(context.flowLabel)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            Text(setupDetail)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button(context.isFirstHandoff ? "Review setup steps" : "Review reconnect steps", action: onShowConnectionGuide)
-                .frame(maxWidth: .infinity)
-                .atriaCardAction(tint: tint)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-}
 
 
-private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
-    let title: String
-    let items: [String]
-    let tint: Color
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "list.number")
-                    .foregroundStyle(tint)
-                Text(title)
-                    .font(.headline.weight(.semibold))
-            }
 
-            ForEach(Array(items.enumerated()), id: \.element) { index, item in
-                HStack(alignment: .top, spacing: 10) {
-                    Text("\(index + 1)")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(tint)
-                        .frame(width: 20, height: 20)
-                        .background(AtriaChecklistBadgeBackground(tint: tint))
-                        .overlay {
-                            Circle()
-                                .stroke(tint.opacity(0.22), lineWidth: 1)
-                        }
 
-                    Text(item)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-}
 
-private struct AtriaDisconnectedOverviewSavedStateCard: View, Equatable {
-    let stats: AtriaHomeModel.HomeStatsState
-    let snapshot: AtriaHomeModel.Snapshot
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "internaldrive.fill")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(tint)
-                    .frame(width: 34, height: 34)
-                    .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Saved data stays ready")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Local backup ready")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityLabel("Saved metrics and backup remain available while the strap reconnects.")
-                }
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
-                savedStateTiles
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-
-    @ViewBuilder
-    private var savedStateTiles: some View {
-        AtriaMetricTile(label: "Baseline",
-                        value: snapshot.referenceText,
-                        state: .personalBaseline,
-                        tint: .blue)
-        AtriaMetricTile(label: "Backup",
-                        value: stats.backupValue,
-                        state: .local,
-                        tint: tint)
-        AtriaMetricTile(label: "Saved HRV",
-                        value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
-                        state: stats.baselineSamples >= PersonalBaseline.trustedMinimumSamples ? .validated : .learning,
-                        tint: .pink)
-    }
-}
 
 
 /// Manual bucketing override for the detail charts (design handoff "Range &

@@ -188,12 +188,27 @@ struct AtriaOnboardingSharingChoiceStep: View {
                     .ignoresSafeArea()
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 14) {
-                        Image(systemName: "shippingbox")
-                            .font(.system(size: 36, weight: .semibold))
-                            .foregroundStyle(.blue)
-                            .symbolRenderingMode(.hierarchical)
+                        // Same 84pt gradient tile the flow pages open with
+                        // (2026-09-02 screenshot audit): this final page used a
+                        // bare 36pt symbol, so the last screen read as a
+                        // different app from the seven before it.
+                        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
+                            .fill(LinearGradient(colors: [Color.blue.opacity(0.38), Color.cyan.opacity(0.22)],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 84, height: 84)
+                            .overlay {
+                                Image(systemName: "shippingbox")
+                                    .font(.system(size: 36, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .symbolRenderingMode(.hierarchical)
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
+                                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                            }
+                            .accessibilityHidden(true)
                         Text("Help improve Atria")
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .font(AtriaDesignTokens.Typography.pageTitle)
                         Text("Anonymous data only. No identity or location. Review the bundle before sharing.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -224,8 +239,13 @@ struct AtriaOnboardingSharingChoiceStep: View {
                     Button {
                         onContinue(sharingEnabled)
                     } label: {
+                        // Same metrics as the flow's PrimaryActionButton so the
+                        // final "Start using Atria" is not a smaller pill than
+                        // every "Continue" before it.
                         Text("Start using Atria")
+                            .font(.headline.weight(.bold))
                             .frame(maxWidth: .infinity)
+                            .frame(minHeight: 30)
                     }
                     .atriaCardAction(tint: .green)
                 }

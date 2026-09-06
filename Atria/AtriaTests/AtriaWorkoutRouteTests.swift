@@ -166,7 +166,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(hud.contains("metricProjection.activeCalories"))
         XCTAssertTrue(hud.contains("Text(zoneText)"))
         XCTAssertTrue(hud.contains(".accessibilityLabel(\"Heart rate"))
-        XCTAssertTrue(hud.contains(".atriaWorkoutGlassSurface(cornerRadius: 24"),
+        // 2026-09-02 radius-scale pass: the literal 24 became the card token
+        // (the pin is about the native glass surface, not the number).
+        XCTAssertTrue(hud.contains(".atriaWorkoutGlassSurface(cornerRadius: AtriaDesignTokens.Radius.card"),
                       "The pinned map overlay should use the native Liquid Glass surface")
     }
 
@@ -209,9 +211,18 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let actionsEnd = try XCTUnwrap(source.range(of: "private func loggedSetRow",
                                                     range: actionsStart.upperBound..<source.endIndex))
         let actions = String(source[actionsStart.lowerBound..<actionsEnd.lowerBound])
-        XCTAssertTrue(actions.contains("if activityType.supportsExerciseSelection"))
-        XCTAssertTrue(actions.contains("if activityType.supportsExerciseSelection, !loggedSets.isEmpty"))
-        XCTAssertTrue(actions.contains("if activityType.supportsExerciseSelection, let restTimerEndsAt"))
+        // Pin migrated 2026-08-30 (in-workout switching): the logger is gated
+        // on `showsSetLoggingControls` — current type supports exercise
+        // selection OR sets already logged OR any declared segment supports
+        // it — so a mid-workout switch cannot strand logged sets. The
+        // catalog's `supportsExerciseSelection` itself is unchanged (asserted
+        // above); AtriaWorkoutSegmentSwitchingTests covers the rule's truth
+        // table.
+        XCTAssertTrue(actions.contains("if showsSetLoggingControls"))
+        XCTAssertTrue(actions.contains("if showsSetLoggingControls, !loggedSets.isEmpty"))
+        XCTAssertTrue(actions.contains("if showsSetLoggingControls, let restTimerEndsAt"))
+        XCTAssertFalse(actions.contains("if activityType.supportsExerciseSelection"),
+                       "workoutActionsCard must not re-grow a current-type-only logger gate")
     }
 
     func testLiveWorkoutUsesTwoDeStackedPerformanceSurfaces() throws {
