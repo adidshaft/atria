@@ -912,6 +912,33 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(justOutside.unavailabilityReason, .noCurrentCycleReceipt)
     }
 
+    // The exact 2026-09-07 device shape: a CONFIRMED main-sleep boundary opens
+    // this cycle (wake 09-07 00:20Z) while the newest drained receipt is frozen
+    // ~68 h back (09-04, R10 in pure-HR fallback). It must be neither carried
+    // (mainSleep boundary already forbids that) NOR disclosed as an abutting
+    // "prior cycle" — the hero is "--" and there is no dateless "Prior cycle:
+    // 135" line to misread as recent.
+    func testStaleReceiptUnderConfirmedSleepBoundaryIsNotDisclosed() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let staleEndedAt = cycleStart.addingTimeInterval(-68 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 135, endedAt: staleEndedAt),
+            boundaryIsUnconfirmedFallback: false, // .mainSleep boundary
+            calendar: utcCalendar
+        )
+        XCTAssertNil(value.count)
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
+    }
+
     // Once this freshly-rolled cycle drains its own small early slice, the shown
     // number must not REGRESS below what the same active period already counted.
     // The carried prior receipt is a non-regressing floor (max, never a sum).
