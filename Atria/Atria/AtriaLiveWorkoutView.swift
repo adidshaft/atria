@@ -2533,6 +2533,8 @@ struct AtriaLiveWorkoutView: View {
     @State private var showsSupersetEditor = false
     @State private var showEndPersistenceError = false
     @State private var isEndingWorkout = false
+    @State private var setWindowIsOpen = false
+    @State private var setWindowOpenedAt: Date?
 
     var body: some View {
         Group {
@@ -2570,6 +2572,7 @@ struct AtriaLiveWorkoutView: View {
             Text("Atria couldn't save the workout yet. Try ending it again.")
         }
         .onAppear {
+            restoreOpenSetWindowPresentation()
             #if DEBUG
             applyDebugWorkoutFixtureIfNeeded(arguments: ProcessInfo.processInfo.arguments)
             if ProcessInfo.processInfo.arguments.contains("--atria-open-set-logger") {
@@ -2578,6 +2581,10 @@ struct AtriaLiveWorkoutView: View {
             }
             #endif
         }
+        .onChange(of: selectedExercise) { _, _ in persistOpenSetDraft() }
+        .onChange(of: loggerWeightKg) { _, _ in persistOpenSetDraft() }
+        .onChange(of: loggerReps) { _, _ in persistOpenSetDraft() }
+        .onChange(of: loggerRPE) { _, _ in persistOpenSetDraft() }
     }
 
     /// Walking, running, hiking and cycling use the map as the primary live
@@ -2665,15 +2672,19 @@ struct AtriaLiveWorkoutView: View {
                 // keeps its logger reachable without leaving the map.
                 if showsSetLoggingControls {
                     Button {
-                        primeLoggerFromLastSet()
-                        showSetLogger = true
+                        if setWindowIsOpen {
+                            stopAndLogSet()
+                        } else {
+                            startSet()
+                        }
                     } label: {
-                        Label("Log set", systemImage: "plus.circle.fill")
+                        Label(setWindowIsOpen ? "Stop & log set" : "Start Set",
+                              systemImage: setWindowIsOpen ? "stop.circle.fill" : "record.circle")
                             .font(.headline.weight(.black))
                             .frame(maxWidth: .infinity, minHeight: 54)
                     }
                     .buttonStyle(.glassProminent)
-                    .tint(.mint)
+                    .tint(setWindowIsOpen ? AtriaStrengthPalette.amber : .mint)
                 }
 
                 Button(action: toggleWorkoutPause) {
@@ -2773,7 +2784,7 @@ struct AtriaLiveWorkoutView: View {
         }
     }
 
-    /// Whether Log set is offered right now. The catalog's
+    /// Whether Start Set / Stop & log set is offered right now. The catalog's
     /// `supportsExerciseSelection` stays untouched; switching mid-workout must
     /// not strand sets already logged (or a strength segment's logging flow)
     /// behind the CURRENT type's capability, so any logged set or any
@@ -2806,15 +2817,19 @@ struct AtriaLiveWorkoutView: View {
                 HStack(spacing: 10) {
                     if showsSetLoggingControls {
                         Button {
-                            primeLoggerFromLastSet()
-                            showSetLogger = true
+                            if setWindowIsOpen {
+                                stopAndLogSet()
+                            } else {
+                                startSet()
+                            }
                         } label: {
-                            Label("Log set", systemImage: "plus.circle.fill")
+                            Label(setWindowIsOpen ? "Stop & log set" : "Start Set",
+                                  systemImage: setWindowIsOpen ? "stop.circle.fill" : "record.circle")
                                 .font(.subheadline.weight(.black))
                                 .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.glassProminent)
-                        .tint(.mint)
+                        .tint(setWindowIsOpen ? AtriaStrengthPalette.amber : .mint)
                     }
 
                     Button(action: toggleWorkoutPause) {
@@ -2828,9 +2843,40 @@ struct AtriaLiveWorkoutView: View {
                 }
             }
 
-            if (showsSetLoggingControls && restTimerEndsAt != nil)
+            if showsSetLoggingControls {
+                Button {
+                    primeLoggerFromLastSet()
+                    showSetLogger = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(selectedExercise)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 8)
+                        Text(pendingSetSummary)
+                            .font(.caption.weight(.black).monospacedDigit())
+                            .foregroundStyle(setWindowIsOpen ? AtriaStrengthPalette.amberTint : .mint)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Set labels, \(selectedExercise), \(pendingSetSummary)")
+            }
+
+            if (showsSetLoggingControls && (restTimerEndsAt != nil || setWindowIsOpen))
                 || pauseStartedAt != nil {
                 HStack(spacing: 8) {
+                    if showsSetLoggingControls, setWindowIsOpen, let setWindowOpenedAt {
+                        TimelineView(.periodic(from: setWindowOpenedAt, by: 1)) { context in
+                            Label(setElapsedText(now: context.date, start: setWindowOpenedAt),
+                                  systemImage: "record.circle")
+                                .font(.caption.weight(.black).monospacedDigit())
+                                .foregroundStyle(AtriaStrengthPalette.amberTint)
+                        }
+                    }
                     if showsSetLoggingControls, let restTimerEndsAt {
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             Label(restTimerText(now: context.date, end: restTimerEndsAt),
@@ -2911,7 +2957,7 @@ struct AtriaLiveWorkoutView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Label(editingSetID == nil ? "Log set" : "Edit set", systemImage: "dumbbell.fill")
+                    Label(setLoggerTitle, systemImage: "dumbbell.fill")
                         .font(.headline.weight(.black))
                     Spacer()
                     Button("Close") { showSetLogger = false }
@@ -3052,16 +3098,39 @@ struct AtriaLiveWorkoutView: View {
 
     private var logSetAction: some View {
         Button {
-            saveLoggedSet()
+            if editingSetID != nil {
+                saveLoggedSet()
+            } else if setWindowIsOpen {
+                stopAndLogSet()
+            } else {
+                startSet()
+            }
         } label: {
-            Label(editingSetID == nil ? "Log set \u{00B7} start rest" : "Update set",
-                  systemImage: "checkmark.circle.fill")
+            Label(logSetActionTitle, systemImage: logSetActionSymbol)
                 .font(.headline.weight(.black))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 7)
         }
         .buttonStyle(.glassProminent)
         .tint(AtriaStrengthPalette.amber)
+    }
+
+    private var setLoggerTitle: String {
+        if editingSetID != nil { return "Edit set" }
+        if setWindowIsOpen { return "Stop & log set" }
+        return "Start Set"
+    }
+
+    private var logSetActionTitle: String {
+        if editingSetID != nil { return "Update set" }
+        if setWindowIsOpen { return "Stop & log set" }
+        return "Start Set"
+    }
+
+    private var logSetActionSymbol: String {
+        if editingSetID != nil { return "checkmark.circle.fill" }
+        if setWindowIsOpen { return "stop.circle.fill" }
+        return "record.circle"
     }
 
     private var strengthNavigationRow: some View {
@@ -3191,6 +3260,71 @@ struct AtriaLiveWorkoutView: View {
         loggerReps = last.reps ?? loggerReps
     }
 
+    private var currentSetDraft: AtriaStrengthSetWindow.Draft {
+        AtriaStrengthSetWindow.Draft(
+            exercise: selectedExercise,
+            weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+            reps: loggerReps,
+            rpe: loggerRPE
+        )
+    }
+
+    private var pendingSetSummary: String {
+        let weight = loggerWeightKg > 0 ? "\(AtriaStrengthSetTablePresentation.weightCell(loggerWeightKg)) kg" : "--"
+        return "\(weight) x \(loggerReps)"
+    }
+
+    private func persistOpenSetDraft() {
+        guard setWindowIsOpen else { return }
+        AtriaStrengthSetWindow.live.updateDraft(currentSetDraft)
+    }
+
+    private func restoreOpenSetWindowPresentation() {
+        setWindowIsOpen = AtriaStrengthSetWindow.live.isOpen
+        setWindowOpenedAt = AtriaStrengthSetWindow.live.openedAt
+        guard setWindowIsOpen, let draft = AtriaStrengthSetWindow.live.draft else { return }
+        selectedExercise = draft.exercise
+        loggerWeightKg = draft.weightKg ?? loggerWeightKg
+        loggerReps = draft.reps ?? loggerReps
+        loggerRPE = draft.rpe
+        loggerRestSeconds = AtriaStrengthLog.restSeconds(for: draft.exercise)
+    }
+
+    private func startSet() {
+        guard editingSetID == nil else { return }
+        let now = Date()
+        AtriaStrengthSetWindow.live.start(at: now, draft: currentSetDraft)
+        setWindowIsOpen = true
+        setWindowOpenedAt = now
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    private func stopAndLogSet() {
+        let now = Date()
+        let receipt = AtriaStrengthLog.supersetReceipt(exercise: selectedExercise,
+                                                       group: activeSuperset,
+                                                       priorSets: loggedSets,
+                                                       now: now)
+        let labels = AtriaStrengthSetWindow.Labels(
+            exercise: selectedExercise,
+            weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+            reps: loggerReps,
+            rpe: loggerRPE,
+            effectiveLoadKg: AtriaStrengthLog.effectiveLoadKg(
+                exercise: selectedExercise,
+                externalWeightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+                bodyMassKg: strengthBodyMassKg
+            )?.loadKg,
+            supersetGroupID: receipt.groupID,
+            supersetOrder: receipt.order,
+            supersetTransitionSeconds: receipt.transitionSeconds
+        )
+        guard let set = AtriaStrengthSetWindow.live.stop(at: now, labels: labels) else { return }
+        setWindowIsOpen = false
+        setWindowOpenedAt = nil
+        commitLoggedSet(set, startsRest: true)
+    }
+
     private func saveLoggedSet() {
         let editingOriginal = editingSetID.flatMap { id in
             loggedSets.first(where: { $0.id == id })
@@ -3228,22 +3362,44 @@ struct AtriaLiveWorkoutView: View {
                             )?.loadKg,
                             supersetGroupID: receipt.groupID,
                             supersetOrder: receipt.order,
-                            supersetTransitionSeconds: receipt.transitionSeconds)
+                            supersetTransitionSeconds: receipt.transitionSeconds,
+                            startedAt: editingOriginal?.startedAt,
+                            endedAt: editingOriginal?.endedAt,
+                            imuSamples: editingOriginal?.imuSamples)
         if let editingOriginal {
             set.id = editingOriginal.id
         }
-        let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
         if let editingSetID,
            let index = loggedSets.firstIndex(where: { $0.id == editingSetID }) {
             loggedSets[index] = set
             self.editingSetID = nil
-        } else {
-            loggedSets.append(set)
+            let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
+            latestPRSetID = isNewPR ? set.id : nil
+            mirrorLoggedSetsToActiveJournal()
+            UIImpactFeedbackGenerator(style: isNewPR ? .heavy : .light).impactOccurred()
+            return
         }
+        if setWindowIsOpen {
+            stopAndLogSet()
+            return
+        }
+        startSet()
+    }
+
+    private func commitLoggedSet(_ set: LoggedSet, startsRest: Bool) {
+        let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
+        loggedSets.append(set)
         latestPRSetID = isNewPR ? set.id : nil
-        restTimerEndsAt = Date().addingTimeInterval(restSeconds(for: selectedExercise))
+        if startsRest {
+            restTimerEndsAt = Date().addingTimeInterval(restSeconds(for: selectedExercise))
+        }
         mirrorLoggedSetsToActiveJournal()
         UIImpactFeedbackGenerator(style: isNewPR ? .heavy : .light).impactOccurred()
+    }
+
+    private func setElapsedText(now: Date, start: Date) -> String {
+        let total = max(0, Int(now.timeIntervalSince(start).rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var supersetEditor: some View {
@@ -3468,6 +3624,9 @@ struct AtriaLiveWorkoutView: View {
         // that request is asynchronous and a second tap must not enqueue a
         // second pause transition while the terminal intent is being saved.
         isEndingWorkout = true
+        if setWindowIsOpen {
+            stopAndLogSet()
+        }
         finalizePauseIfNeeded()
         Task { @MainActor in
             if await onStop() {

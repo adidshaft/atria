@@ -38553,6 +38553,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let decoded = AtriaIMUDecoder.decode(payload: payload)
         if let decoded {
             recordIMUFeatures(decoded)
+            AtriaStrengthSetWindow.ingestLiveDecoded(decoded, receivedAt: Date())
         }
         var i16Pairs: [String] = []
         var magnitudes: [String] = []
@@ -50426,6 +50427,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 )
             }
             if let r10Frame = AtriaR10MotionDecoder.decode(frame: completeFrame) {
+                AtriaStrengthSetWindow.ingestLiveR10(frame: r10Frame, receivedAt: receivedAt)
                 // CoreBluetooth already invokes this delegate on one serial
                 // lane. Submit to the pipeline from that lane directly so a
                 // later MainActor boundary marker cannot overtake a frame that

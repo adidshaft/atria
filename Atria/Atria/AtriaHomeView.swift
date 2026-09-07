@@ -2300,6 +2300,7 @@ struct AtriaHomeView: View {
             return false
         }
         workoutSession = session
+        AtriaStrengthSetWindow.live.cancel()
         AtriaDebugLog("ATRIADBG live_workout_start_latency phase=ui_session_published elapsed_ms=%d",
                       Int(((ProcessInfo.processInfo.systemUptime - requestedUptime) * 1_000).rounded()))
         synchronizeWorkoutZoneHaptics(workoutZoneHapticConfiguration)
@@ -3779,13 +3780,31 @@ struct AtriaHomeView: View {
     private var debugWorkoutReviewHoldState: WorkoutReviewHoldState? { nil }
     #endif
 
+    /// Merge HUD-reported sets with the live array and close an open Start Set
+    /// window so End (including Lock Screen) cannot drop the in-progress interval.
+    private func strengthSetsForWorkoutEnd(_ reported: [LoggedSet], at endedAt: Date) -> [LoggedSet] {
+        var merged = reported
+        for set in liveWorkoutLoggedSets where !merged.contains(where: { $0.id == set.id }) {
+            merged.append(set)
+        }
+        let weight = workoutSession?.calculationContext?.profile.weightKg ?? store.profile.weightKg
+        let bodyMass = weight > 0 ? weight : nil
+        if let open = AtriaStrengthSetWindow.live.stopUsingDraft(at: endedAt, bodyMassKg: bodyMass),
+           !merged.contains(where: { $0.id == open.id }) {
+            merged.append(open)
+            liveWorkoutLoggedSets = merged
+        }
+        AtriaStrengthSetWindow.live.cancel()
+        return merged
+    }
+
     @discardableResult
     private func endWorkoutSession(startedAt: Date) async -> Bool {
         await endWorkoutSession(startedAt: startedAt,
                           endedAt: Date(),
                           activityType: workoutSession?.activityType ?? .other,
-                          strengthSets: [],
-                          excludedIntervals: [])
+                          strengthSets: liveWorkoutLoggedSets,
+                          excludedIntervals: liveWorkoutExcludedIntervals)
     }
 
     @discardableResult
@@ -3847,12 +3866,13 @@ struct AtriaHomeView: View {
         ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
             ?? liveSession?.activityType
             ?? activityType
+        let finalStrengthSets = strengthSetsForWorkoutEnd(strengthSets, at: endedAt)
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
             endedAt: endedAt,
             activityType: finalActivityType.rawValue,
-            strengthSets: strengthSets,
+            strengthSets: finalStrengthSets,
             excludedIntervals: excludedIntervals,
             pauseStartedAt: liveWorkoutPauseStartedAt,
             targetStrain: workoutSession?.targetStrain,
