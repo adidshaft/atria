@@ -820,6 +820,98 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                        .init(steps: 1_118, endedAt: endedAt))
     }
 
+    // 2026-09-07 device bug: the strap's motion transport sat in pure-HR
+    // fallback for days, so the newest drained receipt (135 steps) was frozen
+    // three days before this cycle's wake boundary — yet it was promoted to
+    // today's hero count and the widget value. A prior receipt stranded more
+    // than one physiological cycle back is NOT the same continuous wear period
+    // (a whole cycle drained nothing in between), so it must neither be carried
+    // forward as today nor disclosed as an abutting "prior cycle".
+    func testMultiDayStalePriorReceiptIsNeverCarriedOrDisclosedAsToday() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let staleEndedAt = cycleStart.addingTimeInterval(-72 * 3_600) // 3 days back
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 135, endedAt: staleEndedAt),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.valueText, "--")
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+        // Not even disclosed as "prior cycle": a dateless "ended 9:44 AM" would
+        // read as recent. Fall through to the plain honest empty state instead.
+        XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertEqual(value.detailText, "No verified receipt for this cycle")
+        XCTAssertFalse(value.detailText.contains("135"))
+    }
+
+    // The stale receipt must not sneak in as the partial-branch FLOOR either:
+    // a small fresh drained slice is the honest lower bound for the open cycle,
+    // never a 3-day-old total.
+    func testMultiDayStalePriorReceiptDoesNotFloorAFreshPartial() {
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: day.addingTimeInterval(2 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .missing,
+                                    stepCount: nil,
+                                    known: 120,
+                                    covered: 1_800,
+                                    missing: 40_000,
+                                    end: day.addingTimeInterval(1_800))],
+            physiologicalDayStart: day,
+            priorCycleReceipt: .init(steps: 135,
+                                     endedAt: day.addingTimeInterval(-72 * 3_600)),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 120)
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+    }
+
+    // The abutment boundary is one physiological cycle (28 h). A receipt just
+    // inside it is the immediately-preceding cycle and still carries; just
+    // outside it is stale history and does not.
+    func testPriorReceiptCarriedOnlyWithinOnePhysiologicalCycle() {
+        let cycleStart = day.addingTimeInterval(30 * 3_600)
+        func resolveWithGap(_ gap: TimeInterval) -> AtriaDailyStepPresentation {
+            AtriaDailyStepPresentation.resolve(
+                day: day,
+                now: cycleStart.addingTimeInterval(600),
+                liveCount: 0,
+                liveValidationState: "unavailable",
+                liveCapturedAt: nil,
+                canonicalDays: [],
+                physiologicalDayStart: cycleStart,
+                priorCycleReceipt: .init(steps: 900,
+                                         endedAt: cycleStart.addingTimeInterval(-gap)),
+                boundaryIsUnconfirmedFallback: true,
+                calendar: utcCalendar
+            )
+        }
+
+        let justInside = resolveWithGap(27 * 3_600)
+        XCTAssertEqual(justInside.count, 900)
+        XCTAssertTrue(justInside.carriedFromUnconfirmedPriorCycle)
+
+        let justOutside = resolveWithGap(29 * 3_600)
+        XCTAssertNil(justOutside.count)
+        XCTAssertFalse(justOutside.carriedFromUnconfirmedPriorCycle)
+        XCTAssertEqual(justOutside.unavailabilityReason, .noCurrentCycleReceipt)
+    }
+
     // Once this freshly-rolled cycle drains its own small early slice, the shown
     // number must not REGRESS below what the same active period already counted.
     // The carried prior receipt is a non-regressing floor (max, never a sum).

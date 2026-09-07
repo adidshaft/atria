@@ -329,6 +329,48 @@ final class AtriaStrengthSetWindowTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaIMUDecoder.decode(payload: payload)"))
     }
 
+    // Objective 3: the live BLE tap (ingestLiveR10) must feed the SHARED live
+    // window only while a set is open. If R10 frames flow but imuSamples stays
+    // empty, this proves the bug is upstream (no frames) rather than in the tap
+    // or window: with a set open, an in-window frame binds; frames before Start
+    // and after Stop never bind.
+    func testLiveStaticTapBindsOnlyInWindowFramesWhileOpen() throws {
+        let start = origin
+        let stop = start.addingTimeInterval(3)
+
+        // Before Start: the tap is a no-op (guard live.isOpen).
+        XCTAssertFalse(AtriaStrengthSetWindow.live.isOpen)
+        AtriaStrengthSetWindow.ingestLiveR10(frame: Self.r10Frame(value: 1),
+                                             receivedAt: start.addingTimeInterval(-1))
+
+        AtriaStrengthSetWindow.live.start(at: start, draft: Self.draft)
+        let inFrame = Self.r10Frame(value: 2)
+        let inReceivedAt = start.addingTimeInterval(1.5) // whole frame inside [start, stop]
+        AtriaStrengthSetWindow.ingestLiveR10(frame: inFrame, receivedAt: inReceivedAt)
+
+        let logged = try XCTUnwrap(AtriaStrengthSetWindow.live.stop(at: stop, labels: Self.labels))
+        // After Stop: another frame must not bind to the just-closed window.
+        AtriaStrengthSetWindow.ingestLiveR10(frame: Self.r10Frame(value: 9),
+                                             receivedAt: stop.addingTimeInterval(1))
+
+        let expected = AtriaStrengthSetWindow.samples(fromR10: inFrame, receivedAt: inReceivedAt)
+        XCTAssertFalse(expected.isEmpty)
+        XCTAssertEqual(logged.imuSamples, expected)
+        XCTAssertFalse(logged.imuSamples?.contains(where: { $0.t < start || $0.t > stop }) ?? true)
+    }
+
+    private static func r10Frame(value: Double) -> AtriaR10MotionFrame {
+        let acceleration = (0..<AtriaR10MotionDecoder.sampleCount).map { _ in
+            AtriaR10MotionFrame.Vector3(x: value, y: 0.25, z: -0.5)
+        }
+        return AtriaR10MotionFrame(deviceTimestamp: 0,
+                                   heartRate: 80,
+                                   acceleration: acceleration,
+                                   rotationRate: acceleration.map { _ in
+                                       AtriaR10MotionFrame.Vector3(x: 0, y: 0, z: 0)
+                                   })
+    }
+
     private static let draft = AtriaStrengthSetWindow.Draft(exercise: "Barbell row",
                                                             weightKg: 70,
                                                             reps: 10,

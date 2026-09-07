@@ -10755,6 +10755,91 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(due(now: fallbackAt.addingTimeInterval(-86_400), lastAttemptAt: nil))
     }
 
+    /// 2026-09-07 directive: a live, user-started workout must not sit in
+    /// `.unavailablePureHRFallback` for its whole duration when the strap could
+    /// still qualify stream-5. The in-process requalify gets ONE bounded,
+    /// credential-gated, cooldown-limited attempt — and FAILS CLOSED once the
+    /// dense stream is demonstrably storming this link, so a healthy workout's
+    /// HR is not disconnected every cooldown for a proof already proven to drop.
+    func testWorkoutInProcessRequalifyIsBoundedCredentialedAndFailsClosedOnStorm() {
+        let cooldown: TimeInterval = 30 * 60
+        let fallbackAt = 1_788_779_585.0    // 2026-09-07 11:13:05Z (device)
+        let qualifiedAt = 1_788_391_357.0   // 2026-09-02 (credential present)
+        func attempt(manual: Bool = true,
+                     suppressed: Bool = true,
+                     owner: AtriaBLEManager.ProtectedR10CleanOwner = .pureHRV10,
+                     state: AtriaBLEManager.ProtectedR10CleanOwnerState = .fallbackActive,
+                     qualified: Double? = qualifiedAt,
+                     fallback: Double? = fallbackAt,
+                     lastAttempt: Double? = nil,
+                     fails: Int = 0,
+                     now: Double) -> Bool {
+            AtriaBLEManager.workoutMotionInProcessRequalifyShouldAttempt(
+                manualWorkoutActive: manual,
+                streamSuppressed: suppressed,
+                owner: owner,
+                state: state,
+                priorQualifiedAt: qualified,
+                fallbackAt: fallback,
+                lastAttemptAt: lastAttempt,
+                consecutiveFallbackCount: fails,
+                now: now)
+        }
+        let afterCooldown = fallbackAt + cooldown + 1
+
+        // Eligible: active workout, suppressed pure-HR fallback, credential,
+        // cooldown elapsed, not storming.
+        XCTAssertTrue(attempt(now: afterCooldown))
+
+        // All-day wear (no manual workout) never uses this HR-disconnecting
+        // path — it recovers across launches via the 12 h passive requalify.
+        XCTAssertFalse(attempt(manual: false, now: afterCooldown))
+
+        // Within the 30-min cooldown after the fallback: hold (never flap 3F).
+        XCTAssertFalse(attempt(now: fallbackAt + cooldown - 1))
+        // And a prior attempt within the cooldown also holds.
+        XCTAssertFalse(attempt(lastAttempt: afterCooldown - 60, now: afterCooldown))
+
+        // Anti-storm: at/over the consecutive-fallback cap, degrade to pure HR.
+        XCTAssertFalse(attempt(fails: 4, now: afterCooldown))
+        XCTAssertTrue(attempt(fails: 3, now: afterCooldown))
+
+        // The physical qualification credential is mandatory.
+        XCTAssertFalse(attempt(qualified: nil, now: afterCooldown))
+
+        // Only a suppressed pure-HR fallback owner/state qualifies.
+        XCTAssertFalse(attempt(suppressed: false, now: afterCooldown))
+        XCTAssertFalse(attempt(owner: .protectedV9, state: .proving, now: afterCooldown))
+        XCTAssertFalse(attempt(state: .qualified, now: afterCooldown))
+    }
+
+    /// The escalation is wired into the lease evaluator's pure-HR fallback
+    /// branch and reuses the existing bounded cutover — not a second transport
+    /// path — so a stale `characteristic_missing` reason is re-discovered on a
+    /// genuinely fresh v9 link rather than treated as permanent hardware death.
+    func testWorkoutMotionFallbackBranchOffersBoundedInProcessRequalify() throws {
+        let source = try leaseManagerSource()
+        let evalStart = try XCTUnwrap(source.range(
+            of: "private func evaluateWorkoutMotionLease("))
+        let evalEnd = try XCTUnwrap(source.range(
+            of: "private func attemptWorkoutMotionInProcessRequalifyIfEligible(",
+            range: evalStart.upperBound..<source.endIndex))
+        let evalBody = String(source[evalStart.lowerBound..<evalEnd.lowerBound])
+        // The fallback branch no longer only retains the gap — it offers the
+        // bounded requalify.
+        XCTAssertTrue(evalBody.contains("action == .unavailablePureHRFallback"))
+        XCTAssertTrue(evalBody.contains("attemptWorkoutMotionInProcessRequalifyIfEligible("))
+
+        let attemptStart = try XCTUnwrap(source.range(
+            of: "private func attemptWorkoutMotionInProcessRequalifyIfEligible("))
+        let attemptEnd = try XCTUnwrap(source.range(
+            of: "private func suspendWorkoutMotionLeaseForHistoricalSync(",
+            range: attemptStart.upperBound..<source.endIndex))
+        let attemptBody = String(source[attemptStart.lowerBound..<attemptEnd.lowerBound])
+        XCTAssertTrue(attemptBody.contains("workoutMotionInProcessRequalifyShouldAttempt("))
+        XCTAssertTrue(attemptBody.contains("beginProtectedR10V8WorkoutCutoverIfNeeded("))
+    }
+
     /// 2026-08-19: the passive requalification now fires (proven on device at
     /// 04:04:48), but the proof still fails with `clean_owner_proof_disconnect`
     /// and the single-slot forensic key is overwritten by each retry. At a 12 h
