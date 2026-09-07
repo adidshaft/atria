@@ -85,7 +85,9 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         let mintedNight = settled.first { $0.id == "new-main" }
         XCTAssertNotNil(mintedNight?.frozenSleepNeed,
                         "a genuinely new main sleep mints an itemized receipt at settlement")
-        XCTAssertEqual(mintedNight?.frozenSleepNeed?.baseHours, 8)
+        // Prior 7h night pulls typical to 7h; adapted base is the midpoint of
+        // the configured 8h and that typical.
+        XCTAssertEqual(try XCTUnwrap(mintedNight?.frozenSleepNeed).baseHours, 7.5, accuracy: 0.001)
         XCTAssertNil(settled.first { $0.id == "old-main" }?.frozenSleepNeed,
                      "a record outside the freezable set must not be back-minted")
         XCTAssertNil(settled.first { $0.id == "nap" }?.frozenSleepNeed,
@@ -154,20 +156,46 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
             calendar: calendar
         ))
 
-        let expectedDebt = AtriaSleepBudget.sleepDebt(nights: [
-            (needed: priorA.frozenSleepNeed!.totalHours, slept: 6),
-            (needed: priorB.frozenSleepNeed!.totalHours, slept: 6.5),
-        ])
+        let typical = try XCTUnwrap(AtriaSleepBudget.typicalSleepHours(fromSlept: [6, 6.5]))
+        XCTAssertEqual(typical, 6.5, accuracy: 0.001)
+        // 6h and 6.5h both sit within 10% of typical, so recovered nights
+        // add no debt. Strain and nap credit still move the receipt.
         let expected = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
                                                             yesterdayStrain: 15,
-                                                            debtHours: expectedDebt,
-                                                            sameDayNapHours: 1)
+                                                            debtHours: 0,
+                                                            sameDayNapHours: 1,
+                                                            typicalSleepHours: typical)
         let minted = settled.first { $0.id == "tonight" }?.frozenSleepNeed
         XCTAssertEqual(minted, AtriaSleepBudget.FrozenNeed(expected),
-                       "tonight's receipt must be built from prior frozen nights' debt, yesterday's strain, and the same-day nap credit")
-        XCTAssertGreaterThan(expected.debtAdderHours, 0)
+                       "tonight's receipt uses typical-sleep debt, yesterday's strain, and the same-day nap credit")
+        XCTAssertEqual(expected.debtAdderHours, 0, accuracy: 0.001)
         XCTAssertGreaterThan(expected.napCreditHours, 0)
         XCTAssertGreaterThan(expected.strainAdderHours, 0)
+        XCTAssertEqual(expected.baseHours, 7.25, accuracy: 0.001)
+    }
+
+    func testRecoveredSixHourNightsDoNotFreezeTenHourNeed() throws {
+        let crash = mainSleep(id: "crash", start: day(2026, 9, 3, hour: 7), hours: 2.3)
+        let prior = (0..<3).map { offset in
+            mainSleep(id: "prior-\(offset)",
+                      start: day(2026, 9, 4 + offset, hour: 23),
+                      hours: 6.5)
+        }
+        let tonight = mainSleep(id: "tonight", start: day(2026, 9, 7, hour: 21), hours: 6.4)
+
+        let settled = try XCTUnwrap(SessionStore.freezingAdaptiveSleepNeed(
+            in: [crash] + prior + [tonight],
+            freezableSleepIDs: ["tonight"],
+            dailyMetrics: [],
+            baseNeedHours: 8,
+            calendar: calendar
+        ))
+
+        let minted = try XCTUnwrap(settled.first { $0.id == "tonight" }?.frozenSleepNeed)
+        XCTAssertEqual(minted.debtAdderHours, 0, accuracy: 0.01,
+                       "crash nights under 5h must not inflate later targets")
+        XCTAssertEqual(minted.totalHours, 7.25, accuracy: 0.05)
+        XCTAssertLessThan(minted.totalHours, 8.5)
     }
 
     // MARK: assessment P1.7+8 — TRIMP is truth; the need adder consumes it

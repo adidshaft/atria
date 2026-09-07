@@ -909,7 +909,8 @@ struct AtriaHealthScreen: View {
                                                     isActive: isActive,
                                                     onOpenStressDetail: {
                                                         showStressDetail = true
-                                                    })
+                                                    },
+                                                    sessionsForTimeline: { store.sessions })
                         AtriaHealthMonitorLiveHost(liveStore: liveStore,
                                                    heroStore: heroStore,
                                                    profileStore: profileStore,

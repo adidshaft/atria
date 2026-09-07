@@ -425,6 +425,26 @@ final class AtriaSessionStressContextPublicationTests: XCTestCase {
             previous: original,
             next: fewerRR
         ))
+        XCTAssertFalse(SessionStore.stressReplaySessionNeedsHistoricalRescore(
+            previous: original,
+            next: identical
+        ))
+        XCTAssertTrue(SessionStore.stressReplaySessionNeedsHistoricalRescore(
+            previous: nil,
+            next: original
+        ), "a newly sealed session with HR must replay; live scoring may never have seen it")
+        XCTAssertTrue(SessionStore.stressReplaySessionInputGrew(
+            previous: original,
+            next: growth
+        ))
+        XCTAssertTrue(SessionStore.stressReplaySessionNeedsHistoricalRescore(
+            previous: original,
+            next: growth
+        ))
+        XCTAssertTrue(SessionStore.stressReplaySessionNeedsHistoricalRescore(
+            previous: original,
+            next: shorterEnd
+        ))
     }
 
     func testRecoveredRollbackTerminalGatePublishesOnlyPreservedMutations() {
@@ -603,6 +623,23 @@ final class AtriaSessionStressContextPublicationTests: XCTestCase {
             deleteReplayAuthority.lowerBound,
             deleteTerminal.lowerBound
         )
+
+        let addStart = try XCTUnwrap(
+            source.range(of: "func add(_ s: SavedSession, deferDerivedPublication: Bool = false) -> Bool")
+        )
+        let addEnd = try XCTUnwrap(
+            source.range(
+                of: "func resumeDeferredSessionBoundaryDerivedPublicationIfNeeded(",
+                range: addStart.upperBound..<source.endIndex
+            )
+        )
+        let addPath = String(source[addStart.lowerBound..<addEnd.lowerBound])
+        XCTAssertTrue(
+            addPath.contains("stressReplaySessionNeedsHistoricalRescore("),
+            "sealing a new HR session must enqueue historical stress replay, not only shrinks"
+        )
+        XCTAssertTrue(addPath.contains("saved_session_added"))
+        XCTAssertTrue(addPath.contains("saved_session_shrank"))
 
         let checkpointStart = try XCTUnwrap(
             source.range(of: "func checkpoint(_ s: SavedSession) -> Bool")

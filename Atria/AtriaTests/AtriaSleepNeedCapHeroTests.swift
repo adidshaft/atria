@@ -31,4 +31,27 @@ final class AtriaSleepNeedCapHeroTests: XCTestCase {
         XCTAssertTrue(body.contains("yesterdayStrain: yesterdayStrainForLatestNight"),
                       "the hero still reads yesterday's strain, never today's partial number")
     }
+
+    func testTypicalSleepIgnoresCrashNightsAndMeetsRecoveredSleeperHalfway() throws {
+        XCTAssertNil(AtriaSleepBudget.typicalSleepHours(fromSlept: [2.3, 3.1, 4.9]))
+        XCTAssertEqual(try XCTUnwrap(AtriaSleepBudget.typicalSleepHours(fromSlept: [2.3, 6.4, 6.5, 6.5])),
+                       6.5,
+                       accuracy: 0.001)
+        XCTAssertEqual(AtriaSleepBudget.adaptedBaseHours(configured: 8, typical: 6.5),
+                       7.25,
+                       accuracy: 0.001)
+
+        let debtNights = AtriaSleepBudget.debtNights(slept: [2.3, 6.4, 6.5], typicalHours: 6.5)
+        XCTAssertEqual(debtNights.count, 2, "crash nights under 5h are skipped")
+        XCTAssertEqual(AtriaSleepBudget.sleepDebt(nights: debtNights), 0, accuracy: 0.001)
+
+        let need = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                        yesterdayStrain: 0,
+                                                        debtHours: 0,
+                                                        sameDayNapHours: 0,
+                                                        typicalSleepHours: 6.5)
+        XCTAssertEqual(need.baseHours, 7.25, accuracy: 0.001)
+        XCTAssertEqual(need.totalHours, 7.25, accuracy: 0.001)
+        XCTAssertLessThan(need.totalHours, 10)
+    }
 }

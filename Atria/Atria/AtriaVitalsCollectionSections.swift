@@ -1178,6 +1178,10 @@ private struct AtriaVitalsPulseCardHost: View {
     @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     let baselineSnapshot: AtriaVitalsPulseBaselineSnapshot
     let isActive: Bool
+    /// Saved-session HR for the live 6h preview. Archive-only refresh left
+    /// the card showing a live tail on an empty 6-hour axis (device
+    /// 2026-09-07: 5:55–10:21 sessions existed, the plot was a sliver).
+    var sessionsForTimeline: () -> [SavedSession] = { [] }
     @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
     @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
     @State private var live: AtriaHomeModel.CoreLiveState
@@ -1199,6 +1203,7 @@ private struct AtriaVitalsPulseCardHost: View {
          baselineSnapshot: AtriaVitalsPulseBaselineSnapshot,
          pulseSparklineStore: AtriaHomeModel.PulseSparklineStore,
          isActive: Bool,
+         sessionsForTimeline: @escaping () -> [SavedSession] = { [] },
          onOpenStressDetail: (() -> Void)? = nil) {
         self.liveStore = liveStore
         self.pulseStore = pulseStore
@@ -1207,6 +1212,7 @@ private struct AtriaVitalsPulseCardHost: View {
         self.baselineSnapshot = baselineSnapshot
         self.pulseSparklineStore = pulseSparklineStore
         self.isActive = isActive
+        self.sessionsForTimeline = sessionsForTimeline
         self.onOpenStressDetail = onOpenStressDetail
         _live = State(initialValue: liveStore.state)
         _pulse = State(initialValue: AtriaVitalsPulsePresentationState(pulseStore.state))
@@ -1377,21 +1383,38 @@ private struct AtriaVitalsPulseCardHost: View {
         let windowEnd = Date(timeIntervalSince1970:
             (now.timeIntervalSince1970 / quantum).rounded(.up) * quantum)
         let windowStart = windowEnd.addingTimeInterval(-(24 * 60 * 60) - quantum)
+        let source = HistoricalHeartRateRefreshSource(
+            sessions: sessionsForTimeline(),
+            observed: stressMonitorStore.heartRateHistory.map {
+                AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
+            },
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
         let points = await Task.detached(priority: .utility) {
             // A nil exact-window read is an incomplete scan, not an empty
             // archive; fall back to the bounded recent tail at the same
             // 12k budget Activity's current-day path uses — never the old
             // 50k-limit full-tail rescan.
             let window = HistoricalArchive.metricHeartRatePoints(
-                start: windowStart,
-                end: windowEnd,
+                start: source.windowStart,
+                end: source.windowEnd,
                 maximumPoints: 100_000
             )
-            let raw = (window?.points
-                ?? HistoricalArchive.metricHeartRatePoints(since: windowStart,
+            let archive = (window?.points
+                ?? HistoricalArchive.metricHeartRatePoints(since: source.windowStart,
                                                            limit: 12_000)).map {
                 AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
             }
+            let fromSessions = AtriaVitalsHeartRateTimeline.points(
+                fromSessions: source.sessions,
+                start: source.windowStart,
+                end: source.windowEnd
+            )
+            let raw = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(
+                live: fromSessions + source.observed,
+                historical: archive
+            )
             return AtriaVitalsHeartRateTimeline.downsampledSpan(raw, maxPoints: 2_500)
         }.value
         guard !Task.isCancelled else { return }
@@ -1410,6 +1433,15 @@ private struct AtriaVitalsPulseCardHost: View {
     #else
     private static func debugOpensHeartRateTimeline(arguments: [String]) -> Bool { false }
     #endif
+
+    /// `SavedSession` predates Sendable. Capture the resident COW image on
+    /// MainActor, then read only that immutable copy on the utility worker.
+    private struct HistoricalHeartRateRefreshSource: @unchecked Sendable {
+        let sessions: [SavedSession]
+        let observed: [AtriaHomeModel.HeartRateChartPoint]
+        let windowStart: Date
+        let windowEnd: Date
+    }
 
 }
 
@@ -1441,6 +1473,7 @@ struct AtriaVitalsLivePulseSection: View {
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
     let isActive: Bool
     var onOpenStressDetail: (() -> Void)? = nil
+    var sessionsForTimeline: () -> [SavedSession] = { [] }
 
     var body: some View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
@@ -1450,6 +1483,7 @@ struct AtriaVitalsLivePulseSection: View {
                                  baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(baseline),
                                  pulseSparklineStore: pulseSparklineStore,
                                  isActive: isActive,
+                                 sessionsForTimeline: sessionsForTimeline,
                                  onOpenStressDetail: onOpenStressDetail)
     }
 }
@@ -1490,6 +1524,27 @@ enum AtriaVitalsHeartRateTimeline {
         }
 
         static let defaultWindow = Window.hour6
+    }
+
+    /// Saved-session HR inside `[start, end)`. Activity's current-day path
+    /// already unions this source; the Live 6h preview was archive-only and
+    /// therefore plotted a live sliver on an empty axis.
+    static func points(fromSessions sessions: [SavedSession],
+                       start: Date,
+                       end: Date) -> [AtriaHomeModel.HeartRateChartPoint] {
+        guard end > start else { return [] }
+        var points: [AtriaHomeModel.HeartRateChartPoint] = []
+        for session in sessions {
+            guard session.end > start, session.start < end else { continue }
+            for point in session.points {
+                let date = session.start.addingTimeInterval(point.t)
+                guard date >= start,
+                      date < end,
+                      (25...240).contains(point.bpm) else { continue }
+                points.append(AtriaHomeModel.HeartRateChartPoint(t: date, bpm: point.bpm))
+            }
+        }
+        return points.sorted { $0.t < $1.t }
     }
 
     /// One x-axis tick: a boundary-aligned instant plus the exact label the

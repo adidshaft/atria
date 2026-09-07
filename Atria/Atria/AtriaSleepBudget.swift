@@ -73,25 +73,67 @@ enum AtriaSleepBudget {
     /// the input becomes truth-first. `yesterdayStrainFallback` exists solely
     /// for legacy rows whose dayTRIMP was never persisted — never reconstruct
     /// a missing TRIMP (same rule as a missing frozen need).
+    /// Median duration of nights long enough to count as the user's typical
+    /// sleep. Crash sleeps under 5h (all-nighter leftovers) do not pull this
+    /// down. Device 2026-09-07: 6.4–6.5h recovered nights still produced a
+    /// 10h target because debt compared every main to an 8h ceiling.
+    static func typicalSleepHours(
+        fromSlept slept: [Double],
+        minimumNightHours: Double = 5
+    ) -> Double? {
+        let qualified = slept.filter { $0.isFinite && $0 >= minimumNightHours }
+        guard !qualified.isEmpty else { return nil }
+        let sorted = qualified.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    /// Meet a consistent recovered sleeper halfway between the configured
+    /// 6–10h setting and what they actually sleep.
+    static func adaptedBaseHours(configured: Double, typical: Double?) -> Double {
+        let safe = min(max(configured, 6), 10)
+        guard let typical, typical.isFinite else { return safe }
+        let bounded = min(max(typical, 6), 10)
+        return (safe + bounded) / 2
+    }
+
+    /// Shortfall versus the user's typical night, not versus an 8–10h ceiling.
+    /// Nights within 10% of typical add no debt. Nights under 5h are skipped
+    /// so a 3h crash cannot keep inflating every future target to 10h.
+    static func debtNights(
+        slept: [Double],
+        typicalHours: Double
+    ) -> [(needed: Double, slept: Double)] {
+        let typical = min(max(typicalHours, 6), 10)
+        return slept.compactMap { hours in
+            guard hours.isFinite, hours >= 5 else { return nil }
+            let metTypical = hours >= typical * 0.9
+            return (needed: metTypical ? hours : typical, slept: hours)
+        }
+    }
+
     static func sleepNeedComponents(baseHours: Double,
                                     yesterdayTRIMP: Double?,
                                     yesterdayStrainFallback: Double?,
                                     debtHours: Double,
-                                    sameDayNapHours: Double) -> NeedComponents {
+                                    sameDayNapHours: Double,
+                                    typicalSleepHours: Double? = nil) -> NeedComponents {
         let effectiveStrain = yesterdayTRIMP
             .flatMap { $0.isFinite && $0 > 0 ? AtriaStrainLoadModel.displayScore(fromLoad: $0) : nil }
             ?? yesterdayStrainFallback
         return sleepNeedComponents(baseHours: baseHours,
                                    yesterdayStrain: effectiveStrain,
                                    debtHours: debtHours,
-                                   sameDayNapHours: sameDayNapHours)
+                                   sameDayNapHours: sameDayNapHours,
+                                   typicalSleepHours: typicalSleepHours)
     }
 
     static func sleepNeedComponents(baseHours: Double,
                                     yesterdayStrain: Double?,
                                     debtHours: Double,
-                                    sameDayNapHours: Double) -> NeedComponents {
-        let safeBase = min(max(baseHours, 6), 10)
+                                    sameDayNapHours: Double,
+                                    typicalSleepHours: Double? = nil) -> NeedComponents {
+        let typical = typicalSleepHours
+        let safeBase = adaptedBaseHours(configured: baseHours, typical: typical)
         // Recent-strain sleep-need addition, continuous (WHOOP-style) instead of
         // the old binary "+30 min above strain 14" step. Anchored to WHOOP's
         // published "a 15.0 Day Strain adds ~37 min of Sleep Need": scale linearly
@@ -133,11 +175,13 @@ enum AtriaSleepBudget {
     static func sleepNeed(baseHours: Double,
                           yesterdayStrain: Double?,
                           debtHours: Double,
-                          sameDayNapHours: Double) -> Double {
+                          sameDayNapHours: Double,
+                          typicalSleepHours: Double? = nil) -> Double {
         sleepNeedComponents(baseHours: baseHours,
                             yesterdayStrain: yesterdayStrain,
                             debtHours: debtHours,
-                            sameDayNapHours: sameDayNapHours).totalHours
+                            sameDayNapHours: sameDayNapHours,
+                            typicalSleepHours: typicalSleepHours).totalHours
     }
 
     /// Recency-weighted shortfall over the recent nights.

@@ -45,7 +45,8 @@ final class AtriaSleepTruthTests: XCTestCase {
 
         XCTAssertEqual(snapshot.latestMainSleep?.id, confirmed.id)
         XCTAssertEqual(snapshot.averageDurationText, "7h 0m")
-        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 1, accuracy: 0.001)
+        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 0, accuracy: 0.001,
+                       "a recovered 7h night is typical, not 1h short of an 8h ceiling")
     }
 
     func testNewestReviewCandidateIsVisibleWithoutBecomingAuthoritative() {
@@ -58,7 +59,8 @@ final class AtriaSleepTruthTests: XCTestCase {
         XCTAssertEqual(snapshot.latestDisplayEvidence?.id, candidate.id)
         XCTAssertEqual(snapshot.latestMainSleep?.id, confirmed.id)
         XCTAssertEqual(snapshot.averageDurationText, "7h 0m")
-        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 1, accuracy: 0.001)
+        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 0, accuracy: 0.001,
+                       "a recovered 7h night is typical, not 1h short of an 8h ceiling")
     }
 
     func testHistoricalConsistencyUsesOnlyNightsAvailableByThatMorning() throws {
@@ -128,11 +130,26 @@ final class AtriaSleepTruthTests: XCTestCase {
                                             confirmedCount: 2,
                                             candidateCount: 0)
 
-        // Oldest shortfall: 4h × 0.75 decay; newest shortfall: 1h.
-        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 4, accuracy: 0.001)
-        XCTAssertEqual(snapshot.sleepDebtText(goalHours: 8), "4 h")
+        // 4h is a crash night and is skipped. 7h meets typical. No debt.
+        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 0, accuracy: 0.001)
+        XCTAssertEqual(snapshot.sleepDebtText(goalHours: 8), "Met")
         XCTAssertEqual(snapshot.sleepDebtFootnote(goalHours: 8),
-                       "Weighted 7-night shortfall vs 8 h goal.")
+                       "Recent sleep meets your typical night.")
+    }
+
+    func testShortfallVersusTypicalSleepStillCreatesDebt() throws {
+        let newest = night(id: "newest", hours: 5.5, confirmed: true)
+        let older = night(id: "older", hours: 7, confirmed: true, dayOffset: -86_400)
+        let snapshot = SleepHistorySnapshot(nights: [newest, older],
+                                            confirmedCount: 2,
+                                            candidateCount: 0)
+
+        let typical = try XCTUnwrap(AtriaSleepBudget.typicalSleepHours(fromSlept: [5.5, 7]))
+        XCTAssertEqual(typical, 7, accuracy: 0.001)
+        // 5.5h is under 90% of 7h typical → 1.5h shortfall on the newest night.
+        XCTAssertEqual(snapshot.sleepBudgetDebtHours(baseNeedHours: 8), 1.5, accuracy: 0.001)
+        XCTAssertEqual(snapshot.sleepDebtFootnote(goalHours: 8),
+                       "Weighted 7-night shortfall vs typical sleep.")
     }
 
     func testProductionSnapshotRetainsTwelveWeeksOfCompactSleepHistory() {

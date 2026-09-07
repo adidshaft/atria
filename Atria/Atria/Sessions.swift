@@ -8608,6 +8608,58 @@ final class SessionStore: ObservableObject {
         return false
     }
 
+    /// Inverse of shrink: a sealed session that grew or a brand-new session
+    /// with HR/RR. Live checkpoints grow in lockstep with the live scorer and
+    /// must not use this; `add()` must, because history-drain and background
+    /// BLE seals are coverage the live scorer never saw (device 2026-09-07:
+    /// 05:55–08:55 had 10k HR points and the stress plot stayed blank).
+    nonisolated static func stressReplaySessionInputGrew(
+        previous: SavedSession?,
+        next: SavedSession
+    ) -> Bool {
+        guard let previous else { return false }
+        guard stressReplaySessionHasInput(next) else { return false }
+        if next.start < previous.start || next.end > previous.end { return true }
+        if next.points.count > previous.points.count
+            || (next.rrPoints?.count ?? 0) > (previous.rrPoints?.count ?? 0)
+            || (next.recoveredMotionEpochs?.count ?? 0)
+                > (previous.recoveredMotionEpochs?.count ?? 0) {
+            return true
+        }
+        if let oldFirst = previous.points.first?.t,
+           let newFirst = next.points.first?.t,
+           newFirst < oldFirst { return true }
+        if let oldLast = previous.points.last?.t,
+           let newLast = next.points.last?.t,
+           newLast > oldLast { return true }
+        if let oldFirst = previous.rrPoints?.first?.t,
+           let newFirst = next.rrPoints?.first?.t,
+           newFirst < oldFirst { return true }
+        if let oldLast = previous.rrPoints?.last?.t,
+           let newLast = next.rrPoints?.last?.t,
+           newLast > oldLast { return true }
+        if let oldFirst = previous.recoveredMotionEpochs?.first?.start,
+           let newFirst = next.recoveredMotionEpochs?.first?.start,
+           newFirst < oldFirst { return true }
+        if let oldLast = previous.recoveredMotionEpochs?.last?.end,
+           let newLast = next.recoveredMotionEpochs?.last?.end,
+           newLast > oldLast { return true }
+        return false
+    }
+
+    /// `add()` coverage the live scorer may have missed. Checkpoints stay on
+    /// shrink-only — growth there is the live path.
+    nonisolated static func stressReplaySessionNeedsHistoricalRescore(
+        previous: SavedSession?,
+        next: SavedSession
+    ) -> Bool {
+        if previous == nil {
+            return stressReplaySessionHasInput(next)
+        }
+        return stressReplaySessionInputShrank(previous: previous, next: next)
+            || stressReplaySessionInputGrew(previous: previous, next: next)
+    }
+
     #if DEBUG
     nonisolated static func debugWorkoutStressContextAuthorityChanged(
         previous: UserConfirmedWorkout?,
@@ -28745,6 +28797,10 @@ final class SessionStore: ObservableObject {
             previous: replacedSession,
             next: s
         )
+        let needsHistoricalStressReplay = Self.stressReplaySessionNeedsHistoricalRescore(
+            previous: replacedSession,
+            next: s
+        )
         let mode = upsertSession(s)
         markSessionPersistenceDirty(affectedSessions: [s] + (replacedSession.map { [$0] } ?? []))
         if let replacedSession {
@@ -28764,7 +28820,7 @@ final class SessionStore: ObservableObject {
             deferredSessionBoundaryDerivedPublicationPending = true
             deferredSessionBoundaryStressReplayTerminalEdgePending =
                 deferredSessionBoundaryStressReplayTerminalEdgePending
-                    || stressReplayInputShrank
+                    || needsHistoricalStressReplay
             // The automatic backup writer is already a coalescing utility
             // worker. Queue it now so the fast canonical flush is not the only
             // durable copy, but do not run any analytical projection on the
@@ -28804,12 +28860,14 @@ final class SessionStore: ObservableObject {
                   s.motionEvidenceValidatedValue ? 1 : 0)
         }
         writeAutomaticSessionBackup(reason: "session-add")
-        if stressReplayInputShrank
+        if needsHistoricalStressReplay
             || deferredSessionBoundaryStressReplayTerminalEdgePending {
             deferredSessionBoundaryStressReplayTerminalEdgePending = false
             publishHistoricalStressSessionAuthority()
             publishStressReplayTerminalMutationIfNeeded(
-                reason: "saved_session_shrank"
+                reason: stressReplayInputShrank
+                    ? "saved_session_shrank"
+                    : "saved_session_added"
             )
         }
         return true
@@ -42737,7 +42795,7 @@ final class SessionStore: ObservableObject {
                     latestPriorMetric = metric
                 }
             }
-            var priorFrozenNights: [(needed: Double, slept: Double)] = []
+            var priorSleptHours: [Double] = []
             var previousMainWake: Date?
             for (index, prior) in settled.enumerated() {
                 if index.isMultiple(of: 32), !shouldContinue() { return nil }
@@ -42748,16 +42806,19 @@ final class SessionStore: ObservableObject {
                    previousMainWake.map({ $0 < prior.end }) ?? true {
                     previousMainWake = prior.end
                 }
-                guard let need = prior.sleepNeedSeconds, need > 0,
-                      prior.effectiveSleepDuration > 0 else { continue }
-                priorFrozenNights.append((
-                    needed: need / 3_600,
-                    slept: prior.effectiveSleepDuration / 3_600
-                ))
-                if priorFrozenNights.count > 7 {
-                    priorFrozenNights.removeFirst()
+                let slept = prior.effectiveSleepDuration / 3_600
+                guard slept > 0 else { continue }
+                priorSleptHours.append(slept)
+                if priorSleptHours.count > 7 {
+                    priorSleptHours.removeFirst()
                 }
             }
+            let typical = AtriaSleepBudget.typicalSleepHours(fromSlept: priorSleptHours)
+                ?? baseNeedHours
+            let priorFrozenNights = AtriaSleepBudget.debtNights(
+                slept: priorSleptHours,
+                typicalHours: typical
+            )
             let napSearchStart = previousMainWake
                 ?? sleep.start.addingTimeInterval(-24 * 60 * 60)
             var napHours = 0.0
@@ -42779,7 +42840,8 @@ final class SessionStore: ObservableObject {
                 yesterdayTRIMP: latestPriorMetric?.dayTRIMP,
                 yesterdayStrainFallback: latestPriorMetric?.strain,
                 debtHours: AtriaSleepBudget.sleepDebt(nights: priorFrozenNights),
-                sameDayNapHours: napHours
+                sameDayNapHours: napHours,
+                typicalSleepHours: typical
             )
             settled.append(sleep.replacingFrozenSleepNeed(.init(components)))
         }
@@ -58941,10 +59003,13 @@ struct SleepHistorySnapshot: Equatable {
                 return night.id != excludedNightID
             }
             .prefix(7)
-        let oldestFirst = records.reversed().map { night in
-            (needed: min(max(baseNeedHours, 6), 10), slept: night.durationHours)
-        }
-        return AtriaSleepBudget.sleepDebt(nights: Array(oldestFirst))
+        let slept = records.map(\.durationHours)
+        let typical = AtriaSleepBudget.typicalSleepHours(fromSlept: slept)
+            ?? min(max(baseNeedHours, 6), 10)
+        return AtriaSleepBudget.sleepDebt(
+            nights: AtriaSleepBudget.debtNights(slept: Array(records.reversed().map(\.durationHours)),
+                                                typicalHours: typical)
+        )
     }
 
     func sameDayNapHours(for night: Night, calendar: Calendar = .current) -> Double {
@@ -58986,11 +59051,15 @@ struct SleepHistorySnapshot: Equatable {
         // A confirmed legacy night has no trustworthy receipt. Do not make a
         // historical target appear more precise by recalculating it now.
         guard !night.confirmed else { return nil }
+        let typical = AtriaSleepBudget.typicalSleepHours(
+            fromSlept: Self.recentSleepNights(nights).prefix(7).map(\.durationHours)
+        )
         return AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
                                           yesterdayStrain: yesterdayStrain,
                                           debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
                                                                           excluding: night.id),
-                                          sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+                                          sameDayNapHours: sameDayNapHours(for: night, calendar: calendar),
+                                          typicalSleepHours: typical)
     }
 
     /// Itemized version of sleepNeedHours (2026-07-07 design-handoff ledger).
@@ -59002,11 +59071,15 @@ struct SleepHistorySnapshot: Equatable {
             return frozen.components
         }
         guard !night.confirmed else { return nil }
+        let typical = AtriaSleepBudget.typicalSleepHours(
+            fromSlept: Self.recentSleepNights(nights).prefix(7).map(\.durationHours)
+        )
         return AtriaSleepBudget.sleepNeedComponents(baseHours: baseNeedHours,
                                                     yesterdayStrain: yesterdayStrain,
                                                     debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
                                                                                     excluding: night.id),
-                                                    sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+                                                    sameDayNapHours: sameDayNapHours(for: night, calendar: calendar),
+                                                    typicalSleepHours: typical)
     }
 
     /// ITEM-2 2026-08-15: tonight's PROVISIONAL projected need. Unlike a
@@ -59027,12 +59100,16 @@ struct SleepHistorySnapshot: Equatable {
         } else {
             napHours = 0
         }
+        let typical = AtriaSleepBudget.typicalSleepHours(
+            fromSlept: Self.recentSleepNights(nights).prefix(7).map(\.durationHours)
+        )
         return AtriaSleepBudget.sleepNeedComponents(
             baseHours: baseNeedHours,
             yesterdayTRIMP: todayTRIMP,
             yesterdayStrainFallback: todayStrainFallback,
             debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours),
-            sameDayNapHours: napHours)
+            sameDayNapHours: napHours,
+            typicalSleepHours: typical)
     }
 
     func sleepPerformancePercent(for night: Night,
@@ -59148,23 +59225,25 @@ struct SleepHistorySnapshot: Equatable {
             return "Needs recent sleep records."
         }
         if debt < 0.05 {
-            return "Recent sleep meets \(AtriaMetricFormat.sleepHours(goalHours)) goal."
+            return "Recent sleep meets your typical night."
         }
-        return "Weighted 7-night shortfall vs \(AtriaMetricFormat.sleepHours(goalHours)) goal."
+        return "Weighted 7-night shortfall vs typical sleep."
     }
 
     private func sleepDebtHours(goalHours: Double) -> Double? {
         let records = Self.recentSleepNights(nights).prefix(7)
         guard !records.isEmpty else { return nil }
-        let safeGoal = min(max(goalHours, 6), 10)
-        let oldestFirst = records.reversed().map {
-            (needed: safeGoal, slept: $0.durationHours)
-        }
-        // Keep the displayed debt and the debt term used by sleep-need on the
-        // same recency-decayed ledger. The old display subtracted the unweighted
-        // seven-night average while sleep need summed decayed shortfalls, so the
-        // two cards could disagree by hours from identical nights.
-        return AtriaSleepBudget.sleepDebt(nights: Array(oldestFirst))
+        let slept = records.map(\.durationHours)
+        let typical = AtriaSleepBudget.typicalSleepHours(fromSlept: slept)
+            ?? min(max(goalHours, 6), 10)
+        // Same typical-night ledger as sleep-need. Comparing every main to the
+        // 8–10h ceiling turned recovered 6.5h nights into a 10h target.
+        return AtriaSleepBudget.sleepDebt(
+            nights: AtriaSleepBudget.debtNights(
+                slept: Array(records.reversed().map(\.durationHours)),
+                typicalHours: typical
+            )
+        )
     }
 
     var emptyEvidenceLabel: String {
