@@ -2845,8 +2845,7 @@ struct AtriaLiveWorkoutView: View {
 
             if showsSetLoggingControls {
                 Button {
-                    primeLoggerFromLastSet()
-                    showSetLogger = true
+                    openSetLabelsSheet()
                 } label: {
                     HStack(spacing: 8) {
                         Text(selectedExercise)
@@ -3277,6 +3276,36 @@ struct AtriaLiveWorkoutView: View {
     private func persistOpenSetDraft() {
         guard setWindowIsOpen else { return }
         AtriaStrengthSetWindow.live.updateDraft(currentSetDraft)
+    }
+
+    private func openSetLabelsSheet() {
+        let last = loggedSets.last(where: {
+            $0.exercise.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame
+        })
+        let current = currentSetDraft
+        let next = AtriaStrengthSetWindow.draftForOpeningLabels(
+            setWindowIsOpen: setWindowIsOpen,
+            current: current,
+            lastLoggedForExercise: last
+        )
+        if next != current {
+            applyOpeningLabelsDraft(next)
+        }
+        showSetLogger = true
+    }
+
+    private func applyOpeningLabelsDraft(_ draft: AtriaStrengthSetWindow.Draft) {
+        selectedExercise = draft.exercise
+        loggerRestSeconds = AtriaStrengthLog.restSeconds(for: draft.exercise)
+        if let weight = draft.weightKg {
+            loggerWeightKg = weight
+        } else if AtriaStrengthLog.isEstimatedBodyweightExercise(draft.exercise) {
+            loggerWeightKg = 0
+        }
+        if let reps = draft.reps {
+            loggerReps = reps
+        }
+        loggerRPE = draft.rpe
     }
 
     private func restoreOpenSetWindowPresentation() {
