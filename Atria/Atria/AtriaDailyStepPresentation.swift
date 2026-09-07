@@ -367,6 +367,22 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         let usesPhysiologicalOpenWindow = physiologicalDayStart != nil
             && activeWindowStart <= now
         let isOpenDay = isToday || usesPhysiologicalOpenWindow
+        // A prior-cycle receipt may be carried into THIS open cycle only when it
+        // ABUTS the wake boundary: the same continuous, unbroken wear period cut
+        // in two by a synthetic civil-day line, the prior cycle ending where this
+        // one begins. A receipt whose drained frontier sits more than one
+        // physiological cycle before the boundary means at least one whole cycle
+        // drained nothing in between — the motion transport was in pure-HR
+        // fallback, or the strap was off — so it is stale history, never today's
+        // count. (2026-09-07: a step receipt frozen at 135 steps, whose drained
+        // frontier had been stuck three days earlier while R10 sat in pure-HR
+        // fallback, was being promoted to the open cycle's hero number and the
+        // widget value as if it were today's total.) The abutting-fallback carry
+        // fixtures end ~41 min before the boundary and stay green.
+        let priorReceiptAbutsOpenCycle = priorCycleReceipt.map {
+            activeWindowStart.timeIntervalSince($0.endedAt)
+                <= AtriaPhysiologicalCycle.maximumLearnedInterval
+        } ?? false
         let liveBelongsToDay = liveCapturedAt.map {
             $0 >= activeWindowStart
                 && $0 <= now.addingTimeInterval(5)
@@ -501,7 +517,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             // never regresses the shown number below what this active period had
             // already counted. This only ever RAISES to a real measured prior
             // count; it never sums (no double-count) and never fabricates.
-            let carriedFloor = boundaryIsUnconfirmedFallback
+            let carriedFloor = (boundaryIsUnconfirmedFallback && priorReceiptAbutsOpenCycle)
                 ? max(0, priorCycleReceipt?.steps ?? 0)
                 : 0
             let usesCarried = carriedFloor > banked && carriedFloor >= liveObserved
@@ -592,7 +608,14 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // boundary is that same prior cycle, not a stale sample of this one.
         let staleLiveIsFromPriorCycle = emptyReason == .staleLiveReceipt
             && liveCapturedAt.map { $0 < activeWindowStart } == true
+        // Only an abutting prior receipt is disclosed as "prior cycle". A
+        // receipt stranded more than one physiological cycle back is stale
+        // history: disclosing "Prior cycle: 135 · ended 9:44 AM" (the time
+        // formats without a date) would present a three-day-old frontier as if
+        // it were the immediately preceding cycle. Fall through to the plain
+        // "No verified receipt for this cycle" honest state instead.
         let disclosesPriorCycle = priorCycleReceipt != nil
+            && priorReceiptAbutsOpenCycle
             && (emptyReason == .noCurrentCycleReceipt
                 || staleLiveIsFromPriorCycle)
         // 2026-08-22: when this cycle rolled on an UNCONFIRMED no-sleep
@@ -609,6 +632,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // here — a real new day must not inherit yesterday's steps.
         if disclosesPriorCycle,
            boundaryIsUnconfirmedFallback,
+           priorReceiptAbutsOpenCycle,
            let carried = priorCycleReceipt,
            carried.steps > 0 {
             return .init(day: dayStart,

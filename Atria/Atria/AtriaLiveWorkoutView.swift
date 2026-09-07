@@ -2524,13 +2524,12 @@ struct AtriaLiveWorkoutView: View {
     // one; the set table renders "--" rather than assuming an effort.
     @State private var loggerRPE: Double?
     @State private var restTimerEndsAt: Date?
-    @State private var showExerciseCatalog = false
-    @State private var showStrengthProgress = false
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
+    // The live superset editor moved off the gym surface (2026-09-07). The
+    // commit path still reads this so a group logged elsewhere binds; it simply
+    // stays nil on the live surface now.
     @State private var activeSuperset: StrengthSuperset?
-    @State private var supersetMembers: [String] = []
-    @State private var showsSupersetEditor = false
     @State private var showEndPersistenceError = false
     @State private var isEndingWorkout = false
     @State private var setWindowIsOpen = false
@@ -2969,36 +2968,12 @@ struct AtriaLiveWorkoutView: View {
                                            setNumber: loggedSetsForSelectedExercise.count + 1,
                                            isRecording: !isPaused)
 
-                AtriaStrengthRestHeartRateHost(pulseStore: pulseStore,
-                                               exercise: selectedExercise,
-                                               restEndsAt: restTimerEndsAt,
-                                               targetSeconds: loggerRestSeconds,
-                                               onSubtract15: { shortenRest(by: 15) },
-                                               onSkip: { restTimerEndsAt = nil })
-
-                AtriaStrengthSetTable(rows: strengthSetTableRows,
-                                      pendingWeightText: AtriaStrengthSetTablePresentation.weightCell(loggerWeightKg),
-                                      pendingRepsText: "\(loggerReps)",
-                                      pendingRPEText: AtriaStrengthSetTablePresentation.rpeText(loggerRPE))
-
-                Button {
-                    showsSupersetEditor = true
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: activeSuperset == nil ? "link.badge.plus" : "link")
-                        Text(activeSuperset.map { "Superset · \($0.exercises.joined(separator: " → "))" } ?? "Create superset")
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                    }
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(activeSuperset == nil ? Color.secondary : Color.mint)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .padding(.horizontal, 10)
-                    .background((activeSuperset == nil ? Color.white : Color.mint).opacity(activeSuperset == nil ? 0.07 : 0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
+                // Gym one-hand pass (2026-09-07): the live labels sheet is now
+                // just the optional exercise picker + weight/reps/RPE. The rest
+                // ring, the full SET table, the superset editor and the e1RM
+                // panels moved off the live surface — they overwhelmed logging
+                // mid-set (0 sets saved on a real gym day). Start Set / Stop &
+                // log set on the main card remains the only required interaction.
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(loggerExerciseOptions, id: \.self) { exercise in
@@ -3047,10 +3022,6 @@ struct AtriaLiveWorkoutView: View {
                                  value: restOverrideText(loggerRestSeconds),
                                  decrement: { updateRestOverride(max(30, loggerRestSeconds - 15)) },
                                  increment: { updateRestOverride(min(600, loggerRestSeconds + 15)) })
-
-                exerciseHistoryPanel
-                strengthNavigationRow
-
             }
             .padding(18)
         }
@@ -3064,34 +3035,6 @@ struct AtriaLiveWorkoutView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 8)
                 .background(Color(uiColor: .systemBackground))
-        }
-        .sheet(isPresented: $showExerciseCatalog) {
-            AtriaStrengthCatalogView(projection: strengthHistory) { exercise in
-                selectedExercise = exercise
-                primeLoggerFromLastSet(exercise: exercise)
-                loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-            .preferredColorScheme(.dark)
-        }
-        .sheet(isPresented: $showsSupersetEditor) {
-            supersetEditor
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
-        }
-        .sheet(isPresented: $showStrengthProgress) {
-            // Saved history only, records included: the chart and the PR chips
-            // must describe the same set of days. Sets from the workout in
-            // progress are not saved yet, so they belong to the live table
-            // above, not to this trend.
-            AtriaStrengthProgressView(exercise: selectedExercise,
-                                      history: strengthHistory.fullHistory(for: selectedExercise),
-                                      records: personalRecords(for: selectedExercise))
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-                .preferredColorScheme(.dark)
         }
     }
 
@@ -3132,40 +3075,9 @@ struct AtriaLiveWorkoutView: View {
         return "record.circle"
     }
 
-    private var strengthNavigationRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                showStrengthProgress = true
-            } label: {
-                Label("e1RM progress", systemImage: "chart.xyaxis.line")
-                    .font(.caption.weight(.bold))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.glass)
-            .tint(AtriaStrengthPalette.amber)
-
-            Button {
-                showExerciseCatalog = true
-            } label: {
-                Label("Exercises", systemImage: "list.bullet")
-                    .font(.caption.weight(.bold))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-            }
-            .buttonStyle(.glass)
-            .tint(AtriaStrengthPalette.amber)
-        }
-    }
-
     private var loggedSetsForSelectedExercise: [LoggedSet] {
         let key = AtriaStrengthLog.normalized(selectedExercise)
         return loggedSets.filter { AtriaStrengthLog.normalized($0.exercise) == key }
-    }
-
-    private var strengthSetTableRows: [AtriaStrengthSetTablePresentation.Row] {
-        AtriaStrengthSetTablePresentation.rows(sets: loggedSets,
-                                               exercise: selectedExercise,
-                                               records: personalRecords(for: selectedExercise),
-                                               editingSetID: editingSetID)
     }
 
     private func loggerStepperRow(title: String,
@@ -3196,11 +3108,6 @@ struct AtriaLiveWorkoutView: View {
         }
     }
 
-    private func shortenRest(by seconds: TimeInterval) {
-        guard let restTimerEndsAt else { return }
-        let shortened = restTimerEndsAt.addingTimeInterval(-seconds)
-        self.restTimerEndsAt = shortened <= Date() ? nil : shortened
-    }
 
     private var loggerExerciseOptions: [String] {
         let recents = loggedSets.reversed().map(\.exercise)
@@ -3431,58 +3338,6 @@ struct AtriaLiveWorkoutView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    private var supersetEditor: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Superset")
-                .font(.title3.weight(.black))
-            Text("Select two or more movements in order. Atria keeps each set intact and records the observed handoff separately from your between-round rest.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            List {
-                ForEach(loggerExerciseOptions, id: \.self) { exercise in
-                    Button {
-                        toggleSupersetMember(exercise)
-                    } label: {
-                        HStack {
-                            Text(exercise)
-                            Spacer()
-                            Image(systemName: supersetMembers.contains(exercise) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(supersetMembers.contains(exercise) ? .mint : .secondary)
-                        }
-                    }
-                }
-            }
-            HStack {
-                Button("Ungroup") { activeSuperset = nil; supersetMembers.removeAll(); showsSupersetEditor = false }
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Save group") {
-                    guard supersetMembers.count >= 2 else { return }
-                    // GAP-08: reordering or re-editing the members keeps the
-                    // SAME group id — minting a new id would silently break
-                    // transition-chain continuity with rounds already logged
-                    // under the old id.
-                    activeSuperset = StrengthSuperset(id: activeSuperset?.id ?? UUID().uuidString,
-                                                      exercises: supersetMembers)
-                    showsSupersetEditor = false
-                }
-                .disabled(supersetMembers.count < 2)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.mint)
-        }
-        .padding(18)
-        .onAppear { if supersetMembers.isEmpty { supersetMembers = activeSuperset?.exercises ?? [selectedExercise] } }
-    }
-
-    private func toggleSupersetMember(_ exercise: String) {
-        if let index = supersetMembers.firstIndex(of: exercise) {
-            supersetMembers.remove(at: index)
-        } else {
-            supersetMembers.append(exercise)
-        }
-    }
-
     private func editLoggedSet(_ set: LoggedSet) {
         editingSetID = set.id
         selectedExercise = set.exercise
@@ -3556,52 +3411,6 @@ struct AtriaLiveWorkoutView: View {
         return isPersonalRecord(set) ? "\(base) · PR" : base
     }
 
-    private var exerciseHistoryPanel: some View {
-        let summary = strengthHistorySummary(for: selectedExercise)
-        let records = summary.records
-        let history = summary.history
-        let best = history.last?.best
-        let daysText = history.count == 1 ? "1 day" : "\(history.count) days"
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Label("History", systemImage: "chart.xyaxis.line")
-                    .font(.caption.weight(.black))
-                Spacer()
-                Text(history.isEmpty ? "No sets yet" : daysText)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                historyMetric("Best", value: best.map(setSummaryPlain) ?? "--")
-                historyMetric("e1RM", value: records.maxE1RM.map { "\(Int($0.rounded())) kg" } ?? "--")
-                historyMetric("Max", value: records.maxWeightKg.map { "\(Int($0.rounded())) kg" } ?? "--")
-            }
-
-            if let latestPRSetID,
-               loggedSets.contains(where: { $0.id == latestPRSetID }) {
-                Label("New PR", systemImage: "sparkles")
-                    .font(.caption.weight(.black))
-                    .foregroundStyle(.yellow)
-            }
-        }
-        .padding(10)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private func historyMetric(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.black).monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private func personalRecords(for exercise: String) -> StrengthPersonalRecords {
         strengthHistory.records(for: exercise)
     }
@@ -3612,17 +3421,6 @@ struct AtriaLiveWorkoutView: View {
 
     private func isPersonalRecord(_ set: LoggedSet) -> Bool {
         latestPRSetID == set.id || AtriaStrengthLog.isPR(set, against: personalRecords(for: set.exercise))
-    }
-
-    private func strengthHistorySummary(for exercise: String) -> AtriaLiveWorkoutStrengthHistorySummary {
-        AtriaLiveWorkoutStrengthHistorySummary(records: strengthHistory.records(for: exercise),
-                                               history: strengthHistory.history(for: exercise))
-    }
-
-    private func setSummaryPlain(_ set: LoggedSet) -> String {
-        let weight = set.weightKg.map { "\(Int($0.rounded())) kg" } ?? "--"
-        let reps = set.reps.map { "\($0)" } ?? "--"
-        return "\(weight) x \(reps)"
     }
 
     private var stopButton: some View {
@@ -3680,10 +3478,6 @@ struct AtriaLiveWorkoutView: View {
                      : String(format: "%02d:%02d", m, s)
     }
 
-    private struct AtriaLiveWorkoutStrengthHistorySummary {
-        let records: StrengthPersonalRecords
-        let history: [StrengthHistoryDay]
-    }
 }
 
 /// Pulse-driven leaves keep strap publications from invalidating workout-owned

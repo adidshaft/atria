@@ -4384,6 +4384,57 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Once the dense stream has degraded to a pure-HR fallback this many times
+    /// with no intervening qualification, the in-process (HR-disconnecting)
+    /// workout requalify stops attempting: a strap that physically cannot hold
+    /// the dense R10 stream must degrade to pure HR, not lose live HR on every
+    /// cooldown for a proof already proven to storm this link. The launch-time
+    /// 12 h passive requalify still retries forever, so recovery is never truly
+    /// terminal — it just stops disconnecting a healthy workout link to chase it.
+    nonisolated static let workoutMotionInProcessRequalifyMaxConsecutiveFallbacks = 4
+
+    /// Pure policy for the in-process workout requalify (2026-09-07 directive).
+    /// The pure-HR fallback is the right fail-safe for unattended all-day wear
+    /// (recovered across launches by the 12 h passive requalify), but a live,
+    /// user-started workout must not sit in `.unavailablePureHRFallback` for its
+    /// whole duration when the strap could still qualify stream-5. This is the
+    /// only in-process escalation allowed and is deliberately more restrictive
+    /// than the launch path because it costs one app-owned HR disconnect:
+    ///  - a durable manual workout must be active (never all-day wear);
+    ///  - the stream must actually be suppressed on a pure-HR fallback owner;
+    ///  - the same physical qualification credential the launch cutover demands;
+    ///  - the 30-min fallback/attempt cooldown, so it never flaps 3F; and
+    ///  - it fails CLOSED once the profile is demonstrably storming this link
+    ///    (`consecutiveFallbackCount >= maxConsecutiveFallbacks`).
+    /// The bounded `beginProtectedR10V8WorkoutCutoverIfNeeded` it hands off to
+    /// re-checks the physical prerequisites and fires at most once per workout.
+    nonisolated static func workoutMotionInProcessRequalifyShouldAttempt(
+        manualWorkoutActive: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        priorQualifiedAt: Double?,
+        fallbackAt: Double?,
+        lastAttemptAt: Double?,
+        consecutiveFallbackCount: Int,
+        maxConsecutiveFallbacks: Int = workoutMotionInProcessRequalifyMaxConsecutiveFallbacks,
+        cooldown: TimeInterval = protectedR10FallbackRequalifyCooldown,
+        now: Double
+    ) -> Bool {
+        guard manualWorkoutActive else { return false }
+        guard streamSuppressed else { return false }
+        guard owner == .pureHRV8 || owner == .pureHRV10 else { return false }
+        guard state == .fallbackActive || state == .fallbackPending else { return false }
+        guard consecutiveFallbackCount < maxConsecutiveFallbacks else { return false }
+        return protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: priorQualifiedAt,
+            fallbackAt: fallbackAt,
+            lastAttemptAt: lastAttemptAt,
+            cooldown: cooldown,
+            now: now
+        )
+    }
+
     /// A pure-HR fallback is meant to be a *recoverable* degradation — the
     /// v10 branch of `prepareProtectedR10CleanOwnerAtLaunch` says so in as many
     /// words. In practice it was terminal for every passive user, and this is
@@ -33874,8 +33925,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                          reason: "protected_pure_hr_fallback")
             if workoutMotionStatus != "unavailable_pure_hr_fallback" {
                 setWorkoutMotionStatus("unavailable_pure_hr_fallback", at: now)
-                AtriaDebugLog("ATRIADBG r10_step_lease status=unavailable_pure_hr_fallback action=retain_lease_and_gap_no_transport_retry")
+                AtriaDebugLog("ATRIADBG r10_step_lease status=unavailable_pure_hr_fallback action=retain_lease_and_gap_bounded_in_process_requalify")
             }
+            // A started workout must not sit in pure-HR fallback for its whole
+            // duration when the strap could still qualify stream-5. Offer ONE
+            // bounded, credential-gated, cooldown-limited in-process requalify.
+            attemptWorkoutMotionInProcessRequalifyIfEligible(
+                leaseStartedAt: leaseStartedAt,
+                now: now,
+                reason: reason
+            )
             return
         }
         // Honest on-device decision trail: Release builds strip debug logging,
@@ -33947,6 +34006,51 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         case .alreadyAttempted:
             markWorkoutMotionGapIfNeeded(now: now, reason: "\(reason)_single_attempt_spent")
         }
+    }
+
+    /// Bounded in-process requalify for a live workout stuck in the pure-HR
+    /// fallback (2026-09-07 directive: "a started workout must not sit in
+    /// .unavailablePureHRFallback forever if the strap can still do stream-5").
+    /// The gate is `workoutMotionInProcessRequalifyShouldAttempt`; the hand-off
+    /// is the existing `beginProtectedR10V8WorkoutCutoverIfNeeded` — one
+    /// app-owned disconnect then a fresh v9 central whose normal didConnect
+    /// re-discovers and re-subscribes the protected notify set (so a stale
+    /// `characteristic_missing` reason is never treated as permanent hardware
+    /// death). It never mutates a CCCD on the live pure-HR link and reuses the
+    /// existing R10 decoder/lease machinery — no second transport path.
+    private func attemptWorkoutMotionInProcessRequalifyIfEligible(
+        leaseStartedAt: Date,
+        now: Date,
+        reason: String
+    ) {
+        let defaults = UserDefaults.standard
+        let consecutiveFallbacks = defaults.integer(
+            forKey: Self.protectedR10PassiveReprobeFailureCountKey
+        )
+        guard Self.workoutMotionInProcessRequalifyShouldAttempt(
+            manualWorkoutActive: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now),
+            streamSuppressed: protectedR10StreamSuppressed,
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            priorQualifiedAt: defaults.object(
+                forKey: Self.protectedR10StableTransportQualifiedAtKey) as? Double,
+            fallbackAt: defaults.object(
+                forKey: Self.protectedR10FallbackAtKey) as? Double,
+            lastAttemptAt: defaults.object(
+                forKey: Self.protectedR10RequalifyAttemptAtKey) as? Double,
+            consecutiveFallbackCount: consecutiveFallbacks,
+            now: now.timeIntervalSince1970
+        ) else { return }
+        AtriaDebugLog("ATRIADBG r10_step_lease status=in_process_requalify_eligible reason=%@ failures=%d action=bounded_workout_cutover",
+                      reason, consecutiveFallbacks)
+        // The cutover re-checks the physical prerequisites (connected, fallback
+        // owner, prior qualification, one lease per workout start) and stamps
+        // its own requalify-attempt clock via promoteFallbackToProtectedV9ForLaunch,
+        // so the 30-min cooldown holds across evaluations after it fires.
+        _ = beginProtectedR10V8WorkoutCutoverIfNeeded(
+            startedAt: leaseStartedAt,
+            reason: "\(reason)_in_process_requalify"
+        )
     }
 
     /// Sends the WHOOP 4 bounded accelerometer pair (6A/01 then 51/u32-ms-LE)
