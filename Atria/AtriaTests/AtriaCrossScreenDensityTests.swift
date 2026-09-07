@@ -235,7 +235,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let actions = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(actions.contains("HStack(spacing: 10)"))
-        XCTAssertTrue(actions.contains("Label(\"Log set\""))
+        XCTAssertTrue(actions.contains("Start Set"))
+        XCTAssertTrue(actions.contains("Stop & log set"))
         XCTAssertTrue(actions.contains("isPaused ? \"Resume\" : \"Pause\""))
         XCTAssertFalse(actions.contains("Log your workout"))
         XCTAssertFalse(actions.contains("Pause your workout"))

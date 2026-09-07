@@ -1,5 +1,15 @@
 import Foundation
 
+/// One strap acceleration sample bound to a logged set. Times are wall-clock
+/// (the same clock as Start Set / Stop & log set). Missing IMU is represented
+/// by an empty array on a windowed set, or nil on a legacy `t`-only row.
+struct LoggedSetIMUSample: Codable, Equatable, Sendable {
+    var t: Date
+    var ax: Double
+    var ay: Double
+    var az: Double
+}
+
 struct LoggedSet: Codable, Equatable, Identifiable {
     var id: UUID = UUID()
     let exercise: String
@@ -25,6 +35,13 @@ struct LoggedSet: Codable, Equatable, Identifiable {
     /// muscular-load work distinguish the quick intra-round handoff from the
     /// longer rest before the next round without guessing from HR.
     var supersetTransitionSeconds: TimeInterval? = nil
+    /// Wall-clock instant of Start Set. Nil on archives that only stored `t`.
+    var startedAt: Date? = nil
+    /// Wall-clock instant of Stop & log set. Nil on archives that only stored `t`.
+    var endedAt: Date? = nil
+    /// Acceleration observed while the set was open, clipped to `[startedAt, endedAt]`.
+    /// Empty means the window was logged with no IMU; nil means a legacy row.
+    var imuSamples: [LoggedSetIMUSample]? = nil
 }
 
 struct StrengthSuperset: Codable, Equatable, Identifiable {
