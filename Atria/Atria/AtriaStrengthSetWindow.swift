@@ -68,6 +68,31 @@ final class AtriaStrengthSetWindow: @unchecked Sendable {
         storedDraft = draft
     }
 
+    /// Draft shown when the wearer opens the labels sheet.
+    /// An open set keeps the pending Stop-time labels. Priming from the last
+    /// logged set is only for starting the next set, not for editing an
+    /// in-progress one.
+    static func draftForOpeningLabels(
+        setWindowIsOpen: Bool,
+        current: Draft,
+        lastLoggedForExercise: LoggedSet?
+    ) -> Draft {
+        guard !setWindowIsOpen else { return current }
+        guard let last = lastLoggedForExercise else {
+            if AtriaStrengthLog.isEstimatedBodyweightExercise(current.exercise) {
+                return Draft(exercise: current.exercise,
+                             weightKg: 0,
+                             reps: current.reps,
+                             rpe: current.rpe)
+            }
+            return current
+        }
+        return Draft(exercise: current.exercise,
+                     weightKg: last.weightKg ?? current.weightKg,
+                     reps: last.reps ?? current.reps,
+                     rpe: current.rpe)
+    }
+
     func ingest(_ samples: [LoggedSetIMUSample]) {
         lock.lock()
         defer { lock.unlock() }

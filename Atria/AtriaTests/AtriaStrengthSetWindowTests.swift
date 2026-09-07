@@ -231,6 +231,68 @@ final class AtriaStrengthSetWindowTests: XCTestCase {
         XCTAssertEqual(decoded.strengthSets?.first?.imuSamples, expectedIMU)
     }
 
+    func testOpeningLabelsWhileSetIsOpenKeepsPendingDraftNotLastLoggedSet() throws {
+        let last = LoggedSet(exercise: "Barbell row",
+                             weightKg: 70,
+                             reps: 10,
+                             rpe: nil,
+                             t: origin)
+        let pending = AtriaStrengthSetWindow.Draft(exercise: "Barbell row",
+                                                   weightKg: 75,
+                                                   reps: 8,
+                                                   rpe: 7)
+        let window = AtriaStrengthSetWindow()
+        window.start(at: origin, draft: pending)
+        XCTAssertTrue(window.isOpen)
+
+        let opened = AtriaStrengthSetWindow.draftForOpeningLabels(
+            setWindowIsOpen: window.isOpen,
+            current: pending,
+            lastLoggedForExercise: last
+        )
+        XCTAssertEqual(opened, pending)
+        XCTAssertEqual(opened.weightKg, pending.weightKg)
+        XCTAssertEqual(opened.reps, pending.reps)
+        XCTAssertEqual(opened.rpe, pending.rpe)
+        XCTAssertNotEqual(opened.weightKg, last.weightKg)
+        XCTAssertNotEqual(opened.reps, last.reps)
+        window.updateDraft(opened)
+
+        let logged = try XCTUnwrap(window.stop(
+            at: origin.addingTimeInterval(6),
+            labels: AtriaStrengthSetWindow.Labels(exercise: opened.exercise,
+                                                  weightKg: opened.weightKg,
+                                                  reps: opened.reps,
+                                                  rpe: opened.rpe,
+                                                  effectiveLoadKg: opened.weightKg)
+        ))
+        XCTAssertEqual(logged.weightKg, pending.weightKg)
+        XCTAssertEqual(logged.reps, pending.reps)
+        XCTAssertEqual(logged.rpe, pending.rpe)
+        XCTAssertEqual(window.draft, nil)
+    }
+
+    func testOpeningLabelsWhileIdlePrimesWeightAndRepsFromLastLoggedSet() {
+        let last = LoggedSet(exercise: "Barbell row",
+                             weightKg: 70,
+                             reps: 10,
+                             rpe: 9,
+                             t: origin)
+        let pending = AtriaStrengthSetWindow.Draft(exercise: "Barbell row",
+                                                   weightKg: 75,
+                                                   reps: 8,
+                                                   rpe: 7)
+        let opened = AtriaStrengthSetWindow.draftForOpeningLabels(
+            setWindowIsOpen: false,
+            current: pending,
+            lastLoggedForExercise: last
+        )
+        XCTAssertEqual(opened.weightKg, last.weightKg)
+        XCTAssertEqual(opened.reps, last.reps)
+        XCTAssertEqual(opened.rpe, pending.rpe)
+        XCTAssertNotEqual(opened, pending)
+    }
+
     func testLiveWorkoutSurfaceContainsStartSetAndStopAndLogSet() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
@@ -243,6 +305,15 @@ final class AtriaStrengthSetWindowTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaStrengthSetWindow.live.start"))
         XCTAssertTrue(source.contains("AtriaStrengthSetWindow.live.stop"))
         XCTAssertTrue(source.contains("Label(setWindowIsOpen ? \"Stop & log set\" : \"Start Set\""))
+        XCTAssertTrue(source.contains("openSetLabelsSheet()"))
+        XCTAssertTrue(source.contains("AtriaStrengthSetWindow.draftForOpeningLabels"))
+        let labelsStart = try XCTUnwrap(source.range(of: "private func openSetLabelsSheet()"))
+        let labelsEnd = try XCTUnwrap(source.range(of: "private func applyOpeningLabelsDraft",
+                                                   range: labelsStart.upperBound..<source.endIndex))
+        let openLabels = String(source[labelsStart.lowerBound..<labelsEnd.lowerBound])
+        XCTAssertTrue(openLabels.contains("setWindowIsOpen: setWindowIsOpen"))
+        XCTAssertFalse(openLabels.contains("primeLoggerFromLastSet()"),
+                       "opening labels while a set is open must not prime from the last logged set")
     }
 
     func testBLEFeedsExistingDecodersIntoTheOpenSetWindow() throws {
