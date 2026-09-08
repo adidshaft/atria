@@ -2331,6 +2331,95 @@ extension AtriaBLEManager {
         )
     }
 
+    /// Seconds past an accepted-unrecoverable unix the seek cursor must move
+    /// so `shouldSkipRangeLossRearm` (`cursor <= accepted + 1`) lets go. This
+    /// is a seek skip, not fill progress: no ACK is implied.
+    nonisolated static let historyDrainUnrecoverableSkipEpsilon: TimeInterval = 2
+
+    /// A parked oldest-first page is "behind live" once it is this far in the
+    /// past. Smaller than that and the cursor is already covering now.
+    nonisolated static let historyDrainLiveCoverageMinimumAge: TimeInterval = 60
+
+    /// True when oldest-first drain is parked on a dead page: no rows, first
+    /// frame timeout, or a zero-progress slice, and the park is no longer the
+    /// live frontier. Lost pages stay lost; live coverage should jump to now.
+    nonisolated static func historyDrainOldestPageIsStuck(
+        parkedCursorUnix: TimeInterval,
+        nowUnix: TimeInterval,
+        lastDrainYieldedRows: Bool?,
+        consecutiveZeroProgressSlices: Int,
+        lastStatus: String?,
+        coverLiveUnix: TimeInterval? = nil,
+        minimumAgeSeconds: TimeInterval = historyDrainLiveCoverageMinimumAge
+    ) -> Bool {
+        guard parkedCursorUnix.isFinite, parkedCursorUnix > 0,
+              nowUnix.isFinite,
+              nowUnix - parkedCursorUnix >= minimumAgeSeconds else {
+            return false
+        }
+        if let cover = coverLiveUnix, cover.isFinite, cover > 0,
+           parkedCursorUnix + 1 >= cover {
+            return false
+        }
+        if lastDrainYieldedRows == false { return true }
+        if consecutiveZeroProgressSlices >= 1 { return true }
+        guard let status = lastStatus, !status.isEmpty else { return false }
+        return status.contains("no_rows")
+            || status.contains("first_frame_timeout")
+            || status.contains("history_start_timeout")
+    }
+
+    /// When the oldest-first drain cursor is parked on a proven-dead page
+    /// (device 2026-09-08: Friday 09:44 IST), skip to the next recoverable
+    /// seek. A stuck park (no_rows / first-frame timeout) jumps to `now` so
+    /// live capture is not starved by pages the strap no longer has. Never
+    /// regresses, never jumps into the future, and never treats a Start-fresh
+    /// `drainedThrough == abandonedThrough` stamp as a fill destination —
+    /// that watermark is not a newest record.
+    nonisolated static func resilientHistoryDrainSeekUnix(
+        parkedCursorUnix: TimeInterval,
+        acceptedUnrecoverableUnix: TimeInterval,
+        abandonedThroughUnix: TimeInterval,
+        drainedThroughUnix: TimeInterval,
+        nextRecoverableStartUnix: TimeInterval?,
+        nowUnix: TimeInterval,
+        oldestPageIsStuck: Bool = false
+    ) -> TimeInterval? {
+        guard parkedCursorUnix.isFinite, parkedCursorUnix > 0,
+              nowUnix.isFinite, nowUnix >= parkedCursorUnix else {
+            return nil
+        }
+        var seek = parkedCursorUnix
+        if acceptedUnrecoverableUnix.isFinite,
+           acceptedUnrecoverableUnix > 0,
+           parkedCursorUnix <= acceptedUnrecoverableUnix + 1 {
+            seek = max(seek, acceptedUnrecoverableUnix + historyDrainUnrecoverableSkipEpsilon)
+        }
+        if let next = nextRecoverableStartUnix,
+           next.isFinite, next > 0,
+           next > seek,
+           next <= nowUnix {
+            seek = next
+        }
+        let startFreshStamp = abandonedThroughUnix.isFinite
+            && drainedThroughUnix.isFinite
+            && abandonedThroughUnix > 0
+            && drainedThroughUnix > 0
+            && abs(abandonedThroughUnix - drainedThroughUnix) <= 1
+        if !startFreshStamp,
+           abandonedThroughUnix.isFinite,
+           abandonedThroughUnix > seek,
+           abandonedThroughUnix <= nowUnix {
+            seek = abandonedThroughUnix
+        }
+        if oldestPageIsStuck, nowUnix > seek + 0.5 {
+            seek = nowUnix
+        }
+        seek = min(seek, nowUnix)
+        guard seek.isFinite, seek > parkedCursorUnix + 0.5 else { return nil }
+        return seek
+    }
+
     /// Advances the display-only strap-history frontier exclusively from
     /// generation-fenced timestamps released by a successful canonical flush.
     /// Clock-corrupt future rows are ignored and the persisted value is never

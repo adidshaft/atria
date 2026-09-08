@@ -6665,9 +6665,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, body_source, "store.sleepHistorySnapshot.nights.map")
         assert_not_contains(self, body_source, "store.confirmedWorkouts.map")
 
-        timeline_start = activity.index("private var timelineSpans: [TimelineSpan]")
-        timeline_end = activity.index("\n\n    private var canGoToNextDay", timeline_start)
-        timeline_source = activity[timeline_start:timeline_end]
+        # Scope the assertion to its owner, independently of neighboring members.
+        timeline_blocks = swift_braced_blocks(
+            activity, [r"private var timelineSpans: \[TimelineSpan\]"]
+        )
+        self.assertEqual(len(timeline_blocks), 1)
+        timeline_source = timeline_blocks[0][1]
         assert_not_contains(self, timeline_source, "for night in store.sleepHistorySnapshot.nights")
         assert_not_contains(self, timeline_source, "for workout in store.confirmedWorkouts")
 
@@ -7873,6 +7876,7 @@ class HandoffStaticChecks(unittest.TestCase):
                 "sendProtectedR10ResponseEventDataSequenceIfReady",
                 "sendProtectedR10ActivationNowIfReady",
                 "requestBoundedR10ActivationForSilentStream",
+                "refreshProtectedBoundedRawCaptureIfNeeded",
                 "retryProtectedR10ShortBurstIfEligible",
                 "stopWorkoutRawMotionIfConnected",
                 "armWorkoutHistoricalMotionBankIfPossible",
@@ -7917,6 +7921,11 @@ class HandoffStaticChecks(unittest.TestCase):
                 "!readOnlyHistoryCaptureRequested",
                 "if standardHROnlyMode",
                 "sendProtectedR10ActivationIfReady()",
+            ],
+            "refreshProtectedBoundedRawCaptureIfNeeded": [
+                "!readOnlyHistoryCaptureRequested",
+                "shouldRefreshProtectedBoundedRawCapture(",
+                "Cmd.startRawData",
             ],
             "retryProtectedR10ShortBurstIfEligible": [
                 "!readOnlyHistoryCaptureRequested",
@@ -12443,9 +12452,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, key_builder_source, "store.latestLocalRMSSD")
         assert_not_contains(self, key_builder_source, "store.todayHRZoneMinutesSnapshot")
 
-        publish_start = home.index("private func publishProfileMetrics()")
-        publish_end = home.index("\n    }\n\n    private func refreshSavedAggregate", publish_start)
-        publish_source = home[publish_start:publish_end]
+        # An unrelated helper may be inserted after this method during refactors.
+        publish_blocks = swift_braced_blocks(
+            home, [r"private func publishProfileMetrics\(\)"]
+        )
+        self.assertEqual(len(publish_blocks), 1)
+        publish_source = publish_blocks[0][1]
         self.assertLess(publish_source.index("guard key != profileMetricsKey else { return }"),
                         publish_source.index("Self.makeProfileMetricsState(store: store,"))
 

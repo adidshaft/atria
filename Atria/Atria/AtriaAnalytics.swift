@@ -13,7 +13,11 @@ enum AtriaAnalytics {
                   let first = recent.first?.t,
                   let last = recent.last?.t else { return nil }
             let duration = last.timeIntervalSince(first)
-            guard duration >= 45 else { return nil }
+            // Apply the same missing-beat tolerance at the trailing edge as
+            // inside the window; otherwise a disconnected stream can continue
+            // publishing an apparently current breathing rate for ~45 seconds.
+            guard duration.isFinite, duration >= 45,
+                  now.timeIntervalSince(last) <= 5 else { return nil }
 
             let start = first.timeIntervalSinceReferenceDate
             let relative = recent.map { ($0.t.timeIntervalSinceReferenceDate - start, $0.ms) }
@@ -21,8 +25,10 @@ enum AtriaAnalytics {
             // up to ~69s from 118 link disconnects). A large gap means missing
             // beats; resampling across it manufactures slow low-frequency drift
             // the periodogram would mislabel as breathing. 2026-07-08.
-            for index in 1..<relative.count where relative[index].0 - relative[index - 1].0 > 5.0 {
-                return nil
+            guard recent.allSatisfy({ $0.ms.isFinite && (300...2000).contains($0.ms) }) else { return nil }
+            for index in 1..<relative.count {
+                let gap = relative[index].0 - relative[index - 1].0
+                guard gap.isFinite, gap > 0, gap <= 5 else { return nil }
             }
             let sampleRate = 4.0
             let step = 1.0 / sampleRate
@@ -80,12 +86,17 @@ enum AtriaAnalytics {
                   let first = recent.first?.t,
                   let last = recent.last?.t else { return nil }
             let duration = last.timeIntervalSince(first)
-            guard duration >= 45 else { return nil }
+            // Apply the same missing-beat tolerance at the trailing edge as
+            // inside the window; otherwise a disconnected stream can continue
+            // publishing an apparently current breathing rate for ~45 seconds.
+            guard duration.isFinite, duration >= 45,
+                  now.timeIntervalSince(last) <= 5 else { return nil }
             let origin = first.timeIntervalSinceReferenceDate
             var relative: [(Double, Double)] = []
             relative.reserveCapacity(recent.count)
             for (offset, sample) in recent.enumerated() {
                 if offset.isMultiple(of: 64), !shouldContinue() { return nil }
+                guard sample.ms.isFinite, (300...2000).contains(sample.ms) else { return nil }
                 relative.append((
                     sample.t.timeIntervalSinceReferenceDate - origin,
                     sample.ms
@@ -93,7 +104,8 @@ enum AtriaAnalytics {
             }
             for index in 1..<relative.count {
                 if index.isMultiple(of: 64), !shouldContinue() { return nil }
-                if relative[index].0 - relative[index - 1].0 > 5 { return nil }
+                let gap = relative[index].0 - relative[index - 1].0
+                guard gap.isFinite, gap > 0, gap <= 5 else { return nil }
             }
             let sampleRate = 4.0
             let step = 1.0 / sampleRate
@@ -682,9 +694,9 @@ enum AtriaAnalytics {
             var total = 0.0
             for index in 1..<samples.count {
                 let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
-                guard dtSeconds > 0,
+                guard dtSeconds.isFinite, dtSeconds > 0,
                       dtSeconds <= Strain.maximumLoadEvidenceGap,
-                      samples[index].bpm > 0 else { continue }
+                      Strain.hasPlausibleHeartRateEndpoints(samples[index - 1].bpm, samples[index].bpm) else { continue }
                 let dtMin = dtSeconds / 60.0
                 let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
                 total += max(0, gross - resting) * dtMin
@@ -708,6 +720,13 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
+        /// Match the load model's evidence contract. Both endpoints must be
+        /// usable: removing an invalid observation first would bridge its hole.
+        fileprivate static func hasPlausibleHeartRateEndpoints(_ previous: Int, _ current: Int) -> Bool {
+            AtriaStrainLoadModel.plausibleBPMRange.contains(Double(previous))
+                && AtriaStrainLoadModel.plausibleBPMRange.contains(Double(current))
+        }
+
         /// The single version authority for both the current display curve and
         /// persisted strain values. Bump whenever stored HR evidence can
         /// produce a different public 0–21 score, whether the evidence kernel
@@ -924,8 +943,8 @@ enum AtriaAnalytics {
 
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maxGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maxGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     dropped += dt
                     continue
                 }
@@ -965,8 +984,8 @@ enum AtriaAnalytics {
             for index in 1..<series.count {
                 if index.isMultiple(of: 256), !shouldContinue() { return nil }
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maxGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maxGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     total = MaxHeartRateZoneSeconds(
                         rest: total.rest,
                         warmup: total.warmup,
@@ -1039,8 +1058,9 @@ enum AtriaAnalytics {
             var total = 0.0
             for index in 1..<series.count {
                 let dtMin = (series[index].t - series[index - 1].t) / 60.0
-                guard dtMin > 0,
-                      dtMin <= maximumGapMinutes else { continue }
+                guard dtMin.isFinite, dtMin > 0,
+                      dtMin <= maximumGapMinutes,
+                      hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) else { continue }
                 let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
                 total += dtMin * Double(edwardsWeight(forHRReserve: reserve))
             }
@@ -1212,8 +1232,8 @@ enum AtriaAnalytics {
             var usableSamples = 0
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maximumLoadEvidenceGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maximumLoadEvidenceGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     dropped += dt
                     continue
                 }

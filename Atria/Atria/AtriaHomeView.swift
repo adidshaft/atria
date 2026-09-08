@@ -6917,6 +6917,22 @@ enum AtriaMissedDataBannerPresentation {
         )
         guard stalled else { return false }
         let cursor = defaults.double(forKey: drainCursorKey)
+        let accepted = defaults.double(forKey: acceptedCursorKey)
+        let bound = accepted > 0 ? accepted : cursor
+        if earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: bound,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        ) != nil {
+            // Leftover Friday stall slices must not terminate a Saturday–Tuesday
+            // interval. Remember the abandoned fill cursor, keep the later
+            // ticket pending, and start that interval's slice count at zero.
+            if cursor > 0 {
+                defaults.set(cursor, forKey: acceptedCursorKey)
+            }
+            defaults.set(0, forKey: zeroProgressKey)
+            _ = applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
+            return false
+        }
         if cursor > 0 {
             defaults.set(cursor, forKey: acceptedCursorKey)
         }
@@ -6928,22 +6944,184 @@ enum AtriaMissedDataBannerPresentation {
     }
 
     /// After a terminal stall is accepted, do not re-arm the same unfillable
+    /// oldest-first interval until that cursor actually advances. A proposed
+    /// gap that starts strictly after the accepted cursor is a different
+    /// interval (device 2026-09-08: Friday 09:44 IST fill freeze must not
+    /// block Saturday–Tuesday history still on the strap).
+    static func shouldSkipRangeLossRearm(
+        acceptedCursorUnix: Double,
+        drainCursorUnix: Double,
+        proposedGapStartUnix: Double? = nil
+    ) -> Bool {
+        guard acceptedCursorUnix.isFinite, acceptedCursorUnix > 0 else { return false }
+        if let gapStart = proposedGapStartUnix,
+           gapStart.isFinite, gapStart > 0 {
+            // A gap that starts before the live seek is the abandoned prefix.
+            // Device 2026-09-08: after bringing the cursor to now, Saturday's
+            // dead page must not re-arm and starve live IMU.
+            if drainCursorUnix.isFinite, drainCursorUnix > 0,
+               gapStart + 1 < drainCursorUnix {
+                return true
+            }
+            if gapStart > acceptedCursorUnix + 1 {
+                return false
+            }
+        }
+        guard drainCursorUnix.isFinite else { return false }
+        return drainCursorUnix <= acceptedCursorUnix + 1
+    }
+
+    /// Earliest closed-or-open ledger window that starts strictly after the
+    /// accepted fill cursor. Legacy coalesced envelopes are not actionable.
+    static func earliestGapStartStrictlyAfter(
+        acceptedCursorUnix: Double,
+        windows: [AtriaHistoricalGapLedger.Window]
+    ) -> Double? {
+        guard acceptedCursorUnix.isFinite, acceptedCursorUnix > 0 else { return nil }
+        return windows
+            .filter { !AtriaHistoricalGapLedger.isLegacyCoalescedWindow($0) }
+            .compactMap { window -> Double? in
+                let start = window.start.timeIntervalSince1970
+                guard start.isFinite, start > acceptedCursorUnix + 1 else { return nil }
+                return start
+            }
+            .min()
+    }
+
+    /// True when the ledger has a window that starts after the accepted (or
+    /// parked drain) fill cursor. Used so leftover stall slices from that
+    /// cursor cannot skip or accept-away a strictly later interval.
+    static func hasActionableGapAfterAcceptedCursor(
+        defaults: UserDefaults
+    ) -> Bool {
+        let accepted = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+        )
+        let cursor = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        let bound = accepted > 0 ? accepted : cursor
+        return earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: bound,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        ) != nil
+    }
+
+    /// Move the oldest-first seek cursor off a proven-dead page onto the next
+    /// recoverable start, or to now when that page is stuck. Returns the new
+    /// seek unix, or nil when already correctly placed. Does not rewrite
+    /// `drainedThroughUnix`.
+    @discardableResult
+    static func applyResilientHistoryDrainSeekIfNeeded(
+        defaults: UserDefaults,
+        now: Date = Date(),
+        drainCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix,
+        acceptedCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix,
+        abandonedThroughKey: String = AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix,
+        drainedThroughKey: String = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+    ) -> Double? {
+        let parked = defaults.double(forKey: drainCursorKey)
+        let accepted = defaults.double(forKey: acceptedCursorKey)
+        let laterStart = earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: accepted > 0 ? accepted : parked,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        )
+        let yielded = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        ) as? Bool
+        let stuck = AtriaBLEManager.historyDrainOldestPageIsStuck(
+            parkedCursorUnix: parked,
+            nowUnix: now.timeIntervalSince1970,
+            lastDrainYieldedRows: yielded,
+            consecutiveZeroProgressSlices: defaults.integer(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+            ),
+            lastStatus: defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus
+            ),
+            coverLiveUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix
+            ) as? Double
+        )
+        guard let seek = AtriaBLEManager.resilientHistoryDrainSeekUnix(
+            parkedCursorUnix: parked,
+            acceptedUnrecoverableUnix: accepted,
+            abandonedThroughUnix: defaults.double(forKey: abandonedThroughKey),
+            drainedThroughUnix: defaults.double(forKey: drainedThroughKey),
+            nextRecoverableStartUnix: laterStart,
+            nowUnix: now.timeIntervalSince1970,
+            oldestPageIsStuck: stuck
+        ) else { return nil }
+        defaults.set(seek, forKey: drainCursorKey)
+        if stuck {
+            // Accept the abandoned prefix so skip-rearm will not pull the
+            // radio back onto pages that just timed out.
+            defaults.set(seek, forKey: acceptedCursorKey)
+            defaults.set(seek,
+                         forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix)
+            defaults.set(0, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+            defaults.set(false, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason)
+        }
+        return seek
+    }
+
+    /// Leftover consecutive zero-progress slices belong to the abandoned
+    /// oldest-first interval. A strictly later admission starts a new count.
+    @discardableResult
+    static func resetZeroProgressSlicesForLaterGapAdmission(
+        defaults: UserDefaults,
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+    ) -> Bool {
+        guard hasActionableGapAfterAcceptedCursor(defaults: defaults) else {
+            return false
+        }
+        defaults.set(0, forKey: zeroProgressKey)
+        return true
+    }
+
+    /// After a terminal stall is accepted, do not re-arm the same unfillable
     /// interval until the oldest-first cursor actually advances.
     static func shouldSkipRangeLossRearm(
         defaults: UserDefaults,
         now: Date = Date()
     ) -> Bool {
-        if acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now) {
+        // Cover-live jumped the drain to now. A reconnect blip must not
+        // re-arm oldest-first history and steal the radio from 51/IMU.
+        if defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix
+        ) != nil {
             return true
         }
         let accepted = defaults.double(
             forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
         )
-        guard accepted > 0 else { return false }
         let cursor = defaults.double(
             forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
         )
-        return cursor <= accepted + 1
+        let laterGapStart = earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: accepted > 0 ? accepted : cursor,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        )
+        if laterGapStart != nil {
+            return shouldSkipRangeLossRearm(
+                acceptedCursorUnix: accepted > 0 ? accepted : cursor,
+                drainCursorUnix: cursor,
+                proposedGapStartUnix: laterGapStart
+            )
+        }
+        if acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now) {
+            return true
+        }
+        return shouldSkipRangeLossRearm(
+            acceptedCursorUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+            ),
+            drainCursorUnix: cursor,
+            proposedGapStartUnix: nil
+        )
     }
 
     static func copy(strapPendingRecords: Int,

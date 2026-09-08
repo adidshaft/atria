@@ -428,6 +428,26 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             let openCycleReceiptIsCurrent = capturedAge.map {
                 $0 >= -5 && $0 <= liveEvidenceMaximumAge
             } ?? false
+            // Complete means complete through the receipt's end, not through
+            // the rest of an open cycle. A newer validated live total can
+            // advance that subtotal without adding overlapping observations.
+            if isOpenDay,
+               liveAuthorityQualified,
+               liveBelongsToDay,
+               liveIsValidated,
+               liveCount > exact,
+               let liveCapturedAt,
+               let capturedAt,
+               liveCapturedAt > capturedAt {
+                return .init(day: dayStart,
+                             count: liveCount,
+                             completeness: .partial,
+                             source: .live,
+                             isValidated: true,
+                             capturedAt: liveCapturedAt,
+                             coverageFraction: nil,
+                             isOpenCycle: true)
+            }
             return .init(day: dayStart,
                          count: exact,
                          completeness: .complete,
@@ -468,13 +488,14 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // detector-applied coordinate is fresh. A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
         // masquerade as today's current count. Once validated, this exact
-        // current-cycle coordinate outranks an older partial archive lower
-        // bound (without summing them); a complete canonical receipt and an
-        // exact-receipt conflict still retain precedence above.
+        // current-cycle coordinate can advance an older partial archive lower
+        // bound (without summing them), but cannot erase a larger drained count.
+        // Exact receipts and their conflicts are reconciled above.
         if liveAuthorityQualified,
            isOpenDay,
            liveBelongsToDay,
-           liveIsValidated {
+           liveIsValidated,
+           liveCount >= (partial?.knownStepDeltaSum ?? 0) {
             return .init(day: dayStart,
                          count: max(0, liveCount),
                          completeness: .partial,

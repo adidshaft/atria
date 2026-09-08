@@ -509,6 +509,105 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertFalse(f!.active, "zero-row drains are not catching up")
     }
 
+    /// Device 2026-09-08: the ribbon the user read as "Last till 9:44AM Friday"
+    /// is the oldest-first fill cursor, not a live-HR outage and not the
+    /// Start-fresh 09:19 Saturday watermark.
+    func testDeviceFriday944FillCursorIsHonestLastFill() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let friday944: TimeInterval = 1_788_495_274
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let now = Date(timeIntervalSince1970: 1_788_850_000) // 2026-09-08 ~13:16 IST
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: friday944,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("9:44"),
+                      "fill time is Friday 9:44, not the 9:19 Start-fresh stamp")
+        XCTAssertTrue(f!.headline.contains("Fri"))
+        XCTAssertFalse(f!.headline.contains("9:19"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active)
+        XCTAssertEqual(
+            AtriaHomeRecoverySyncPresentation.fillThroughUnix(
+                drainCursorUnix: friday944,
+                drainedThroughUnix: startFreshWatermark,
+                abandonedThroughUnix: startFreshWatermark
+            ),
+            friday944
+        )
+    }
+
+    func testSkipAheadSeekIsStillALastFillNotANewestRecord() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let friday944: TimeInterval = 1_788_495_274
+        let seek = friday944 + AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: seek,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("9:44"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+    }
+
+    func testCoverLiveSeekIsStillALastFillNotANewestRecord() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let nowUnix: TimeInterval = 1_788_850_000
+        let now = Date(timeIntervalSince1970: nowUnix)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: false,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: nowUnix,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+    }
+
     /// Device 2026-09-02: the pre-Atria backlog banner recommended "Start
     /// fresh" while offering only a sync glyph and a snooze, and its sentence
     /// was cut at one line. A decision shows its whole sentence and both

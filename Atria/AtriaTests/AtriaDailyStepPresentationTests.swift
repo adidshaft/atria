@@ -77,6 +77,64 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.accessibilityText.contains("steps. Verified through "))
     }
 
+    func testNewerValidatedLiveAdvancesExactOpenCycleSubtotalWithoutSumming() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let receiptEnd = now.addingTimeInterval(-2 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day, now: now, liveCount: 4_257,
+            liveValidationState: "validated", liveCapturedAt: now,
+            canonicalDays: [stepDay(state: .available, stepCount: 176,
+                                    known: 176, covered: 12 * 3_600,
+                                    missing: 0, end: receiptEnd)],
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 4_257)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.capturedAt, now)
+        XCTAssertEqual(value.detailText, "Today so far · live")
+    }
+
+    func testExactSubtotalRejectsLiveWithoutNewerQualifiedCurrentEvidence() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let receiptEnd = now.addingTimeInterval(-2 * 3_600)
+        for (captured, state, qualified) in [
+            (now.addingTimeInterval(-60), "validated", true),
+            (receiptEnd, "validated", true),
+            (now, "research_unvalidated", true),
+            (now, "validated", false)
+        ] {
+            let value = AtriaDailyStepPresentation.resolve(
+                day: day, now: now, liveCount: 4_257,
+                liveValidationState: state, liveCapturedAt: captured,
+                canonicalDays: [stepDay(state: .available, stepCount: 176,
+                                        known: 176, covered: 12 * 3_600,
+                                        missing: 0, end: receiptEnd)],
+                liveAuthorityQualified: qualified,
+                calendar: utcCalendar
+            )
+            XCTAssertEqual(value.count, 176)
+            XCTAssertEqual(value.source, .verifiedCanonical)
+        }
+    }
+
+    func testFreshValidatedLiveCannotEraseLargerDrainedPartial() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        for liveCount in [0, 100] {
+            let value = AtriaDailyStepPresentation.resolve(
+                day: day, now: now, liveCount: liveCount,
+                liveValidationState: "validated", liveCapturedAt: now,
+                canonicalDays: [stepDay(state: .missing, stepCount: nil,
+                                        known: 1_234, covered: 3_600,
+                                        missing: 13 * 3_600, end: now)],
+                calendar: utcCalendar
+            )
+            XCTAssertEqual(value.count, 1_234)
+            XCTAssertEqual(value.source, .verifiedCanonical)
+        }
+    }
+
     func testPartialCanonicalCoverageUsesLowerBoundLabel() {
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -851,6 +909,30 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
         XCTAssertNil(value.priorCycleReceipt)
         XCTAssertEqual(value.detailText, "No verified receipt for this cycle")
+        XCTAssertFalse(value.detailText.contains("135"))
+    }
+
+    /// Device 2026-09-08: accepting the Friday 9:44 IST fill freeze must not
+    /// withhold a later open-cycle live total for the current wake window.
+    func testOpenCycleLiveAfterFridayFillFreezeIsNotWithheld() {
+        let friday944 = Date(timeIntervalSince1970: 1_788_495_274)
+        let wake = Date(timeIntervalSince1970: 1_788_847_800) // 2026-09-08 00:15Z
+        let now = wake.addingTimeInterval(8 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: wake,
+            now: now,
+            liveCount: 842,
+            liveValidationState: "validated",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            physiologicalDayStart: wake,
+            priorCycleReceipt: .init(steps: 135, endedAt: friday944),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 842)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertNil(value.priorCycleReceipt)
         XCTAssertFalse(value.detailText.contains("135"))
     }
 
