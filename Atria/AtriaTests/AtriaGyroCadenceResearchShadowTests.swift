@@ -156,6 +156,31 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
                        AtriaGyroCadenceResearchShadow.carrySamples + 100)
     }
 
+    func testTenMinuteWalkingCadenceHundredSampleFramesScoresWalkScaleNotStarvedSlice() {
+        // 2026-09-08 gym walk: IMU duty was 8.8% (56 s of 10.6 min,
+        // 100-sample frames) and strapStepResearchCount landed at 45.
+        // Cadence math is not that field bug. A contiguous walking-cadence
+        // signal at the pre-walk frame shape must still score a walk-scale
+        // count, not tens of steps, and must not invent phone CMPedometer.
+        let shadow = AtriaGyroCadenceResearchShadow()
+        let cadence = 1.75
+        let walk = walkingMagnitudes(seconds: 600, cadenceHz: cadence)
+        XCTAssertEqual(walk.count % 100, 0,
+                       "pre-walk frame shape is 100 samples per second")
+        ingest(shadow, samples: walk, startTimestamp: 10_000)
+        let snapshot = shadow.closeOpenSpanSynchronously()
+        let batch = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: walk
+        )
+        XCTAssertGreaterThan(batch, 500,
+                             "shipped cadence on a 10-minute 100-sample-frame walk is walk-scale")
+        XCTAssertGreaterThan(snapshot.totalSteps, 500,
+                             "a 10-minute walking-cadence capture is walk-scale, not ~45")
+        XCTAssertLessThan(snapshot.totalSteps, 1_500)
+        XCTAssertGreaterThan(snapshot.totalSteps, 45)
+        XCTAssertGreaterThan(batch, 45)
+    }
+
     func testLongContiguousWalkScoresWithoutAnyGapEverArriving() {
         let shadow = AtriaGyroCadenceResearchShadow()
         let cadence = 1.75

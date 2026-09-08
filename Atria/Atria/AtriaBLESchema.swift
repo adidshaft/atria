@@ -252,6 +252,10 @@ extension AtriaBLEManager {
         static let gapStartedAt = "atria.workoutMotion.gapStartedAt"
         static let firstLiveFrameAt = "atria.workoutMotion.firstLiveFrameAt"
         static let lastLiveFrameAt = "atria.workoutMotion.lastLiveFrameAt"
+        /// Set once this workout lease has observed dense R10 (~1 Hz) frames.
+        /// Counted against the workout, not the BLE epoch, so a reconnect
+        /// cannot restart 6A/51 after the stream has already gone live.
+        static let denseObservedAt = "atria.workoutMotion.denseObservedAt"
         static let activationAttemptAt = "atria.workoutMotion.activationAttemptAt"
         static let activationConnectionAt = "atria.workoutMotion.activationConnectionAt"
         static let activationAttempts = "atria.workoutMotion.activationAttempts"
@@ -425,6 +429,12 @@ extension AtriaBLEManager {
         /// must not be shown as "newest record".
         static let unrecoverableHistoryAcceptedCursorUnix =
             "atria.offlineSync.unrecoverableHistoryAcceptedCursorUnix.v1"
+        /// Seek unix at which oldest-first drain jumped to live coverage
+        /// because the parked page was stuck (no_rows / first-frame timeout).
+        /// Not a fill ACK. Lets all-day IMU requalify once after history
+        /// releases the radio.
+        static let historyCoverLiveUnix =
+            "atria.offlineSync.historyCoverLiveUnix.v1"
         // Clean-slate auto-surfacing: persisted mirror of the in-memory
         // consecutive zero-progress catch-up slice counter. A degraded strap
         // that drops the link on every history read accumulates these (each

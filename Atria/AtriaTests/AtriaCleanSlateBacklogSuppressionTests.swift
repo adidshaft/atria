@@ -252,4 +252,254 @@ final class AtriaGapTerminalStallTests: XCTestCase {
                        "a later ACK'd page may re-arm")
         UserDefaults().removePersistentDomain(forName: suite)
     }
+
+    /// Device 2026-09-08: Overview "Last fill 9:44 AM Friday" is
+    /// `historyDrainCursorUnix` 1788495274 (2026-09-04 09:44 Asia/Kolkata).
+    /// Accepting that interval as unrecoverable must not freeze Saturday–Tuesday
+    /// gaps that start after the cursor.
+    func testAcceptedFriday944CursorStillSkipsThatIntervalButNotALaterGap() {
+        let friday944: TimeInterval = 1_788_495_274
+        XCTAssertTrue(
+            P.shouldSkipRangeLossRearm(
+                acceptedCursorUnix: friday944,
+                drainCursorUnix: friday944
+            ),
+            "the abandoned Friday 9:44 interval stays skipped while the cursor is parked there"
+        )
+        XCTAssertTrue(
+            P.shouldSkipRangeLossRearm(
+                acceptedCursorUnix: friday944,
+                drainCursorUnix: friday944,
+                proposedGapStartUnix: friday944
+            ),
+            "a gap that starts on the accepted cursor is the same unfillable interval"
+        )
+        XCTAssertFalse(
+            P.shouldSkipRangeLossRearm(
+                acceptedCursorUnix: friday944,
+                drainCursorUnix: friday944,
+                proposedGapStartUnix: friday944 + 24 * 60 * 60
+            ),
+            "a strictly later gap remains eligible to drain"
+        )
+        let saturdayStart = Date(timeIntervalSince1970: friday944 + 24 * 60 * 60)
+        let laterStart = P.earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: friday944,
+            windows: [
+                .init(start: Date(timeIntervalSince1970: friday944 - 3600),
+                      end: Date(timeIntervalSince1970: friday944),
+                      reason: "abandoned_prefix"),
+                .init(start: saturdayStart,
+                      end: saturdayStart.addingTimeInterval(3600),
+                      reason: "later_gap")
+            ]
+        )
+        XCTAssertEqual(laterStart ?? -1,
+                       saturdayStart.timeIntervalSince1970,
+                       accuracy: 0.001)
+        XCTAssertNil(
+            P.earliestGapStartStrictlyAfter(
+                acceptedCursorUnix: friday944,
+                windows: [
+                    .init(start: Date(timeIntervalSince1970: friday944 - 3600),
+                          end: Date(timeIntervalSince1970: friday944),
+                          reason: "abandoned_prefix")
+                ]
+            )
+        )
+    }
+
+    /// Device 2026-09-08: accepted=drainCursor=1788495274, slices=13, pending
+    /// later Saturday gap. Skip-rearm must stay false, leftover Friday zeros
+    /// must not accept-away the later ticket, and admitting the later interval
+    /// resets the slice count.
+    func testDeviceFridayStallSlicesDoNotAcceptAwayALaterGapTicket() throws {
+        let suite = "atria.friday944.later-gap.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer {
+            AtriaHistoricalGapLedger.resetStorageForTesting(defaults: defaults)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        let friday944: TimeInterval = 1_788_495_274
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let saturdayStart = Date(timeIntervalSince1970: friday944 + 24 * 60 * 60)
+        defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        defaults.set(now.timeIntervalSince1970 - P.terminalStallWindow - 60,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+        defaults.set(13, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        defaults.set(friday944, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+        defaults.set(friday944,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix)
+        XCTAssertTrue(
+            AtriaHistoricalGapLedger.recordObservedGap(
+                start: saturdayStart,
+                end: saturdayStart.addingTimeInterval(3_600),
+                reason: "later_gap",
+                defaults: defaults
+            )
+        )
+
+        XCTAssertTrue(P.hasActionableGapAfterAcceptedCursor(defaults: defaults))
+        XCTAssertFalse(
+            P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+            "a later ledger gap must remain eligible despite leftover Friday stall slices"
+        )
+        XCTAssertTrue(
+            defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending),
+            "skip-rearm must not clear the later ticket"
+        )
+        XCTAssertFalse(
+            P.acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now),
+            "leftover Friday stall slices must not accept-away a Saturday–Tuesday ticket"
+        )
+        XCTAssertTrue(
+            defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        )
+        XCTAssertEqual(
+            defaults.integer(forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices),
+            0,
+            "accepting leftover Friday zeros against a later gap resets the slice count"
+        )
+        defaults.set(13, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        XCTAssertTrue(P.resetZeroProgressSlicesForLaterGapAdmission(defaults: defaults))
+        XCTAssertEqual(
+            defaults.integer(forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices),
+            0
+        )
+
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func markRangeLossBackfillRequired("))
+        let end = try XCTUnwrap(source.range(
+            of: "private func preserveLongWearRangeLossRecovery(",
+            range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("resetZeroProgressSlicesForLaterGapAdmission("))
+        XCTAssertTrue(body.contains("connectedRawCatchUpConsecutiveZeroProgressSlices = 0"))
+        XCTAssertTrue(body.contains("applyResilientHistoryDrainSeekIfNeeded("))
+        XCTAssertTrue(source.contains("applyResilientHistoryDrainSeekIfNeeded("))
+        let syncStart = try XCTUnwrap(source.range(of: "let connectedRawHistoryCatchUpStartFrontierUnix"))
+        let syncPrefix = String(source[source.index(syncStart.lowerBound, offsetBy: -1600)..<syncStart.lowerBound])
+        XCTAssertTrue(
+            syncPrefix.contains("applyResilientHistoryDrainSeekIfNeeded("),
+            "drain start must skip-ahead the seek cursor before using it as the slice frontier"
+        )
+        XCTAssertTrue(
+            syncPrefix.contains("skipped_drain_cover_live"),
+            "a stuck oldest-first park must release the radio instead of starting another drain"
+        )
+    }
+
+    func testResilientSeekMovesFridayParkOffTheDeadPageAndUnblocksLaterAdmission() {
+        let suite = "atria.friday944.seek.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let friday944: TimeInterval = 1_788_495_274
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let startFresh: TimeInterval = 1_788_580_144
+        defaults.set(friday944, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+        defaults.set(friday944,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix)
+        defaults.set(startFresh, forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix)
+        defaults.set(startFresh, forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix)
+
+        let seek = P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
+        XCTAssertEqual(seek ?? -1, friday944 + AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon,
+                       accuracy: 0.001)
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix),
+            friday944 + AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix),
+            startFresh,
+            accuracy: 0.001,
+            "skip-ahead is a seek, not a newest-record claim"
+        )
+        XCTAssertFalse(
+            P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+            "after leaving the dead page, later drain admission must not stay skipped"
+        )
+        XCTAssertNil(
+            P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now),
+            "idempotent once the cursor is already off the dead page"
+        )
+    }
+
+    /// Device 2026-09-08: after skip-ahead left Friday 9:44, drain parked on
+    /// Saturday 09:28 with no_rows / first-frame timeout. That page is lost.
+    /// Bring the cursor to now and do not re-arm the abandoned prefix.
+    func testStuckSaturdayParkBringsCursorToNowAndSkipsAbandonedPrefix() {
+        let suite = "atria.cover-live.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let friday944: TimeInterval = 1_788_495_274
+        let saturday928: TimeInterval = 1_788_580_736.647
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        defaults.set(saturday928, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+        defaults.set(friday944,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix)
+        defaults.set(false, forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows)
+        defaults.set(1, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        defaults.set("no_rows", forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus)
+        defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+
+        let seek = P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
+        XCTAssertEqual(seek ?? -1, now.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix),
+            now.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix),
+            now.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending))
+        XCTAssertTrue(
+            P.shouldSkipRangeLossRearm(
+                acceptedCursorUnix: now.timeIntervalSince1970,
+                drainCursorUnix: now.timeIntervalSince1970,
+                proposedGapStartUnix: saturday928
+            ),
+            "the abandoned Saturday prefix must not re-arm after cover-live"
+        )
+        XCTAssertNil(
+            P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now),
+            "cover-live is idempotent for this park"
+        )
+        XCTAssertTrue(
+            P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+            "cover-live must not re-arm history when a reconnect opens a later gap"
+        )
+    }
+
+    func testLiveWorkoutAndCoverLiveKeepHistoryFromWinningTransport() {
+        XCTAssertFalse(
+            AtriaR10StepLeasePolicy.shouldClaimHistoryTransport(
+                manualWorkoutActive: true
+            ),
+            "a user-started workout keeps proprietary transport off history"
+        )
+        XCTAssertFalse(
+            AtriaR10StepLeasePolicy.historyOwnsTransportForStepLease(
+                manualWorkoutActive: true, historySyncInProgress: true
+            )
+        )
+        let suite = "atria.cover-live.workout.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix)
+        XCTAssertTrue(
+            P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
+            "cover-live skip-rearm remains in force during the live workout"
+        )
+    }
 }

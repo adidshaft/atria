@@ -1177,6 +1177,132 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    func testResilientDrainSeekSkipsADeadParkedPageWithoutInventingTheFuture() {
+        let friday944: TimeInterval = 1_788_495_274
+        let now: TimeInterval = 1_788_850_000
+        let epsilon = AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon
+        XCTAssertEqual(epsilon, 2, accuracy: 0.000_1)
+
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            friday944 + epsilon,
+            "a parked unrecoverable page must skip just past the skip-rearm gate"
+        )
+
+        let saturday = friday944 + 24 * 60 * 60
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: saturday,
+                nowUnix: now
+            ),
+            saturday,
+            "seek the next recoverable interval when it is known"
+        )
+
+        let startFresh: TimeInterval = 1_788_580_144
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: startFresh,
+                drainedThroughUnix: startFresh,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            friday944 + epsilon,
+            "Start-fresh drained==abandoned is not a fill destination"
+        )
+
+        let futureSkip = AtriaBLEManager.resilientHistoryDrainSeekUnix(
+            parkedCursorUnix: friday944,
+            acceptedUnrecoverableUnix: friday944,
+            abandonedThroughUnix: 0,
+            drainedThroughUnix: 0,
+            nextRecoverableStartUnix: now + 3_600,
+            nowUnix: now
+        )
+        XCTAssertEqual(futureSkip, friday944 + epsilon,
+                       "a future gap start must not become the seek")
+        XCTAssertLessThanOrEqual(futureSkip ?? .greatestFiniteMagnitude, now)
+
+        XCTAssertNil(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: saturday,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            "never regress a cursor that already left the dead page"
+        )
+
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: friday944,
+                nowUnix: now,
+                lastDrainYieldedRows: nil,
+                consecutiveZeroProgressSlices: 0,
+                lastStatus: nil
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: saturday,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows"
+            ),
+            "a zero-row park hours behind live is stuck"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: now - 10,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows"
+            ),
+            "a park that is already the live frontier is not stuck"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: now - 120,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows",
+                coverLiveUnix: now - 120
+            ),
+            "cover-live already jumped this park; do not re-jump every minute"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: saturday,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: saturday,
+                nowUnix: now,
+                oldestPageIsStuck: true
+            ),
+            now,
+            "a stuck oldest page brings the cursor to now so live capture can run"
+        )
+    }
+
     func testHistoryServeCutoverAlwaysClearsArmedStateAndRetainsPrearm() {
         XCTAssertEqual(
             AtriaBLEManager
