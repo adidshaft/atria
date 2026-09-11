@@ -608,6 +608,60 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertTrue(f!.detail.contains("aren't on the strap"))
     }
 
+    func testFailedDrainWithoutFreshCaughtUpDoesNotClaimStrapEmpty() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let abandoned = now.addingTimeInterval(-6 * 24 * 3_600)
+        let cursor = now.addingTimeInterval(-13 * 3_600)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 807,
+            debtObservedAgeSeconds: 6 * 24 * 3_600,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(
+            f!.detail.contains("old"),
+            "device 2026-09-11: a zero-row drain with stale debt is behind, not empty"
+        )
+        XCTAssertFalse(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active)
+    }
+
+    func testFreshPendingFillSaysHowMuchIsStillOnTheStrap() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let abandoned = now.addingTimeInterval(-6 * 24 * 3_600)
+        let cursor = now.addingTimeInterval(-13 * 3_600)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 807,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.detail.contains("still on the strap"))
+        XCTAssertFalse(f!.detail.contains("aren't on the strap"))
+    }
+
     /// Device 2026-09-02: the pre-Atria backlog banner recommended "Start
     /// fresh" while offering only a sync glyph and a snooze, and its sentence
     /// was cut at one line. A decision shows its whole sentence and both

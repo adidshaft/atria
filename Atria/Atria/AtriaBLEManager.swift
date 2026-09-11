@@ -5391,14 +5391,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard self.peripheral?.identifier == peripheral.identifier,
               peripheral.state == .connected,
               denseBringUpIsWanted,
-              standardHROnlyMode,
               !historyOnlyProbeMode,
-              !offlineHistoricalSyncInProgress,
-              !protectedR10StreamSuppressed,
-              protectedR10CleanOwner == .protectedV9 else { return }
+              !protectedR10StreamSuppressed else { return }
+        // Device 2026-09-11: full-protocol mode (`standardHROnlyMode == false`)
+        // made this coordinator a no-op, so `didConnect` never discovered 2A37
+        // after a workout-start history preemption. Restore HR first on every
+        // explicit workout, then arm dense IMU once 2A37 is notifying.
+        if offlineHistoricalSyncInProgress {
+            yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                reason: "hr_first_\(reason)"
+            )
+        }
         if heartRateCharacteristic?.isNotifying == true {
-            beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
-                                                     reason: reason)
+            if protectedR10CleanOwner == .protectedV9 {
+                beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
+                                                         reason: reason)
+            }
             return
         }
         protectedR10StandardDiscoveryStarted = true
@@ -8436,7 +8444,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 == offlineHistoricalSyncGeneration
         if Self.shouldSkipIdleWindowHeartRateReassert(
             idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
-            verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor
+            verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
         ) {
             AtriaDebugLog("ATRIADBG ble_notify_reassert status=skipped reason=%@ detail=idle_window_drain_pauses_2a37", reason)
             return
@@ -10880,6 +10889,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func explicitWorkoutOwnsRadio(now: Date = Date()) -> Bool {
+        Self.explicitMotionOwnershipBlocksHistory(
+            pendingWorkoutIntentActive:
+                AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now),
+            inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+            calibrationHoldActive:
+                workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        )
+    }
+
+    private func abortIdleWindowHeartRatePauseForExplicitWorkout(reason: String) {
+        idleWindowDrainArchiveWarmRetry = false
+        idleWindowDrainPausesHeartRate = false
+        idleWindowDrainStartedAt = nil
+        idleWindowPreferImmediatePause = false
+        idleWindowConsumeLiveTailPauseStartedAt = nil
+        naturalGapDrainArmed = false
+        idleWindowDrainArmFence.clear()
+        cancelIdleWindowHistoryPipeRetry()
+        AtriaDebugLog(
+            "ATRIADBG idle_window_drain status=aborted_for_explicit_workout reason=%@ action=restore_2a37",
+            reason
+        )
+    }
+
     private func currentIdleWindowHistoryDrainWindow(
         treatAsNaturalGap: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
@@ -10923,6 +10957,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         default:
             return false
         }
+        guard Self.shouldAdmitIdleWindowHeartRatePause(
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
+        ) else {
+            return false
+        }
         if idleWindowDrainArchiveWarmRetry {
             return true
         }
@@ -10936,6 +10975,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         startBudgetClock: Bool = true
     ) {
+        guard Self.shouldAdmitIdleWindowHeartRatePause(
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
+        ) else { return }
         idleWindowDrainPausesHeartRate = true
         // Soak-2 09:27: pause during orphan replay before generation starts.
         // The 20s handshake budget must not run from that pause; it starts
@@ -30459,6 +30501,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         releaseConnectedMotionBankLocalDependencyFirstRefusal(
             reason: "explicit_workout_\(reason)"
         )
+        abortIdleWindowHeartRatePauseForExplicitWorkout(reason: reason)
+        reassertHeartRateNotificationsIfConnected(reason: "explicit_workout_restore_2a37")
         if let owner = workoutMotionOwnerStartedAt,
            abs(owner.timeIntervalSince(startedAt)) < 0.001 {
             scheduleWorkoutMotionLeaseEvaluation(reason: "\(reason)_replay")
@@ -34405,7 +34449,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         delay: TimeInterval = protectedR10PassiveGraceDuration
     ) {
         guard workoutMotionOwnerStartedAt != nil else { return }
-        guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
+        guard !historyOnlyProbeMode else { return }
+        if offlineHistoricalSyncInProgress {
+            if explicitWorkoutOwnsRadio() {
+                yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                    reason: "\(reason)_lease_eval"
+                )
+            } else {
+                return
+            }
+        }
         guard workoutMotionActivationTask == nil else { return }
         workoutMotionActivationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -34416,7 +34469,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     }
 
     private func evaluateWorkoutMotionLease(now: Date, reason: String) {
-        guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
+        guard !historyOnlyProbeMode else { return }
+        if offlineHistoricalSyncInProgress {
+            if explicitWorkoutOwnsRadio(now: now) {
+                yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                    reason: "\(reason)_lease_eval"
+                )
+            } else {
+                return
+            }
+        }
         guard let leaseStartedAt = workoutMotionOwnerStartedAt else { return }
         let manualWorkoutActive =
             AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
@@ -48019,7 +48081,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 callbackEpoch: callbackEpoch,
                 reason: "did_connect_background_safe"
             )
-            if self.idleWindowDrainOwnsHeartRateLink() {
+            if self.idleWindowDrainOwnsHeartRateLink(),
+               !self.explicitWorkoutOwnsRadio() {
                 AtriaDebugLog(
                     "ATRIADBG ble_notify_reassert status=skipped reason=did_connect_background_safe detail=idle_window_drain_owns_2a37"
                 )
@@ -48206,7 +48269,6 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // 2A37 only. Arming here would later demote a qualified owner
             // into pure-HR fallback (2026-09-08 gym: 20–47 s HR holes).
             if denseBringUpIsWanted,
-               standardHROnlyMode,
                !historyOnlyProbeMode,
                protectedR10CleanOwner == .protectedV9,
                protectedR10CleanOwnerState == .qualified,
@@ -48238,6 +48300,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 retainHistoricalRequest: false
             )
             if self.freshHistoryOwnerAdmissionPending {
+                if Self.shouldAdmitFreshHistoryOwnerOnConnect(
+                    explicitMotionOwnershipActive: self.explicitWorkoutOwnsRadio()
+                ) {
                 self.freshHistoryOwnerAdmissionPending = false
                 if let pending = self.takePendingOfflineHistoricalSyncRequest() {
                     let started = self.requestOfflineHistoricalSyncIfNeeded(
@@ -48261,13 +48326,21 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         }
                     }
                 }
+                } else {
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=fresh_owner_deferred_for_explicit_workout action=restore_2a37_keep_pending_history"
+                    )
+                }
             }
             if readOnlyHistoryCaptureRequested {
                 AtriaDebugLog("ATRIADBG readOnlyHistory status=service_discovery_requested service=61080001 commands=0")
                 peripheral.discoverServices([Self.UUIDs.strapService])
                 return
             }
-            if resumeFreshHistoryOwnerConnectionIfNeeded(
+            if Self.shouldAdmitFreshHistoryOwnerOnConnect(
+                    explicitMotionOwnershipActive: self.explicitWorkoutOwnsRadio()
+               ),
+               resumeFreshHistoryOwnerConnectionIfNeeded(
                 peripheral: peripheral
             ) {
                 return

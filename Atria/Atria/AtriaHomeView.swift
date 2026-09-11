@@ -6692,10 +6692,23 @@ enum AtriaSyncProgressFooterPresentation {
         // the frontier. A Start-fresh stamp equal to abandoned-through is not
         // a record; the fill cursor is.
         if usingFillCursor {
-            let strapEmpty = freshlyCaughtUp || lastDrainYieldedRows == false
-            let detail = strapEmpty
-                ? "Last fill \(throughText) · older pages aren't on the strap"
-                : "Last fill \(throughText) · \(behindText(behind)) old"
+            // A zero-row drain is not proof the strap is empty — it is also
+            // how a timed-out or preempted fill looks (device 2026-09-11:
+            // lastDrainYieldedRows=false while 807 idle-window records were
+            // still pending). Only a FRESH caught-up strap reading may say
+            // older pages aren't on the strap.
+            let strapEmpty = freshlyCaughtUp
+            let remainingMinutes = (!strapEmpty && debtFresh)
+                ? max(1, (debtRecords ?? 0) / 60)
+                : nil
+            let detail: String
+            if strapEmpty {
+                detail = "Older pages aren't on the strap"
+            } else if let remainingMinutes, (debtRecords ?? 0) > caughtUpRecordFloor {
+                detail = "~\(remainingMinutes) min still on the strap"
+            } else {
+                detail = "\(behindText(behind)) old"
+            }
             return Footer(
                 headline: "Last fill \(throughText)",
                 detail: detail,

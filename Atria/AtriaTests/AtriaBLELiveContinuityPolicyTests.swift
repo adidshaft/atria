@@ -5537,4 +5537,46 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "04:27: didConnect must evaluate idle-window without a natural-gap fence"
         )
     }
+
+    func testExplicitWorkoutOutranksIdleWindowHeartRatePauseAndHistoryOwner() {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: true
+            ),
+            "device 2026-09-11: archive-warm retry must not pause 2A37 during a live workout"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitFreshHistoryOwnerOnConnect(
+                explicitMotionOwnershipActive: true
+            ),
+            "reconnect after workout-start history preemption must restore 2A37, not re-admit history"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitFreshHistoryOwnerOnConnect(
+                explicitMotionOwnershipActive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: false,
+                deferLiveRestoreForConsumeLiveTail: true,
+                explicitMotionOwnershipActive: true
+            ),
+            "a started workout must reassert 2A37 even if idle drain still owns the link"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: false,
+                deferLiveRestoreForConsumeLiveTail: true,
+                explicitMotionOwnershipActive: false
+            )
+        )
+    }
 }

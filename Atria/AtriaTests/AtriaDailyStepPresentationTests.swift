@@ -553,15 +553,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        // Option 1 (2026-08-22): over only 21% drained coverage the in-cycle
-        // live estimate (4257) is the more up-to-date total and is now shown as
-        // an estimate, rather than pinning the 176-step drained floor. This is
-        // the "stuck at 176 all morning" case the user asked to fix.
-        XCTAssertEqual(value.count, 4_257)
-        XCTAssertEqual(value.source, .live)
-        XCTAssertFalse(value.isValidated)
+        // Device 2026-09-11: a preliminary live estimate must not replace a
+        // real drained floor. The 176-step receipt stays until validated live
+        // or more coverage drains; swinging 176↔4257 was the field failure.
+        XCTAssertEqual(value.count, 176)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertTrue(value.isValidated)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.detailText, "Today so far · estimate")
+        XCTAssertFalse(value.detailText.contains("Today so far · estimate"))
     }
 
     func testFreshValidatedLiveOutranksPartialDurableReceiptWithoutSumming() {

@@ -2200,6 +2200,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(bringUpBody.contains("diagnostic_order"))
         XCTAssertTrue(bringUpBody.contains("heartRateCharacteristic?.isNotifying == true"))
         XCTAssertTrue(bringUpBody.contains("discoverCharacteristics([Self.UUIDs.heartRateMeasure]"))
+        XCTAssertFalse(
+            bringUpBody.contains("standardHROnlyMode,"),
+            "device 2026-09-11: full-protocol workouts still need 2A37-first discovery"
+        )
 
         let standardDiscoveryStart = try XCTUnwrap(source.range(
             of: "private func scheduleProtectedR10BatteryDiscovery"
@@ -8862,6 +8866,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(armWindow.contains("WorkoutMotionDefaults.denseObservedAt"))
         XCTAssertTrue(connectBody.contains("beginHRFirstDenseBringUpIfNeeded"))
+        XCTAssertTrue(
+            connectBody.contains("shouldAdmitFreshHistoryOwnerOnConnect("),
+            "didConnect must not re-admit a pending history owner during a live workout"
+        )
+        XCTAssertTrue(connectBody.contains("fresh_owner_deferred_for_explicit_workout"))
     }
 
     func testConnectedLeaseWithoutEpochIsHardInvariantFailure() {
@@ -11825,6 +11834,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("beginProtectedR10V8WorkoutCutoverIfNeeded("))
         XCTAssertTrue(body.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded"))
         XCTAssertTrue(body.contains("armWorkoutHistoricalMotionBankIfPossible"))
+        XCTAssertTrue(
+            body.contains("abortIdleWindowHeartRatePauseForExplicitWorkout"),
+            "device 2026-09-11: Start must unpause 2A37 before IMU or history yield"
+        )
+        XCTAssertTrue(body.contains("explicit_workout_restore_2a37"))
     }
 
     func testAcceptedHRDoesNotRetryRetiredRealtimeWorkoutCutover() throws {

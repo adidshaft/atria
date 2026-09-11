@@ -530,7 +530,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             // Only fill the gap with the live estimate while verified coverage is
             // low; a high-coverage verified count is the trustworthy total.
             let liveMayFillGap = (coverageFraction ?? 1) < liveEstimateCoverageCeiling
-            let liveObserved = (liveInCycle && liveMayFillGap) ? max(0, liveCount) : 0
+            // Device 2026-09-11: unvalidated preliminary live (gain-inflated
+            // R10) was raising a real drained floor, then snapping back —
+            // the hero number swayed in both directions. Only a validated
+            // live coordinate may fill a low-coverage gap. Preliminary
+            // estimates still surface when there is no drained floor.
+            let liveObserved = (liveInCycle && liveIsValidated && liveMayFillGap)
+                ? max(0, liveCount) : 0
             // Across an unconfirmed no-sleep fallback the prior receipt is the
             // SAME continuous wear period as this partial (disjoint windows:
             // prior ends at the synthetic boundary, this partial begins there).

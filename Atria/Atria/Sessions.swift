@@ -28236,6 +28236,13 @@ final class SessionStore: ObservableObject {
                                           preferredSession: preferredSession)
     }
 
+    /// Live Activity/Vitals plots must include the open journal. Saved
+    /// `sessions` alone left today's HR/stress charts empty while the strap
+    /// was still writing the current epoch (device 2026-09-11).
+    func sessionsIncludingFreshActiveJournal() -> [SavedSession] {
+        canonicalSessions(includeActiveJournal: true)
+    }
+
     private nonisolated static func makeCanonicalSessions(from source: [SavedSession],
                                                           preferredSession: ((SavedSession, SavedSession) -> Bool)? = nil) -> [SavedSession] {
         var byID: [UUID: SavedSession] = [:]
@@ -35865,6 +35872,21 @@ final class SessionStore: ObservableObject {
 
         func materializePreferredFreshReview() throws
             -> SleepHistorySnapshot.Night? {
+            if let aggregateDraft, let physiologicalDraft,
+               preferredGrowingSleepReview(
+                   replacing: aggregateDraft.night,
+                   with: [physiologicalDraft.night],
+                   calendar: calendar
+               ) != nil,
+               let aggregateEnd = aggregateDraft.night.end,
+               let physiologicalEnd = physiologicalDraft.night.end,
+               aggregateEnd.timeIntervalSince(physiologicalEnd) >= 30 * 60 {
+                // Device 2026-09-11: after wake, the aggregate journal kept
+                // growing through quiet sitting. Prefer the wake-trimmed
+                // physiological episode so the review clock can stop without
+                // a confirm/dismiss tap.
+                return try materializeFreshReview(physiologicalDraft)
+            }
             if let aggregateDraft {
                 return try materializeFreshReview(aggregateDraft)
             }
@@ -36085,10 +36107,12 @@ final class SessionStore: ObservableObject {
     }
 
     /// A provisional daily-rollup candidate is a snapshot, not an immutable
-    /// wake boundary. Replace it only with overlapping/same-day evidence that
-    /// materially trims a quiet-awake lead-in or extends at least 30 minutes
-    /// past the first wake. This changes review presentation only; the returned
-    /// night remains unconfirmed and still traverses the existing save gates.
+    /// wake boundary. Replace it with overlapping/same-day evidence that
+    /// materially trims a quiet-awake lead-in, trims a runaway end after
+    /// wake, or extends the same episode by at least 30 minutes. A later
+    /// quiet-sitting bout must not keep the overnight clock running.
+    /// This changes review presentation only; the returned night remains
+    /// unconfirmed and still traverses the existing save gates.
     nonisolated static func preferredGrowingSleepReview(
         replacing current: SleepHistorySnapshot.Night,
         with replacements: [SleepHistorySnapshot.Night],
@@ -36100,25 +36124,35 @@ final class SessionStore: ObservableObject {
         guard !current.confirmed,
               let currentStart = current.start,
               let currentEnd = current.end else { return nil }
-        return replacements
-            .filter { replacement in
-                guard !replacement.confirmed,
-                      let start = replacement.start,
-                      let end = replacement.end,
-                      end > start,
-                      start <= currentEnd.addingTimeInterval(maximumSameEpisodeGap),
-                      currentStart <= end.addingTimeInterval(maximumSameEpisodeGap) else {
-                    return false
-                }
-                return start.timeIntervalSince(currentStart) >= materialBoundaryChange
-                    || end.timeIntervalSince(currentEnd) >= materialBoundaryChange
+        let candidates = replacements.filter { replacement in
+            guard !replacement.confirmed,
+                  let start = replacement.start,
+                  let end = replacement.end,
+                  end > start,
+                  start <= currentEnd.addingTimeInterval(maximumSameEpisodeGap),
+                  currentStart <= end.addingTimeInterval(maximumSameEpisodeGap) else {
+                return false
             }
-            .max { lhs, rhs in
-                let lhsEnd = lhs.end ?? .distantPast
-                let rhsEnd = rhs.end ?? .distantPast
-                if lhsEnd != rhsEnd { return lhsEnd < rhsEnd }
-                return (lhs.start ?? .distantPast) < (rhs.start ?? .distantPast)
-            }
+            let trimsLeadIn = start.timeIntervalSince(currentStart) >= materialBoundaryChange
+            let trimsEnd = currentEnd.timeIntervalSince(end) >= materialBoundaryChange
+            let extendsSameEpisode = end.timeIntervalSince(currentEnd) >= materialBoundaryChange
+                && start <= currentEnd
+            return trimsLeadIn || trimsEnd || extendsSameEpisode
+        }
+        if let trimmed = candidates.max(by: { lhs, rhs in
+            let lhsTrim = currentEnd.timeIntervalSince(lhs.end ?? currentEnd)
+            let rhsTrim = currentEnd.timeIntervalSince(rhs.end ?? currentEnd)
+            return lhsTrim < rhsTrim
+        }),
+           currentEnd.timeIntervalSince(trimmed.end ?? currentEnd) >= materialBoundaryChange {
+            return trimmed
+        }
+        return candidates.max { lhs, rhs in
+            let lhsEnd = lhs.end ?? .distantPast
+            let rhsEnd = rhs.end ?? .distantPast
+            if lhsEnd != rhsEnd { return lhsEnd < rhsEnd }
+            return (lhs.start ?? .distantPast) < (rhs.start ?? .distantPast)
+        }
     }
 
     /// Builds a conservative review-only sleep episode from sustained
@@ -36208,6 +36242,27 @@ final class SessionStore: ObservableObject {
         return false
     }
 
+    /// Quiet sitting after a detected wake used to rejoin the overnight
+    /// episode (sleep-band bins within two hours), so the review clock kept
+    /// running until the user confirmed. Split when sustained awake sits
+    /// between two sleep-band bins.
+    nonisolated static func shouldSplitSleepEpisodeForInterveningAwake(
+        previousSleepBinStart: Date,
+        nextSleepBinStart: Date,
+        awakeBinStarts: [Date],
+        binSeconds: TimeInterval = 5 * 60
+    ) -> Bool {
+        let previousEnd = previousSleepBinStart.addingTimeInterval(binSeconds)
+        guard nextSleepBinStart > previousEnd else { return false }
+        return sustainedAwakeEvidenceExists(
+            awakeBinStarts: awakeBinStarts,
+            boundary: previousEnd,
+            side: .after,
+            binSeconds: binSeconds,
+            searchWindow: nextSleepBinStart.timeIntervalSince(previousEnd)
+        )
+    }
+
     private nonisolated static func physiologicalSleepReviewNightDraftCore(
         in sessions: [SavedSession],
         confirmedSleeps: [UserConfirmedSleep],
@@ -36295,7 +36350,13 @@ final class SessionStore: ObservableObject {
         for bin in bins {
             try cooperativeDeadline?.checkpoint()
             if let previous = current.last,
-               bin.start.timeIntervalSince(previous.start) > 2 * 60 * 60 {
+               bin.start.timeIntervalSince(previous.start) > 2 * 60 * 60
+                || Self.shouldSplitSleepEpisodeForInterveningAwake(
+                    previousSleepBinStart: previous.start,
+                    nextSleepBinStart: bin.start,
+                    awakeBinStarts: awakeBinStarts,
+                    binSeconds: binSeconds
+                ) {
                 episodes.append(current)
                 current = []
             }

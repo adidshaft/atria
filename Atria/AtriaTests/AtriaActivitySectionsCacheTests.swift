@@ -35,8 +35,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(source.contains(
             "publisher(for: HistoricalArchive.didUpdateNotification)"
         ), "Per-row archive writes must not trigger repeated whole-day scans")
-        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay ? store.sessions : []"),
+        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay"),
                       "The current wake cycle should start from the resident prepared session image")
+        XCTAssertTrue(source.contains("store.sessionsIncludingFreshActiveJournal()"),
+                      "device 2026-09-11: Activity HR must include the open journal")
         XCTAssertTrue(source.contains("since: snapshot.interval.start"),
                       "The current wake cycle should use the bounded recent reader")
         XCTAssertTrue(source.contains("maximumPoints: 100_000"),
