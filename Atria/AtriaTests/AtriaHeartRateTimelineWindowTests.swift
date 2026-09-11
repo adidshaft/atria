@@ -299,8 +299,8 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaHealthScreen.swift"),
                                 encoding: .utf8)
-        XCTAssertTrue(health.contains("sessionsForTimeline: { store.sessions }"),
-                      "Health Live monitor must pass the resident sessions into the 6h preview")
+        XCTAssertTrue(health.contains("sessionsIncludingFreshActiveJournal()"),
+                      "Health Live monitor must pass saved sessions plus the open journal into the 6h preview")
     }
 
     func testMergedKeepsFullResolution() {

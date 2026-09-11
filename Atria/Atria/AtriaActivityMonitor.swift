@@ -2324,7 +2324,8 @@ struct AtriaActivityMonitorTab: View {
         let interval = DateInterval(start: window.displayInterval.start,
                                     end: max(end, window.displayInterval.start.addingTimeInterval(1)))
         let snapshot = TimelineHeartRateSourceSnapshot(
-            sessions: window.isCurrentPhysiologicalDay ? store.sessions : [],
+            sessions: window.isCurrentPhysiologicalDay
+                ? store.sessionsIncludingFreshActiveJournal() : [],
             observedHeartRate: stressMonitorStore.heartRateHistory.map {
                 HistoricalArchive.HeartRatePoint(t: $0.t, bpm: $0.bpm)
             },

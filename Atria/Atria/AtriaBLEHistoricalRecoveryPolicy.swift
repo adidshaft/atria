@@ -1262,11 +1262,32 @@ extension AtriaBLEManager {
     /// drain — reassert must run. Mid-slice scene_active reassert still skips.
     /// Soak 14: a 1–2 page live tail is not complete; keep 2A37 paused so
     /// the next 0x22 can land before write seals another page.
+    /// Device 2026-09-11: an 83-minute Strength workout saved 0 HR samples
+    /// because `idleWindowDrainArchiveWarmRetry` kept admitting 2A37 pause
+    /// after the user had already started the session. A live workout or
+    /// calibration hold outranks that retry.
+    nonisolated static func shouldAdmitIdleWindowHeartRatePause(
+        explicitMotionOwnershipActive: Bool
+    ) -> Bool {
+        !explicitMotionOwnershipActive
+    }
+
+    /// Workout Start may disconnect a history owner, but the replacement
+    /// connection must restore 2A37 first. Re-admitting the pending history
+    /// owner on `didConnect` skipped HR discovery for the whole gym window.
+    nonisolated static func shouldAdmitFreshHistoryOwnerOnConnect(
+        explicitMotionOwnershipActive: Bool
+    ) -> Bool {
+        !explicitMotionOwnershipActive
+    }
+
     nonisolated static func shouldSkipIdleWindowHeartRateReassert(
         idleWindowDrainOwnsLink: Bool,
         verifiedEmptyHistoryCursor: Bool = false,
-        deferLiveRestoreForConsumeLiveTail: Bool = false
+        deferLiveRestoreForConsumeLiveTail: Bool = false,
+        explicitMotionOwnershipActive: Bool = false
     ) -> Bool {
+        if explicitMotionOwnershipActive { return false }
         if verifiedEmptyHistoryCursor { return false }
         if deferLiveRestoreForConsumeLiveTail { return true }
         return idleWindowDrainOwnsLink
