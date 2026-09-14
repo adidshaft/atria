@@ -223,6 +223,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let source = try leaseManagerSource()
         XCTAssertTrue(source.contains("central_rebuild_standing_connect_deferred_drain"))
         XCTAssertTrue(source.contains("skip_standing_connect_until_restore_slot_drain"))
+        XCTAssertTrue(
+            AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
+                didConnectThisProcess: false,
+                peripheralState: .connecting
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
+                didConnectThisProcess: false,
+                peripheralState: .disconnected
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
+                didConnectThisProcess: true,
+                peripheralState: .connecting
+            )
+        )
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
