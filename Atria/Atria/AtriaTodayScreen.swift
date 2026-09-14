@@ -47,7 +47,11 @@ struct AtriaTodaySessionState: Equatable {
         confirmedSleeps = store.confirmedSleeps
         behaviorImpactSummaries = store.behaviorImpactSummariesCache
         behaviorInsights = store.behaviorInsights
-        learnedInsights = store.learnedInsights
+        learnedInsights = {
+            let stored = store.learnedInsights
+            if !stored.isEmpty { return stored }
+            return AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory, now: now)
+        }()
         baseline = store.baseline
         baselineSamplesKey = store.baseline.samples.map {
             BaselineSampleKey(date: $0.date,
@@ -384,11 +388,19 @@ struct AtriaTodayScreen: View {
                 }
             }
 
+            if !sessionProjectionStore.state.learnedInsights.isEmpty {
+                AtriaLearnedInsightsBoard(
+                    insights: sessionProjectionStore.state.learnedInsights
+                )
+            }
+
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
             // big sections (user feedback 2026-07-07): the major blocks below
             // the ring render in a persisted order and reorder by
             // long-press-drag. Kickers travel with their sections.
-            ForEach(orderedTodaySections) { section in
+            // learnedRead is pinned under highlights, not in this list —
+            // this phone's CSV starts with weeklyPlan (device 2026-09-14 23:24).
+            ForEach(orderedTodaySections.filter { $0 != .learnedRead }) { section in
                 todaySection(section)
                     .onDrag {
                         draggingSection = section
@@ -899,10 +911,7 @@ struct AtriaTodayScreen: View {
             }
 
         case .learnedRead:
-            let insights = sessionProjectionStore.state.learnedInsights
-            if !insights.isEmpty {
-                AtriaLearnedInsightsBoard(insights: insights)
-            }
+            EmptyView()
 
         case .shortcuts:
             AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)

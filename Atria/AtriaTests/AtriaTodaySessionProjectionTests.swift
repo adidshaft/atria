@@ -180,6 +180,8 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertTrue(source.contains("showInsights = true"))
         XCTAssertTrue(source.contains("AtriaInsightsCardHost(store: store)"),
                       "Today should reuse the canonical ranked-insights card")
+        XCTAssertTrue(source.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
+        XCTAssertTrue(source.contains("AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory"))
     }
 
     func testDayStrainIncompleteCacheReusesOnlyExactSourceWindow() {
