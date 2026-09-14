@@ -89,4 +89,46 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(insights.contains { $0.kind == .bedtimeSpread })
         XCTAssertTrue(insights.contains { $0.detail.count > 40 })
     }
+
+    func testStackedRecoveryAndYesterdayStrainAreSpecific() {
+        let today = calendar.startOfDay(for: now)
+        let todayRollup = DailyRollupStoreEntry(
+            day: today,
+            recovery: 42,
+            sleepSeconds: 5 * 3_600,
+            sleepNeedSeconds: 8 * 3_600,
+            strain: 0.5,
+            calendar: calendar
+        )
+        let yesterday = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: -1, to: today)!,
+            strain: 12.4,
+            calendar: calendar
+        )
+        let insights = AtriaLearnedInsights.insights(
+            rollups: [todayRollup, yesterday],
+            now: now
+        )
+        XCTAssertTrue(insights.contains { $0.kind == .stackedRecovery })
+        XCTAssertTrue(insights.contains { $0.kind == .yesterdayStrain })
+        XCTAssertEqual(
+            insights.first { $0.kind == .stackedRecovery }?.emphasisLabel,
+            "Stack"
+        )
+    }
+
+    func testLearnedInsightsBoardIsTheSharedSurface() throws {
+        let source = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaLearnedInsightsBoard.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("What moved you"))
+        XCTAssertTrue(source.contains("featuredCard"))
+        XCTAssertTrue(source.contains("railColor(for:"))
+        XCTAssertFalse(source.contains("isPositive ? Metrics.electricGreen"))
+    }
 }

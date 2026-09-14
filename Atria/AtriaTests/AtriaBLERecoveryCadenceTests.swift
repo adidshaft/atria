@@ -106,12 +106,13 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 skipStandingReconnectOnce: false
             )
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
                 isActivelyScanning: true,
                 rediscoveringStuckRestore: true,
                 connectedThisProcess: false
-            )
+            ),
+            "bonded WHOOP does not advertise; keepalive must not deadlock on scan"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldKeepaliveDeferToActiveScan(

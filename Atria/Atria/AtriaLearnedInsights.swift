@@ -14,6 +14,8 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case bedtimeSpread
         case daySnapshot
         case readiness
+        case yesterdayStrain
+        case stackedRecovery
     }
 
     let id: String
@@ -26,11 +28,28 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
     var systemImage: String {
         switch kind {
         case .sleepDebt, .weeklySleepDebt, .bedtimeSpread: return "moon.zzz.fill"
-        case .loadMismatch, .weeklyStrain: return "bolt.heart.fill"
+        case .loadMismatch, .weeklyStrain, .yesterdayStrain: return "bolt.heart.fill"
         case .restingHRDrift: return "heart.fill"
-        case .recoveryDrift, .readiness: return "figure.walk"
+        case .recoveryDrift, .readiness, .stackedRecovery: return "figure.walk"
         case .hrvDrift: return "waveform.path.ecg"
         case .daySnapshot: return "calendar"
+        }
+    }
+
+    var emphasisLabel: String {
+        switch kind {
+        case .sleepDebt: return isPositive ? "Covered" : "Short"
+        case .weeklySleepDebt: return "Week"
+        case .loadMismatch: return isPositive ? "Cleared" : "Load"
+        case .restingHRDrift: return isPositive ? "Calmer" : "Elevated"
+        case .recoveryDrift: return isPositive ? "Up" : "Down"
+        case .hrvDrift: return isPositive ? "Higher" : "Lower"
+        case .weeklyStrain: return isPositive ? "Easier" : "Heavier"
+        case .bedtimeSpread: return "Clock"
+        case .daySnapshot: return "Today"
+        case .readiness: return isPositive ? "Go" : "Hold"
+        case .yesterdayStrain: return "Yesterday"
+        case .stackedRecovery: return "Stack"
         }
     }
 }
@@ -85,7 +104,7 @@ enum AtriaDurableInsightStore {
 }
 
 enum AtriaLearnedInsights {
-    static let maximumInsights = 6
+    static let maximumInsights = 7
 
     static func insights(rollups: [DailyRollupStoreEntry],
                          now: Date = Date()) -> [AtriaLearnedInsight] {
@@ -93,6 +112,9 @@ enum AtriaLearnedInsights {
         guard let latest = ordered.first else { return [] }
         var results: [AtriaLearnedInsight] = []
 
+        if let stacked = stackedRecovery(latest: latest, now: now) {
+            results.append(stacked)
+        }
         if let sleep = sleepDebt(latest: latest, now: now) {
             results.append(sleep)
         }
@@ -101,6 +123,9 @@ enum AtriaLearnedInsights {
         }
         if let weekly = weeklySleepDebt(ordered: ordered, now: now) {
             results.append(weekly)
+        }
+        if let yesterday = yesterdayStrain(ordered: ordered, now: now) {
+            results.append(yesterday)
         }
         if let load = loadMismatch(ordered: ordered, now: now) {
             results.append(load)
@@ -432,6 +457,54 @@ enum AtriaLearnedInsights {
             headline: "Today's picture",
             detail: parts.joined(separator: " · ") + ". These stay even after raw sensor files are retired.",
             isPositive: (latest.recovery ?? 50) >= 50,
+            asOf: now
+        )
+    }
+
+    private static func yesterdayStrain(ordered: [DailyRollupStoreEntry],
+                                        now: Date) -> AtriaLearnedInsight? {
+        guard ordered.count >= 2, let strain = ordered[1].strain, strain >= 6 else {
+            return nil
+        }
+        let prior = ordered.dropFirst(2).prefix(6).compactMap(\.strain)
+        let comparison: String
+        if prior.count >= 3 {
+            let mean = prior.reduce(0, +) / Double(prior.count)
+            if strain >= mean + 3 {
+                comparison = String(format: "That sits %.1f above your recent days. Recover today before stacking another peak.",
+                                    strain - mean)
+            } else if strain + 3 <= mean {
+                comparison = String(format: "That is lighter than your recent %.1f average — room to train if recovery agrees.",
+                                    mean)
+            } else {
+                comparison = "In line with your recent days. Do not treat it as a free pass or a warning on its own."
+            }
+        } else {
+            comparison = "Today's first job is to clear it, not to match it."
+        }
+        return AtriaLearnedInsight(
+            id: "yesterday-strain",
+            kind: .yesterdayStrain,
+            headline: String(format: "Yesterday carried %.1f strain", strain),
+            detail: comparison,
+            isPositive: strain < 10,
+            asOf: now
+        )
+    }
+
+    private static func stackedRecovery(latest: DailyRollupStoreEntry,
+                                        now: Date) -> AtriaLearnedInsight? {
+        guard let recovery = latest.recovery, recovery <= 49,
+              let slept = latest.sleepSeconds, slept > 0,
+              let need = latest.sleepNeedSeconds, need > 0 else { return nil }
+        let deltaHours = hours(need - slept)
+        guard deltaHours >= 1 else { return nil }
+        return AtriaLearnedInsight(
+            id: "stacked-recovery",
+            kind: .stackedRecovery,
+            headline: "Low recovery is stacked on short sleep",
+            detail: "Recovery is \(recovery)% and last night was \(hourText(deltaHours)) under need. Easy movement only until both move.",
+            isPositive: false,
             asOf: now
         )
     }
