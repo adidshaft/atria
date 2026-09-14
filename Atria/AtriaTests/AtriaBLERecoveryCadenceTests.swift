@@ -223,6 +223,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 alreadyToggledThisConnection: false
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                alreadyToggledThisConnection: false,
+                alreadyRediscoveredThisConnection: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 4,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: false
+            )
+        )
+        XCTAssertTrue(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: true))
+        XCTAssertFalse(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: false))
     }
 
     func testStuckRestoreUnstickRebuildsAnonymousCentral() throws {
@@ -11676,9 +11714,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("enableMissingProtectedCompanionNotifications"))
         XCTAssertTrue(refreshBody.contains("shouldRefreshZombieProprietaryCCCD"))
         XCTAssertTrue(refreshBody.contains("refreshEvenIfNotifying: zombie"))
+        XCTAssertTrue(refreshBody.contains("writeProprietaryWithoutResponse"),
+                      "silent 6A/51 must wait for the CoreBluetooth WWR queue")
         XCTAssertFalse(refreshBody.contains("Cmd.sendR10R11Realtime"),
                        "silent IMU refresh must not write 0x3F")
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
+
+        let toggleStart = try XCTUnwrap(source.range(
+            of: "private func kickZombieProprietaryStreamIfNeeded"
+        ))
+        let toggleEnd = try XCTUnwrap(source.range(
+            of: "/// A healthy active subscription survives foreground transitions untouched.",
+            range: toggleStart.upperBound..<source.endIndex
+        ))
+        let toggleBody = String(source[toggleStart.lowerBound..<toggleEnd.lowerBound])
+        XCTAssertTrue(toggleBody.contains("zombie_cccd_toggle_on"))
+        XCTAssertTrue(toggleBody.contains("rediscoverZombieProprietaryTransportIfNeeded"))
+        XCTAssertTrue(toggleBody.contains("after_zombie_toggle"))
+        XCTAssertFalse(toggleBody.contains("Cmd.sendR10R11Realtime"))
+        XCTAssertFalse(toggleBody.contains("cancelPeripheralConnection"))
 
         let armStart = try XCTUnwrap(source.range(
             of: "private func ensureR10LivenessWatchdog"

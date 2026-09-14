@@ -243,6 +243,12 @@ extension AtriaBLEManager {
         static let passiveR10FirstValidAt = "atria.radio.passiveR10FirstValidAt"
         static let passiveR10LastValidAt = "atria.radio.passiveR10LastValidAt"
         static let passiveR10ValidFrames = "atria.radio.passiveR10ValidFrames"
+        static let txReady = "atria.radio.txReady"
+        static let lastWWRAllowed = "atria.radio.lastWWRAllowed"
+        static let wwrBlockedCount = "atria.radio.wwrBlockedCount"
+        static let lastWWRFlushedAt = "atria.radio.lastWWRFlushedAt"
+        static let lastWWRFlushCount = "atria.radio.lastWWRFlushCount"
+        static let zombieTxRediscoverAt = "atria.r10.zombieTxRediscoverAt"
     }
 
     enum WorkoutMotionDefaults {
@@ -535,6 +541,9 @@ extension AtriaBLEManager {
         static let lastPacketLength = "atria.protocol.lastPacketLength"
         static let packetsThisConnection = "atria.protocol.packetsThisConnection"
         static let lastPacketAt = "atria.protocol.lastPacketAt"
+        static let notifyCallbacksThisConnection = "atria.protocol.notifyCallbacksThisConnection"
+        static let lastNotifyCallbackAt = "atria.protocol.lastNotifyCallbackAt"
+        static let lastNotifyCallbackUUID = "atria.protocol.lastNotifyCallbackUUID"
     }
 
     enum Cmd {
