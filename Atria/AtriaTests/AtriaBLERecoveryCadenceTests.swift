@@ -316,18 +316,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             20
         )
+        XCTAssertEqual(
+            AtriaBLEManager.reconnectWatchdogDelaySeconds(
+                reconnectWatchdogSeconds: 20,
+                unstickSeconds: 3,
+                shouldUnstickStuckRestore: false,
+                identifiedReissueSeconds: 8,
+                shouldReissueIdentified: true
+            ),
+            8
+        )
+        XCTAssertEqual(AtriaBLEManager.identifiedStandingConnectReissueSeconds, 8)
         XCTAssertTrue(
-            AtriaBLEManager.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
-                alreadyRebuiltIdentified: false,
-                didConnectThisProcess: false
+            AtriaBLEManager.shouldReissueIdentifiedStandingConnectAfterDrain(
+                identifiedCentralRebuilt: true,
+                alreadyReissuedIdentified: false,
+                didConnectThisProcess: false,
+                peripheralState: .connecting
             )
         )
         XCTAssertFalse(
-            AtriaBLEManager.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
-                alreadyRebuiltIdentified: true,
-                didConnectThisProcess: false
+            AtriaBLEManager.shouldReissueIdentifiedStandingConnectAfterDrain(
+                identifiedCentralRebuilt: true,
+                alreadyReissuedIdentified: true,
+                didConnectThisProcess: false,
+                peripheralState: .connecting
             )
         )
+        XCTAssertTrue(source.contains("repair_identified_standing_connect_reissue"))
+        XCTAssertTrue(source.contains("completeConnectRequest(peripheral)"))
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
