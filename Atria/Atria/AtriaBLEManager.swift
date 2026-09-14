@@ -5315,6 +5315,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedAt = now
         protocolPacketsThisConnection = 0
         lastR10ZombieCCCDRefreshAt = nil
+        lastR10ZombieCCCDToggleAt = nil
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
         reissuedStuckRestoredConnecting = false
         rediscoveredStuckRestoredConnecting = false
@@ -8664,6 +8665,53 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         peripheral.setNotifyValue(true, for: stream5)
         AtriaDebugLog("ATRIADBG r10_notify_repair status=requested reason=%@ action=enable_stream5_no_reconnect",
                       reason)
+    }
+
+    /// One stream-5 off/on when this connection has HR but zero proprietary
+    /// packets. Never touches 2A37. `setNotify(true)` on the restored zombie
+    /// CCCD did not resume IMU (device 2026-09-14 23:54).
+    private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
+        guard !standardHROnlyMode,
+              !readOnlyHistoryCaptureRequested,
+              status == .connected,
+              let peripheral,
+              peripheral.state == .connected else { return }
+        let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
+        guard Self.shouldToggleZombieProprietaryCCCD(
+            connected: true,
+            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            packetsThisConnection: protocolPacketsThisConnection,
+            connectedAge: connectedAge,
+            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil
+        ) else { return }
+        guard let stream5 = peripheral.services?
+            .first(where: { $0.uuid == Self.UUIDs.strapService })?
+            .characteristics?
+            .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
+              stream5.properties.contains(.notify) else { return }
+        lastR10ZombieCCCDToggleAt = now
+        UserDefaults.standard.set(
+            now.timeIntervalSince1970,
+            forKey: "atria.r10.zombieCCCDToggleAt"
+        )
+        strapStream5NotifyConfirmed = false
+        peripheral.setNotifyValue(false, for: stream5)
+        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_off reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
+                      reason)
+        Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected,
+                  self.protocolPacketsThisConnection == 0,
+                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            guard let stream5 = peripheral.services?
+                .first(where: { $0.uuid == Self.UUIDs.strapService })?
+                .characteristics?
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else { return }
+            peripheral.setNotifyValue(true, for: stream5)
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
+                          reason)
+        }
     }
 
     /// A healthy active subscription survives foreground transitions untouched.
@@ -29780,6 +29828,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10RecoveryRediscoveryAt: Date?
     private var lastR10NotifyRepairAt: Date?
     private var lastR10ZombieCCCDRefreshAt: Date?
+    private var lastR10ZombieCCCDToggleAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 20
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
@@ -29920,6 +29969,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard connectedAge >= minimumConnectedAge else { return false }
         if let lastRefreshAge, lastRefreshAge >= 0,
            lastRefreshAge < minimumRefreshInterval {
+            return false
+        }
+        return true
+    }
+
+    /// `setNotify(true)` on an already-notifying zombie CCCD produced no
+    /// packets (device 2026-09-14 23:54). One stream-5 off/on per epoch, never
+    /// 2A37, never 0x3F, never a standing reconnect.
+    nonisolated static func shouldToggleZombieProprietaryCCCD(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        packetsThisConnection: Int,
+        connectedAge: TimeInterval,
+        alreadyToggledThisConnection: Bool,
+        minimumConnectedAge: TimeInterval = 20
+    ) -> Bool {
+        guard connected, heartRateNotifying, packetsThisConnection == 0 else { return false }
+        guard !alreadyToggledThisConnection, connectedAge >= minimumConnectedAge else {
             return false
         }
         return true
@@ -30859,6 +30926,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if eligible, connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
+            kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
             return
         }
         let action = Self.r10LivenessAction(
@@ -30883,6 +30951,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // toggle a healthy HR/R10 subscription for a missing frame.
             reassertR10NotificationIfConnected(reason: "\(reason)_stale_followup", now: now)
         }
+        kickZombieProprietaryStreamIfNeeded(now: now, reason: reason)
     }
 
     // MARK: Workout motion ownership lease
