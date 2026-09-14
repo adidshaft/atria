@@ -5314,6 +5314,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedAt = now
         reissuedStuckRestoredConnecting = false
         rediscoveredStuckRestoredConnecting = false
+        identifiedCentralRebuiltAfterRestoreSlotDrain = false
+        reissuedIdentifiedStandingConnectAfterDrain = false
         skipStandingReconnectOnce = false
         callbackPolicyState.update {
             $0.skipStandingReconnectOnce = false
@@ -5556,6 +5558,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// (device 2026-09-14 18:56: `state=0`, no `didConnect`). One identified
     /// rebuild after drain restores the session type that produced 9315 links.
     private var identifiedCentralRebuiltAfterRestoreSlotDrain = false
+    private var reissuedIdentifiedStandingConnectAfterDrain = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -26111,9 +26114,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func reconnectWatchdogDelaySeconds(
         reconnectWatchdogSeconds: TimeInterval,
         unstickSeconds: TimeInterval,
-        shouldUnstickStuckRestore: Bool
+        shouldUnstickStuckRestore: Bool,
+        identifiedReissueSeconds: TimeInterval = 8,
+        shouldReissueIdentified: Bool = false
     ) -> TimeInterval {
-        shouldUnstickStuckRestore ? unstickSeconds : reconnectWatchdogSeconds
+        if shouldUnstickStuckRestore { return unstickSeconds }
+        if shouldReissueIdentified { return identifiedReissueSeconds }
+        return reconnectWatchdogSeconds
+    }
+
+    nonisolated static var identifiedStandingConnectReissueSeconds: TimeInterval { 8 }
+
+    /// After the identified rebuild issues `connect`, the 20s watchdog only
+    /// observed — the retainer claim stayed pending and no second radio
+    /// request ran (device 2026-09-14 19:09). Reissue once on that central.
+    nonisolated static func shouldReissueIdentifiedStandingConnectAfterDrain(
+        identifiedCentralRebuilt: Bool,
+        alreadyReissuedIdentified: Bool,
+        didConnectThisProcess: Bool,
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        identifiedCentralRebuilt
+            && !alreadyReissuedIdentified
+            && !didConnectThisProcess
+            && peripheralState != .connected
     }
 
     /// Anonymous `connect` hung on a disconnected retrieve (device 18:56).
@@ -26138,6 +26162,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 peripheralState: peripheral.state,
                 didConnectThisProcess: connectedAt != nil,
                 alreadyReissued: reissuedStuckRestoredConnecting
+            ),
+            identifiedReissueSeconds: Self.identifiedStandingConnectReissueSeconds,
+            shouldReissueIdentified: Self.shouldReissueIdentifiedStandingConnectAfterDrain(
+                identifiedCentralRebuilt: identifiedCentralRebuiltAfterRestoreSlotDrain,
+                alreadyReissuedIdentified: reissuedIdentifiedStandingConnectAfterDrain,
+                didConnectThisProcess: connectedAt != nil,
+                peripheralState: peripheral.state
             )
         )
         reconnectWatchdogTask = Task { @MainActor in
@@ -26192,6 +26223,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                     return
                 }
+                if Self.shouldReissueIdentifiedStandingConnectAfterDrain(
+                    identifiedCentralRebuilt: self.identifiedCentralRebuiltAfterRestoreSlotDrain,
+                    alreadyReissuedIdentified: self.reissuedIdentifiedStandingConnectAfterDrain,
+                    didConnectThisProcess: self.connectedAt != nil,
+                    peripheralState: peripheral.state
+                ) {
+                    self.reissuedIdentifiedStandingConnectAfterDrain = true
+                    AtriaDebugLog(
+                        "ATRIADBG ble_link watchdog reason=%@ action=reissue_identified_standing_connect peripheral_state=%d",
+                        reason,
+                        peripheral.state.rawValue
+                    )
+                    self.reissueIdentifiedStandingConnectAfterDrain(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
                 AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=observe_pending_connect_saved_strap peripheral_state=%d",
                               reason,
                               peripheral.state.rawValue)
@@ -26211,6 +26260,47 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   reconnectWatchdogSeconds)
             self.startScan(reason: "\(reason)_watchdog_recovery")
         }
+    }
+
+    /// The identified rebuild's first `connect` can sit in `.connecting`
+    /// forever if the retainer still owns the claim (device 2026-09-14 19:09).
+    /// Drop that claim, cancel, and let `didDisconnect` install a fresh
+    /// standing request on the same restore-identified central.
+    private func reissueIdentifiedStandingConnectAfterDrain(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        recordReconnectLeaseStage(
+            "repair_identified_standing_connect_reissue",
+            detail: reason
+        )
+        _ = connectedPeripheralRetainer.completeConnectRequest(peripheral)
+        awaitingDidDisconnectToForceConnectAfterDrain = true
+        recordReconnectLeaseStage(
+            "app_cancel_wrapper",
+            detail: "identified_standing_connect_reissue"
+        )
+        central.cancelPeripheralConnection(peripheral)
+        startReconnectWatchdog(
+            reason: "identified_standing_connect_reissue",
+            peripheral: peripheral
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+            self.awaitingDidDisconnectToForceConnectAfterDrain = false
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            self.forceStandingConnectAfterRestoreSlotDrain(
+                reason: "identified_standing_connect_reissue_timeout",
+                allowCancelConnecting: false
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=reissue_identified_standing_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
     }
 
     /// Cancel the zombie restored connect, then replace the wedged
