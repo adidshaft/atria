@@ -241,6 +241,47 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 peripheralState: .connecting
             )
         )
+        XCTAssertEqual(AtriaBLEManager.restoreSlotDrainSettleSeconds, 4)
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishRestoreSlotDrainFromCleanerCallback()
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+                peripheralState: .connecting
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+                peripheralState: .disconnecting
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+                peripheralState: .disconnected
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldStartScanOnPoweredOnFallback(
+                drainDeferred: true,
+                hasSavedStrap: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldStartScanOnPoweredOnFallback(
+                drainDeferred: false,
+                hasSavedStrap: true
+            ),
+            "a bonded WHOOP does not advertise; never scan when a saved UUID exists"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldStartScanOnPoweredOnFallback(
+                drainDeferred: false,
+                hasSavedStrap: false
+            )
+        )
+        XCTAssertTrue(source.contains("repair_central_restore_slot_drain_cancel_connecting"))
+        XCTAssertTrue(source.contains("skip_scan_saved_or_restore_slot_drain"))
+        XCTAssertTrue(source.contains("Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))"))
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
