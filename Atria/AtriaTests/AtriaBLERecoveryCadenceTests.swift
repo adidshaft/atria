@@ -170,6 +170,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(rebuild.contains("repair_central_rebuild_anonymous"))
         XCTAssertTrue(rebuild.contains("repair_central_restore_slot_drain"))
         XCTAssertTrue(rebuild.contains("AtriaLegacyBLECentralCleaner("))
+        XCTAssertTrue(rebuild.contains("deferStandingConnectForRestoreSlotDrain = true"))
         XCTAssertTrue(rebuild.contains("CBCentralManagerOptionShowPowerAlertKey: false"))
     }
 
@@ -189,6 +190,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             ["\(base).recovery-b-v1", base]
         )
+    }
+
+    func testRestoreSlotDrainDefersStandingConnect() throws {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+                deferring: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+                deferring: false
+            )
+        )
+        let source = try leaseManagerSource()
+        XCTAssertTrue(source.contains("central_rebuild_standing_connect_deferred_drain"))
+        XCTAssertTrue(source.contains("skip_standing_connect_until_restore_slot_drain"))
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {

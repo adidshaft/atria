@@ -12,6 +12,7 @@ final class AtriaBLECallbackPolicyState: @unchecked Sendable {
         var protectedProfileIsEmpty: Bool
         var protectedStandardDiscoveryStarted: Bool
         var skipStandingReconnectOnce: Bool
+        var deferStandingConnectForRestoreSlotDrain: Bool
     }
 
     private let lock = NSLock()
@@ -23,7 +24,8 @@ final class AtriaBLECallbackPolicyState: @unchecked Sendable {
         historySkipsDataRange: Bool = false,
         protectedProfileIsEmpty: Bool = true,
         protectedStandardDiscoveryStarted: Bool = false,
-        skipStandingReconnectOnce: Bool = false
+        skipStandingReconnectOnce: Bool = false,
+        deferStandingConnectForRestoreSlotDrain: Bool = false
     ) {
         value = Snapshot(
             standardHROnly: standardHROnly,
@@ -31,7 +33,8 @@ final class AtriaBLECallbackPolicyState: @unchecked Sendable {
             historySkipsDataRange: historySkipsDataRange,
             protectedProfileIsEmpty: protectedProfileIsEmpty,
             protectedStandardDiscoveryStarted: protectedStandardDiscoveryStarted,
-            skipStandingReconnectOnce: skipStandingReconnectOnce
+            skipStandingReconnectOnce: skipStandingReconnectOnce,
+            deferStandingConnectForRestoreSlotDrain: deferStandingConnectForRestoreSlotDrain
         )
     }
 
