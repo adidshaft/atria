@@ -3963,6 +3963,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return currentIdentifier == alternate ? baseIdentifier : alternate
     }
 
+    /// Both A/B restore slots can keep a zombie `.connecting` WHOOP in
+    /// bluetoothd after a rebuild storm. Drain every identifier the retired
+    /// manager could still own so the anonymous replacement can complete.
+    nonisolated static func restoreSlotIdentifiersToDrainAfterStuckRebuild(
+        baseIdentifier: String,
+        currentIdentifier: String
+    ) -> [String] {
+        let alternate = nextCentralRecoveryRestoreIdentifier(
+            baseIdentifier: baseIdentifier,
+            currentIdentifier: currentIdentifier
+        )
+        var seen = Set<String>()
+        return [currentIdentifier, alternate, baseIdentifier].compactMap { id in
+            guard !id.isEmpty, seen.insert(id).inserted else { return nil }
+            return id
+        }
+    }
+
     enum CentralUnavailableRecoveryPlan: Equatable {
         case none
         case rebuild(after: TimeInterval)
@@ -21778,7 +21796,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
-        callbackCentral.connect(target, options: nil)
+        callbackCentral.connect(
+            target,
+            options: [CBConnectPeripheralOptionEnableAutoReconnect: true]
+        )
         return true
     }
 
@@ -26867,6 +26888,52 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         delegateQueue?.resume()
         recomputeConnectionStatus(reason: "event")
+        if omitRestoreIdentifier, motionHandshakeDiagnostic == nil {
+            drainStuckRestoreSlotsThenReissueConnect(
+                baseIdentifier: baseRestoreIdentifier,
+                currentIdentifier: currentRestoreIdentifier,
+                trigger: trigger
+            )
+        }
+    }
+
+    /// bluetoothd still owns the WHOOP through the retired A/B restore
+    /// sessions after an anonymous rebuild (device 2026-09-14 17:28: standing
+    /// connect issued, no `didConnect`). Cancel those namespaces so the
+    /// anonymous pending request can complete.
+    private func drainStuckRestoreSlotsThenReissueConnect(
+        baseIdentifier: String,
+        currentIdentifier: String,
+        trigger: String
+    ) {
+        let identifiers = Self.restoreSlotIdentifiersToDrainAfterStuckRebuild(
+            baseIdentifier: baseIdentifier,
+            currentIdentifier: currentIdentifier
+        )
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain",
+            detail: identifiers.joined(separator: ",")
+        )
+        for identifier in identifiers {
+            let cleaner = AtriaLegacyBLECentralCleaner(
+                restoreIdentifier: identifier
+            ) { [weak self] cleanerID in
+                self?.legacyCentralCleaners.removeAll { $0.id == cleanerID }
+                self?.finishStuckRestoreSlotDrainIfNeeded(trigger: trigger)
+            }
+            legacyCentralCleaners.append(cleaner)
+        }
+    }
+
+    private func finishStuckRestoreSlotDrainIfNeeded(trigger: String) {
+        guard connectedAt == nil, status != .connected else { return }
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain_reissue",
+            detail: trigger
+        )
+        _ = reconnectToSavedPeripheralIfPossible(
+            reason: "stuck_restore_slot_drain_complete"
+        )
     }
 
     private func reconcileCentralUnavailableRecovery(
@@ -47436,10 +47503,19 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // connect call and its success line are byte-for-byte unchanged.
             if let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
                let uuid = UUID(uuidString: uuidString) {
-                if let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
-                    if Self.shouldIssuePoweredOnStandingConnect(
+                let preferSystemConnected = legacyPowerOnMarkers.silentStreamRebuild
+                    || centralPowerOnMarkers.silentStreamRebuild
+                let systemConnected = preferSystemConnected
+                    ? central.retrieveConnectedPeripherals(
+                        withServices: Self.UUIDs.scanServices
+                    ).first(where: { $0.identifier == uuid })
+                    : nil
+                if let saved = systemConnected
+                    ?? central.retrievePeripherals(withIdentifiers: [uuid]).first {
+                    let issueConnect = Self.shouldIssuePoweredOnStandingConnect(
                         peripheralState: saved.state
-                    ) {
+                    ) || (preferSystemConnected && saved.state == .connected)
+                    if issueConnect {
                         issueSingleFlightConnect(
                             saved,
                             central: central,

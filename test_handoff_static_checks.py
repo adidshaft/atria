@@ -8872,9 +8872,13 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, text, needle)
 
         self.assertEqual(
-            text.count("callbackCentral.connect(target, options: nil)"),
+            text.count("callbackCentral.connect("),
             1,
             "every production connect issuer must use the single-flight gateway",
+        )
+        self.assertIn(
+            "CBConnectPeripheralOptionEnableAutoReconnect",
+            text,
         )
 
         restore_method = re.search(

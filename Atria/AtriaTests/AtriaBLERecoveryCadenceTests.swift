@@ -168,7 +168,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let rebuild = String(source[rebuildStart.lowerBound..<rebuildEnd.lowerBound])
         XCTAssertTrue(rebuild.contains("omitRestoreIdentifier"))
         XCTAssertTrue(rebuild.contains("repair_central_rebuild_anonymous"))
+        XCTAssertTrue(rebuild.contains("repair_central_restore_slot_drain"))
+        XCTAssertTrue(rebuild.contains("AtriaLegacyBLECentralCleaner("))
         XCTAssertTrue(rebuild.contains("CBCentralManagerOptionShowPowerAlertKey: false"))
+    }
+
+    func testStuckRestoreDrainsBothRecoverySlots() {
+        let base = "com.adidshaft.atria.ble-central-v5"
+        XCTAssertEqual(
+            AtriaBLEManager.restoreSlotIdentifiersToDrainAfterStuckRebuild(
+                baseIdentifier: base,
+                currentIdentifier: base
+            ),
+            [base, "\(base).recovery-b-v1"]
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.restoreSlotIdentifiersToDrainAfterStuckRebuild(
+                baseIdentifier: base,
+                currentIdentifier: "\(base).recovery-b-v1"
+            ),
+            ["\(base).recovery-b-v1", base]
+        )
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
