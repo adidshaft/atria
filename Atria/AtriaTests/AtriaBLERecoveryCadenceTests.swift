@@ -149,6 +149,55 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testZombieProprietaryCCCDRefreshesWithoutDisableOrReconnect() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 12,
+                lastRefreshAge: nil
+            ),
+            "restored stream-5 isNotifying with zero packets this epoch must re-enable"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 3,
+                connectedAge: 12,
+                lastRefreshAge: nil
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 2,
+                lastRefreshAge: nil
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 20,
+                lastRefreshAge: 10
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: false,
+                packetsThisConnection: 0,
+                connectedAge: 20,
+                lastRefreshAge: nil
+            )
+        )
+    }
+
     func testStuckRestoreUnstickRebuildsAnonymousCentral() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
@@ -11598,6 +11647,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let refreshBody = String(source[refreshStart.lowerBound..<refreshEnd.lowerBound])
         XCTAssertTrue(refreshBody.contains("enableMissingProtectedCompanionNotifications"))
+        XCTAssertTrue(refreshBody.contains("shouldRefreshZombieProprietaryCCCD"))
+        XCTAssertTrue(refreshBody.contains("refreshEvenIfNotifying: zombie"))
         XCTAssertFalse(refreshBody.contains("Cmd.sendR10R11Realtime"),
                        "silent IMU refresh must not write 0x3F")
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
