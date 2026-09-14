@@ -117,9 +117,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
                 isActivelyScanning: false,
                 rediscoveringStuckRestore: true,
-                connectedThisProcess: false
+                connectedThisProcess: false,
+                skipStandingReconnectOnce: true
             ),
             "keepalive must not standing-connect the old central during rebuild"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: false,
+                rediscoveringStuckRestore: true,
+                connectedThisProcess: false,
+                restoreSlotDrainDeferred: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: false,
+                rediscoveringStuckRestore: true,
+                connectedThisProcess: false
+            ),
+            "after restore-slot drain, keepalive must reissue the standing connect"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
