@@ -295,8 +295,39 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("repair_central_restore_slot_drain_cancel_connecting"))
         XCTAssertTrue(source.contains("repair_central_restore_slot_drain_retrieved"))
+        XCTAssertTrue(source.contains("repair_central_rebuild_identified_after_drain"))
+        XCTAssertTrue(source.contains("omitRestoreIdentifier: false"))
         XCTAssertTrue(source.contains("skip_scan_saved_or_restore_slot_drain"))
         XCTAssertTrue(source.contains("Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))"))
+        XCTAssertEqual(AtriaBLEManager.stuckRestoredConnectingUnstickSeconds, 3)
+        XCTAssertEqual(
+            AtriaBLEManager.reconnectWatchdogDelaySeconds(
+                reconnectWatchdogSeconds: 20,
+                unstickSeconds: 3,
+                shouldUnstickStuckRestore: true
+            ),
+            3
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.reconnectWatchdogDelaySeconds(
+                reconnectWatchdogSeconds: 20,
+                unstickSeconds: 3,
+                shouldUnstickStuckRestore: false
+            ),
+            20
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+                alreadyRebuiltIdentified: false,
+                didConnectThisProcess: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+                alreadyRebuiltIdentified: true,
+                didConnectThisProcess: false
+            )
+        )
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {

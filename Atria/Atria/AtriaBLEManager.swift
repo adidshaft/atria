@@ -5552,6 +5552,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// and this waits for `didDisconnect` before issuing a real standing
     /// `connect` (device 2026-09-14 18:29: connect-on-connecting hung).
     private var awaitingDidDisconnectToForceConnectAfterDrain = false
+    /// Anonymous-central `connect` on a disconnected WHOOP hung in-range
+    /// (device 2026-09-14 18:56: `state=0`, no `didConnect`). One identified
+    /// rebuild after drain restores the session type that produced 9315 links.
+    private var identifiedCentralRebuiltAfterRestoreSlotDrain = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -26100,13 +26104,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         !drainDeferred && !hasSavedStrap
     }
 
+    /// Restored `.connecting` never completed on this phone today. Unstick in
+    /// 3s instead of waiting a full 20s watchdog while the user is in range.
+    nonisolated static var stuckRestoredConnectingUnstickSeconds: TimeInterval { 3 }
+
+    nonisolated static func reconnectWatchdogDelaySeconds(
+        reconnectWatchdogSeconds: TimeInterval,
+        unstickSeconds: TimeInterval,
+        shouldUnstickStuckRestore: Bool
+    ) -> TimeInterval {
+        shouldUnstickStuckRestore ? unstickSeconds : reconnectWatchdogSeconds
+    }
+
+    /// Anonymous `connect` hung on a disconnected retrieve (device 18:56).
+    /// After the A/B slots are empty, rebuild a restore-identified central
+    /// and let poweredOn issue the standing connect that historically works.
+    nonisolated static func shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+        alreadyRebuiltIdentified: Bool,
+        didConnectThisProcess: Bool
+    ) -> Bool {
+        !alreadyRebuiltIdentified && !didConnectThisProcess
+    }
+
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
     ) {
         reconnectWatchdogTask?.cancel()
+        let delay = Self.reconnectWatchdogDelaySeconds(
+            reconnectWatchdogSeconds: reconnectWatchdogSeconds,
+            unstickSeconds: Self.stuckRestoredConnectingUnstickSeconds,
+            shouldUnstickStuckRestore: Self.shouldReissueStuckRestoredConnecting(
+                peripheralState: peripheral.state,
+                didConnectThisProcess: connectedAt != nil,
+                alreadyReissued: reissuedStuckRestoredConnecting
+            )
+        )
         reconnectWatchdogTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(reconnectWatchdogSeconds))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             guard self.peripheral === peripheral,
                   self.status == .connecting,
@@ -27098,6 +27133,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             "repair_central_restore_slot_drain_reissue",
             detail: trigger
         )
+        if Self.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+            alreadyRebuiltIdentified: identifiedCentralRebuiltAfterRestoreSlotDrain,
+            didConnectThisProcess: connectedAt != nil
+        ) {
+            identifiedCentralRebuiltAfterRestoreSlotDrain = true
+            recordReconnectLeaseStage(
+                "repair_central_rebuild_identified_after_drain",
+                detail: trigger
+            )
+            rebuildCentralForWedgedSessionOnce(
+                trigger: "after_restore_slot_drain",
+                omitRestoreIdentifier: false
+            )
+            return
+        }
         forceStandingConnectAfterRestoreSlotDrain(reason: trigger)
     }
 
