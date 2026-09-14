@@ -546,6 +546,7 @@ extension AtriaBLEManager {
         static let lastNotifyCallbackAt = "atria.protocol.lastNotifyCallbackAt"
         static let lastNotifyCallbackUUID = "atria.protocol.lastNotifyCallbackUUID"
         static let lastNotifyCallbackLength = "atria.protocol.lastNotifyCallbackLength"
+        static let lastNotifyCallbackHex = "atria.protocol.lastNotifyCallbackHex"
         static let stream4NotifyCallbacksThisConnection = "atria.protocol.stream4NotifyCallbacksThisConnection"
         static let stream5NotifyCallbacksThisConnection = "atria.protocol.stream5NotifyCallbacksThisConnection"
     }

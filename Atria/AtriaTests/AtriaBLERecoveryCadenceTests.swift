@@ -261,6 +261,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: true))
         XCTAssertFalse(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: false))
+        XCTAssertTrue(
+            AtriaBLEManager.stream5CountsAsNotifying(
+                confirmed: true,
+                characteristicNotifying: false
+            ),
+            "a just-reenabled stream-5 must count as notifying before the CCCD callback"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.stream5CountsAsNotifying(
+                confirmed: false,
+                characteristicNotifying: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.stream5CountsAsNotifying(
+                confirmed: false,
+                characteristicNotifying: false
+            )
+        )
     }
 
     func testStuckRestoreUnstickRebuildsAnonymousCentral() throws {
@@ -11729,6 +11748,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let toggleBody = String(source[toggleStart.lowerBound..<toggleEnd.lowerBound])
         XCTAssertTrue(toggleBody.contains("zombie_cccd_toggle_on"))
+        XCTAssertTrue(toggleBody.contains("strapStream5NotifyConfirmed = true"))
         XCTAssertTrue(toggleBody.contains("rediscoverZombieProprietaryTransportIfNeeded"))
         XCTAssertTrue(toggleBody.contains("after_zombie_toggle"))
         XCTAssertFalse(toggleBody.contains("Cmd.sendR10R11Realtime"))
@@ -11755,6 +11775,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let liveBody = String(source[liveStart.lowerBound..<liveEnd.lowerBound])
         XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
                       "a leftover queued 6A/51 must flush on the liveness tick")
+        XCTAssertTrue(liveBody.contains("after_unconfirmed_toggle"),
+                      "an already-toggled silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("Cmd.sendR10R11Realtime"))
     }
 
