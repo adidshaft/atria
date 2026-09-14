@@ -9861,7 +9861,8 @@ struct AtriaInsightsCard: View, Equatable {
                 if !learned.isEmpty {
                     AtriaLearnedInsightsBoard(
                         insights: Array(learned.prefix(5)),
-                        showsHeader: false
+                        showsHeader: false,
+                        usesOwnCard: false
                     )
                 }
                 ForEach(insights.prefix(3)) { insight in

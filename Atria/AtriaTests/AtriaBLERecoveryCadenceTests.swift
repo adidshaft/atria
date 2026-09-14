@@ -11589,6 +11589,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "cover-live IMU recovery must not write 0x3F")
         XCTAssertTrue(coverBody.contains("cmds=6a01,51_duration_le"))
 
+        let refreshStart = try XCTUnwrap(source.range(
+            of: "private func refreshProtectedBoundedRawCaptureIfNeeded"
+        ))
+        let refreshEnd = try XCTUnwrap(source.range(
+            of: "private func requestBoundedR10ActivationForSilentStream",
+            range: refreshStart.upperBound..<source.endIndex
+        ))
+        let refreshBody = String(source[refreshStart.lowerBound..<refreshEnd.lowerBound])
+        XCTAssertTrue(refreshBody.contains("enableMissingProtectedCompanionNotifications"))
+        XCTAssertFalse(refreshBody.contains("Cmd.sendR10R11Realtime"),
+                       "silent IMU refresh must not write 0x3F")
+        XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
+
         let armStart = try XCTUnwrap(source.range(
             of: "private func ensureR10LivenessWatchdog"
         ))

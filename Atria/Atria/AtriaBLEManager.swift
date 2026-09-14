@@ -30468,9 +30468,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Enable only inactive companion notifications on this already-connected
+    /// link. Established CCCDs are left alone; this is not a toggle and not a
+    /// reconnect. Workout dense IMU already does this; silent 6A/51 without
+    /// RX/stream4 produced diagnostic packets and zero IMU frames
+    /// (device 2026-09-14 23:03).
+    @discardableResult
+    private func enableMissingProtectedCompanionNotifications(
+        peripheral: CBPeripheral
+    ) -> Int {
+        let strapService = peripheral.services?.first {
+            $0.uuid == Self.UUIDs.strapService
+        }
+        var enabled = 0
+        for uuid in Self.protectedR10ResponseEventDataNotifyOrder {
+            guard let characteristic = strapService?.characteristics?
+                    .first(where: { $0.uuid == uuid }),
+                  characteristic.properties.contains(.notify),
+                  !characteristic.isNotifying else { continue }
+            peripheral.setNotifyValue(true, for: characteristic)
+            enabled += 1
+        }
+        return enabled
+    }
+
     /// Re-send 6A/01 then 51 on a qualified silent stream-5 link. Never
-    /// toggles a CCCD or reconnects; the 45-second activation lease and the
-    /// stale-frame gate live in `shouldRefreshProtectedBoundedRawCapture`.
+    /// reconnects or writes 0x3F; inactive companion CCCDs may be enabled
+    /// once. The 45-second activation lease and the stale-frame gate live in
+    /// `shouldRefreshProtectedBoundedRawCapture`.
     @discardableResult
     private func refreshProtectedBoundedRawCaptureIfNeeded(
         now: Date,
@@ -30516,6 +30541,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
+            let companions = self.enableMissingProtectedCompanionNotifications(
+                peripheral: peripheral
+            )
+            if companions > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, peripheral.state == .connected else { return }
+            }
             let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
             peripheral.writeValue(
@@ -30535,9 +30567,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 for: txCharacteristic,
                 type: .withoutResponse
             )
-            AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=6a01,51_duration_le duration_ms=%u action=paced_pair_same_link_no_cccd_no_reconnect",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=6a01,51_duration_le duration_ms=%u companions=%d action=paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
                           reason,
-                          Cmd.workoutRawCaptureDurationMilliseconds)
+                          Cmd.workoutRawCaptureDurationMilliseconds,
+                          companions)
         }
         return true
     }
