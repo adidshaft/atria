@@ -26064,14 +26064,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         deferring
     }
 
-    /// After the A/B restore slots are cancelled, a leftover `.connecting`
-    /// object is still a zombie. Force a new `connect` instead of
-    /// `keep_existing_transition` (device 2026-09-14 18:19).
+    /// After the A/B restore slots are cancelled, issue a local `connect`
+    /// on a disconnected or already-system-connected object. A leftover
+    /// `.connecting` object is cancelled first (device 2026-09-14 18:19).
+    /// Skipping `.connected` left this phone hung: retrieveConnected returned
+    /// the strap and we never established a local epoch (18:46).
     nonisolated static func shouldForceStandingConnectAfterRestoreSlotDrain(
         didConnectThisProcess: Bool,
         peripheralState: CBPeripheralState
     ) -> Bool {
-        !didConnectThisProcess && peripheralState != .connected
+        !didConnectThisProcess
+            && (peripheralState == .disconnected || peripheralState == .connected)
     }
 
     /// Empty restore-slot cleaners used to finish in 0.5s and issue `connect`
@@ -27119,6 +27122,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         target.delegate = self
         peripheral = target
         assignIfChanged(\.deviceName, target.name ?? deviceName)
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain_retrieved",
+            detail: "state=\(target.state.rawValue) system_connected=\(systemConnected != nil ? 1 : 0)"
+        )
         recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
         markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
         if allowCancelConnecting,

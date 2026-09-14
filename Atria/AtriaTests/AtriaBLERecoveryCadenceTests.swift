@@ -223,11 +223,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let source = try leaseManagerSource()
         XCTAssertTrue(source.contains("central_rebuild_standing_connect_deferred_drain"))
         XCTAssertTrue(source.contains("skip_standing_connect_until_restore_slot_drain"))
-        XCTAssertTrue(
+        XCTAssertFalse(
             AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
                 didConnectThisProcess: false,
                 peripheralState: .connecting
-            )
+            ),
+            "a leftover .connecting object must be cancelled, not connect()-coalesced"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
@@ -235,10 +236,23 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 peripheralState: .disconnected
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
+                didConnectThisProcess: false,
+                peripheralState: .connected
+            ),
+            "system-connected WHOOP still needs a local connect to get didConnect"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
                 didConnectThisProcess: true,
                 peripheralState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldForceStandingConnectAfterRestoreSlotDrain(
+                didConnectThisProcess: true,
+                peripheralState: .connected
             )
         )
         XCTAssertEqual(AtriaBLEManager.restoreSlotDrainSettleSeconds, 4)
@@ -280,6 +294,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             )
         )
         XCTAssertTrue(source.contains("repair_central_restore_slot_drain_cancel_connecting"))
+        XCTAssertTrue(source.contains("repair_central_restore_slot_drain_retrieved"))
         XCTAssertTrue(source.contains("skip_scan_saved_or_restore_slot_drain"))
         XCTAssertTrue(source.contains("Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))"))
     }
