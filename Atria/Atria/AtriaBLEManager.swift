@@ -21796,10 +21796,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
-        callbackCentral.connect(
-            target,
-            options: [CBConnectPeripheralOptionEnableAutoReconnect: true]
-        )
+        callbackCentral.connect(target, options: nil)
         return true
     }
 

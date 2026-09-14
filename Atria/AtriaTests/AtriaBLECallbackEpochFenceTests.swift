@@ -452,14 +452,14 @@ final class AtriaBLECallbackEpochFenceTests: XCTestCase {
         let gateway = String(manager[gatewayStart..<gatewayEnd])
         XCTAssertEqual(
             manager.components(
-                separatedBy: "callbackCentral.connect("
+                separatedBy: "callbackCentral.connect(target, options: nil)"
             ).count - 1,
             1,
             "all connect issuers must converge on one raw CoreBluetooth call"
         )
         XCTAssertTrue(gateway.contains(".retainAndClaimConnectRequest(target)"))
         XCTAssertTrue(gateway.contains(
-            "CBConnectPeripheralOptionEnableAutoReconnect"
+            "callbackCentral.connect(target, options: nil)"
         ))
     }
 
