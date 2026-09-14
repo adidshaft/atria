@@ -9212,6 +9212,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=reconnect_known_strap saved=%d",
                           hasSavedStrap ? 1 : 0)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_missing_peripheral") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=retry_saved_no_scan")
+                    return
+                }
                 startScan(reason: "foreground_keepalive_missing_peripheral")
             }
             return
@@ -9233,8 +9237,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set("not_connected", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
             AtriaDebugLog("ATRIADBG foreground_keepalive status=not_connected action=reconnect_known_strap peripheral_state=%d",
-                          peripheral.state.rawValue)
+                          peripheral?.state.rawValue ?? -1)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_not_connected") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=not_connected action=retry_saved_no_scan")
+                    return
+                }
                 startScan(reason: "foreground_keepalive_not_connected")
             }
             return
@@ -26048,6 +26056,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         deferring
     }
 
+    /// After the A/B restore slots are cancelled, a leftover `.connecting`
+    /// object is still a zombie. Force a new `connect` instead of
+    /// `keep_existing_transition` (device 2026-09-14 18:19).
+    nonisolated static func shouldForceStandingConnectAfterRestoreSlotDrain(
+        didConnectThisProcess: Bool,
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        !didConnectThisProcess && peripheralState != .connected
+    }
+
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
@@ -27035,12 +27053,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             $0.deferStandingConnectForRestoreSlotDrain = false
         }
         guard connectedAt == nil, status != .connected else { return }
+        isActivelyScanning = false
+        central.stopScan()
         recordReconnectLeaseStage(
             "repair_central_restore_slot_drain_reissue",
             detail: trigger
         )
-        _ = reconnectToSavedPeripheralIfPossible(
+        forceStandingConnectAfterRestoreSlotDrain(reason: trigger)
+    }
+
+    private func forceStandingConnectAfterRestoreSlotDrain(reason: String) {
+        let defaults = UserDefaults.standard
+        guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
+              let uuid = UUID(uuidString: uuidString) else { return }
+        let systemConnected = central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+        guard let target = systemConnected
+                ?? central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+            recordReconnectLeaseStage(
+                "repair_central_restore_slot_drain_retrieve_empty",
+                detail: reason
+            )
+            return
+        }
+        target.delegate = self
+        peripheral = target
+        assignIfChanged(\.deviceName, target.name ?? deviceName)
+        if Self.shouldForceStandingConnectAfterRestoreSlotDrain(
+            didConnectThisProcess: connectedAt != nil,
+            peripheralState: target.state
+        ), target.state == .connecting || target.state == .disconnecting {
+            cancelPeripheralConnection(
+                target,
+                reason: "stuck_restore_slot_drain_force_connect"
+            )
+        }
+        recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
+        markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
+        issueSingleFlightConnect(
+            target,
+            central: central,
             reason: "stuck_restore_slot_drain_complete"
+        )
+        startReconnectWatchdog(
+            reason: "stuck_restore_slot_drain_complete",
+            peripheral: target
+        )
+        recomputeConnectionStatus(reason: "event")
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=force_standing_connect_after_restore_slot_drain peripheral_state=%d",
+            reason,
+            target.state.rawValue
         )
     }
 
