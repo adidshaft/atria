@@ -4287,17 +4287,25 @@ struct AtriaInsight: Identifiable, Equatable {
     var isPositive: Bool { metric == .rhr ? delta <= 0 : delta >= 0 }
 
     var headline: String {
-        let dir = delta < 0 ? "lower" : "higher"
         let n = abs(Int(delta.rounded()))
         switch metric {
-        case .recovery: return "Recovery \(n)% \(dir)"
-        case .hrv: return "HRV \(n) ms \(dir)"
-        case .rhr: return "RHR \(n) bpm \(dir)"
+        case .recovery:
+            return delta < 0
+                ? "Recovery averages \(n)% lower on \(tagLabel.lowercased()) days"
+                : "Recovery averages \(n)% higher on \(tagLabel.lowercased()) days"
+        case .hrv:
+            return delta < 0
+                ? "HRV averages \(n) ms lower on \(tagLabel.lowercased()) days"
+                : "HRV averages \(n) ms higher on \(tagLabel.lowercased()) days"
+        case .rhr:
+            return delta < 0
+                ? "Resting HR averages \(n) bpm lower on \(tagLabel.lowercased()) days"
+                : "Resting HR averages \(n) bpm higher on \(tagLabel.lowercased()) days"
         }
     }
 
     var detail: String {
-        "On \(days) \(tagLabel.lowercased()) day\(days == 1 ? "" : "s")"
+        "Compared with \(days) tagged day\(days == 1 ? "" : "s") versus your other days."
     }
 }
 
@@ -9827,6 +9835,8 @@ final class SessionStore: ObservableObject {
     /// Phase-0 derived cache: ranked behavior insights (effect-size, confidence-
     /// gated). Recomputed on data/journal change, read O(1) by the insights card.
     @Published private(set) var behaviorInsights: [AtriaInsight] = []
+    /// Physiological insights from persisted rollups. Survive raw-archive GC.
+    @Published private(set) var learnedInsights: [AtriaLearnedInsight] = AtriaDurableInsightStore.load()
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
     @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
@@ -23986,6 +23996,12 @@ final class SessionStore: ObservableObject {
                 self.behaviorImpactSummariesCache = impacts
                 self.behaviorInsights = insights
                 self.journalInsightsCache = journalInsights
+                let learned = AtriaLearnedInsights.insights(
+                    rollups: self.dailyRollupHistory,
+                    now: Date()
+                )
+                self.learnedInsights = learned
+                AtriaDurableInsightStore.save(learned)
                 completion?(true)
             }
         }
@@ -26824,7 +26840,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Evaluates the production 30-day / 512-MiB high-volume policy. One
+    /// Evaluates the production 7-day / 512-MiB high-volume policy. One
     /// transaction still retires at most one raw chunk, but the off-main driver
     /// starts fresh verified transactions within a bounded work slice until the
     /// cap is satisfied (or only the active writer prevents it). Deferred and
@@ -55450,7 +55466,7 @@ final class SessionStore: ObservableObject {
         refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
         // BGTask execution is opportunistic. Evaluate the same once-per-day,
         // shadow-only retention queue after launch content has landed so the
-        // 30-day / 512-MiB policy is not dependent on iOS granting background
+        // 7-day / 512-MiB policy is not dependent on iOS granting background
         // maintenance time.
         reserveArchiveCompactionForSafeBackground()
 

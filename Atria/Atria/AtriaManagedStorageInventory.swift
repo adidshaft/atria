@@ -67,7 +67,7 @@ enum AtriaManagedStorageInventory {
           "sessions-cold.json"]),
         ("sessions_and_daily",
          ["sessions.json", "daily-rollups.json", "daily-metrics.json",
-          "biological-age-cache.json"]),
+          "biological-age-cache.json", "learned-insights-v1.json"]),
         ("stress_history", ["AS:Atria/stress-history-v3"]),
         ("projections_and_receipts",
          ["AS:atria-projections", "AS:Atria/HistoricalRecovery",

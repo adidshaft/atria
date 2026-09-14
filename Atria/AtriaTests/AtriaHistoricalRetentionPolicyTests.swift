@@ -28,12 +28,12 @@ final class AtriaHistoricalRetentionPolicyTests: XCTestCase {
         XCTAssertEqual(plan.projectedRawBytes, 20)
     }
 
-    func testProductionRetentionMatchesTheChosenThirtyDayRawTier() {
-        // The product decision itself, pinned where a change to it is the
-        // point rather than a side effect. 2026-08-19 directive: raw data is
-        // kept for "a week or month"; insights are never pruned.
+    func testProductionRetentionMatchesTheChosenSevenDayRawTier() {
+        // Field device 2026-08-19: ~2.99 GB of raw vs ~93 MB of aggregates.
+        // 7 days of IMU-rate raw stays under the 512 MB cap; 30 does not.
+        // Insights live in rollups + the durable learned-insight ledger.
         XCTAssertEqual(AtriaHistoricalRetentionPolicy.production.rawHorizon,
-                       30 * 24 * 60 * 60)
+                       7 * 24 * 60 * 60)
         XCTAssertEqual(AtriaHistoricalRetentionPolicy.production.maximumRawBytes,
                        512 * 1024 * 1024)
     }

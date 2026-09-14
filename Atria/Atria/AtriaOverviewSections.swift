@@ -2599,7 +2599,7 @@ struct AtriaStrapStepLiveStatus: Equatable {
     var isLive: Bool { freshness == .live }
 
     var tileValue: String {
-        guard isLive else { return "--" }
+        if freshness == .unavailable, count <= 0 { return "--" }
         return isValidated ? "\(count)" : "~\(count)"
     }
 
@@ -2612,7 +2612,9 @@ struct AtriaStrapStepLiveStatus: Equatable {
         case .live:
             return isValidated ? "Live strap count" : "Live estimate"
         case .stale:
-            return "Not live · \(lastMotionText)"
+            return count > 0
+                ? "Last count · \(lastMotionText)"
+                : "Not live · \(lastMotionText)"
         case .unavailable:
             return "Not live · no motion"
         }
@@ -2677,7 +2679,7 @@ struct AtriaStrapStepLiveStatus: Equatable {
             let measurement = isValidated ? "validated count" : "estimated count"
             return "Live strap movement. \(savedCountText) steps today, \(measurement). Goal \(goal)."
         case .stale:
-            return "Not live. Last saved value \(savedCountText) steps today. \(lastMotionText)."
+            return "Last counted \(savedCountText) steps today. \(lastMotionText). Motion syncing."
         case .unavailable:
             return "Not live. Strap movement is unavailable."
         }
@@ -9824,35 +9826,41 @@ struct AtriaInsightsCardHost: View {
     @ObservedObject var store: SessionStore
 
     var body: some View {
-        AtriaInsightsCard(insights: store.behaviorInsights,
+        AtriaInsightsCard(learned: store.learnedInsights,
+                          insights: store.behaviorInsights,
                           taggedDays: store.behaviorJournalEntries.count)
             .equatable()
     }
 }
 
 /// Smart insights: actionable, effect-size-ranked findings from behavior tags vs
-/// validated local metrics. Recovery correlations stay hidden until Recovery is
-/// built from real baseline-gated inputs. Local, never medical.
+/// validated local metrics, plus physiological insights from persisted rollups.
+/// Recovery correlations stay hidden until Recovery is built from real
+/// baseline-gated inputs. Local, never medical.
 struct AtriaInsightsCard: View, Equatable {
+    let learned: [AtriaLearnedInsight]
     let insights: [AtriaInsight]
     let taggedDays: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Insights", subtitle: "What moves your HRV")
+            AtriaPanelSectionHeader(title: "Insights", subtitle: "What moved you")
 
-            if insights.isEmpty {
+            if learned.isEmpty && insights.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .foregroundStyle(.secondary)
                     Text(taggedDays == 0
-                         ? "Tag your days (sleep, alcohol, training…) and Atria learns what moves your HRV."
+                         ? "Atria already reads sleep, recovery, and strain. Tag days to learn what you do that moves them."
                          : "Keep tagging — clear patterns appear after a few matched days.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
+                ForEach(learned.prefix(5)) { insight in
+                    learnedRow(insight)
+                }
                 ForEach(insights.prefix(3)) { insight in
                     insightRow(insight)
                 }
@@ -9860,6 +9868,30 @@ struct AtriaInsightsCard: View, Equatable {
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
+    }
+
+    private func learnedRow(_ insight: AtriaLearnedInsight) -> some View {
+        let tint: Color = insight.isPositive ? Metrics.electricGreen : .orange
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: insight.systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(tint)
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(insight.headline)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(insight.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(insight.headline). \(insight.detail)")
     }
 
     private func insightRow(_ i: AtriaInsight) -> some View {

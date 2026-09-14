@@ -61,6 +61,116 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testStuckRestoredConnectingRediscoverAfterReissue() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRediscoverStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: true,
+                alreadyRediscovered: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: false,
+                alreadyRediscovered: false
+            ),
+            "the one-shot reissue still runs first"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: true,
+                alreadyReissued: true,
+                alreadyRediscovered: false
+            ),
+            "a live didConnect this process is an out-of-range standing wait"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: true,
+                alreadyRediscovered: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipKnownStrapStandingReconnect(
+                skipStandingReconnectOnce: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipKnownStrapStandingReconnect(
+                skipStandingReconnectOnce: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: true,
+                rediscoveringStuckRestore: true,
+                connectedThisProcess: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: false,
+                rediscoveringStuckRestore: true,
+                connectedThisProcess: false
+            ),
+            "keepalive must not standing-connect the old central during rebuild"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: false,
+                rediscoveringStuckRestore: true,
+                connectedThisProcess: true
+            ),
+            "after a live didConnect, keepalive may reinstall a standing wait"
+        )
+    }
+
+    func testStuckRestoreUnstickRebuildsAnonymousCentral() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func unstickRestoredConnectingCentral("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// State-restoration relaunches run without debug launch arguments",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("omitRestoreIdentifier: true"))
+        XCTAssertTrue(body.contains("reissuedStuckRestoredConnecting = true"))
+        XCTAssertTrue(body.contains("rediscoveredStuckRestoredConnecting = true"))
+
+        let watchdogStart = try XCTUnwrap(source.range(
+            of: "private func startReconnectWatchdog("
+        ))
+        let watchdogEnd = try XCTUnwrap(source.range(
+            of: "private func beginBackgroundReconnectLeaseIfNeeded(",
+            range: watchdogStart.upperBound..<source.endIndex
+        ))
+        let watchdog = String(source[watchdogStart.lowerBound..<watchdogEnd.lowerBound])
+        XCTAssertTrue(
+            watchdog.contains("beginStuckRestoredConnectingRediscovery("),
+            "the first stuck-restore tick must unstick, not standing-connect the zombie"
+        )
+
+        let rebuildStart = try XCTUnwrap(source.range(
+            of: "private func rebuildCentralForWedgedSessionOnce("
+        ))
+        let rebuildEnd = try XCTUnwrap(source.range(
+            of: "private func reconcileCentralUnavailableRecovery(",
+            range: rebuildStart.upperBound..<source.endIndex
+        ))
+        let rebuild = String(source[rebuildStart.lowerBound..<rebuildEnd.lowerBound])
+        XCTAssertTrue(rebuild.contains("omitRestoreIdentifier"))
+        XCTAssertTrue(rebuild.contains("repair_central_rebuild_anonymous"))
+        XCTAssertTrue(rebuild.contains("CBCentralManagerOptionShowPowerAlertKey: false"))
+    }
+
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
         XCTAssertEqual(
             AtriaBLEManager.reconnectWatchdogDisposition(
@@ -5945,13 +6055,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let staleFrame = now.addingTimeInterval(-61)
-        let rearm = now.addingTimeInterval(-61)
+        // 20–45 s after a re-arm: CCCD reassert only. After 45 s, same-link
+        // 6A/51 again — never wait ten minutes while IMU is silent.
         XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
             eligible: true,
             connected: true,
             realtimeArmed: true,
             lastFrameAt: staleFrame,
-            lastRearmAt: rearm,
+            lastRearmAt: now.addingTimeInterval(-30),
             lastRediscoveryAt: nil,
             now: now
         ), .rediscover)
@@ -5960,8 +6071,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             connected: true,
             realtimeArmed: true,
             lastFrameAt: staleFrame,
-            lastRearmAt: rearm,
-            lastRediscoveryAt: now.addingTimeInterval(-30),
+            lastRearmAt: now.addingTimeInterval(-30),
+            lastRediscoveryAt: now.addingTimeInterval(-10),
             now: now
         ), .none)
         XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
@@ -5969,10 +6080,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             connected: true,
             realtimeArmed: true,
             lastFrameAt: staleFrame,
-            lastRearmAt: now.addingTimeInterval(-601),
-            lastRediscoveryAt: now.addingTimeInterval(-30),
+            lastRearmAt: now.addingTimeInterval(-46),
+            lastRediscoveryAt: now.addingTimeInterval(-10),
             now: now
-        ), .rearm, "A command re-arm is rate-limited to once per ten minutes")
+        ), .rearm, "A command re-arm is rate-limited to 45 seconds")
     }
 
     func testImplausibleBatteryDropRequiresCorroborationEvenWithOlderCache() {
@@ -9267,16 +9378,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "private func requestBoundedR10ActivationForSilentStream"
         ))
         let end = try XCTUnwrap(source.range(
-            of: "private func evaluateR10Liveness",
+            of: "private func retryProtectedR10ShortBurstIfEligible",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
         let leaseCall = try XCTUnwrap(body.range(of: "evaluateWorkoutMotionLease"))
         let observedLog = try XCTUnwrap(body.range(
-            of: "action=no_mid_link_cccd_or_epoch_reset"
+            of: "action=preserve_hr_same_link_imu_no_3f_no_reconnect"
         ))
         XCTAssertLessThan(leaseCall.lowerBound, observedLog.lowerBound)
         XCTAssertTrue(body.contains("refreshProtectedBoundedRawCaptureIfNeeded("))
+        XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"),
+                       "silent IMU recovery must not write 0x3F on a live HR link")
+        XCTAssertFalse(body.contains("cancelPeripheralConnection"))
     }
 
     func testAllDayFallbackLivenessOffersPassiveCutoverAndKeepaliveArmsWatchdog() throws {
@@ -11176,7 +11290,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 imuFrames: 0,
                 nowUnix: coverLiveAt + 10
             ),
-            "zero IMU after 6A+51 earns one 3F+6A+51 follow-up"
+            "zero IMU after 6A+51 earns one extra 6A+51 follow-up"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldSendCoverLiveBoundedRawCapture(
@@ -11230,13 +11344,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "never-seen frames on a qualified owner are a silent stream")
         XCTAssertFalse(refresh(frameAge: 5),
                        "fresh frames must not be refreshed")
-        XCTAssertFalse(refresh(activationAge: 60),
-                       "the 10-minute activation lease must hold")
+        XCTAssertFalse(refresh(activationAge: 30),
+                       "the 45-second activation lease must hold")
+        XCTAssertTrue(refresh(activationAge: 60),
+                      "a silent stream past 45s must refresh even in full_protocol")
         XCTAssertFalse(refresh(suppressed: true))
         XCTAssertFalse(refresh(proof: true))
         XCTAssertFalse(refresh(history: true))
         XCTAssertFalse(refresh(stream5: false))
         XCTAssertFalse(refresh(hr: false))
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefreshProtectedBoundedRawCapture(
+                standardHROnlyMode: false,
+                streamSuppressed: false,
+                owner: owner,
+                state: qualified,
+                proofActive: false,
+                historyOwnsTransport: false,
+                connected: true,
+                stream5Notifying: true,
+                heartRateNotifying: true,
+                lastFrameAge: 90,
+                lastActivationAge: 11 * 60
+            ),
+            "full-protocol silent IMU must use same-link 6A/51, not 0x3F"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldRefreshProtectedBoundedRawCapture(
                 standardHROnlyMode: true,
@@ -11252,6 +11384,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 lastActivationAge: 11 * 60
             )
         )
+    }
+
+    func testHRContinuityWatchdogRunsInFullProtocolAndCoverLiveOmitsRealtime() throws {
+        let source = try leaseManagerSource()
+        let hrStart = try XCTUnwrap(source.range(
+            of: "private func scheduleHRContinuityWatchdogIfNeeded"
+        ))
+        let hrEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleDebugHRContinuityWatchdog",
+            range: hrStart.upperBound..<source.endIndex
+        ))
+        let hrBody = String(source[hrStart.lowerBound..<hrEnd.lowerBound])
+        XCTAssertFalse(hrBody.contains("standardHROnlyMode"),
+                       "2A37 reassert must run in full_protocol, not only HR-only radio")
+        XCTAssertTrue(hrBody.contains("guard longWearModeEnabled else { continue }"))
+
+        let coverStart = try XCTUnwrap(source.range(
+            of: "private func sendCoverLiveBoundedRawCaptureIfNeeded"
+        ))
+        let coverEnd = try XCTUnwrap(source.range(
+            of: "private func refreshProtectedBoundedRawCaptureIfNeeded",
+            range: coverStart.upperBound..<source.endIndex
+        ))
+        let coverBody = String(source[coverStart.lowerBound..<coverEnd.lowerBound])
+        XCTAssertFalse(coverBody.contains("Cmd.sendR10R11Realtime"),
+                       "cover-live IMU recovery must not write 0x3F")
+        XCTAssertTrue(coverBody.contains("cmds=6a01,51_duration_le"))
+
+        let armStart = try XCTUnwrap(source.range(
+            of: "private func ensureR10LivenessWatchdog"
+        ))
+        let armEnd = try XCTUnwrap(source.range(
+            of: "private func stopR10LivenessWatchdog",
+            range: armStart.upperBound..<source.endIndex
+        ))
+        let armBody = String(source[armStart.lowerBound..<armEnd.lowerBound])
+        XCTAssertTrue(armBody.contains("reason: \"arm\""),
+                      "IMU silence must be evaluated on arm, not after the first 20s sleep")
     }
 
     /// The escalation is wired into the lease evaluator's pure-HR fallback
@@ -12516,6 +12686,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         XCTAssertTrue(watchdog.contains("case .observeSavedStandingRequest:"))
         XCTAssertTrue(watchdog.contains("action=observe_pending_connect_saved_strap"))
+        XCTAssertTrue(watchdog.contains("action=rediscover_stuck_restored_connecting_scan"))
+        XCTAssertTrue(watchdog.contains("beginStuckRestoredConnectingRediscovery("))
+        XCTAssertTrue(watchdog.contains("unstickRestoredConnectingCentral("))
+        XCTAssertFalse(watchdog.contains("rebuildCentralForWedgedSessionOnce("))
         XCTAssertFalse(watchdog.contains("rebuildCentralForWedgedSessionOnce("))
         XCTAssertFalse(watchdog.contains("rotateRestoredConnectingCentral"))
         XCTAssertFalse(watchdog.contains("centralEventFence.retire"))

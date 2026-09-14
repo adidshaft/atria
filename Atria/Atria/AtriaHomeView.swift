@@ -13086,6 +13086,7 @@ final class AtriaHomeModel {
                 before: savedAggregate.cycleStart,
                 strapIdentifiers: strapIdentifiers
             )
+        let heldFloor = AtriaHeldDailyStepFloor.load(cycleStart: savedAggregate.cycleStart)
         var dailyStepPresentation = AtriaDailyStepPresentation.resolve(
             day: Date(),
             now: Date(),
@@ -13101,8 +13102,17 @@ final class AtriaHomeModel {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
             },
             boundaryIsUnconfirmedFallback:
-                savedAggregate.cycleBoundaryIsUnconfirmedFallback
+                savedAggregate.cycleBoundaryIsUnconfirmedFallback,
+            heldCount: heldFloor?.count ?? 0,
+            heldCapturedAt: heldFloor?.capturedAt
         )
+        if let count = dailyStepPresentation.count, count > 0 {
+            AtriaHeldDailyStepFloor.persist(
+                count: count,
+                cycleStart: savedAggregate.cycleStart,
+                capturedAt: dailyStepPresentation.capturedAt
+            )
+        }
         // Classify strap-motion availability so the step copy stops promising an
         // endless sync when the transport is a terminal pure-HR fallback (while
         // keeping the verified count/coverage). Computed once per Core-Live

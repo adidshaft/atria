@@ -1303,9 +1303,7 @@ struct AtriaWidgetEntryView: View {
     }
 
     private var stepsText: String {
-        guard let snapshot = entry.snapshot,
-              let steps = atriaCurrentStepValue(snapshot, now: entry.date) else { return "--" }
-        return atriaStepValueText(snapshot, steps: steps)
+        AtriaWidgetMetric.steps.rendered(entry.snapshot, now: entry.date).text
     }
 
     private var batteryHeaderText: String? {

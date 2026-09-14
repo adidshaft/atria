@@ -172,7 +172,8 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         )
         let insightCase = String(source[insightCaseStart.lowerBound..<layoutSizeStart.lowerBound])
         XCTAssertTrue(insightCase.contains("sessionProjectionStore.state.behaviorInsights"))
-        XCTAssertTrue(insightCase.contains("value: \"\\(insights.count)\""))
+        XCTAssertTrue(insightCase.contains("sessionProjectionStore.state.learnedInsights"))
+        XCTAssertTrue(insightCase.contains("value: \"\\(learned.count + insights.count)\""))
         XCTAssertFalse(insightCase.contains("highlights.count"),
                        "The Insights tile must not count unrelated Today highlights")
 

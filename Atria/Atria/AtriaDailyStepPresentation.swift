@@ -128,6 +128,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case motionObservedCountUnresolved
         case conflictingExactReceipts
         case stepModelNotQualified
+        /// Last in-cycle count is still the honest floor while IMU/R10 recovers.
+        /// The number stays visible; copy must not claim it is live.
+        case heldWhileMotionSyncing
     }
 
     /// Disclosure-only summary of the newest receipt that ended at or before
@@ -241,6 +244,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return coverageFraction != nil ? "Partial day so far" : "Syncing steps"
         case (.live, .partial):
+            if unavailabilityReason == .heldWhileMotionSyncing {
+                if let capturedAt {
+                    return "Last count · syncing · through "
+                        + capturedAt.formatted(date: .omitted, time: .shortened)
+                }
+                return "Last count · motion syncing"
+            }
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:
             switch unavailabilityReason {
@@ -264,6 +274,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                     )
             case .staleLiveReceipt:
                 return "Last strap movement is no longer live"
+            case .heldWhileMotionSyncing:
+                return "Last count · motion syncing"
             case .unvalidatedLiveReceipt:
                 return "Strap motion is still validating"
             case .motionObservedCountUnresolved:
@@ -300,6 +312,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             } ?? ""
             return "\(count) steps so far, \(coverage)\(frontier)."
         case (.live, .partial):
+            if unavailabilityReason == .heldWhileMotionSyncing {
+                let frontier = capturedAt.map {
+                    " through \($0.formatted(date: .omitted, time: .shortened))"
+                } ?? ""
+                return "\(count) steps counted\(frontier). Motion syncing."
+            }
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
         default:
             return "Step count unavailable."
@@ -359,6 +377,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         /// and always for a confirmed-sleep boundary) preserves the strict
         /// "prior steps are never attributed to today" behavior.
         boundaryIsUnconfirmedFallback: Bool = false,
+        /// Last in-cycle count persisted while IMU was live. Used only when the
+        /// current merge is 0 (checkpoint swallowed today's prefix) or IMU is
+        /// silent. Never crosses a wake boundary.
+        heldCount: Int = 0,
+        heldCapturedAt: Date? = nil,
         calendar: Calendar = .current
     ) -> Self {
         let dayStart = calendar.startOfDay(for: day)
@@ -383,11 +406,24 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             activeWindowStart.timeIntervalSince($0.endedAt)
                 <= AtriaPhysiologicalCycle.maximumLearnedInterval
         } ?? false
-        let liveBelongsToDay = liveCapturedAt.map {
-            $0 >= activeWindowStart
-                && $0 <= now.addingTimeInterval(5)
-                && now.timeIntervalSince($0) <= liveEvidenceMaximumAge
+        let heldCapturedInCycle = heldCount > 0 && heldCapturedAt.map {
+            $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
+        } == true
+        let livePositive = max(0, liveCount)
+        let heldPositive = heldCapturedInCycle ? heldCount : 0
+        let mergedLiveCount = max(livePositive, heldPositive)
+        let mergedLiveCapturedAt: Date? = {
+            if heldPositive > livePositive { return heldCapturedAt }
+            if livePositive > 0 { return liveCapturedAt }
+            return heldCapturedInCycle ? heldCapturedAt : liveCapturedAt
+        }()
+        let liveCapturedInCycle = mergedLiveCapturedAt.map {
+            $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
         } ?? false
+        let liveBelongsToDay = liveCapturedInCycle
+            && mergedLiveCapturedAt.map {
+                now.timeIntervalSince($0) <= liveEvidenceMaximumAge
+            } ?? false
         let liveIsValidated = WidgetSnapshotPublisher.strapStepsAreValidated(
             state: liveValidationState
         )
@@ -435,12 +471,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                liveAuthorityQualified,
                liveBelongsToDay,
                liveIsValidated,
-               liveCount > exact,
-               let liveCapturedAt,
+               mergedLiveCount > exact,
+               let liveCapturedAt = mergedLiveCapturedAt,
                let capturedAt,
                liveCapturedAt > capturedAt {
                 return .init(day: dayStart,
-                             count: liveCount,
+                             count: mergedLiveCount,
                              completeness: .partial,
                              source: .live,
                              isValidated: true,
@@ -495,13 +531,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
            isOpenDay,
            liveBelongsToDay,
            liveIsValidated,
-           liveCount >= (partial?.knownStepDeltaSum ?? 0) {
+           mergedLiveCount >= (partial?.knownStepDeltaSum ?? 0) {
             return .init(day: dayStart,
-                         count: max(0, liveCount),
+                         count: max(0, mergedLiveCount),
                          completeness: .partial,
                          source: .live,
                          isValidated: true,
-                         capturedAt: liveCapturedAt,
+                         capturedAt: mergedLiveCapturedAt,
                          coverageFraction: nil,
                          isOpenCycle: isOpenDay)
         }
@@ -515,8 +551,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // never fabricates or extrapolates a step.
         let liveInCycle = liveAuthorityQualified
             && isOpenDay
-            && liveCount > 0
-            && (liveCapturedAt.map {
+            && mergedLiveCount > 0
+            && (mergedLiveCapturedAt.map {
                 $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
             } ?? false)
         // Without a fresh validated live coordinate, the best durable partial
@@ -536,7 +572,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             // live coordinate may fill a low-coverage gap. Preliminary
             // estimates still surface when there is no drained floor.
             let liveObserved = (liveInCycle && liveIsValidated && liveMayFillGap)
-                ? max(0, liveCount) : 0
+                ? max(0, mergedLiveCount) : 0
             // Across an unconfirmed no-sleep fallback the prior receipt is the
             // SAME continuous wear period as this partial (disjoint windows:
             // prior ends at the synthetic boundary, this partial begins there).
@@ -565,7 +601,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isValidated: usesLive ? liveIsValidated : true,
                          capturedAt: usesCarried
                             ? carriedEndedAt
-                            : (usesLive ? liveCapturedAt : partial.dayEnd),
+                            : (usesLive ? mergedLiveCapturedAt : partial.dayEnd),
                          coverageFraction: usesCarried ? nil : coverageFraction,
                          isOpenCycle: isOpenDay,
                          carriedFromUnconfirmedPriorCycle: usesCarried)
@@ -584,9 +620,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // partial (the raise-above-floor path above already owns the stuck-low case)
         // and a FRESH in-cycle live coordinate exists; HR-only radio mode has
         // liveCount==0, so this never fires there and the honest states below stand.
-        // Freshness is required (liveBelongsToDay, not the looser liveInCycle the
-        // raise-above-floor path may use): with no drained floor a STALE coordinate
-        // must still fail closed as "no longer live", never freeze a stale estimate.
+        // Freshness is required for a LIVE label (liveBelongsToDay). A stale
+        // in-cycle coordinate is still today's counted floor while IMU recovers;
+        // hiding it as "--" made a radio hitch look like a broken step counter
+        // (device 2026-09-14: ledger 11854, widget "-- / Waiting for strap").
         // Compact receipt with firmware ticks and a zero gait subtotal is
         // unresolved cadence, not "no drained floor". A live IMU estimate
         // would paper over that as "Today so far · estimate" (store test:
@@ -594,35 +631,52 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         let liveEstimateEligible = liveAuthorityQualified
             && isOpenDay
             && liveBelongsToDay
-            && liveCount > 0
+            && mergedLiveCount > 0
             && !hasUnresolvedMotionReceipt
         if liveEstimateEligible {
             let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
             let cadenceCeiling = Int(
                 (elapsedActiveSeconds * liveEstimateMaxStepsPerSecond).rounded()
             )
-            let clampedLive = min(max(0, liveCount), cadenceCeiling)
+            let clampedLive = min(max(0, mergedLiveCount), cadenceCeiling)
             return .init(day: dayStart,
                          count: clampedLive,
                          completeness: .partial,
                          source: .live,
                          isValidated: false,
-                         capturedAt: liveCapturedAt,
+                         capturedAt: mergedLiveCapturedAt,
                          coverageFraction: nil,
                          isOpenCycle: isOpenDay)
         }
-        // Intentionally NO branch here that surfaces a live count when there is
-        // no drained coverage at all AND no fresh in-cycle live coordinate: with
-        // no verified floor to sanity-check against, an unvalidated/preliminary
-        // count could be arbitrarily wrong. Those no-coverage states keep their
-        // existing specific reasons (still-validating / no-longer-live / prior
-        // cycle) below.
+        let liveHoldEligible = liveAuthorityQualified
+            && isOpenDay
+            && liveCapturedInCycle
+            && mergedLiveCount > 0
+            && !hasUnresolvedMotionReceipt
+        if liveHoldEligible {
+            let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
+            let cadenceCeiling = Int(
+                (elapsedActiveSeconds * liveEstimateMaxStepsPerSecond).rounded()
+            )
+            let clampedLive = min(max(0, mergedLiveCount), cadenceCeiling)
+            return .init(day: dayStart,
+                         count: clampedLive,
+                         completeness: .partial,
+                         source: .live,
+                         isValidated: false,
+                         capturedAt: mergedLiveCapturedAt,
+                         coverageFraction: nil,
+                         unavailabilityReason: .heldWhileMotionSyncing,
+                         isOpenCycle: isOpenDay)
+        }
+        // No in-cycle count to hold and no drained floor: keep the specific
+        // unavailable reasons below (still-validating / no receipt / prior cycle).
         let emptyReason: UnavailabilityReason =
             !liveAuthorityQualified
                 ? .stepModelNotQualified
                 : (hasUnresolvedMotionReceipt
                 ? .motionObservedCountUnresolved
-                : (liveCapturedAt == nil
+                : (mergedLiveCapturedAt == nil
                     ? .noCurrentCycleReceipt
                     : (liveBelongsToDay
                        ? .unvalidatedLiveReceipt
@@ -634,7 +688,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // are never attributed to today. A live sample captured before the
         // boundary is that same prior cycle, not a stale sample of this one.
         let staleLiveIsFromPriorCycle = emptyReason == .staleLiveReceipt
-            && liveCapturedAt.map { $0 < activeWindowStart } == true
+            && mergedLiveCapturedAt.map { $0 < activeWindowStart } == true
         // Only an abutting prior receipt is disclosed as "prior cycle". A
         // receipt stranded more than one physiological cycle back is stale
         // history: disclosing "Prior cycle: 135 · ended 9:44 AM" (the time
@@ -686,5 +740,70 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                      priorCycleReceipt: disclosesPriorCycle
                         ? priorCycleReceipt
                         : nil)
+    }
+}
+
+/// Last in-cycle strap count that was actually shown. IMU silence or a
+/// session checkpoint that equals the live cumulative used to collapse
+/// today's merge to 0 and the widget to "--". This floor is keyed to the
+/// wake boundary and is never a retention/raw candidate.
+enum AtriaHeldDailyStepFloor {
+    static let countKey = "atria.steps.heldDailyCount"
+    static let cycleKey = "atria.steps.heldDailyCycleStart"
+    static let capturedKey = "atria.steps.heldDailyCapturedAt"
+
+    static func persist(count: Int,
+                        cycleStart: Date,
+                        capturedAt: Date?,
+                        defaults: UserDefaults = .standard) {
+        guard count > 0 else { return }
+        if let existing = load(cycleStart: cycleStart, defaults: defaults),
+           count < existing.count {
+            return
+        }
+        defaults.set(count, forKey: countKey)
+        defaults.set(cycleStart.timeIntervalSince1970, forKey: cycleKey)
+        if let capturedAt {
+            defaults.set(capturedAt.timeIntervalSince1970, forKey: capturedKey)
+        } else {
+            defaults.removeObject(forKey: capturedKey)
+        }
+    }
+
+    /// BLE/ledger producer. Does not require the wake boundary; `load`
+    /// still refuses to attribute a capturedAt before the current cycle.
+    static func persistLiveCoordinate(count: Int,
+                                      capturedAt: Date,
+                                      defaults: UserDefaults = .standard) {
+        guard count > 0 else { return }
+        let existingCount = defaults.integer(forKey: countKey)
+        let existingCaptured = (defaults.object(forKey: capturedKey) as? Double)
+            .map(Date.init(timeIntervalSince1970:))
+        if existingCount > 0,
+           let existingCaptured,
+           abs(capturedAt.timeIntervalSince(existingCaptured))
+                <= AtriaStrapStepLedger.maximumRestoreAge {
+            if count <= existingCount { return }
+        }
+        defaults.set(count, forKey: countKey)
+        defaults.set(capturedAt.timeIntervalSince1970, forKey: capturedKey)
+    }
+
+    static func load(cycleStart: Date,
+                     now: Date = Date(),
+                     defaults: UserDefaults = .standard) -> (count: Int, capturedAt: Date?)? {
+        let count = defaults.integer(forKey: countKey)
+        guard count > 0 else { return nil }
+        let capturedRaw = defaults.object(forKey: capturedKey) as? Double
+        let captured = capturedRaw.map(Date.init(timeIntervalSince1970:))
+        if let captured, captured >= cycleStart, captured <= now.addingTimeInterval(5) {
+            return (count, captured)
+        }
+        let storedCycle = defaults.double(forKey: cycleKey)
+        guard storedCycle > 0,
+              abs(Date(timeIntervalSince1970: storedCycle).timeIntervalSince(cycleStart)) < 1 else {
+            return nil
+        }
+        return (count, captured)
     }
 }

@@ -59,8 +59,8 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
 
         XCTAssertFalse(status.isLive)
         XCTAssertEqual(status.freshness, .stale)
-        XCTAssertEqual(status.tileValue, "--")
-        XCTAssertEqual(status.tileDetail, "Not live · motion 3m ago")
+        XCTAssertEqual(status.tileValue, "842")
+        XCTAssertEqual(status.tileDetail, "Last count · motion 3m ago")
         XCTAssertEqual(status.savedCountText, "842")
     }
 
@@ -81,8 +81,9 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertTrue(boundary.isLive)
         XCTAssertEqual(boundary.tileValue, "~842")
         XCTAssertEqual(expired.freshness, .stale)
-        XCTAssertEqual(expired.tileValue, "--")
+        XCTAssertEqual(expired.tileValue, "~842")
         XCTAssertEqual(expired.savedCountText, "~842")
+        XCTAssertTrue(expired.tileDetail.hasPrefix("Last count"))
     }
 
     func testMissingMotionIsUnavailableWhenNoSavedCountExists() {
@@ -106,9 +107,9 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(fallback.freshness, .stale)
-        XCTAssertEqual(fallback.tileValue, "--")
+        XCTAssertEqual(fallback.tileValue, "~842")
         XCTAssertEqual(fallback.savedCountText, "~842")
-        XCTAssertEqual(fallback.tileDetail, "Not live · motion unavailable")
+        XCTAssertEqual(fallback.tileDetail, "Last count · motion unavailable")
 
         let noSavedPrefix = AtriaStrapStepLiveStatus.make(
             count: 0,
@@ -139,7 +140,7 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         )
 
         XCTAssertEqual(status.freshness, .stale)
-        XCTAssertEqual(status.tileValue, "--")
+        XCTAssertEqual(status.tileValue, "842")
     }
 
     func testPersistedMotionDateReadsBLETimestamp() throws {
