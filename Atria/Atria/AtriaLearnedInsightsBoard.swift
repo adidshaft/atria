@@ -1,17 +1,48 @@
 import SwiftUI
 
-/// Physiological reads as a ledger, not a caption stack. Featured first insight
-/// gets a kind-colored rail and a large headline; the rest sit as compact rows.
+/// Physiological reads as a ledger. The first insight is the featured read;
+/// the rest sit as compact rail rows. Kind color carries the metric, not
+/// a generic good/bad palette.
 struct AtriaLearnedInsightsBoard: View {
     let insights: [AtriaLearnedInsight]
     var title: String = "Today's read"
     var subtitle: String = "What moved you"
     var showsHeader: Bool = true
+    /// When true, wrap the board in a card. Today and Journal want that;
+    /// Insights already sits inside `AtriaInsightsCard`.
+    var usesOwnCard: Bool = true
 
     var body: some View {
+        Group {
+            if usesOwnCard {
+                board
+                    .padding(AtriaDesignTokens.Spacing.lg)
+                    .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+            } else {
+                board
+            }
+        }
+    }
+
+    private var board: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             if showsHeader {
-                AtriaPanelSectionHeader(title: title, subtitle: subtitle)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    AtriaPanelSectionHeader(title: title, subtitle: subtitle)
+                    if !insights.isEmpty {
+                        Text("\(insights.count)")
+                            .font(AtriaDesignTokens.Typography.eyebrow)
+                            .tracking(AtriaDesignTokens.Typography.eyebrowTracking)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(
+                                Color.primary.opacity(0.06),
+                                in: Capsule()
+                            )
+                            .accessibilityHidden(true)
+                    }
+                }
             }
             if insights.isEmpty {
                 Text("Atria writes a specific read here once nights of sleep, recovery, and strain exist. Raw files can be retired; these stay.")
@@ -20,8 +51,16 @@ struct AtriaLearnedInsightsBoard: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 featuredCard(insights[0])
-                ForEach(Array(insights.dropFirst())) { insight in
-                    compactRow(insight)
+                if insights.count > 1 {
+                    VStack(spacing: 0) {
+                        ForEach(Array(insights.dropFirst())) { insight in
+                            Rectangle()
+                                .fill(Color.primary.opacity(0.08))
+                                .frame(height: 1)
+                                .padding(.vertical, AtriaDesignTokens.Spacing.sm)
+                            compactRow(insight)
+                        }
+                    }
                 }
             }
         }
@@ -33,10 +72,10 @@ struct AtriaLearnedInsightsBoard: View {
             Capsule()
                 .fill(tint)
                 .frame(width: 4)
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
 
             VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Text(insight.emphasisLabel.uppercased())
                         .atriaEyebrow()
                         .foregroundStyle(tint)
@@ -44,8 +83,8 @@ struct AtriaLearnedInsightsBoard: View {
                     Image(systemName: insight.systemImage)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(tint)
-                        .frame(width: 36, height: 36)
-                        .background(tint.opacity(0.16), in: RoundedRectangle(
+                        .frame(width: 40, height: 40)
+                        .background(tint.opacity(0.18), in: RoundedRectangle(
                             cornerRadius: AtriaDesignTokens.Radius.chip,
                             style: .continuous
                         ))
@@ -61,13 +100,16 @@ struct AtriaLearnedInsightsBoard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, AtriaDesignTokens.Spacing.md)
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
         }
         .padding(AtriaDesignTokens.Spacing.md)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+        .background(tint.opacity(0.10), in: RoundedRectangle(
+            cornerRadius: AtriaDesignTokens.Radius.inset,
+            style: .continuous
+        ))
         .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
-                .stroke(tint.opacity(0.22), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
+                .stroke(tint.opacity(0.28), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(insight.headline). \(insight.detail)")
@@ -76,6 +118,10 @@ struct AtriaLearnedInsightsBoard: View {
     private func compactRow(_ insight: AtriaLearnedInsight) -> some View {
         let tint = Self.railColor(for: insight)
         return HStack(alignment: .top, spacing: AtriaDesignTokens.Spacing.md) {
+            Capsule()
+                .fill(tint)
+                .frame(width: 3, height: 28)
+                .padding(.top, 2)
             Image(systemName: insight.systemImage)
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(tint)
@@ -85,6 +131,9 @@ struct AtriaLearnedInsightsBoard: View {
                     style: .continuous
                 ))
             VStack(alignment: .leading, spacing: 3) {
+                Text(insight.emphasisLabel.uppercased())
+                    .atriaEyebrow()
+                    .foregroundStyle(tint)
                 Text(insight.headline)
                     .font(AtriaDesignTokens.Typography.metricLabel)
                     .foregroundStyle(.primary)
@@ -96,7 +145,7 @@ struct AtriaLearnedInsightsBoard: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(insight.headline). \(insight.detail)")
     }

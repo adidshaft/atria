@@ -129,6 +129,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("What moved you"))
         XCTAssertTrue(source.contains("featuredCard"))
         XCTAssertTrue(source.contains("railColor(for:"))
+        XCTAssertTrue(source.contains("emphasisLabel.uppercased()"))
         XCTAssertFalse(source.contains("isPositive ? Metrics.electricGreen"))
     }
 }

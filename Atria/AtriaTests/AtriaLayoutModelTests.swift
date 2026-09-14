@@ -43,6 +43,16 @@ final class AtriaLayoutModelTests: XCTestCase {
                        [.coach, .plan, .learnedRead, .shortcuts, .weeklyPlan, .glance])
     }
 
+    func testTodaySectionOrderInsertsNewSectionsAtDefaultRelativeSlot() {
+        XCTAssertEqual(
+            AtriaTodayScreen.orderedTodaySections(
+                from: "plan,shortcuts,weeklyPlan,glance,coach"
+            ),
+            [.plan, .learnedRead, .shortcuts, .weeklyPlan, .glance, .coach],
+            "learnedRead must sit under the plan cluster, not after coach"
+        )
+    }
+
     func testTodayScreenGlanceMetricsUsesValidatedLayoutConfig() {
         var config = AtriaHomeLayoutConfig.default
         config.glanceMetrics = ["hrv", "unknown", "hrv", "sleepPerformance"]

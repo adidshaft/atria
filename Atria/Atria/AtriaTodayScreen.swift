@@ -782,8 +782,25 @@ struct AtriaTodayScreen: View {
             order.append(section)
             seen.insert(section)
         }
+        // New sections must land at their default-relative slot, not the
+        // bottom. Appending buried Today's read under glance + coach on this
+        // phone's saved CSV (device 2026-09-14 23:00).
         for section in AtriaTodaySection.defaultOrder where !order.contains(section) {
-            order.append(section)
+            if let anchor = AtriaTodaySection.defaultOrder
+                .prefix(while: { $0 != section })
+                .reversed()
+                .first(where: { order.contains($0) }),
+               let idx = order.firstIndex(of: anchor) {
+                order.insert(section, at: idx + 1)
+            } else if let next = AtriaTodaySection.defaultOrder
+                .drop(while: { $0 != section })
+                .dropFirst()
+                .first(where: { order.contains($0) }),
+               let idx = order.firstIndex(of: next) {
+                order.insert(section, at: idx)
+            } else {
+                order.append(section)
+            }
         }
         return order
     }
@@ -882,9 +899,10 @@ struct AtriaTodayScreen: View {
             }
 
         case .learnedRead:
-            AtriaLearnedInsightsBoard(
-                insights: sessionProjectionStore.state.learnedInsights
-            )
+            let insights = sessionProjectionStore.state.learnedInsights
+            if !insights.isEmpty {
+                AtriaLearnedInsightsBoard(insights: insights)
+            }
 
         case .shortcuts:
             AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)
@@ -4659,7 +4677,7 @@ private struct AtriaTodayActionRow: View, Equatable {
 /// The user-arrangeable big sections of the Today screen (everything below
 /// the ring/live/highlights cluster). Raw values persist in
 /// `atria.today.sectionOrder`; unknown values are dropped and missing ones
-/// appended so the set can evolve.
+/// are inserted at their default-relative slot so the set can evolve.
 enum AtriaTodaySection: String, CaseIterable, Identifiable {
     case plan, learnedRead, shortcuts, weeklyPlan, glance, coach
 
