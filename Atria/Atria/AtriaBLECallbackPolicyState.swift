@@ -11,6 +11,7 @@ final class AtriaBLECallbackPolicyState: @unchecked Sendable {
         var historySkipsDataRange: Bool
         var protectedProfileIsEmpty: Bool
         var protectedStandardDiscoveryStarted: Bool
+        var skipStandingReconnectOnce: Bool
     }
 
     private let lock = NSLock()
@@ -21,14 +22,16 @@ final class AtriaBLECallbackPolicyState: @unchecked Sendable {
         onboardingPairingPreflight: Bool = false,
         historySkipsDataRange: Bool = false,
         protectedProfileIsEmpty: Bool = true,
-        protectedStandardDiscoveryStarted: Bool = false
+        protectedStandardDiscoveryStarted: Bool = false,
+        skipStandingReconnectOnce: Bool = false
     ) {
         value = Snapshot(
             standardHROnly: standardHROnly,
             onboardingPairingPreflight: onboardingPairingPreflight,
             historySkipsDataRange: historySkipsDataRange,
             protectedProfileIsEmpty: protectedProfileIsEmpty,
-            protectedStandardDiscoveryStarted: protectedStandardDiscoveryStarted
+            protectedStandardDiscoveryStarted: protectedStandardDiscoveryStarted,
+            skipStandingReconnectOnce: skipStandingReconnectOnce
         )
     }
 

@@ -211,6 +211,7 @@ struct AtriaJournalTab: View {
                                                    store: store)
         Group {
             AtriaJournalCheckInDeck(store: store, projection: projection)
+            AtriaLearnedInsightsHost(store: store)
             AtriaJournalTypedInsightsSection(insights: projection.typedInsights,
                                              answeredDayCount: projection.answeredDayCount)
             AtriaBehaviorImpactCard(model: impactModel)
@@ -496,6 +497,45 @@ private struct AtriaCyclePeriodLogSheet: View {
             if newValue < startDate { endDate = startDate }
         }
         .presentationDetents([.medium])
+    }
+}
+
+private struct AtriaLearnedInsightsHost: View {
+    @ObservedObject var store: SessionStore
+
+    var body: some View {
+        AtriaLearnedInsightsSection(insights: store.learnedInsights)
+    }
+}
+
+private struct AtriaLearnedInsightsSection: View {
+    let insights: [AtriaLearnedInsight]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            AtriaPanelSectionHeader(title: "Today's read",
+                                    subtitle: "From sleep, recovery, and strain")
+            if insights.isEmpty {
+                Text("Atria writes a specific read here once a few nights of rollups exist. Raw sensor files can be retired; these sentences stay.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ForEach(insights) { insight in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(insight.headline)
+                            .font(.subheadline.weight(.semibold))
+                        Text(insight.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(insight.headline). \(insight.detail)")
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

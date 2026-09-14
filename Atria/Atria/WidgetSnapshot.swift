@@ -503,7 +503,7 @@ enum WidgetSnapshotPublisher {
                 before: cycle.start,
                 strapIdentifiers: [sourceIdentifier]
             )
-        let presentation = resolvedDailySteps(
+        let presentation = resolvedDailyStepsHoldingLastCount(
             day: now,
             now: now,
             liveCount: 0,
@@ -1633,7 +1633,7 @@ enum WidgetSnapshotPublisher {
                 before: savedAggregate.day,
                 strapIdentifiers: strapIdentifiers
             )
-        let dailySteps = resolvedDailySteps(
+        let dailySteps = resolvedDailyStepsHoldingLastCount(
             day: now,
             now: now,
             liveCount: strapStepsToday,
@@ -2098,6 +2098,46 @@ enum WidgetSnapshotPublisher {
             boundaryIsUnconfirmedFallback: boundaryIsUnconfirmedFallback,
             calendar: calendar
         )
+    }
+
+    nonisolated static func resolvedDailyStepsHoldingLastCount(
+        day: Date,
+        now: Date,
+        liveCount: Int,
+        liveValidationState: String,
+        liveCapturedAt: Date?,
+        canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
+        liveAuthorityQualified: Bool = true,
+        physiologicalDayStart: Date? = nil,
+        priorCycleReceipt: AtriaDailyStepPresentation.PriorCycleReceipt? = nil,
+        boundaryIsUnconfirmedFallback: Bool = false,
+        calendar: Calendar = .current
+    ) -> AtriaDailyStepPresentation {
+        let cycleStart = physiologicalDayStart ?? calendar.startOfDay(for: day)
+        let held = AtriaHeldDailyStepFloor.load(cycleStart: cycleStart)
+        let presentation = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: liveCount,
+            liveValidationState: liveValidationState,
+            liveCapturedAt: liveCapturedAt,
+            canonicalDays: canonicalDays,
+            liveAuthorityQualified: liveAuthorityQualified,
+            physiologicalDayStart: physiologicalDayStart,
+            priorCycleReceipt: priorCycleReceipt,
+            boundaryIsUnconfirmedFallback: boundaryIsUnconfirmedFallback,
+            heldCount: held?.count ?? 0,
+            heldCapturedAt: held?.capturedAt,
+            calendar: calendar
+        )
+        if let count = presentation.count, count > 0 {
+            AtriaHeldDailyStepFloor.persist(
+                count: count,
+                cycleStart: cycleStart,
+                capturedAt: presentation.capturedAt
+            )
+        }
+        return presentation
     }
 
     nonisolated static func stepSourceIdentifier(

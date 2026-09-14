@@ -12,7 +12,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 onboardingPairingPreflight: false,
                 historySkipsDataRange: false,
                 protectedProfileIsEmpty: true,
-                protectedStandardDiscoveryStarted: false
+                protectedStandardDiscoveryStarted: false,
+                skipStandingReconnectOnce: false
             )
         )
 
@@ -31,7 +32,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 onboardingPairingPreflight: true,
                 historySkipsDataRange: true,
                 protectedProfileIsEmpty: false,
-                protectedStandardDiscoveryStarted: true
+                protectedStandardDiscoveryStarted: true,
+                skipStandingReconnectOnce: false
             )
         )
     }

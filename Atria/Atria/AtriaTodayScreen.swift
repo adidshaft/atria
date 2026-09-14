@@ -20,6 +20,7 @@ struct AtriaTodaySessionState: Equatable {
     let confirmedSleeps: [UserConfirmedSleep]
     let behaviorImpactSummaries: [BehaviorImpactSummary]
     let behaviorInsights: [AtriaInsight]
+    let learnedInsights: [AtriaLearnedInsight]
     let baseline: PersonalBaseline
     let sleepHistorySnapshot: SleepHistorySnapshot
     let sleepHistorySnapshotRevision: Int
@@ -46,6 +47,7 @@ struct AtriaTodaySessionState: Equatable {
         confirmedSleeps = store.confirmedSleeps
         behaviorImpactSummaries = store.behaviorImpactSummariesCache
         behaviorInsights = store.behaviorInsights
+        learnedInsights = store.learnedInsights
         baseline = store.baseline
         baselineSamplesKey = store.baseline.samples.map {
             BaselineSampleKey(date: $0.date,
@@ -71,6 +73,7 @@ struct AtriaTodaySessionState: Equatable {
             && lhs.confirmedWorkoutsRevision == rhs.confirmedWorkoutsRevision
             && lhs.behaviorImpactSummaries == rhs.behaviorImpactSummaries
             && lhs.behaviorInsights == rhs.behaviorInsights
+            && lhs.learnedInsights == rhs.learnedInsights
             && lhs.baselineSamplesKey == rhs.baselineSamplesKey
             && lhs.baseline.restingHR == rhs.baseline.restingHR
             && lhs.baseline.hrvEMA == rhs.baseline.hrvEMA
@@ -116,6 +119,7 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$behaviorImpactSummariesCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$behaviorInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$learnedInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$profile.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -2995,11 +2999,15 @@ struct AtriaTodayScreen: View {
                                         trend: glanceTrend(for: metric),
                                         trendStyle: glanceSparklineStyle(for: metric))
         case .insights:
+            let learned = sessionProjectionStore.state.learnedInsights
             let insights = sessionProjectionStore.state.behaviorInsights
+            let lead = learned.first?.headline
+                ?? insights.first?.headline
+                ?? (insights.isEmpty && learned.isEmpty ? "Keep tagging" : "Patterns")
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\(insights.count)",
-                                        detail: legendDetail(insights.first?.tagLabel ?? "Keep tagging"),
+                                        value: "\(learned.count + insights.count)",
+                                        detail: legendDetail(lead),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric),

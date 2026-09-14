@@ -4615,7 +4615,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         if let sent = coverLive51WriteAt, sent.isFinite, sent >= cover - 1 {
-            // First write was 6A+51 with no frames. One 3F+6A+51 follow-up.
+            // First write was 6A+51 with no frames. One extra 6A/51 follow-up.
             return nowUnix - sent >= 5
         }
         return true
@@ -4626,6 +4626,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// stream-5 CCCD, not a mid-link subscribe, reconnect, or proof restart.
     /// The 6 h `51` capture is the production IMU source; once it expires the
     /// strap keeps the CCCD and simply stops sending frames.
+    ///
+    /// Mode is deliberately not gated: full-protocol silent recovery used to
+    /// send `0x3F` on a live HR link and physically drop both streams
+    /// (device 2026-09-14). Same-link 6A/51 is the IMU recovery for every
+    /// qualified owner.
     nonisolated static func shouldRefreshProtectedBoundedRawCapture(
         standardHROnlyMode: Bool,
         streamSuppressed: Bool,
@@ -4639,10 +4644,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastFrameAge: TimeInterval?,
         lastActivationAge: TimeInterval?,
         staleInterval: TimeInterval = r10LivenessStaleInterval,
-        minimumActivationInterval: TimeInterval = protectedR10RollbackRetryBaseDelay
+        minimumActivationInterval: TimeInterval = 45
     ) -> Bool {
-        guard standardHROnlyMode,
-              !streamSuppressed,
+        _ = standardHROnlyMode
+        guard !streamSuppressed,
               !proofActive,
               !historyOwnsTransport,
               owner == .protectedV9,
@@ -5289,6 +5294,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastSilentStreamRepairSpentAt = nil
         }
         connectedAt = now
+        reissuedStuckRestoredConnecting = false
+        rediscoveredStuckRestoredConnecting = false
+        skipStandingReconnectOnce = false
+        callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
         connectedEpochAcceptedHeartRateSamples = 0
         invalidateConnectedRawHistoryCatchUpPublicationYield(
             reason: "connection_epoch_changed"
@@ -5511,6 +5520,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let reconnectWatchdogSeconds: TimeInterval = 20
     private var reconnectWatchdogTask: Task<Void, Never>?
     private var reissuedStuckRestoredConnecting = false
+    private var rediscoveredStuckRestoredConnecting = false
+    /// After a stuck restored `.connecting` object is cancelled for scan
+    /// rediscovery, `didDisconnect` must not immediately reinstall the same
+    /// standing `connect` that hung for minutes (device 2026-09-14).
+    private var skipStandingReconnectOnce = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -9138,6 +9152,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastTickAt)
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.ticks) + 1, forKey: KeepaliveDefaults.ticks)
         if peripheral == nil {
+            if Self.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: isActivelyScanning,
+                rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
+                connectedThisProcess: connectedAt != nil
+            ) {
+                defaults.set("stuck_restore_scan", forKey: KeepaliveDefaults.lastStatus)
+                defaults.set("defer_scan", forKey: KeepaliveDefaults.lastAction)
+                AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=defer_to_stuck_restore_scan")
+                return
+            }
             recomputeConnectionStatus(reason: "foreground_keepalive_missing_peripheral")
             defaults.set("missing_peripheral", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
@@ -23110,7 +23134,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled { break }
-                guard longWearModeEnabled, standardHROnlyMode else { continue }
+                // Device 2026-09-14: effective full_protocol skipped this
+                // loop while 2A37 sat notifying=false for 36s.
+                guard longWearModeEnabled else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
                 guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
@@ -23903,7 +23929,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled { break }
-                guard longWearModeEnabled, standardHROnlyMode else { continue }
+                guard longWearModeEnabled else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
                 guard let reference = Self.latestLinkActivity([lastAcceptedHRAt, connectedAt]) else { continue }
@@ -25392,6 +25418,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     func reconnectToSavedPeripheralIfPossible(reason: String,
                                                allowCleanOwnerLaunchCutover: Bool = false) -> Bool {
+        if rediscoveredStuckRestoredConnecting && connectedAt == nil && isActivelyScanning {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=skip_standing_connect_during_stuck_restore_scan",
+                reason
+            )
+            return false
+        }
         let defaults = UserDefaults.standard
         guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
               let uuid = UUID(uuidString: uuidString),
@@ -25899,6 +25932,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && peripheralState == .connecting
     }
 
+    /// The one-shot reissue still left this phone connecting for 10+ minutes.
+    /// A saved standing `connect` to a zombie restored object never completes
+    /// and also blocks `didDiscover`. Scan once; genuine out-of-range after a
+    /// live `didConnect` this process keeps observing.
+    nonisolated static func shouldRediscoverStuckRestoredConnecting(
+        peripheralState: CBPeripheralState,
+        didConnectThisProcess: Bool,
+        alreadyReissued: Bool,
+        alreadyRediscovered: Bool
+    ) -> Bool {
+        alreadyReissued
+            && !alreadyRediscovered
+            && !didConnectThisProcess
+            && peripheralState == .connecting
+    }
+
+    nonisolated static func shouldSkipKnownStrapStandingReconnect(
+        skipStandingReconnectOnce: Bool
+    ) -> Bool {
+        skipStandingReconnectOnce
+    }
+
+    nonisolated static func shouldKeepaliveDeferToActiveScan(
+        isActivelyScanning: Bool,
+        rediscoveringStuckRestore: Bool,
+        connectedThisProcess: Bool
+    ) -> Bool {
+        return isActivelyScanning
+            || (rediscoveringStuckRestore && !connectedThisProcess)
+    }
+
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
@@ -25921,15 +25985,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     didConnectThisProcess: self.connectedAt != nil,
                     alreadyReissued: self.reissuedStuckRestoredConnecting
                 ) {
+                    // Cancel/reissue on the restored object just standing-
+                    // connected the same zombie (device 2026-09-14). Skip
+                    // that and the second 20s wait; unstick via anonymous
+                    // central rebuild.
                     self.reissuedStuckRestoredConnecting = true
+                    self.rediscoveredStuckRestoredConnecting = true
                     AtriaDebugLog(
                         "ATRIADBG ble_link watchdog reason=%@ action=reissue_stuck_restored_connecting peripheral_state=%d",
                         reason,
                         peripheral.state.rawValue
                     )
-                    self.cancelPeripheralConnection(
-                        peripheral,
-                        reason: "\(reason)_stuck_restored_connecting"
+                    self.beginStuckRestoredConnectingRediscovery(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
+                if Self.shouldRediscoverStuckRestoredConnecting(
+                    peripheralState: peripheral.state,
+                    didConnectThisProcess: self.connectedAt != nil,
+                    alreadyReissued: self.reissuedStuckRestoredConnecting,
+                    alreadyRediscovered: self.rediscoveredStuckRestoredConnecting
+                ) {
+                    self.rediscoveredStuckRestoredConnecting = true
+                    AtriaDebugLog(
+                        "ATRIADBG ble_link watchdog reason=%@ action=rediscover_stuck_restored_connecting_scan peripheral_state=%d",
+                        reason,
+                        peripheral.state.rawValue
+                    )
+                    self.beginStuckRestoredConnectingRediscovery(
+                        peripheral: peripheral,
+                        reason: reason
                     )
                     return
                 }
@@ -25951,6 +26038,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   reason,
                   reconnectWatchdogSeconds)
             self.startScan(reason: "\(reason)_watchdog_recovery")
+        }
+    }
+
+    /// Cancel the zombie restored connect, then replace the wedged
+    /// CoreBluetooth session. Scan cannot find a bonded WHOOP that is not
+    /// advertising, and standing-connect on the restored object hung in-range
+    /// (device 2026-09-14).
+    private func beginStuckRestoredConnectingRediscovery(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        skipStandingReconnectOnce = true
+        callbackPolicyState.update { $0.skipStandingReconnectOnce = true }
+        cancelPeripheralConnection(
+            peripheral,
+            reason: "\(reason)_stuck_restored_connecting_rediscover"
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            AtriaDebugLog(
+                "ATRIADBG ble_link watchdog reason=%@ action=rebuild_central_after_stuck_restored_connecting",
+                reason
+            )
+            self.unstickRestoredConnectingCentral(reason: reason)
         }
     }
 
@@ -25992,6 +26105,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         startReconnectWatchdog(
             reason: "connection_timeout_pending_session",
             peripheral: peripheral
+        )
+    }
+
+    /// Fresh CBCentralManager + standing connect. The restored `.connecting`
+    /// object stayed hung even in range; a replacement central is the same
+    /// unstick used for a wedged live session.
+    private func unstickRestoredConnectingCentral(reason: String) {
+        // The replacement central's pending connect is a real in-range wait,
+        // not another zombie restore. Mark both one-shots spent so the
+        // watchdog observes instead of rebuild-looping every 20s
+        // (device 2026-09-14: first rebuild's connect was cancelled at 21s).
+        reissuedStuckRestoredConnecting = true
+        rediscoveredStuckRestoredConnecting = true
+        skipStandingReconnectOnce = false
+        callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
+        if let peripheral {
+            peripheral.delegate = nil
+            self.peripheral = nil
+        }
+        isActivelyScanning = false
+        rebuildCentralForWedgedSessionOnce(
+            trigger: "stuck_restored_connecting_\(reason)",
+            omitRestoreIdentifier: true
         )
     }
 
@@ -26570,9 +26706,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// central swap used by the v10 clean-owner cutover.
     private func rebuildCentralForWedgedSessionOnce(
         trigger: String,
-        centralUnavailableRecoveryAttempt: Bool = false
+        centralUnavailableRecoveryAttempt: Bool = false,
+        omitRestoreIdentifier: Bool = false
     ) {
-        recordReconnectLeaseStage("repair_central_rebuild", detail: trigger)
+        recordReconnectLeaseStage(
+            omitRestoreIdentifier
+                ? "repair_central_rebuild_anonymous"
+                : "repair_central_rebuild",
+            detail: trigger
+        )
         // A replacement is a new CoreBluetooth-state episode even when both
         // managers report the same raw unavailable value. Retire A's timer and
         // observation before B can callback; otherwise B sees the non-nil A
@@ -26655,44 +26797,66 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // leaving bluetoothd two sessions for one strap and reaping HR CCCD
         // handle 0x002b out from under the canonical owner.
         if motionHandshakeDiagnostic == nil {
-            persistCentralRecoveryRestoreIdentifier(
-                replacementRestoreIdentifier,
-                baseIdentifier: baseRestoreIdentifier,
-                defaults: defaults
-            )
-            // A silent-link repair has not yet spent the separate unavailable-
-            // central fallback. The real Build 4 failure was A -> B for a
-            // silent link, followed by B reporting impossible `.unsupported`;
-            // marking that first swap as the unavailable one-shot strands B
-            // forever. Only a rebuild actually admitted by the unavailable-
-            // state timer consumes the persisted one-shot. Its replacement
-            // then cannot flip A/B again across force launches until an exact
-            // current `.poweredOn` callback clears this bit. This pending-bit
-            // write commits in the same post-drain/pre-construction window as
-            // the restore-slot persistence above.
-            if centralUnavailableRecoveryAttempt {
-                setCentralRecoveryPending(
-                    true,
+            if omitRestoreIdentifier {
+                // A/B restore slots both carried zombie `.connecting`
+                // peripherals after this afternoon's rebuild storm. An
+                // anonymous manager cannot restore them; next launch returns
+                // to the canonical slot.
+                persistCentralRecoveryRestoreIdentifier(
+                    baseRestoreIdentifier,
                     baseIdentifier: baseRestoreIdentifier,
                     defaults: defaults
                 )
+            } else {
+                persistCentralRecoveryRestoreIdentifier(
+                    replacementRestoreIdentifier,
+                    baseIdentifier: baseRestoreIdentifier,
+                    defaults: defaults
+                )
+                // A silent-link repair has not yet spent the separate unavailable-
+                // central fallback. The real Build 4 failure was A -> B for a
+                // silent link, followed by B reporting impossible `.unsupported`;
+                // marking that first swap as the unavailable one-shot strands B
+                // forever. Only a rebuild actually admitted by the unavailable-
+                // state timer consumes the persisted one-shot. Its replacement
+                // then cannot flip A/B again across force launches until an exact
+                // current `.poweredOn` callback clears this bit. This pending-bit
+                // write commits in the same post-drain/pre-construction window as
+                // the restore-slot persistence above.
+                if centralUnavailableRecoveryAttempt {
+                    setCentralRecoveryPending(
+                        true,
+                        baseIdentifier: baseRestoreIdentifier,
+                        defaults: defaults
+                    )
+                }
             }
         }
         let delegateQueue = centralDelegateQueue
         delegateQueue?.suspend()
-        central = CBCentralManager(delegate: self,
-                                   queue: delegateQueue,
-                                   options: [
-                                       CBCentralManagerOptionRestoreIdentifierKey:
-                                           replacementRestoreIdentifier,
-                                       // The initial manager already owns the
-                                       // system prompt. A transparent one-shot
-                                       // session repair must not show it again.
-                                       CBCentralManagerOptionShowPowerAlertKey: false
-                                   ])
+        if omitRestoreIdentifier {
+            central = CBCentralManager(delegate: self,
+                                       queue: delegateQueue,
+                                       options: [
+                                           CBCentralManagerOptionShowPowerAlertKey: false
+                                       ])
+        } else {
+            central = CBCentralManager(delegate: self,
+                                       queue: delegateQueue,
+                                       options: [
+                                           CBCentralManagerOptionRestoreIdentifierKey:
+                                               replacementRestoreIdentifier,
+                                           // The initial manager already owns the
+                                           // system prompt. A transparent one-shot
+                                           // session repair must not show it again.
+                                           CBCentralManagerOptionShowPowerAlertKey: false
+                                       ])
+        }
         let replacementToken = centralEventFence.install(central)
         installedCentralBaseIdentifier = baseRestoreIdentifier
-        installedCentralRestoreIdentifier = replacementRestoreIdentifier
+        installedCentralRestoreIdentifier = omitRestoreIdentifier
+            ? baseRestoreIdentifier
+            : replacementRestoreIdentifier
         // Marker ownership is the replacement generation itself. An old
         // admitted callback cannot consume this even if it was already running
         // when its central was retired.
@@ -29119,10 +29283,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10RecoveryRearmAt: Date?
     private var lastR10RecoveryRediscoveryAt: Date?
     private var lastR10NotifyRepairAt: Date?
-    nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 60
-    nonisolated static let r10LivenessStaleInterval: TimeInterval = 60
-    nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 60
-    nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 10 * 60
+    nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
+    nonisolated static let r10LivenessStaleInterval: TimeInterval = 20
+    nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
+    nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 45
     nonisolated static let r10NotifyRepairMinimumInterval: TimeInterval = 30
     private var lastRRBearingRealtimeFrameAt: Date?
     private var lastRealtimeRestartAt: Date?
@@ -29727,6 +29891,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ interval_s=%.0f",
                           reason,
                           Self.r10LivenessStaleInterval)
+            self.evaluateR10Liveness(now: Date(), reason: "arm")
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Self.r10LivenessStaleInterval))
                 guard !Task.isCancelled else { return }
@@ -29778,10 +29943,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            protectedR10CommandSequenceTask == nil,
            workoutMotionCommandTask == nil else { return false }
 
-        let includeRealtime = priorWrite != nil
         defaults.set(now.timeIntervalSince1970,
                      forKey: Self.protectedR10CoverLive51WriteAtKey)
-        if includeRealtime {
+        if priorWrite != nil {
+            // Bound the follow-up to one extra 6A/51. The key is historical
+            // ("with realtime") but the payload is IMU-only — 0x3F dropped HR.
             defaults.set(now.timeIntervalSince1970,
                          forKey: Self.protectedR10CoverLive51WithRealtimeAtKey)
         }
@@ -29792,7 +29958,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: Self.protectedR10ActivationSentAtKey)
         defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
                      forKey: Self.protectedR10ActivationCountKey)
-        defaults.set(includeRealtime ? "cover_live_3f_6a_51_write" : "cover_live_51_write",
+        defaults.set("cover_live_51_write",
                      forKey: RadioDefaults.passiveR10Status)
         if let stream5 = peripheral.services?
             .first(where: { $0.uuid == Self.UUIDs.strapService })?
@@ -29806,17 +29972,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
-            if includeRealtime {
-                let realtimeSequence = self.cmdSeq
-                self.cmdSeq &+= 1
-                peripheral.writeValue(
-                    encodeFrame([Packet.command, realtimeSequence, Cmd.sendR10R11Realtime, 0x01]),
-                    for: tx,
-                    type: .withoutResponse
-                )
-                try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
-                guard !Task.isCancelled, peripheral.state == .connected else { return }
-            }
             let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
             peripheral.writeValue(
@@ -29836,16 +29991,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 for: tx,
                 type: .withoutResponse
             )
-            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_51_sent reason=%@ cmds=%@ duration_ms=%u action=same_link_no_disconnect_no_proof",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_51_sent reason=%@ cmds=6a01,51_duration_le duration_ms=%u action=same_link_no_disconnect_no_proof_no_3f",
                           reason,
-                          includeRealtime ? "3f01,6a01,51_duration_le" : "6a01,51_duration_le",
                           Cmd.workoutRawCaptureDurationMilliseconds)
         }
         return true
     }
 
     /// Re-send 6A/01 then 51 on a qualified silent stream-5 link. Never
-    /// toggles a CCCD or reconnects; the 10-minute activation lease and the
+    /// toggles a CCCD or reconnects; the 45-second activation lease and the
     /// stale-frame gate live in `shouldRefreshProtectedBoundedRawCapture`.
     @discardableResult
     private func refreshProtectedBoundedRawCaptureIfNeeded(
@@ -29934,58 +30088,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
 
-        if standardHROnlyMode {
-            if protectedR10CleanOwnerProofIsActive {
-                sendProtectedR10ActivationIfReady()
-            }
-            retryProtectedR10ShortBurstIfEligible(now: now, reason: reason)
-            // An already-qualified protected owner with a silent stream and an
-            // active explicit workout may issue the single validated per-
-            // connection activation pair through the workout motion lease. It
-            // still never toggles a CCCD or resets the connection epoch.
-            if workoutMotionOwnerStartedAt != nil {
-                evaluateWorkoutMotionLease(now: now, reason: "\(reason)_workout_lease")
-            }
-            if refreshProtectedBoundedRawCaptureIfNeeded(now: now, reason: reason) {
-                return
-            }
-            // Retired diagnostic vocabulary retained for audit continuity:
-            // status=repair_scheduled mode=protected. Clean owners do not
-            // schedule a CCCD repair; only the in-flight proof command gate is
-            // re-evaluated above.
-            AtriaDebugLog("ATRIADBG r10_watchdog status=observed mode=protected reason=%@ action=no_mid_link_cccd_or_epoch_reset",
-                          reason)
+        // Same-link 6A/51 first, in every radio mode. Full-protocol used to
+        // write 0x3F on a healthy 2A37 link; that command physically dropped
+        // both HR and IMU (device 2026-09-14: 8686 disconnects, imuFrames=0).
+        if refreshProtectedBoundedRawCaptureIfNeeded(now: now, reason: reason) {
             return
         }
-
-        guard let txCharacteristic,
-              txCharacteristic.properties.contains(.writeWithoutResponse),
-              heartRateCharacteristic?.isNotifying == true else { return }
-        let defaults = UserDefaults.standard
-        let lastActivationAt = (defaults.object(
-            forKey: Self.protectedR10ActivationSentAtKey
-        ) as? Double).map(Date.init(timeIntervalSince1970:))
-        let leaseDelay = Self.protectedR10ActivationLeaseDelay(
-            lastActivationAt: lastActivationAt,
-            now: now
-        )
-        guard leaseDelay <= 0 else {
-            AtriaDebugLog("ATRIADBG r10_watchdog status=repair_deferred mode=full_protocol reason=%@ lease_remaining_s=%.0f action=preserve_hr_link",
-                          reason,
-                          leaseDelay)
-            return
+        if protectedR10CleanOwnerProofIsActive {
+            sendProtectedR10ActivationIfReady()
         }
-        let sequence = cmdSeq
-        cmdSeq &+= 1
-        let frame = encodeFrame([Packet.command, sequence, Cmd.sendR10R11Realtime, 0x01])
-        defaults.set(now.timeIntervalSince1970,
-                     forKey: Self.protectedR10ActivationSentAtKey)
-        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
-                     forKey: Self.protectedR10ActivationCountKey)
-        peripheral.writeValue(frame, for: txCharacteristic, type: .withoutResponse)
-        AtriaDebugLog("ATRIADBG r10_watchdog status=repair_sent mode=full_protocol reason=%@ cmd=3f data=01 seq=%d action=single_leased_write_no_reconnect",
-                      reason,
-                      Int(sequence))
+        retryProtectedR10ShortBurstIfEligible(now: now, reason: reason)
+        if workoutMotionOwnerStartedAt != nil {
+            evaluateWorkoutMotionLease(now: now, reason: "\(reason)_workout_lease")
+        }
+        AtriaDebugLog("ATRIADBG r10_watchdog status=observed mode=%@ reason=%@ action=preserve_hr_same_link_imu_no_3f_no_reconnect",
+                      standardHROnlyMode ? "protected" : "full_protocol",
+                      reason)
     }
 
     /// One bounded, command-only retry for the observed two-frame v9 stall.
@@ -30099,7 +30217,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// itself — those decisions stay with the audited policies.
     func performBackgroundLinkAudit(reason: String) {
         evaluateR10Liveness(reason: "\(reason)_bg_audit")
-        guard longWearModeEnabled, standardHROnlyMode, status == .connected else { return }
+        guard longWearModeEnabled, status == .connected else { return }
         let now = Date()
         guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
               let acceptedReference = lastAcceptedHRAt ?? connectedAt else { return }
@@ -46334,6 +46452,19 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             self.strapStepLedgerRestoreInFlight = false
             let pending = self.strapStepLedgerSavePending
             self.strapStepLedgerSavePending = false
+            let restoredFloor = max(
+                record.segmentGyroCadenceResearchSteps ?? 0,
+                record.cumulativeGyroCadenceResearchSteps ?? 0
+            )
+            if restoredFloor > 0 {
+                AtriaHeldDailyStepFloor.persistLiveCoordinate(
+                    count: restoredFloor,
+                    capturedAt: record.updatedAt
+                )
+                if self.liveStrapStepCountCapturedAt == nil {
+                    self.assignIfChanged(\.liveStrapStepCountCapturedAt, record.updatedAt)
+                }
+            }
             self.publishLiveStrapStepResearchIfNeeded(force: true)
             if self.strapStepResearchPeakCount > record.segmentRawSteps
                 || self.currentGyroCadenceResearchSessionSteps()
@@ -46964,6 +47095,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepResearchTodayCount,
                         Self.dayScopedStrapStepCount(sessionCount: strapStepResearchCount,
                                                      dayBaseline: strapStepResearchDayBaseline))
+        let publishedFloor = max(strapStepResearchCount, liveStrapStepResearchTodayCount)
+        if publishedFloor > 0 {
+            AtriaHeldDailyStepFloor.persistLiveCoordinate(
+                count: publishedFloor,
+                capturedAt: liveStrapStepCountCapturedAt ?? now
+            )
+        }
     }
 
     nonisolated static func dayScopedStrapStepCount(sessionCount: Int, dayBaseline: Int) -> Int {
@@ -48506,8 +48644,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     ? .suppressHistoryOwner
                     : .reconnectRealtime
         }
+        let skipStandingReconnectOnce = callbackPolicyState.snapshot().skipStandingReconnectOnce
         let synchronousReconnectIssued =
-            fastLaneDisposition.requestsRealtimeReconnect
+            !skipStandingReconnectOnce
+                && fastLaneDisposition.requestsRealtimeReconnect
                 && centralEventFence.accepts(centralToken, central: central)
                 && peripheral.state == .disconnected
         if synchronousReconnectIssued {
@@ -48890,7 +49030,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                           disconnectCause,
                           defaults.integer(forKey: LinkDefaults.disconnectsThisLaunch),
                           disconnects)
-            let useFreshScan = forceFreshScanAfterDisconnect
+            let skipStandingReconnectOnce = Self.shouldSkipKnownStrapStandingReconnect(
+                skipStandingReconnectOnce: self.skipStandingReconnectOnce
+                    || self.callbackPolicyState.snapshot().skipStandingReconnectOnce
+            )
+            self.skipStandingReconnectOnce = false
+            self.callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
+            let useFreshScan = forceFreshScanAfterDisconnect || skipStandingReconnectOnce
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
             if wasUserRequestedDisconnect {
@@ -49201,6 +49347,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     self.peripheral = nil
                 }
                 recomputeConnectionStatus(reason: "event")
+                if skipStandingReconnectOnce {
+                    AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=stuck_restored_connecting action=await_central_rebuild_no_standing_connect")
+                    return
+                }
                 let freshReason = longWearModeEnabled ? "long_wear_disconnect" : "stale_data_recovery"
                 // Even on a forced fresh recovery, prefer a standing pending connect
                 // to the KNOWN strap over scanning — it reconnects without giving up.
@@ -49282,6 +49432,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 peripheralIsDisconnected: peripheral.state == .disconnected
             )
             && !Self.isPeerRemovedPairingError(error)
+            && !callbackPolicyState.snapshot().skipStandingReconnectOnce
         if synchronousReconnectIssued,
            centralEventFence.accepts(centralToken, central: central) {
             // A locked/background failure callback may be the last execution
