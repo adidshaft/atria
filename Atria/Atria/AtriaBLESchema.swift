@@ -248,6 +248,7 @@ extension AtriaBLEManager {
         static let wwrBlockedCount = "atria.radio.wwrBlockedCount"
         static let lastWWRFlushedAt = "atria.radio.lastWWRFlushedAt"
         static let lastWWRFlushCount = "atria.radio.lastWWRFlushCount"
+        static let wwrPendingCount = "atria.radio.wwrPendingCount"
         static let zombieTxRediscoverAt = "atria.r10.zombieTxRediscoverAt"
     }
 
@@ -544,6 +545,9 @@ extension AtriaBLEManager {
         static let notifyCallbacksThisConnection = "atria.protocol.notifyCallbacksThisConnection"
         static let lastNotifyCallbackAt = "atria.protocol.lastNotifyCallbackAt"
         static let lastNotifyCallbackUUID = "atria.protocol.lastNotifyCallbackUUID"
+        static let lastNotifyCallbackLength = "atria.protocol.lastNotifyCallbackLength"
+        static let stream4NotifyCallbacksThisConnection = "atria.protocol.stream4NotifyCallbacksThisConnection"
+        static let stream5NotifyCallbacksThisConnection = "atria.protocol.stream5NotifyCallbacksThisConnection"
     }
 
     enum Cmd {
