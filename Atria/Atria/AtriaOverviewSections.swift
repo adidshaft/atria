@@ -9858,8 +9858,11 @@ struct AtriaInsightsCard: View, Equatable {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                ForEach(learned.prefix(5)) { insight in
-                    learnedRow(insight)
+                if !learned.isEmpty {
+                    AtriaLearnedInsightsBoard(
+                        insights: Array(learned.prefix(5)),
+                        showsHeader: false
+                    )
                 }
                 ForEach(insights.prefix(3)) { insight in
                     insightRow(insight)
@@ -9868,30 +9871,6 @@ struct AtriaInsightsCard: View, Equatable {
         }
         .padding(16)
         .atriaCard(emphasis: .soft)
-    }
-
-    private func learnedRow(_ insight: AtriaLearnedInsight) -> some View {
-        let tint: Color = insight.isPositive ? Metrics.electricGreen : .orange
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: insight.systemImage)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(insight.headline)
-                    .font(.subheadline.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(insight.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: tint)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(insight.headline). \(insight.detail)")
     }
 
     private func insightRow(_ i: AtriaInsight) -> some View {

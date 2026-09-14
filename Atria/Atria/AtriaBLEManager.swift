@@ -9203,6 +9203,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastTickAt)
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.ticks) + 1, forKey: KeepaliveDefaults.ticks)
         if peripheral == nil {
+            if isActivelyScanning {
+                isActivelyScanning = false
+                central.stopScan()
+            }
             if Self.shouldKeepaliveDeferToActiveScan(
                 isActivelyScanning: isActivelyScanning,
                 rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
@@ -9230,6 +9234,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 startScan(reason: "foreground_keepalive_missing_peripheral")
             }
             return
+        }
+        if isActivelyScanning {
+            isActivelyScanning = false
+            central.stopScan()
         }
         if Self.shouldKeepaliveDeferToActiveScan(
             isActivelyScanning: isActivelyScanning,
@@ -26058,11 +26066,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         skipStandingReconnectOnce: Bool = false,
         restoreSlotDrainDeferred: Bool = false
     ) -> Bool {
+        _ = isActivelyScanning
         _ = rediscoveringStuckRestore
         _ = connectedThisProcess
-        return isActivelyScanning
-            || skipStandingReconnectOnce
-            || restoreSlotDrainDeferred
+        // Bonded WHOOP does not advertise. Deferring to an active scan is a
+        // deadlock (device 2026-09-14 22:46: keepalive=defer_scan, in range).
+        return skipStandingReconnectOnce || restoreSlotDrainDeferred
     }
 
     nonisolated static func shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(

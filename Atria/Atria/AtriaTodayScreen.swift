@@ -881,6 +881,11 @@ struct AtriaTodayScreen: View {
                 .accessibilityHint("Asks iOS to show Atria's notifications as normal alerts.")
             }
 
+        case .learnedRead:
+            AtriaLearnedInsightsBoard(
+                insights: sessionProjectionStore.state.learnedInsights
+            )
+
         case .shortcuts:
             AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)
         case .weeklyPlan:
@@ -4656,11 +4661,13 @@ private struct AtriaTodayActionRow: View, Equatable {
 /// `atria.today.sectionOrder`; unknown values are dropped and missing ones
 /// appended so the set can evolve.
 enum AtriaTodaySection: String, CaseIterable, Identifiable {
-    case plan, shortcuts, weeklyPlan, glance, coach
+    case plan, learnedRead, shortcuts, weeklyPlan, glance, coach
 
     var id: String { rawValue }
 
-    static let defaultOrder: [AtriaTodaySection] = [.plan, .shortcuts, .weeklyPlan, .glance, .coach]
+    static let defaultOrder: [AtriaTodaySection] = [
+        .plan, .learnedRead, .shortcuts, .weeklyPlan, .glance, .coach
+    ]
 }
 
 /// Classic SwiftUI reorder delegate: sections swap as the drag passes over

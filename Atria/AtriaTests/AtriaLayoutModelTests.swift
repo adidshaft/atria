@@ -40,7 +40,7 @@ final class AtriaLayoutModelTests: XCTestCase {
 
     func testTodaySectionOrderRepairsMalformedAndDuplicateCSV() {
         XCTAssertEqual(AtriaTodayScreen.orderedTodaySections(from: "coach,unknown,plan,coach"),
-                       [.coach, .plan, .shortcuts, .weeklyPlan, .glance])
+                       [.coach, .plan, .learnedRead, .shortcuts, .weeklyPlan, .glance])
     }
 
     func testTodayScreenGlanceMetricsUsesValidatedLayoutConfig() {
