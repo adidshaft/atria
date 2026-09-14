@@ -416,6 +416,62 @@ struct AtriaBLEWorkoutHistoryPreemptionSuccessorGate: Sendable {
     }
 }
 
+/// CoreBluetooth silently drops `.withoutResponse` writes when the local
+/// transmit queue is full. Live 2A37 traffic on this phone filled that queue
+/// while 6A/51 still incremented `activationCount` (device 2026-09-14 23:56).
+private final class AtriaProprietaryWWRGate: @unchecked Sendable {
+    static let maximumPendingFrames = 4
+    private let lock = NSLock()
+    private var pending: [Data] = []
+
+    @discardableResult
+    func sendOrQueue(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        frame: Data
+    ) -> Bool {
+        guard characteristic.properties.contains(.writeWithoutResponse) else {
+            return false
+        }
+        if peripheral.canSendWriteWithoutResponse {
+            peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+            return true
+        }
+        lock.withLock {
+            if pending.count >= Self.maximumPendingFrames {
+                pending.removeFirst()
+            }
+            pending.append(frame)
+        }
+        return false
+    }
+
+    @discardableResult
+    func flush(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) -> Int {
+        guard characteristic.properties.contains(.writeWithoutResponse) else {
+            return 0
+        }
+        var sent = 0
+        while peripheral.canSendWriteWithoutResponse {
+            let frame: Data? = lock.withLock {
+                guard !pending.isEmpty else { return nil }
+                return pending.removeFirst()
+            }
+            guard let frame else { break }
+            peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+            sent += 1
+        }
+        return sent
+    }
+
+    func reset() {
+        lock.withLock { pending.removeAll(keepingCapacity: true) }
+    }
+}
+
 /// Connects to the strap over BLE and publishes the reliable, relevant data:
 /// live heart rate, battery level, connection state — plus a raw log of the
 /// proprietary stream for later protocol decoding.
@@ -2730,6 +2786,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let offlineHistoricalSyncWatchdogPollInterval: TimeInterval = 15
     private var protocolPacketCount = 0
     private var protocolPacketsThisConnection = 0
+    private var protocolNotifyCallbacksThisConnection = 0
     private var protocolIMUFrameCount = 0
     private var decodedIMUSampleCount = 0
     private var imuGravityValidatedFrameCount = 0
@@ -3225,6 +3282,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var legacyCentralCleaners: [AtriaLegacyBLECentralCleaner] = []
     private let centralQueue = DispatchQueue(label: "com.adidshaft.atria.ble-central",
                                              qos: .utility)
+    nonisolated private let proprietaryWWRGate = AtriaProprietaryWWRGate()
     /// Diagnostic-only parity switch for the reference iOS client, which runs
     /// CoreBluetooth delegates on the main queue. Production retains the
     /// physically proven private serial queue unless this explicit launch
@@ -5314,9 +5372,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         connectedAt = now
         protocolPacketsThisConnection = 0
+        protocolNotifyCallbacksThisConnection = 0
         lastR10ZombieCCCDRefreshAt = nil
         lastR10ZombieCCCDToggleAt = nil
+        lastR10ZombieTxRediscoverAt = nil
+        proprietaryWWRGate.reset()
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackAt)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+        UserDefaults.standard.set(false, forKey: RadioDefaults.txReady)
+        UserDefaults.standard.set(0, forKey: RadioDefaults.wwrBlockedCount)
         reissuedStuckRestoredConnecting = false
         rediscoveredStuckRestoredConnecting = false
         identifiedCentralRebuiltAfterRestoreSlotDrain = false
@@ -8711,7 +8777,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheral.setNotifyValue(true, for: stream5)
             AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
                           reason)
+            self.rediscoverZombieProprietaryTransportIfNeeded(
+                peripheral: peripheral,
+                reason: reason
+            )
+            UserDefaults.standard.removeObject(
+                forKey: Self.protectedR10ActivationSentAtKey
+            )
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, peripheral.state == .connected,
+                  self.protocolPacketsThisConnection == 0,
+                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            _ = self.refreshProtectedBoundedRawCaptureIfNeeded(
+                now: Date(),
+                reason: "\(reason)_after_zombie_toggle"
+            )
         }
+    }
+
+    /// Restored TX objects can accept `writeValue` while the radio never
+    /// delivers the frame. Rediscover strap TX/notify chars once after the
+    /// stream-5 toggle, never 2A37, never 0x3F.
+    private func rediscoverZombieProprietaryTransportIfNeeded(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        guard Self.shouldRediscoverZombieProprietaryTransport(
+            connected: peripheral.state == .connected,
+            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            packetsThisConnection: protocolPacketsThisConnection,
+            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
+            alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil
+        ) else { return }
+        guard let strapService = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) else { return }
+        let now = Date()
+        lastR10ZombieTxRediscoverAt = now
+        UserDefaults.standard.set(
+            now.timeIntervalSince1970,
+            forKey: RadioDefaults.zombieTxRediscoverAt
+        )
+        peripheral.discoverCharacteristics(
+            [
+                Self.UUIDs.strapTX,
+                Self.UUIDs.strapRX,
+                Self.UUIDs.strapStream4,
+                Self.UUIDs.strapStream5,
+            ],
+            for: strapService
+        )
+        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_tx_rediscover reason=%@ action=strap_chars_only_keep_2a37_no_3f_no_reconnect",
+                      reason)
     }
 
     /// A healthy active subscription survives foreground transitions untouched.
@@ -13863,7 +13980,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         txCharacteristic = tx
-        dbgTxReady = true
+        persistRadioTXReady(true)
 
         let proofNotifyOrder = protectedR10CurrentProofNotifyOrder
         let missing = proofNotifyOrder.filter {
@@ -14739,7 +14856,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if let cachedTX, cachedTX.properties.contains(.writeWithoutResponse) {
             txCharacteristic = cachedTX
-            dbgTxReady = true
+            persistRadioTXReady(true)
         }
         if let cachedStream5, cachedStream5.properties.contains(.notify) {
             if cachedStream5.isNotifying {
@@ -29829,6 +29946,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10NotifyRepairAt: Date?
     private var lastR10ZombieCCCDRefreshAt: Date?
     private var lastR10ZombieCCCDToggleAt: Date?
+    private var lastR10ZombieTxRediscoverAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 20
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
@@ -29992,6 +30110,75 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Stream-5 off/on still left `packetsThisConnection=0` (device 2026-09-14
+    /// 23:56). Rediscover strap TX/notify once after that toggle.
+    nonisolated static func shouldRediscoverZombieProprietaryTransport(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        packetsThisConnection: Int,
+        alreadyToggledThisConnection: Bool,
+        alreadyRediscoveredThisConnection: Bool
+    ) -> Bool {
+        guard connected, heartRateNotifying, packetsThisConnection == 0 else {
+            return false
+        }
+        return alreadyToggledThisConnection && !alreadyRediscoveredThisConnection
+    }
+
+    nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
+        canSend
+    }
+
+    nonisolated static func strapWriteCharacteristic(
+        on peripheral: CBPeripheral
+    ) -> CBCharacteristic? {
+        peripheral.services?
+            .first(where: { $0.uuid == UUIDs.strapService })?
+            .characteristics?
+            .first(where: { $0.uuid == UUIDs.strapTX })
+    }
+
+    private func persistRadioTXReady(_ ready: Bool) {
+        dbgTxReady = ready
+        UserDefaults.standard.set(ready, forKey: RadioDefaults.txReady)
+    }
+
+    /// Write 6A/51 and other IMU commands on the CoreBluetooth queue so a full
+    /// local WWR buffer cannot drop them while 2A37 is live.
+    @discardableResult
+    private func writeProprietaryWithoutResponse(
+        _ frame: Data,
+        reason: String
+    ) -> Bool {
+        guard let peripheral, peripheral.state == .connected else { return false }
+        let gate = proprietaryWWRGate
+        let defaults = UserDefaults.standard
+        centralQueue.async {
+            guard let tx = AtriaBLEManager.strapWriteCharacteristic(on: peripheral),
+                  tx.properties.contains(.writeWithoutResponse) else { return }
+            let sent = gate.sendOrQueue(
+                peripheral: peripheral,
+                characteristic: tx,
+                frame: frame
+            )
+            if sent {
+                defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+                defaults.set(Date().timeIntervalSince1970,
+                             forKey: RadioDefaults.lastWWRFlushedAt)
+            } else {
+                defaults.set(false, forKey: RadioDefaults.lastWWRAllowed)
+                defaults.set(
+                    defaults.integer(forKey: RadioDefaults.wwrBlockedCount) + 1,
+                    forKey: RadioDefaults.wwrBlockedCount
+                )
+            }
+            AtriaDebugLog("ATRIADBG proprietary_wwr status=%@ reason=%@ action=no_3f_no_2a37",
+                          sent ? "sent" : "queued",
+                          reason)
+        }
+        return true
+    }
+
     /// The protected R10 transport blocks experimental/maintenance writes by
     /// default. A user-started workout haptic is the sole narrow exception: it
     /// is bounded to real zone transitions and is never a periodic probe.
@@ -30130,7 +30317,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 dbgWrite = "wwr unsupported"
                 return false
             }
-            p.writeValue(frame, for: tx, type: .withoutResponse)
+            persistRadioTXReady(true)
+            writeProprietaryWithoutResponse(frame, reason: String(format: "cmd_%02x", cmd))
         case .withResponse:
             guard tx.properties.contains(.write) else {
                 AtriaDebugLog("ATRIADBG writeSkip mode=wr reason=unsupported props=%lu", tx.properties.rawValue)
@@ -30553,29 +30741,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            !stream5.isNotifying {
             peripheral.setNotifyValue(true, for: stream5)
         }
-        let tx = txCharacteristic
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
             let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
+            self.writeProprietaryWithoutResponse(
                 encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
-                for: tx,
-                type: .withoutResponse
+                reason: "cover_live_6a"
             )
             try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
             guard !Task.isCancelled, peripheral.state == .connected else { return }
             let rawSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
+            self.writeProprietaryWithoutResponse(
                 encodeFrame(
                     [Packet.command, rawSequence, Cmd.startRawData]
                         + Cmd.rawCaptureDurationPayload()
                 ),
-                for: tx,
-                type: .withoutResponse
+                reason: "cover_live_51"
             )
             AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_51_sent reason=%@ cmds=6a01,51_duration_le duration_ms=%u action=same_link_no_disconnect_no_proof_no_3f",
                           reason,
@@ -30683,22 +30868,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
+            self.writeProprietaryWithoutResponse(
                 encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
-                for: txCharacteristic,
-                type: .withoutResponse
+                reason: "silent_stream_6a"
             )
             try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
             guard !Task.isCancelled, peripheral.state == .connected else { return }
             let rawSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
+            self.writeProprietaryWithoutResponse(
                 encodeFrame(
                     [Packet.command, rawSequence, Cmd.startRawData]
                         + Cmd.rawCaptureDurationPayload()
                 ),
-                for: txCharacteristic,
-                type: .withoutResponse
+                reason: "silent_stream_51"
             )
             AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=6a01,51_duration_le duration_ms=%u companions=%d action=paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
                           reason,
@@ -50938,7 +51121,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if let tx = foundTX {
                     self.txCharacteristic = tx
-                    self.dbgTxReady = true
+                    self.persistRadioTXReady(true)
                     self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
                     if self.startGate4HistoricalIMUWindowIfRequested(
                         peripheral: peripheral,
@@ -50984,7 +51167,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     peripheral: peripheral
                 ) else { return }
                 self.txCharacteristic = tx
-                self.dbgTxReady = true
+                self.persistRadioTXReady(true)
                 self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
                 if !self.handleHistoryOnlyTXDiscoveryIfNeeded(reason: "tx_only_discovered"),
                    !self.armWhenProprietaryNotifyPairReadyIfNeeded(reason: "tx_only_discovered_notify_pair_ready") {
@@ -50992,6 +51175,21 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
             }
         }
+    }
+
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard let tx = Self.strapWriteCharacteristic(on: peripheral) else { return }
+        let flushed = proprietaryWWRGate.flush(
+            peripheral: peripheral,
+            characteristic: tx
+        )
+        guard flushed > 0 else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+        defaults.set(Date().timeIntervalSince1970, forKey: RadioDefaults.lastWWRFlushedAt)
+        defaults.set(flushed, forKey: RadioDefaults.lastWWRFlushCount)
+        AtriaDebugLog("ATRIADBG proprietary_wwr status=flushed count=%d action=no_3f_no_2a37",
+                      flushed)
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,
@@ -51618,6 +51816,20 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             return
         }
         let isProprietaryNotification = UUIDs.allNotify.contains(uuid)
+        if isProprietaryNotification {
+            let defaults = UserDefaults.standard
+            let count = defaults.integer(
+                forKey: ProtocolDefaults.notifyCallbacksThisConnection
+            ) + 1
+            defaults.set(count, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
+            defaults.set(receivedAt.timeIntervalSince1970,
+                         forKey: ProtocolDefaults.lastNotifyCallbackAt)
+            defaults.set(uuid.uuidString,
+                         forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+            Task { @MainActor in
+                self.protocolNotifyCallbacksThisConnection = count
+            }
+        }
         let isPendingOneShotBatteryResponse = uuid == Self.UUIDs.strapRX
             && UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending)
         if isProprietaryNotification,
