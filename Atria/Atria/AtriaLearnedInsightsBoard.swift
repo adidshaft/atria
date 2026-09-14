@@ -16,7 +16,7 @@ struct AtriaLearnedInsightsBoard: View {
         Group {
             if usesOwnCard {
                 board
-                    .padding(AtriaDesignTokens.Spacing.lg)
+                    .padding(AtriaDesignTokens.Spacing.md)
                     .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
             } else {
                 board
@@ -25,7 +25,7 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private var board: some View {
-        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
             if showsHeader {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     AtriaPanelSectionHeader(title: title, subtitle: subtitle)
@@ -57,7 +57,7 @@ struct AtriaLearnedInsightsBoard: View {
                             Rectangle()
                                 .fill(Color.primary.opacity(0.08))
                                 .frame(height: 1)
-                                .padding(.vertical, AtriaDesignTokens.Spacing.sm)
+                                .padding(.vertical, 6)
                             compactRow(insight)
                         }
                     }
@@ -74,18 +74,18 @@ struct AtriaLearnedInsightsBoard: View {
                 .frame(width: 4)
                 .padding(.vertical, 2)
 
-            VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(insight.emphasisLabel.uppercased())
                         .atriaEyebrow()
                         .foregroundStyle(tint)
                     Spacer(minLength: 8)
                     Image(systemName: insight.systemImage)
-                        .font(.body.weight(.semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(tint)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 32, height: 32)
                         .background(tint.opacity(0.18), in: RoundedRectangle(
-                            cornerRadius: AtriaDesignTokens.Radius.chip,
+                            cornerRadius: 10,
                             style: .continuous
                         ))
                 }
@@ -100,9 +100,9 @@ struct AtriaLearnedInsightsBoard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, AtriaDesignTokens.Spacing.md)
-            .padding(.vertical, 2)
         }
-        .padding(AtriaDesignTokens.Spacing.md)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
         .background(tint.opacity(0.10), in: RoundedRectangle(
             cornerRadius: AtriaDesignTokens.Radius.inset,
             style: .continuous
