@@ -5315,7 +5315,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reissuedStuckRestoredConnecting = false
         rediscoveredStuckRestoredConnecting = false
         skipStandingReconnectOnce = false
-        callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
+        callbackPolicyState.update {
+            $0.skipStandingReconnectOnce = false
+            $0.deferStandingConnectForRestoreSlotDrain = false
+        }
         connectedEpochAcceptedHeartRateSamples = 0
         invalidateConnectedRawHistoryCatchUpPublicationYield(
             reason: "connection_epoch_changed"
@@ -5543,6 +5546,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// rediscovery, `didDisconnect` must not immediately reinstall the same
     /// standing `connect` that hung for minutes (device 2026-09-14).
     private var skipStandingReconnectOnce = false
+    private var pendingRestoreSlotDrainCount = 0
+    private var restoreSlotDrainGeneration: UInt64 = 0
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -6772,6 +6777,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let initialRestoreIdentifier = centralRestoreIdentifier
         installedCentralBaseIdentifier = initialBaseRestoreIdentifier
         installedCentralRestoreIdentifier = initialRestoreIdentifier
+        if motionHandshakeDiagnostic == nil {
+            let unusedRestoreSlot = Self.nextCentralRecoveryRestoreIdentifier(
+                baseIdentifier: initialBaseRestoreIdentifier,
+                currentIdentifier: initialRestoreIdentifier
+            )
+            if unusedRestoreSlot != initialRestoreIdentifier {
+                legacyCentralCleaners.append(
+                    AtriaLegacyBLECentralCleaner(
+                        restoreIdentifier: unusedRestoreSlot
+                    ) { [weak self] cleanerID in
+                        self?.legacyCentralCleaners.removeAll {
+                            $0.id == cleanerID
+                        }
+                    }
+                )
+            }
+        }
         let delegateQueue = centralDelegateQueue
         delegateQueue?.suspend()
         central = CBCentralManager(delegate: self,
@@ -25436,6 +25458,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     func reconnectToSavedPeripheralIfPossible(reason: String,
                                                allowCleanOwnerLaunchCutover: Bool = false) -> Bool {
+        if callbackPolicyState.snapshot().deferStandingConnectForRestoreSlotDrain {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=skip_standing_connect_until_restore_slot_drain",
+                reason
+            )
+            return false
+        }
         if rediscoveredStuckRestoredConnecting && connectedAt == nil && isActivelyScanning {
             AtriaDebugLog(
                 "ATRIADBG ble_link status=reconnect_known reason=%@ action=skip_standing_connect_during_stuck_restore_scan",
@@ -25979,6 +26008,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> Bool {
         return isActivelyScanning
             || (rediscoveringStuckRestore && !connectedThisProcess)
+    }
+
+    nonisolated static func shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+        deferring: Bool
+    ) -> Bool {
+        deferring
     }
 
     private func startReconnectWatchdog(
@@ -26883,6 +26918,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             standingConnect: true,
             silentStreamRebuild: true
         )
+        if omitRestoreIdentifier, motionHandshakeDiagnostic == nil {
+            // Set before resume so poweredOn cannot connect into a still-owned
+            // restore slot (device 2026-09-14 17:53: drain and connect raced).
+            callbackPolicyState.update {
+                $0.deferStandingConnectForRestoreSlotDrain = true
+            }
+        }
         delegateQueue?.resume()
         recomputeConnectionStatus(reason: "event")
         if omitRestoreIdentifier, motionHandshakeDiagnostic == nil {
@@ -26896,8 +26938,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// bluetoothd still owns the WHOOP through the retired A/B restore
     /// sessions after an anonymous rebuild (device 2026-09-14 17:28: standing
-    /// connect issued, no `didConnect`). Cancel those namespaces so the
-    /// anonymous pending request can complete.
+    /// connect issued, no `didConnect`). Cancel those namespaces *before*
+    /// issuing connect; 17:53 drained empty and connected in the same second.
     private func drainStuckRestoreSlotsThenReissueConnect(
         baseIdentifier: String,
         currentIdentifier: String,
@@ -26911,18 +26953,55 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             "repair_central_restore_slot_drain",
             detail: identifiers.joined(separator: ",")
         )
+        restoreSlotDrainGeneration &+= 1
+        let generation = restoreSlotDrainGeneration
+        pendingRestoreSlotDrainCount = identifiers.count
+        callbackPolicyState.update {
+            $0.deferStandingConnectForRestoreSlotDrain = true
+        }
         for identifier in identifiers {
             let cleaner = AtriaLegacyBLECentralCleaner(
                 restoreIdentifier: identifier
             ) { [weak self] cleanerID in
-                self?.legacyCentralCleaners.removeAll { $0.id == cleanerID }
-                self?.finishStuckRestoreSlotDrainIfNeeded(trigger: trigger)
+                guard let self else { return }
+                self.legacyCentralCleaners.removeAll { $0.id == cleanerID }
+                self.pendingRestoreSlotDrainCount -= 1
+                if self.pendingRestoreSlotDrainCount <= 0 {
+                    self.finishStuckRestoreSlotDrainIfNeeded(
+                        trigger: trigger,
+                        generation: generation
+                    )
+                }
             }
             legacyCentralCleaners.append(cleaner)
         }
+        if identifiers.isEmpty {
+            finishStuckRestoreSlotDrainIfNeeded(
+                trigger: trigger,
+                generation: generation
+            )
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self else { return }
+            self.finishStuckRestoreSlotDrainIfNeeded(
+                trigger: trigger,
+                generation: generation
+            )
+        }
     }
 
-    private func finishStuckRestoreSlotDrainIfNeeded(trigger: String) {
+    private func finishStuckRestoreSlotDrainIfNeeded(
+        trigger: String,
+        generation: UInt64
+    ) {
+        guard generation == restoreSlotDrainGeneration else { return }
+        restoreSlotDrainGeneration &+= 1
+        pendingRestoreSlotDrainCount = 0
+        callbackPolicyState.update {
+            $0.deferStandingConnectForRestoreSlotDrain = false
+        }
         guard connectedAt == nil, status != .connected else { return }
         recordReconnectLeaseStage(
             "repair_central_restore_slot_drain_reissue",
@@ -47509,10 +47588,23 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     : nil
                 if let saved = systemConnected
                     ?? central.retrievePeripherals(withIdentifiers: [uuid]).first {
-                    let issueConnect = Self.shouldIssuePoweredOnStandingConnect(
-                        peripheralState: saved.state
-                    ) || (preferSystemConnected && saved.state == .connected)
-                    if issueConnect {
+                    let deferForDrain = Self.shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+                        deferring: callbackPolicyState.snapshot()
+                            .deferStandingConnectForRestoreSlotDrain
+                    )
+                    let issueConnect = !deferForDrain && (
+                        Self.shouldIssuePoweredOnStandingConnect(
+                            peripheralState: saved.state
+                        ) || (preferSystemConnected && saved.state == .connected)
+                    )
+                    if deferForDrain {
+                        recordReconnectLeaseStage(
+                            "central_rebuild_standing_connect_deferred_drain",
+                            detail: "saved_uuid=1"
+                        )
+                        AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=defer_until_restore_slot_drain peripheral_state=%d",
+                                      saved.state.rawValue)
+                    } else if issueConnect {
                         issueSingleFlightConnect(
                             saved,
                             central: central,
