@@ -5548,6 +5548,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var skipStandingReconnectOnce = false
     private var pendingRestoreSlotDrainCount = 0
     private var restoreSlotDrainGeneration: UInt64 = 0
+    /// After restore-slot drain, a leftover `.connecting` object is cancelled
+    /// and this waits for `didDisconnect` before issuing a real standing
+    /// `connect` (device 2026-09-14 18:29: connect-on-connecting hung).
+    private var awaitingDidDisconnectToForceConnectAfterDrain = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -9257,6 +9261,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           peripheral.state.rawValue,
                           hasSavedStrap ? 1 : 0)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_peripheral_state_\(peripheral.state.rawValue)") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=peripheral_not_connected action=retry_saved_no_scan")
+                    return
+                }
                 startScan(reason: "foreground_keepalive_peripheral_state_\(peripheral.state.rawValue)")
             }
             return
@@ -26066,6 +26074,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         !didConnectThisProcess && peripheralState != .connected
     }
 
+    /// Empty restore-slot cleaners used to finish in 0.5s and issue `connect`
+    /// in the same second bluetoothd still owned the WHOOP (device 2026-09-14
+    /// 17:53 and 18:29). Wait out the cleaner release (0.5s empty / 2s with
+    /// peripherals) plus a settle beat before retrieve+connect.
+    nonisolated static var restoreSlotDrainSettleSeconds: TimeInterval { 4 }
+
+    nonisolated static func shouldFinishRestoreSlotDrainFromCleanerCallback() -> Bool {
+        false
+    }
+
+    nonisolated static func shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        peripheralState == .connecting || peripheralState == .disconnecting
+    }
+
+    nonisolated static func shouldStartScanOnPoweredOnFallback(
+        drainDeferred: Bool,
+        hasSavedStrap: Bool
+    ) -> Bool {
+        !drainDeferred && !hasSavedStrap
+    }
+
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
@@ -27015,12 +27046,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ) { [weak self] cleanerID in
                 guard let self else { return }
                 self.legacyCentralCleaners.removeAll { $0.id == cleanerID }
-                self.pendingRestoreSlotDrainCount -= 1
-                if self.pendingRestoreSlotDrainCount <= 0 {
-                    self.finishStuckRestoreSlotDrainIfNeeded(
-                        trigger: trigger,
-                        generation: generation
-                    )
+                // Never finish from the cleaner callback. Empty namespaces
+                // complete in 0.5s and used to issue connect while bluetoothd
+                // still owned the strap (device 2026-09-14 18:29).
+                if Self.shouldFinishRestoreSlotDrainFromCleanerCallback() {
+                    self.pendingRestoreSlotDrainCount -= 1
+                    if self.pendingRestoreSlotDrainCount <= 0 {
+                        self.finishStuckRestoreSlotDrainIfNeeded(
+                            trigger: trigger,
+                            generation: generation
+                        )
+                    }
                 }
             }
             legacyCentralCleaners.append(cleaner)
@@ -27033,7 +27069,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))
             guard let self else { return }
             self.finishStuckRestoreSlotDrainIfNeeded(
                 trigger: trigger,
@@ -27062,7 +27098,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         forceStandingConnectAfterRestoreSlotDrain(reason: trigger)
     }
 
-    private func forceStandingConnectAfterRestoreSlotDrain(reason: String) {
+    private func forceStandingConnectAfterRestoreSlotDrain(
+        reason: String,
+        allowCancelConnecting: Bool = true
+    ) {
         let defaults = UserDefaults.standard
         guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
               let uuid = UUID(uuidString: uuidString) else { return }
@@ -27080,22 +27119,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         target.delegate = self
         peripheral = target
         assignIfChanged(\.deviceName, target.name ?? deviceName)
+        recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
+        markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
+        if allowCancelConnecting,
+           Self.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+            peripheralState: target.state
+        ) {
+            recordReconnectLeaseStage(
+                "repair_central_restore_slot_drain_cancel_connecting",
+                detail: reason
+            )
+            awaitingDidDisconnectToForceConnectAfterDrain = true
+            // Do not mark this as an app-owned cutover: that suppresses the
+            // didDisconnect fast-lane standing connect. bluetoothd has to see
+            // a fresh `connect` on a disconnected object (device 2026-09-14).
+            recordReconnectLeaseStage(
+                "app_cancel_wrapper",
+                detail: "stuck_restore_slot_drain_force_connect"
+            )
+            central.cancelPeripheralConnection(target)
+            startReconnectWatchdog(
+                reason: "stuck_restore_slot_drain_cancel_connecting",
+                peripheral: target
+            )
+            recomputeConnectionStatus(reason: "event")
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=cancel_connecting_after_restore_slot_drain peripheral_state=%d",
+                reason,
+                target.state.rawValue
+            )
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+                self.awaitingDidDisconnectToForceConnectAfterDrain = false
+                guard self.connectedAt == nil, self.status != .connected else { return }
+                self.forceStandingConnectAfterRestoreSlotDrain(
+                    reason: "\(reason)_cancel_timeout",
+                    allowCancelConnecting: false
+                )
+            }
+            return
+        }
         if Self.shouldForceStandingConnectAfterRestoreSlotDrain(
             didConnectThisProcess: connectedAt != nil,
             peripheralState: target.state
-        ), target.state == .connecting || target.state == .disconnecting {
-            cancelPeripheralConnection(
+        ) {
+            issueSingleFlightConnect(
                 target,
-                reason: "stuck_restore_slot_drain_force_connect"
+                central: central,
+                reason: "stuck_restore_slot_drain_complete"
             )
         }
-        recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
-        markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
-        issueSingleFlightConnect(
-            target,
-            central: central,
-            reason: "stuck_restore_slot_drain_complete"
-        )
         startReconnectWatchdog(
             reason: "stuck_restore_slot_drain_complete",
             peripheral: target
@@ -47822,9 +47897,16 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     // or became available only after the early precheck ran).
                     // Re-armed a standing pending connection to the known strap.
                     // No scan needed — iOS reconnects when it is in range.
-                } else {
+                } else if Self.shouldStartScanOnPoweredOnFallback(
+                    drainDeferred: callbackPolicyState.snapshot()
+                        .deferStandingConnectForRestoreSlotDrain,
+                    hasSavedStrap: hasSavedStrap
+                ) {
                     // No saved strap yet (first-time setup) — scan to find one.
                     startScan(reason: reason)
+                } else {
+                    AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_%@ action=skip_scan_saved_or_restore_slot_drain",
+                                  reason)
                 }
                 self.recomputeConnectionStatus(reason: "central_powered_on")
             case .poweredOff:
@@ -48954,6 +49036,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               terminalCallbackEpoch,
                               self.bleCallbackEpochFence.epoch)
                 return
+            }
+            if self.awaitingDidDisconnectToForceConnectAfterDrain {
+                self.awaitingDidDisconnectToForceConnectAfterDrain = false
             }
             self.releaseConnectedMotionBankPreFreshHRFirstRefusal(
                 reason: "did_disconnect"
