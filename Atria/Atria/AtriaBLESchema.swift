@@ -533,6 +533,8 @@ extension AtriaBLEManager {
         static let lastPacketType = "atria.protocol.lastPacketType"
         static let lastPacketKind = "atria.protocol.lastPacketKind"
         static let lastPacketLength = "atria.protocol.lastPacketLength"
+        static let packetsThisConnection = "atria.protocol.packetsThisConnection"
+        static let lastPacketAt = "atria.protocol.lastPacketAt"
     }
 
     enum Cmd {

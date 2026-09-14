@@ -2729,6 +2729,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncHistoryStartObserved = false
     private let offlineHistoricalSyncWatchdogPollInterval: TimeInterval = 15
     private var protocolPacketCount = 0
+    private var protocolPacketsThisConnection = 0
     private var protocolIMUFrameCount = 0
     private var decodedIMUSampleCount = 0
     private var imuGravityValidatedFrameCount = 0
@@ -5312,6 +5313,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastSilentStreamRepairSpentAt = nil
         }
         connectedAt = now
+        protocolPacketsThisConnection = 0
+        lastR10ZombieCCCDRefreshAt = nil
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
         reissuedStuckRestoredConnecting = false
         rediscoveredStuckRestoredConnecting = false
         identifiedCentralRebuiltAfterRestoreSlotDrain = false
@@ -8623,8 +8627,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if stream5.isNotifying {
             strapStream5NotifyConfirmed = true
             ensureR10LivenessWatchdog(reason: "\(reason)_stream5_active")
-            AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_active_cccd",
-                          reason)
+            let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
+            let lastRefreshAge = lastR10ZombieCCCDRefreshAt.map { now.timeIntervalSince($0) }
+            if Self.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+                packetsThisConnection: protocolPacketsThisConnection,
+                connectedAge: connectedAge,
+                lastRefreshAge: lastRefreshAge
+            ) {
+                lastR10ZombieCCCDRefreshAt = now
+                lastR10NotifyRepairAt = now
+                peripheral.setNotifyValue(true, for: stream5)
+                _ = enableMissingProtectedCompanionNotifications(
+                    peripheral: peripheral,
+                    refreshEvenIfNotifying: true
+                )
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_refresh reason=%@ action=set_notify_true_no_disable_no_3f_no_reconnect packets_this_connection=%d",
+                              reason,
+                              protocolPacketsThisConnection)
+            } else {
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_active_cccd",
+                              reason)
+            }
             return
         }
         guard Self.shouldRepairR10Notification(
@@ -20817,6 +20842,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func resetProtocolDiagnosticsForDebugLaunch(arguments: [String]) {
         protocolPacketCount = 0
+        protocolPacketsThisConnection = 0
         protocolIMUFrameCount = 0
         resetIMUFeatureStats(resetResearchAggregates: false)
         protocolDiagnosticFrameCount = 0
@@ -29753,6 +29779,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10RecoveryRearmAt: Date?
     private var lastR10RecoveryRediscoveryAt: Date?
     private var lastR10NotifyRepairAt: Date?
+    private var lastR10ZombieCCCDRefreshAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 20
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
@@ -29874,6 +29901,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard expected, connected, !isNotifying else { return false }
         guard let lastRepairAt else { return true }
         return now.timeIntervalSince(lastRepairAt) >= minimumInterval
+    }
+
+    /// Restored WHOOP links report stream-5 `isNotifying=true` with no
+    /// proprietary callbacks (device 2026-09-14 23:40: lifetime packets=48,
+    /// this process 0, HR live). Re-enable the CCCD without disabling it and
+    /// without 0x3F or reconnect.
+    nonisolated static func shouldRefreshZombieProprietaryCCCD(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        packetsThisConnection: Int,
+        connectedAge: TimeInterval,
+        lastRefreshAge: TimeInterval?,
+        minimumConnectedAge: TimeInterval = 6,
+        minimumRefreshInterval: TimeInterval = 45
+    ) -> Bool {
+        guard connected, heartRateNotifying, packetsThisConnection == 0 else { return false }
+        guard connectedAge >= minimumConnectedAge else { return false }
+        if let lastRefreshAge, lastRefreshAge >= 0,
+           lastRefreshAge < minimumRefreshInterval {
+            return false
+        }
+        return true
     }
 
     /// The protected R10 transport blocks experimental/maintenance writes by
@@ -30475,7 +30524,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// (device 2026-09-14 23:03).
     @discardableResult
     private func enableMissingProtectedCompanionNotifications(
-        peripheral: CBPeripheral
+        peripheral: CBPeripheral,
+        refreshEvenIfNotifying: Bool = false
     ) -> Int {
         let strapService = peripheral.services?.first {
             $0.uuid == Self.UUIDs.strapService
@@ -30484,8 +30534,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         for uuid in Self.protectedR10ResponseEventDataNotifyOrder {
             guard let characteristic = strapService?.characteristics?
                     .first(where: { $0.uuid == uuid }),
-                  characteristic.properties.contains(.notify),
-                  !characteristic.isNotifying else { continue }
+                  characteristic.properties.contains(.notify) else { continue }
+            if characteristic.isNotifying, !refreshEvenIfNotifying { continue }
             peripheral.setNotifyValue(true, for: characteristic)
             enabled += 1
         }
@@ -30541,8 +30591,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
+            let writeAt = Date()
+            let connectedAge = self.connectedAt.map { writeAt.timeIntervalSince($0) } ?? 0
+            let lastRefreshAge = self.lastR10ZombieCCCDRefreshAt.map {
+                writeAt.timeIntervalSince($0)
+            }
+            let zombie = Self.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                packetsThisConnection: self.protocolPacketsThisConnection,
+                connectedAge: connectedAge,
+                lastRefreshAge: lastRefreshAge
+            )
+            if zombie {
+                self.lastR10ZombieCCCDRefreshAt = writeAt
+            }
             let companions = self.enableMissingProtectedCompanionNotifications(
-                peripheral: peripheral
+                peripheral: peripheral,
+                refreshEvenIfNotifying: zombie
             )
             if companions > 0 {
                 try? await Task.sleep(for: .seconds(1))
@@ -39885,6 +39951,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
 
     private func recordProtocolPacket(type: UInt8, length: Int) {
         protocolPacketCount += 1
+        protocolPacketsThisConnection += 1
         protocolLastPacketType = String(format: "%02x", type)
         protocolLastPacketKind = Self.packetKind(type)
         protocolLastPacketLength = length
@@ -39901,6 +39968,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         guard protocolDiagnosticsPersistenceEnabled else { return }
         let defaults = UserDefaults.standard
         defaults.set(protocolPacketCount, forKey: ProtocolDefaults.packets)
+        defaults.set(protocolPacketsThisConnection, forKey: ProtocolDefaults.packetsThisConnection)
+        defaults.set(Date().timeIntervalSince1970, forKey: ProtocolDefaults.lastPacketAt)
         defaults.set(protocolLastPacketType, forKey: ProtocolDefaults.lastPacketType)
         defaults.set(protocolLastPacketKind, forKey: ProtocolDefaults.lastPacketKind)
         defaults.set(protocolLastPacketLength, forKey: ProtocolDefaults.lastPacketLength)
