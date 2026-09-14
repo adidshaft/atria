@@ -196,6 +196,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 lastRefreshAge: nil
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 25,
+                alreadyToggledThisConnection: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 25,
+                alreadyToggledThisConnection: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 10,
+                alreadyToggledThisConnection: false
+            )
+        )
     }
 
     func testStuckRestoreUnstickRebuildsAnonymousCentral() throws {
