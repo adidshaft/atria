@@ -9836,7 +9836,17 @@ final class SessionStore: ObservableObject {
     /// gated). Recomputed on data/journal change, read O(1) by the insights card.
     @Published private(set) var behaviorInsights: [AtriaInsight] = []
     /// Physiological insights from persisted rollups. Survive raw-archive GC.
+    /// Refreshed from rollups directly so Today is not waiting on the
+    /// tag-correlation engine (device 2026-09-14 23:15: rollups present,
+    /// board empty).
     @Published private(set) var learnedInsights: [AtriaLearnedInsight] = AtriaDurableInsightStore.load()
+
+    func refreshLearnedInsights(now: Date = Date()) {
+        let learned = AtriaLearnedInsights.insights(rollups: dailyRollupHistory, now: now)
+        guard learned != learnedInsights else { return }
+        learnedInsights = learned
+        AtriaDurableInsightStore.save(learned)
+    }
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
     @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
@@ -10018,7 +10028,10 @@ final class SessionStore: ObservableObject {
     }
     @Published private(set) var dashboardRevision = 0
     @Published private(set) var dailyRollupHistory: [DailyRollupStoreEntry] = [] {
-        didSet { backupCanonicalRevision &+= 1 }
+        didSet {
+            backupCanonicalRevision &+= 1
+            refreshLearnedInsights()
+        }
     }
     /// Bumped every time `dailyRollupHistory` is reassigned (measured-perf pass,
     /// 2026-07-05). Lets read-only consumers such as AtriaTodayScreen's
@@ -23996,12 +24009,7 @@ final class SessionStore: ObservableObject {
                 self.behaviorImpactSummariesCache = impacts
                 self.behaviorInsights = insights
                 self.journalInsightsCache = journalInsights
-                let learned = AtriaLearnedInsights.insights(
-                    rollups: self.dailyRollupHistory,
-                    now: Date()
-                )
-                self.learnedInsights = learned
-                AtriaDurableInsightStore.save(learned)
+                self.refreshLearnedInsights()
                 completion?(true)
             }
         }
