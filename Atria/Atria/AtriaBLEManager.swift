@@ -467,6 +467,10 @@ private final class AtriaProprietaryWWRGate: @unchecked Sendable {
         return sent
     }
 
+    func pendingCount() -> Int {
+        lock.withLock { pending.count }
+    }
+
     func reset() {
         lock.withLock { pending.removeAll(keepingCapacity: true) }
     }
@@ -5379,8 +5383,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         proprietaryWWRGate.reset()
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection)
         UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackAt)
         UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackLength)
         UserDefaults.standard.set(false, forKey: RadioDefaults.txReady)
         UserDefaults.standard.set(0, forKey: RadioDefaults.wwrBlockedCount)
         reissuedStuckRestoredConnecting = false
@@ -30175,8 +30182,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG proprietary_wwr status=%@ reason=%@ action=no_3f_no_2a37",
                           sent ? "sent" : "queued",
                           reason)
+            defaults.set(gate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
         }
         return true
+    }
+
+    /// A full 2A37 queue can ACK only one WWR at a time. Device 2026-09-15
+    /// 00:26 queued two IMU frames and flushed one; the leftover 51 must not
+    /// wait forever for a second `peripheralIsReady`.
+    private func flushPendingProprietaryWWRIfNeeded(reason: String) {
+        guard let peripheral, peripheral.state == .connected else { return }
+        let gate = proprietaryWWRGate
+        let defaults = UserDefaults.standard
+        centralQueue.async {
+            guard let tx = AtriaBLEManager.strapWriteCharacteristic(on: peripheral),
+                  tx.properties.contains(.writeWithoutResponse) else { return }
+            let flushed = gate.flush(peripheral: peripheral, characteristic: tx)
+            defaults.set(gate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
+            guard flushed > 0 else { return }
+            defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+            defaults.set(Date().timeIntervalSince1970, forKey: RadioDefaults.lastWWRFlushedAt)
+            defaults.set(flushed, forKey: RadioDefaults.lastWWRFlushCount)
+            AtriaDebugLog("ATRIADBG proprietary_wwr status=watchdog_flush count=%d reason=%@ action=no_3f_no_2a37",
+                          flushed,
+                          reason)
+        }
     }
 
     /// The protected R10 transport blocks experimental/maintenance writes by
@@ -31059,6 +31089,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
+        flushPendingProprietaryWWRIfNeeded(reason: "\(reason)_wwr_leftover")
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
         // restoration, and releases one whose pending intent no longer exists.
@@ -51188,6 +51219,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
         defaults.set(Date().timeIntervalSince1970, forKey: RadioDefaults.lastWWRFlushedAt)
         defaults.set(flushed, forKey: RadioDefaults.lastWWRFlushCount)
+        defaults.set(proprietaryWWRGate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
         AtriaDebugLog("ATRIADBG proprietary_wwr status=flushed count=%d action=no_3f_no_2a37",
                       flushed)
     }
@@ -51826,6 +51858,19 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                          forKey: ProtocolDefaults.lastNotifyCallbackAt)
             defaults.set(uuid.uuidString,
                          forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+            defaults.set(data.count,
+                         forKey: ProtocolDefaults.lastNotifyCallbackLength)
+            if uuid == Self.UUIDs.strapStream4 {
+                defaults.set(
+                    defaults.integer(forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection) + 1,
+                    forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection
+                )
+            } else if uuid == Self.UUIDs.strapStream5 {
+                defaults.set(
+                    defaults.integer(forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection) + 1,
+                    forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+                )
+            }
             Task { @MainActor in
                 self.protocolNotifyCallbacksThisConnection = count
             }

@@ -11744,6 +11744,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let armBody = String(source[armStart.lowerBound..<armEnd.lowerBound])
         XCTAssertTrue(armBody.contains("reason: \"arm\""),
                       "IMU silence must be evaluated on arm, not after the first 20s sleep")
+
+        let liveStart = try XCTUnwrap(source.range(
+            of: "private func evaluateR10Liveness(now: Date = Date(), reason: String)"
+        ))
+        let liveEnd = try XCTUnwrap(source.range(
+            of: "// MARK: Workout motion ownership lease",
+            range: liveStart.upperBound..<source.endIndex
+        ))
+        let liveBody = String(source[liveStart.lowerBound..<liveEnd.lowerBound])
+        XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
+                      "a leftover queued 6A/51 must flush on the liveness tick")
+        XCTAssertFalse(liveBody.contains("Cmd.sendR10R11Realtime"))
     }
 
     /// The escalation is wired into the lease evaluator's pure-HR fallback
