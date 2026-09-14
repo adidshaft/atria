@@ -132,4 +132,36 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("emphasisLabel.uppercased()"))
         XCTAssertFalse(source.contains("isPositive ? Metrics.electricGreen"))
     }
+
+    func testShortSleepAgainstNeedProducesAFeaturedRead() {
+        let today = calendar.startOfDay(for: now)
+        let rollup = DailyRollupStoreEntry(
+            day: today,
+            recovery: 51,
+            rhr: 61,
+            sleepSeconds: 17_349,
+            sleepNeedSeconds: 28_307,
+            sleepPerformance: 61,
+            strain: 0.56,
+            calendar: calendar
+        )
+        let insights = AtriaLearnedInsights.insights(rollups: [rollup], now: now)
+        XCTAssertTrue(insights.contains { $0.kind == .sleepDebt })
+        XCTAssertTrue(insights.contains { $0.headline.contains("under your need") })
+        XCTAssertFalse(insights.isEmpty)
+    }
+
+    func testLearnedInsightsRefreshFromRollupsNotJournalEngine() throws {
+        let source = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("func refreshLearnedInsights(now: Date = Date())"))
+        XCTAssertTrue(source.contains("refreshLearnedInsights()"))
+        XCTAssertTrue(source.contains("didSet {\n            backupCanonicalRevision &+= 1\n            refreshLearnedInsights()"))
+    }
 }
