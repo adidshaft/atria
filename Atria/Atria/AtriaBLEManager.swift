@@ -9195,7 +9195,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if Self.shouldKeepaliveDeferToActiveScan(
                 isActivelyScanning: isActivelyScanning,
                 rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
-                connectedThisProcess: connectedAt != nil
+                connectedThisProcess: connectedAt != nil,
+                skipStandingReconnectOnce: skipStandingReconnectOnce
+                    || callbackPolicyState.snapshot().skipStandingReconnectOnce,
+                restoreSlotDrainDeferred: callbackPolicyState.snapshot()
+                    .deferStandingConnectForRestoreSlotDrain
             ) {
                 defaults.set("stuck_restore_scan", forKey: KeepaliveDefaults.lastStatus)
                 defaults.set("defer_scan", forKey: KeepaliveDefaults.lastAction)
@@ -9209,6 +9213,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           hasSavedStrap ? 1 : 0)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_missing_peripheral") {
                 startScan(reason: "foreground_keepalive_missing_peripheral")
+            }
+            return
+        }
+        if Self.shouldKeepaliveDeferToActiveScan(
+            isActivelyScanning: isActivelyScanning,
+            rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
+            connectedThisProcess: connectedAt != nil,
+            skipStandingReconnectOnce: skipStandingReconnectOnce
+                || callbackPolicyState.snapshot().skipStandingReconnectOnce,
+            restoreSlotDrainDeferred: callbackPolicyState.snapshot()
+                .deferStandingConnectForRestoreSlotDrain
+        ) {
+            defaults.set("stuck_restore_scan", forKey: KeepaliveDefaults.lastStatus)
+            defaults.set("defer_scan", forKey: KeepaliveDefaults.lastAction)
+            return
+        }
+        if status != .connected {
+            defaults.set("not_connected", forKey: KeepaliveDefaults.lastStatus)
+            defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
+            AtriaDebugLog("ATRIADBG foreground_keepalive status=not_connected action=reconnect_known_strap peripheral_state=%d",
+                          peripheral.state.rawValue)
+            if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_not_connected") {
+                startScan(reason: "foreground_keepalive_not_connected")
             }
             return
         }
@@ -26004,10 +26031,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func shouldKeepaliveDeferToActiveScan(
         isActivelyScanning: Bool,
         rediscoveringStuckRestore: Bool,
-        connectedThisProcess: Bool
+        connectedThisProcess: Bool,
+        skipStandingReconnectOnce: Bool = false,
+        restoreSlotDrainDeferred: Bool = false
     ) -> Bool {
+        _ = rediscoveringStuckRestore
+        _ = connectedThisProcess
         return isActivelyScanning
-            || (rediscoveringStuckRestore && !connectedThisProcess)
+            || skipStandingReconnectOnce
+            || restoreSlotDrainDeferred
     }
 
     nonisolated static func shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
