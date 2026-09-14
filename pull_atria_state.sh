@@ -981,6 +981,7 @@ def emit_offline_sync_preferences():
     print(f"protocol_stream5_notify_callbacks_this_connection={int(pref(prefs, 'protocol.stream5NotifyCallbacksThisConnection', 0) or 0)}")
     print(f"protocol_last_notify_callback_uuid={pref(prefs, 'protocol.lastNotifyCallbackUUID', 'none') or 'none'}")
     print(f"protocol_last_notify_callback_length={int(pref(prefs, 'protocol.lastNotifyCallbackLength', 0) or 0)}")
+    print(f"protocol_last_notify_callback_hex={pref(prefs, 'protocol.lastNotifyCallbackHex', 'none') or 'none'}")
     print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
     print(f"radio_tx_ready={bool_int(pref(prefs, 'radio.txReady', False))}")
     print(f"radio_last_wwr_allowed={pref(prefs, 'radio.lastWWRAllowed', 'none')}")

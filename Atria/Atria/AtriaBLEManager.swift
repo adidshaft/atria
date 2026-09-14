@@ -5388,6 +5388,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackAt)
         UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackUUID)
         UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackLength)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackHex)
         UserDefaults.standard.set(false, forKey: RadioDefaults.txReady)
         UserDefaults.standard.set(0, forKey: RadioDefaults.wwrBlockedCount)
         reissuedStuckRestoredConnecting = false
@@ -8782,6 +8783,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 .characteristics?
                 .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else { return }
             peripheral.setNotifyValue(true, for: stream5)
+            self.strapStream5NotifyConfirmed = true
+            self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
             AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
                           reason)
             self.rediscoverZombieProprietaryTransportIfNeeded(
@@ -30132,6 +30135,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return alreadyToggledThisConnection && !alreadyRediscoveredThisConnection
     }
 
+    nonisolated static func stream5CountsAsNotifying(
+        confirmed: Bool,
+        characteristicNotifying: Bool
+    ) -> Bool {
+        confirmed || characteristicNotifying
+    }
+
     nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
         canSend
     }
@@ -30846,12 +30856,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             proofActive: protectedR10ResponseEventDataProofIsActive,
             historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
             connected: peripheral?.state == .connected,
-            stream5Notifying: strapStream5NotifyConfirmed
-                && (peripheral?.services?
+            stream5Notifying: Self.stream5CountsAsNotifying(
+                confirmed: strapStream5NotifyConfirmed,
+                characteristicNotifying: peripheral?.services?
                     .first(where: { $0.uuid == Self.UUIDs.strapService })?
                     .characteristics?
                     .first(where: { $0.uuid == Self.UUIDs.strapStream5 })?
-                    .isNotifying == true),
+                    .isNotifying == true
+            ),
             heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
             lastFrameAge: lastR10MotionFrameAt.map { now.timeIntervalSince($0) },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
@@ -31141,6 +31153,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if eligible, connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
             kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
+            // After the once-per-epoch toggle, waiting for a notify-state
+            // callback stranded 6A/51 (device 2026-09-15 00:38: activationSentAt
+            // cleared, packetsThis=0, HR live). Keep same-link IMU writes.
+            guard lastR10ZombieCCCDToggleAt == nil else {
+                requestBoundedR10ActivationForSilentStream(
+                    now: now,
+                    reason: "\(reason)_after_unconfirmed_toggle"
+                )
+                return
+            }
             return
         }
         let action = Self.r10LivenessAction(
@@ -51860,6 +51882,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                          forKey: ProtocolDefaults.lastNotifyCallbackUUID)
             defaults.set(data.count,
                          forKey: ProtocolDefaults.lastNotifyCallbackLength)
+            defaults.set(
+                data.prefix(24).map { String(format: "%02x", $0) }.joined(),
+                forKey: ProtocolDefaults.lastNotifyCallbackHex
+            )
             if uuid == Self.UUIDs.strapStream4 {
                 defaults.set(
                     defaults.integer(forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection) + 1,
