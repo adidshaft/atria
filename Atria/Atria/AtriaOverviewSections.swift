@@ -4298,6 +4298,12 @@ struct AtriaMetricDetailSheet: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(metric.title) meaning and coaching")
                 }
+                if AtriaAppReviewDemo.isActive {
+                    AtriaSampleDataBadge(compact: true)
+                    AtriaSourcesLink(metricID: metric.rawValue, compact: true)
+                } else {
+                    AtriaSourcesLink(metricID: metric.rawValue, compact: true)
+                }
 
                 if preparation.value == nil {
                     preparationShell

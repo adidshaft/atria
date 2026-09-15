@@ -59,6 +59,37 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertEqual(timestamps[1], timestamps[0] &+ 1)
     }
 
+    func testCoalescedBurstDoesNotEmitFasterThanRealtime() throws {
+        let packet = try XCTUnwrap(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
+        let assembler = AtriaWhoop4CompactIMUAssembler()
+        let receivedAt = Date()
+        var frames: [AtriaR10MotionFrame] = []
+        for _ in 0..<50 {
+            frames.append(contentsOf: assembler.push(packet, receivedAt: receivedAt))
+        }
+        XCTAssertLessThanOrEqual(
+            frames.count,
+            2,
+            "BLE-coalesced 0x33 packets must not score many gait seconds in one callback"
+        )
+        let gyroSteps = frames.reduce(0.0) { partial, frame in
+            partial + AtriaGyroCadenceResearchPedometer.steps(
+                contiguousRotationMagnitudes: frame.rotationRate.map(\.magnitude),
+                rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+            )
+        }
+        XCTAssertEqual(gyroSteps, 0, accuracy: 0.01)
+    }
+
+    func testDeskRotationBelowCompactGateScoresNoSteps() {
+        let samples = [Double](repeating: 18, count: 400)
+        let steps = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples,
+            rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+        )
+        XCTAssertEqual(steps, 0, accuracy: 0.01)
+    }
+
     func testCompactFramesContinuePastAStaleR10Watermark() {
         let behind = AtriaR10MotionFrame(
             deviceTimestamp: 31_561_474,
@@ -341,11 +372,10 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
     func testLiveCompactIMUSecondsRecordRotationDiagnostics() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
-        let ble = try String(
-            contentsOf: testsURL.deletingLastPathComponent()
-                .appendingPathComponent("Atria/AtriaBLEManager.swift"),
-            encoding: .utf8
-        )
+        let bleURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        guard FileManager.default.fileExists(atPath: bleURL.path) else { return }
+        let ble = try String(contentsOf: bleURL, encoding: .utf8)
         XCTAssertTrue(ble.contains(
             "AtriaCompactIMULiveDiagnostics.note(rotationRate: packet.rotationRate)"
         ))

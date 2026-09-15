@@ -383,6 +383,8 @@ enum AtriaGyroCadenceResearchPedometer {
     static let rotationLevelGate = 35.0
     /// Wrist compact `0x33` rest is ~1 dps. Native R10 walking was fitted at
     /// 35 dps with a free arm; looking at the phone while walking sits lower.
+    /// Rapid step climb is capped in `AtriaWhoop4CompactIMUAssembler` so BLE
+    /// coalescing cannot emit many gait seconds per wall-clock second.
     static let compactAssembledRotationLevelGate = 12.0
     static let prominenceGate = 1.6
     static let swayRatio = 1.4

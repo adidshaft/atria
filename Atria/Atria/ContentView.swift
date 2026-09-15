@@ -56,25 +56,15 @@ struct ContentView: View {
             .equatable()
             .overlay(alignment: .top) {
                 if appReviewDemoActive {
-                    HStack(spacing: 10) {
-                        Label("App Review demo · local sample data", systemImage: "checkmark.shield.fill")
-                            .font(.footnote.weight(.semibold))
-                        Spacer(minLength: 8)
-                        Button("Exit") {
-                            Task { @MainActor in
-                                await store.clearAppReviewDemo()
-                                ble.exitAppReviewDemoMode()
-                                appReviewDemoActive = false
-                            }
+                    AtriaDemoDataBanner {
+                        Task { @MainActor in
+                            await store.clearAppReviewDemo()
+                            ble.exitAppReviewDemoMode()
+                            appReviewDemoActive = false
+                            onboardingStage = .flow
+                            showOnboarding = true
                         }
-                        .font(.footnote.weight(.bold))
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .accessibilityElement(children: .combine)
                 }
             }
             .fullScreenCover(isPresented: $showOnboarding) {
@@ -94,9 +84,9 @@ struct ContentView: View {
                                                 || !onboardingHistoryBootstrap.isCompleteForCurrentStrap
                                             return true
                                         },
-                                        onAppReviewDemo: { nickname in
+                                        onAppReviewDemo: {
                                             Task { @MainActor in
-                                                guard await store.activateAppReviewDemo(nickname: nickname) else { return }
+                                                guard await store.activateAppReviewDemo() else { return }
                                                 ble.enterAppReviewDemoMode()
                                                 appReviewDemoActive = true
                                                 showOnboarding = false

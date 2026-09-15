@@ -29725,9 +29725,8 @@ final class SessionStore: ObservableObject {
     /// in-memory values, so activation is also safe while launch hydration is
     /// still in flight.
     @discardableResult
-    func activateAppReviewDemo(nickname: String, now: Date = Date()) async -> Bool {
+    func activateAppReviewDemo(now: Date = Date()) async -> Bool {
         guard canonicalMutationAllowed,
-              AtriaAppReviewDemo.isRequested(nickname: nickname),
               !profile.hasCompletedOnboarding,
               sessions.isEmpty,
               cachedConfirmedSleeps.isEmpty,
@@ -29744,11 +29743,12 @@ final class SessionStore: ObservableObject {
         reviewProfile.clamp()
         profile = reviewProfile
         profile.save()
-        AtriaOnboardingPersonalization.persistNickname(nickname)
+        AtriaOnboardingPersonalization.persistNickname("Sample")
         let fixture = AtriaAppReviewDemo.sessions(now: now)
         dailyMetricHistory = AtriaAppReviewDemo.dailyMetrics(now: now)
         dailyRollupStore.replaceAll(AtriaAppReviewDemo.rollups(now: now))
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        saveBehaviorJournalEntries(AtriaAppReviewDemo.journalEntries(now: now))
         guard await saveConfirmedSleeps(AtriaAppReviewDemo.confirmedSleeps(now: now),
                                         deferDerivedPublication: true),
               await saveConfirmedWorkouts(AtriaAppReviewDemo.confirmedWorkouts(now: now),
@@ -29785,7 +29785,6 @@ final class SessionStore: ObservableObject {
         recomputeBehaviorInsights()
         publishDashboardRevision()
         scheduleSessionFilePersist(reason: "app_review_demo", delay: 0)
-        writeAutomaticSessionBackup(reason: "app_review_demo")
         AtriaDebugLog("ATRIADBG app_review_demo status=activated sessions=%d local_only=1", fixture.count)
         return true
     }
@@ -29802,6 +29801,7 @@ final class SessionStore: ObservableObject {
         }
         AtriaAppReviewDemo.deactivate()
         AtriaOnboardingPersonalization.persistNickname("")
+        saveBehaviorJournalEntries([])
         sessions = []
         dailyMetricHistory = []
         dailyRollupStore.replaceAll([])
@@ -29834,6 +29834,24 @@ final class SessionStore: ObservableObject {
         guard arguments.contains("--atria-complete-onboarding") else { return }
         completeOnboarding(with: profile)
     }
+
+#if DEBUG
+    func prepareUITestFreshInstallIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard arguments.contains("--atria-ui-fresh-install") else { return }
+        AtriaAppReviewDemo.deactivate()
+        AtriaOnboardingPersonalization.persistNickname("")
+        profile = AthleteProfile(age: AthleteProfile.defaultAge,
+                                 measuredMaxHR: AthleteProfile.defaultMeasuredMaxHR,
+                                 maxHRSource: .ageEstimate,
+                                 biologicalSex: .unspecified,
+                                 weightKg: 0,
+                                 heightCm: 0,
+                                 updated: nil,
+                                 hasCompletedOnboarding: false)
+        profile.save()
+        AtriaDebugLog("ATRIADBG app_review_demo status=ui_test_fresh_install")
+    }
+#endif
 
     func logBaselineMaturityFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-log-baseline") else { return }
@@ -54584,6 +54602,10 @@ final class SessionStore: ObservableObject {
     /// User-triggered Apple Health export (from Settings). The export is
     /// idempotent and incremental, so repeated taps only write new samples.
     func exportToHealthKit() {
+        guard !AtriaAppReviewDemo.isActive else {
+            AtriaDebugLog("ATRIADBG healthkit_export status=suppressed reason=app_review_demo")
+            return
+        }
         let rest = baseline.restingInt ?? 60
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,
@@ -54601,6 +54623,7 @@ final class SessionStore: ObservableObject {
 
     @discardableResult
     func exportRawDataPackage() -> URL? {
+        guard !AtriaAppReviewDemo.isActive else { return nil }
         let exportDir = url.deletingLastPathComponent().appendingPathComponent("atria-raw-exports")
         let exportURL = Self.rawExportURL(in: exportDir)
         let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory

@@ -469,7 +469,7 @@ enum AtriaLearnedInsights {
                 id: "readiness-recover",
                 kind: .readiness,
                 headline: "Today: recover",
-                detail: "Signals say back off — \(parts.joined(separator: ", ")). Easy movement is fine; hard strain is not.",
+                detail: "Signals say back off — \(parts.joined(separator: ", ")). Keep the day's load lighter than usual.",
                 isPositive: false,
                 asOf: now
             )
