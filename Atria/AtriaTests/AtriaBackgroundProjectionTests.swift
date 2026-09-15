@@ -3538,6 +3538,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "sitting idle still skips duplicate-identity shards then takes small isolated JSONL")
         XCTAssertTrue(body.contains("preferLarge: false"),
                       "a live BLE session must not start a 33 MB JSONL")
+        XCTAssertTrue(body.contains("preferLarge: true"),
+                      "BGProcessing may retire one isolated 33 MB JSONL and must skip 72/134")
+        XCTAssertTrue(body.contains("sittingIdleLargeChunkBytes"),
+                      "background retention cap stays under the 72/134 MB legacy JSONL")
         XCTAssertTrue(body.contains("skippingIdleCutoverSkips("),
                       "a JSONL with duplicate replay keys must not stall every later isolated shard")
         XCTAssertTrue(body.contains("deferred_idle_cutover_skipped"),
