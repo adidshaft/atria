@@ -9740,7 +9740,14 @@ enum HistoricalArchive {
             }
             let retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
             if overdueSceneBackgroundFastPath {
-                let idleCap: UInt64 = AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                // Lock stays on ≤8 MB. Sitting Today may take isolated ≤48 MB
+                // JSONL when compact IMU mean is under 8 dps; typing stays on
+                // 8 MB. 72/134 MB legacy files stay skipped by the 64 MB overlap
+                // filter.
+                let idleCap: UInt64 = reason == "overdue_idle"
+                    ? AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
+                    : AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                let preferLargeIdle = idleCap > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                 if reason == "overdue_idle" {
                     let sealed = catalog.chunks.filter { $0.state == .sealed }
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
@@ -9766,8 +9773,8 @@ enum HistoricalArchive {
                     retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
                         .orderedIdleRetirementCandidates(
                             skipFiltered,
-                            preferLarge: false,
-                            limit: 3
+                            preferLarge: preferLargeIdle,
+                            limit: preferLargeIdle ? 1 : 3
                         )
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator

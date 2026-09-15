@@ -1140,6 +1140,30 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         self.snapshotMinimumInterval = max(0.01, snapshotMinimumInterval)
     }
 
+    /// Desk-level compact IMU must not pad a 4 s gyro-cadence window.
+    /// Sitting packets are ~1 dps; a walk that should still score is well
+    /// above the 12 dps compact gate. Skip the current second when it is
+    /// sitting, or when recent diagnostics say sitting and this second is
+    /// still below that walk gate. A walk burst with peak ≥ 12 dps is
+    /// admitted even if the previous diagnostic write was sitting.
+    nonisolated static func shouldSkipSittingCompactGyroCadence(
+        deviceClock: AtriaR10MotionFrame.DeviceClock,
+        rotationMagnitudes: [Double],
+        isFreshSitting: Bool = AtriaCompactIMULiveDiagnostics.isFreshSitting()
+    ) -> Bool {
+        guard deviceClock == .compactAssembled, !rotationMagnitudes.isEmpty else {
+            return false
+        }
+        let mean = rotationMagnitudes.reduce(0, +) / Double(rotationMagnitudes.count)
+        let peak = rotationMagnitudes.max() ?? 0
+        if mean < AtriaCompactIMULiveDiagnostics.sittingMeanCeilingDps,
+           peak < AtriaCompactIMULiveDiagnostics.sittingMaxCeilingDps {
+            return true
+        }
+        return isFreshSitting
+            && peak < AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+    }
+
     func ingest(_ frame: AtriaR10MotionFrame,
                 receivedAt: Date,
                 sourceIsValid: @escaping IngressSourceValidator = { true },
@@ -1713,13 +1737,20 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         totalFrames += 1
         totalSamples += frame.acceleration.count
         if frame.rotationRate.count == AtriaR10MotionDecoder.sampleCount {
-            _ = gyroCadenceState.ingest(
-                deviceTimestamp: frame.deviceTimestamp,
-                rotationMagnitudes: frame.rotationRate.map(\.magnitude),
-                rotationLevelGate: frame.deviceClock == .compactAssembled
-                    ? AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
-                    : AtriaGyroCadenceResearchPedometer.rotationLevelGate
+            let rotationMagnitudes = frame.rotationRate.map(\.magnitude)
+            let skipSittingCompact = Self.shouldSkipSittingCompactGyroCadence(
+                deviceClock: frame.deviceClock,
+                rotationMagnitudes: rotationMagnitudes
             )
+            if !skipSittingCompact {
+                _ = gyroCadenceState.ingest(
+                    deviceTimestamp: frame.deviceTimestamp,
+                    rotationMagnitudes: rotationMagnitudes,
+                    rotationLevelGate: frame.deviceClock == .compactAssembled
+                        ? AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+                        : AtriaGyroCadenceResearchPedometer.rotationLevelGate
+                )
+            }
         }
         let magnitudes = frame.acceleration.map(\.magnitude)
         detector.ingest(magnitudes)
