@@ -39802,6 +39802,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
         if type == Packet.imu {
             logIMUCandidate(payload: payload)
+            // Compact 0x33 is the live IMU source. Without this, lastR10MotionFrameAt
+            // stays nil and the 8s liveness watchdog re-sends 6A/51 on a healthy stream.
+            recordValidR10MotionEvidence(receivedAt: Date())
             return
         }
         if type == 0x32 {

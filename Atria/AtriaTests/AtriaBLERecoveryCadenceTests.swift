@@ -11838,6 +11838,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testCompactIMUPacketsCountAsR10LivenessEvidence() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "if type == Packet.imu {"))
+        let body = String(source[start.lowerBound...].prefix(500))
+        XCTAssertTrue(body.contains("recordValidR10MotionEvidence(receivedAt: Date())"),
+                      "compact 0x33 must refresh lastR10MotionFrameAt or 6A/51 fires on a live stream")
+        XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"))
+    }
+
     func testHRContinuityWatchdogRunsInFullProtocolAndCoverLiveOmitsRealtime() throws {
         let source = try leaseManagerSource()
         let hrStart = try XCTUnwrap(source.range(
