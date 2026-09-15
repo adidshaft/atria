@@ -9774,22 +9774,30 @@ enum HistoricalArchive {
                     let shadowed = skipFiltered.filter {
                         retention.shadowCommittedCandidateIDs.contains($0.id)
                     }
+                    let includeOneLarge = AtriaHistoricalShadowCompactionCoordinator
+                        .shouldIncludeLargeIdleChunk(
+                            isolatedUnskipped: skipFiltered,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            preferLarge: preferLargeIdle
+                        )
                     preferredIdleShadowCutoverID = AtriaHistoricalShadowCompactionCoordinator
-                        .orderedIdleRetirementCandidates(
-                            shadowed,
-                            preferLarge: false,
-                            limit: 1
-                        ).first?.id
-                    // Always keep isolated ≤8 MB JSONL on the build list.
-                    // Emptying it for a 33 MB shadow cutover burned the lease
-                    // on duplicateIdentity and never drained the 140 small
-                    // shards that still retire.
+                        .preferredIdleShadowCutoverChunkID(
+                            shadowed: shadowed,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            allowLarge: includeOneLarge
+                        )
+                    // Isolated ≤8 MB JSONL stays on the build list until it
+                    // is gone. A 33 MB shadow cutover previously burned the
+                    // lease on duplicateIdentity and blocked the remaining
+                    // small shards.
                     retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
                         .sittingIdleBuildCandidates(
                             skipFiltered,
                             smallChunkBytes: AtriaCompactIMULiveDiagnostics
                                 .sittingIdleSmallChunkBytes,
-                            includeOneLarge: preferLargeIdle
+                            includeOneLarge: includeOneLarge
                         )
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
