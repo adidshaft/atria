@@ -2754,6 +2754,10 @@ struct AtriaStrapStepsDetailSheet: View {
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: presentation.valueText)
                     }
+                    if AtriaAppReviewDemo.isActive {
+                        AtriaSampleDataBadge(compact: true)
+                    }
+                    AtriaSourcesLink(metricID: "steps", compact: true)
 
                     HStack(spacing: 10) {
                         statusRow(title: "Measurement",
@@ -2817,6 +2821,7 @@ struct AtriaStrapStepsDetailSheet: View {
             .task { await loadWeekSteps() }
             .navigationTitle("Strap steps")
             .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("atria.metric.detail.steps")
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -4316,6 +4321,7 @@ struct AtriaMetricDetailSheet: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 18)
         }
+        .accessibilityIdentifier("atria.metric.detail.\(metric.rawValue)")
         .task(id: preparationInput) {
             await refreshPreparedHistory()
         }
@@ -7969,36 +7975,36 @@ enum AtriaMetricMeaningCopy {
                          guidance: Coach.Guidance) -> String {
         switch metric {
         case .recovery:
-            return guidance.headline.isEmpty ? guidance.detail : "\(guidance.headline) \(guidance.detail)"
-        case .hrv:
-            return "Look for multi-day direction. If HRV is suppressed and recovery is also down, favor easier training and protect tonight’s sleep."
-        case .restingHeartRate:
-            return "Treat a higher-than-normal RHR as a reason to reduce intensity, hydrate, and keep an eye on how you feel."
-        case .respiratoryRate:
-            return "Watch the trend, not one night. If respiratory rate stays outside your usual range, take it as a wellness signal and compare with how you feel."
-        case .sleep:
-            return "If debt is climbing, buy back time tonight before trying to force a bigger strain score tomorrow."
-        case .strain:
-            if let target = guidance.target {
-                return String(format: "Aim for the target arc around %.1f today and let recovery decide how hard to push.", target)
+            if guidance.headline.isEmpty {
+                return "Recovery is a derived readiness score from overnight signals against your baseline. See Sources for the calculation."
             }
-            return "Use the active band to stay controlled while Atria learns your recovery-scaled target."
+            return "\(guidance.headline) See Sources for the calculation."
+        case .hrv:
+            return "HRV is a derived multi-day trend of accepted beat-to-beat intervals against your own baseline. See Sources for the definition."
+        case .restingHeartRate:
+            return "Resting HR is a derived overnight low-percentile heart rate, compared with your own baseline. See Sources for the measurement context."
+        case .respiratoryRate:
+            return "Respiratory rate is a derived estimate from beat timing during sleep, compared with your own nights. See Sources for the physiology."
+        case .sleep:
+            return "Sleep duration and timing are derived from overnight heart-rate evidence. See Sources for how stages and sufficiency are defined."
+        case .strain:
+            return "Strain is a derived display mapping of daily training impulse from heart rate, not a quantity read from the strap. See Sources for TRIMP."
         case .stress:
-            return "If it stays elevated, try a few slow paced breaths or lighten today's training rather than pushing through it."
+            return "This is a derived autonomic-load estimate from heart-rate evidence, not a laboratory measurement. See Sources."
         case .vo2max:
-            return "Watch the multi-week trend rather than any single estimate; sustained aerobic training is what moves it."
+            return "VO2max here is a derived estimate from resting and maximum heart rate, not a gas-exchange test. See Sources."
         case .sleepPerformance:
-            return "A string of nights under 100% adds up as debt \u{2014} an earlier bedtime pays it back faster than one long catch-up night."
+            return "Sleep sufficiency compares last night with the stored need Atria computed from your recent nights. See Sources."
         case .sleepEfficiency:
-            return "Low efficiency with normal duration usually means restless time in bed \u{2014} a cooler, darker, screen-free wind-down tends to help."
+            return "Sleep efficiency estimates time asleep versus time in bed from duration, not a clinical sleep study. See Sources."
         case .skinTemperature:
-            return "There is no temperature reading to act on."
+            return "There is no temperature reading. The decoder is not verified."
         case .fitnessAge:
-            return "This moves slowly by design \u{2014} consistent aerobic training and sleep are what shift the pace of aging over months, not days."
+            return "Fitness age is a derived estimate from VO2max-adjacent signals. See Sources."
         case .hrZones:
-            return "More time in Z2\u{2013}Z3 builds an aerobic base; Z4\u{2013}Z5 minutes are the hard efforts to keep purposeful, not accidental."
+            return "Zone minutes split today's elevated heart rate into intensity bands. See Sources for how strain and heart-rate load are defined."
         case .bloodOxygen:
-            return "There's no verified blood-oxygen reading to act on."
+            return "There's no verified blood-oxygen reading. The decoder is not verified."
         }
     }
 }

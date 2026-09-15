@@ -697,6 +697,7 @@ struct AtriaTodayScreen: View {
                                              trend: weekStepTrend)
             }
             .buttonStyle(AtriaPressableCardStyle())
+            .accessibilityIdentifier("atria.today.metric.steps")
         case .calories:
             AtriaTodayLiveGlanceTileHost(metric: metric,
                                          liveStore: liveStore,
@@ -4301,6 +4302,7 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens the weekly report.")
+        .accessibilityIdentifier("atria.today.weekly-plan")
     }
 
     private var accessibilityText: String {
@@ -4458,6 +4460,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                         hueTinted: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
+        .accessibilityIdentifier("atria.today.metric.\(item.metricKey)")
     }
 
     private var tileBody: some View {
@@ -4547,6 +4550,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                         hueTinted: true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
+        .accessibilityIdentifier("atria.today.metric.\(item.metricKey)")
     }
 }
 

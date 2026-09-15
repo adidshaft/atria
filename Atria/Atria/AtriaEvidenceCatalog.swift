@@ -102,6 +102,32 @@ enum AtriaEvidenceCatalog {
                 "Overnight or true-rest values are the intended measurement context."
             ],
             metricIDs: ["restingHeartRate", "recovery"]
+        ),
+        AtriaEvidenceSource(
+            id: "susi-motion-2013",
+            title: "Motion Mode Recognition and Step Detection Algorithms Implemented in Real-Time on Mobile Devices",
+            authorsPublisher: "Susi M, Renaudin V, Lachapelle G. Sensors",
+            year: 2013,
+            locator: "https://doi.org/10.3390/s130201539",
+            lastReviewed: lastReviewed,
+            supports: [
+                "Step detection can be derived from body-worn inertial sensors, including gyroscope cadence.",
+                "Atria counts steps from strap IMU evidence, not the iPhone pedometer."
+            ],
+            metricIDs: ["steps"]
+        ),
+        AtriaEvidenceSource(
+            id: "keytel-energy-2005",
+            title: "Prediction of energy expenditure from heart rate monitoring during submaximal exercise",
+            authorsPublisher: "Keytel LR et al. Journal of Sports Sciences",
+            year: 2005,
+            locator: "https://doi.org/10.1080/02640410400011870",
+            lastReviewed: lastReviewed,
+            supports: [
+                "Active energy can be estimated from heart-rate recordings during activity.",
+                "Calorie values in Atria are derived estimates, not a strap-reported quantity."
+            ],
+            metricIDs: ["calories", "activeEnergy"]
         )
     ]
 

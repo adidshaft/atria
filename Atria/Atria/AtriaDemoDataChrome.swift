@@ -34,6 +34,6 @@ struct AtriaDemoDataBanner: View {
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }

@@ -479,28 +479,28 @@ enum Coach {
         }
         let target = liveStrainTarget(recovery: r, accumulatedStrain: strain)
         if r < 34 {
-            return Guidance(headline: "Prioritize recovery",
-                            detail: "Recovery is low; keep strain light and let your body rebuild.",
+            return Guidance(headline: "Recovery is low",
+                            detail: "Overnight recovery is in the lowest band versus your baseline. The strain number is scaled from that derived score. See Sources.",
                             color: .red, target: target,
                             state: "ready",
                             reason: "low_recovery")
         }
         if strain > target + 2 {
-            return Guidance(headline: "Ease off",
-                            detail: "You are past today's optimal strain; more risks overreaching.",
+            return Guidance(headline: "Strain is above the recovery-scaled band",
+                            detail: "Today's derived strain is above the recovery-scaled target Atria computed from overnight signals. See Sources.",
                             color: .orange, target: target,
                             state: "ready",
                             reason: "strain_above_target")
         }
         if strain < target - 2 {
-            return Guidance(headline: "Room to push",
-                            detail: "You can safely add strain to reach today's target.",
+            return Guidance(headline: "Strain is below the recovery-scaled band",
+                            detail: "Today's derived strain is below the recovery-scaled target Atria computed from overnight signals. See Sources.",
                             color: .green, target: target,
                             state: "ready",
                             reason: "strain_below_target")
         }
-        return Guidance(headline: "On target",
-                        detail: "Your strain matches what today's recovery supports.",
+        return Guidance(headline: "Strain is near the recovery-scaled band",
+                        detail: "Today's derived strain is near the recovery-scaled target Atria computed from overnight signals. See Sources.",
                         color: .blue, target: target,
                         state: "ready",
                         reason: "strain_on_target")
@@ -538,35 +538,35 @@ enum Coach {
         let loadReason: String
         if ratio > 1.30 {
             adjustedTarget = max(4, (guidance.target ?? optimalStrain(recovery: percent)) - 2)
-            loadClause = " Acute load is above your longer base, so today's target is softened."
+            loadClause = " Acute training load is above the recent base used for this calculation."
             loadReason = "load_high"
         } else if ratio < 0.80 {
             adjustedTarget = min(21, (guidance.target ?? optimalStrain(recovery: percent)) + 1)
-            loadClause = " Recent load is below your base, so there is room to rebuild gradually."
+            loadClause = " Recent training load is below the recent base used for this calculation."
             loadReason = "load_low"
         } else {
             adjustedTarget = guidance.target ?? optimalStrain(recovery: percent)
-            loadClause = " Load is aligned with your base."
+            loadClause = " Training load is aligned with the recent base used for this calculation."
             loadReason = "load_aligned"
         }
 
         if strain > adjustedTarget + 2 {
-            guidance = Guidance(headline: "Ease off",
-                                detail: "You are past today's adjusted strain target.\(loadClause)",
+            guidance = Guidance(headline: "Strain is above the recovery-scaled band",
+                                detail: "Today's derived strain is above the load-adjusted recovery-scaled target.\(loadClause) See Sources.",
                                 color: .orange,
                                 target: adjustedTarget,
                                 state: guidance.state,
                                 reason: "\(guidance.reason)_\(loadReason)")
         } else if strain < adjustedTarget - 2 {
-            guidance = Guidance(headline: "Room to push",
-                                detail: "You can add strain toward today's adjusted target.\(loadClause)",
+            guidance = Guidance(headline: "Strain is below the recovery-scaled band",
+                                detail: "Today's derived strain is below the load-adjusted recovery-scaled target.\(loadClause) See Sources.",
                                 color: .green,
                                 target: adjustedTarget,
                                 state: guidance.state,
                                 reason: "\(guidance.reason)_\(loadReason)")
         } else {
-            guidance = Guidance(headline: "On target",
-                                detail: "Your strain matches today's adjusted target.\(loadClause)",
+            guidance = Guidance(headline: "Strain is near the recovery-scaled band",
+                                detail: "Today's derived strain is near the load-adjusted recovery-scaled target.\(loadClause) See Sources.",
                                 color: .blue,
                                 target: adjustedTarget,
                                 state: guidance.state,
@@ -578,25 +578,25 @@ enum Coach {
     static func guide(recovery: Int, strain: Double, frozenTarget target: Double) -> Guidance {
         let safeTarget = min(max(target, 0), 21)
         if recovery < 34 {
-            return Guidance(headline: "Prioritize recovery",
-                            detail: "Recovery is low; keep strain light and let your body rebuild.",
+            return Guidance(headline: "Recovery is low",
+                            detail: "Overnight recovery is in the lowest band versus your baseline. The frozen strain number is scaled from that derived score. See Sources.",
                             color: .red, target: safeTarget,
                             state: "ready", reason: "low_recovery_frozen_daily_target")
         }
         if strain > safeTarget + 2 {
-            return Guidance(headline: "Ease off",
-                            detail: "You are past today's strain target.",
+            return Guidance(headline: "Strain is above the recovery-scaled band",
+                            detail: "Today's derived strain is above the frozen recovery-scaled target. See Sources.",
                             color: .orange, target: safeTarget,
                             state: "ready", reason: "strain_above_frozen_daily_target")
         }
         if strain < safeTarget - 2 {
-            return Guidance(headline: "Room to push",
-                            detail: "You can safely add strain toward today's target.",
+            return Guidance(headline: "Strain is below the recovery-scaled band",
+                            detail: "Today's derived strain is below the frozen recovery-scaled target. See Sources.",
                             color: .green, target: safeTarget,
                             state: "ready", reason: "strain_below_frozen_daily_target")
         }
-        return Guidance(headline: "On target",
-                        detail: "Your strain matches today's target.",
+        return Guidance(headline: "Strain is near the recovery-scaled band",
+                        detail: "Today's derived strain is near the frozen recovery-scaled target. See Sources.",
                         color: .blue, target: safeTarget,
                         state: "ready", reason: "strain_on_frozen_daily_target")
     }
@@ -632,14 +632,14 @@ struct AtriaWhiteboardCoachSentence {
         if rhrZ > 1 {
             let clause: String
             if let yesterdayTRIMP {
-                clause = String(format: " — go easier than yesterday's %.0f TRIMP.", yesterdayTRIMP)
+                clause = String(format: ". Yesterday's training impulse was %.0f TRIMP.", yesterdayTRIMP)
             } else if let yesterdayStrain {
-                clause = String(format: " — go easier than yesterday's Strain %.1f.", yesterdayStrain)
+                clause = String(format: ". Yesterday's Strain was %.1f.", yesterdayStrain)
             } else {
-                clause = " — keep today easy."
+                clause = "."
             }
             return Coach.Guidance(
-                headline: "Take today lighter than yesterday",
+                headline: "Resting HR is above your typical band",
                 detail: "Resting HR is above your typical band" + clause + qualifier,
                 color: .orange,
                 target: kernel.target,
@@ -650,14 +650,14 @@ struct AtriaWhiteboardCoachSentence {
         let headline: String
         let clause: String
         if let yesterdayTRIMP {
-            headline = "Room to match yesterday"
-            clause = String(format: " — room to repeat yesterday's %.0f TRIMP.", yesterdayTRIMP)
+            headline = "Resting HR is inside your typical band"
+            clause = String(format: ". Yesterday's training impulse was %.0f TRIMP.", yesterdayTRIMP)
         } else if let yesterdayStrain {
-            headline = "Room to match yesterday"
-            clause = String(format: " — room to repeat yesterday's Strain %.1f.", yesterdayStrain)
+            headline = "Resting HR is inside your typical band"
+            clause = String(format: ". Yesterday's Strain was %.1f.", yesterdayStrain)
         } else {
             headline = "Inside your resting-HR band"
-            clause = " — no strain recorded yesterday, go by feel."
+            clause = ". No strain recorded yesterday."
         }
         return Coach.Guidance(
             headline: headline,
@@ -732,14 +732,14 @@ struct AtriaWhiteboardCoachSentence {
             }
             let clause: String
             if let yesterdayTRIMP {
-                clause = String(format: " — go easier than yesterday's %.0f TRIMP.", yesterdayTRIMP)
+                clause = String(format: ". Yesterday's training impulse was %.0f TRIMP.", yesterdayTRIMP)
             } else if let yesterdayStrain {
-                clause = String(format: " — go easier than yesterday's Strain %.1f.", yesterdayStrain)
+                clause = String(format: ". Yesterday's Strain was %.1f.", yesterdayStrain)
             } else {
-                clause = " — keep today easy."
+                clause = "."
             }
             return Coach.Guidance(
-                headline: "Take today lighter than yesterday",
+                headline: cause,
                 detail: cause + clause,
                 color: .orange,
                 target: kernel.target,
@@ -750,14 +750,14 @@ struct AtriaWhiteboardCoachSentence {
         let clause: String
         let headline: String
         if let yesterdayTRIMP {
-            headline = "Room to match yesterday"
-            clause = String(format: " — room to repeat yesterday's %.0f TRIMP.", yesterdayTRIMP)
+            headline = "Inside your typical bands"
+            clause = String(format: ". Yesterday's training impulse was %.0f TRIMP.", yesterdayTRIMP)
         } else if let yesterdayStrain {
-            headline = "Room to match yesterday"
-            clause = String(format: " — room to repeat yesterday's Strain %.1f.", yesterdayStrain)
+            headline = "Inside your typical bands"
+            clause = String(format: ". Yesterday's Strain was %.1f.", yesterdayStrain)
         } else {
             headline = "Inside your typical bands"
-            clause = " — no strain recorded yesterday, go by feel."
+            clause = ". No strain recorded yesterday."
         }
         return Coach.Guidance(
             headline: headline,

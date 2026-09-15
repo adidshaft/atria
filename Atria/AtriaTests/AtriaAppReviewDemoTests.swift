@@ -51,6 +51,8 @@ final class AtriaAppReviewDemoTests: XCTestCase {
             )
         }
         XCTAssertTrue(AtriaEvidenceCatalog.sources.allSatisfy { URL(string: $0.locator) != nil || $0.locator.contains("doi.org") || $0.locator.contains("pubmed") })
+        XCTAssertFalse(AtriaEvidenceCatalog.sources(for: "steps").isEmpty)
+        XCTAssertFalse(AtriaEvidenceCatalog.sources(for: "calories").isEmpty)
     }
 
     func testCompatibleHardwareScreenStatesWhoop4Only() {
@@ -61,6 +63,28 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         XCTAssertTrue(
             AtriaEvidenceCatalog.sources.contains { $0.year >= 1971 }
         )
+    }
+
+    func testCoachCopyWithholdsUncitedPrescriptions() {
+        let low = Coach.guide(recovery: 20, strain: 4)
+        let high = Coach.guide(recovery: 80, strain: 6)
+        for text in [low.headline, low.detail, high.headline, high.detail] {
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("prioritize rest"))
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("ease off"))
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("room to push"))
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("safely add"))
+            XCTAssertFalse(text.localizedCaseInsensitiveContains("hard strain is not"))
+        }
+        for metric in AtriaMetricDetailKind.allCases {
+            let copy = AtriaMetricMeaningCopy.coaching(
+                metric: metric,
+                guidance: Coach.guide(recovery: 50, strain: 8)
+            )
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("favor easier"))
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("buy back time"))
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("earlier bedtime"))
+            XCTAssertFalse(copy.localizedCaseInsensitiveContains("zone 2"))
+        }
     }
 }
 

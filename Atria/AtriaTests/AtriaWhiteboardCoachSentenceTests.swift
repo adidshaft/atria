@@ -153,9 +153,9 @@ final class AtriaWhiteboardCoachSentenceTests: XCTestCase {
                            yesterdayTRIMP: 188.4,
                            yesterdayStrainDisplay: 15.0))
         XCTAssertEqual(rewritten.reason, "whiteboard_lighter")
-        XCTAssertEqual(rewritten.headline, "Take today lighter than yesterday")
+        XCTAssertEqual(rewritten.headline, "HRV is below your typical band")
         XCTAssertTrue(rewritten.detail.contains("HRV is below your typical band"))
-        XCTAssertTrue(rewritten.detail.contains("go easier than yesterday's 188 TRIMP"),
+        XCTAssertTrue(rewritten.detail.contains("188 TRIMP"),
                       "got: \(rewritten.detail)")
     }
 
@@ -169,7 +169,7 @@ final class AtriaWhiteboardCoachSentenceTests: XCTestCase {
                            yesterdayStrainDisplay: 12.4))
         XCTAssertEqual(rewritten.reason, "whiteboard_lighter")
         XCTAssertTrue(rewritten.detail.contains("Resting HR is above your typical band"))
-        XCTAssertTrue(rewritten.detail.contains("Strain 12.4"),
+        XCTAssertTrue(rewritten.detail.contains("Strain was 12.4"),
                       "legacy days fall back to the display skin, got: \(rewritten.detail)")
     }
 
@@ -182,6 +182,6 @@ final class AtriaWhiteboardCoachSentenceTests: XCTestCase {
                            yesterdayTRIMP: nil,
                            yesterdayStrainDisplay: nil))
         XCTAssertEqual(rewritten.headline, "Inside your typical bands")
-        XCTAssertTrue(rewritten.detail.contains("no strain recorded yesterday"))
+        XCTAssertTrue(rewritten.detail.localizedCaseInsensitiveContains("no strain recorded yesterday"))
     }
 }

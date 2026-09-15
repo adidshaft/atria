@@ -834,6 +834,7 @@ struct AtriaTriRing: View, Equatable {
         .accessibilityLabel(showsLegendDetail(metric)
                             ? "\(metric.title) \(metric.value), \(metric.detail)"
                             : "\(metric.title) \(metric.value)")
+        .accessibilityIdentifier("atria.today.ring.\(metric.title.lowercased())")
     }
 
     /// Spring fill-in that plays once per real appearance/value change, and

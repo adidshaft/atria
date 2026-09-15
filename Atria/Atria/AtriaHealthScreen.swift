@@ -1996,7 +1996,7 @@ struct AtriaHealthScreen: View {
     private var recoveryHint: String? {
         guard let value = heroStore.state.recoveryEstimate.percent,
               value < 34 else { return nil }
-        return "Low \u{2014} prioritize rest today"
+        return "Low versus typical"
     }
 
     private var restingHeartRateHint: String? {
@@ -2007,7 +2007,7 @@ struct AtriaHealthScreen: View {
               let today else { return nil }
         let z = (Double(today) - stats.mean) / stats.sd
         guard z > 1.5 else { return nil }
-        return "\u{2191} elevated \u{2014} try earlier bedtime"
+        return "\u{2191} elevated versus typical"
     }
 
     private var hrvHint: String? {
@@ -2019,7 +2019,7 @@ struct AtriaHealthScreen: View {
         let lnRMSSD = log(Double(hrvMS))
         let z = (lnRMSSD - stats.mean) / stats.sd
         guard z < -1.5 else { return nil }
-        return "\u{2193} below typical \u{2014} ease today's training"
+        return "\u{2193} below typical"
     }
 
     private var respiratoryHint: String? {
@@ -2028,7 +2028,7 @@ struct AtriaHealthScreen: View {
               let value = currentMainSleep?.respiratoryRate else { return nil }
         let z = (value - stats.mean) / stats.sd
         guard z > 1.5 else { return nil }
-        return "\u{2191} elevated \u{2014} track how you feel"
+        return "\u{2191} elevated versus typical"
     }
 
     /// Why the most recent sleep candidate was skipped, if one was, within the
@@ -2060,7 +2060,7 @@ struct AtriaHealthScreen: View {
     private var sleepHint: String? {
         let debtText = vitalsStore.state.sleepHistorySnapshot.sleepDebtText(goalHours: sleepGoalHours)
         guard debtText != "--", debtText != "Met" else { return nil }
-        return "\u{2193} \(debtText) debt \u{2014} earlier bedtime tonight"
+        return "\u{2193} \(debtText) versus the stored need"
     }
 
     private func statusValue(live: AtriaHealthMonitorLiveProjection) -> String {
@@ -2487,6 +2487,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityHint(onTap == nil ? "" : "Opens this metric's detail and trend.")
+        .accessibilityIdentifier("atria.vitals.\(title.replacingOccurrences(of: " ", with: "-").lowercased())")
     }
 
     private var accessibilityLabelText: String {

@@ -572,13 +572,13 @@ private enum AtriaHealthMonitorVitalKind: String, CaseIterable {
         switch self {
         case .restingHeartRate:
             guard case .aboveTypical = rangeState else { return nil }
-            return "\u{2191} elevated -- try earlier bedtime"
+            return "\u{2191} elevated versus typical"
         case .hrv:
             guard case .belowTypical = rangeState else { return nil }
-            return "\u{2193} below typical -- ease today's training"
+            return "\u{2193} below typical"
         case .respiratoryRate:
             guard case .aboveTypical = rangeState else { return nil }
-            return "\u{2191} elevated -- track how you feel"
+            return "\u{2191} elevated versus typical"
         case .bloodOxygen, .skinTemperature:
             return nil
         }
