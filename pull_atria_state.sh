@@ -1225,7 +1225,7 @@ def emit_duty_cycle_and_compaction_preferences():
     print(f"archive_compaction_last_bytes_before={int(pref(prefs, 'archiveCompaction.lastBytesBefore', 0) or 0)}")
     print(f"archive_compaction_last_bytes_after={int(pref(prefs, 'archiveCompaction.lastBytesAfter', 0) or 0)}")
     print(f"archive_compaction_last_error={pref(prefs, 'archiveCompaction.lastError', 'none') or 'none'}")
-    skip_ids = pref(prefs, "archiveCompaction.idleSkipChunkIDs") or []
+    skip_ids = pref(prefs, "archiveCompaction.idleSkipChunkIDs.v2") or pref(prefs, "archiveCompaction.idleSkipChunkIDs") or []
     print(f"archive_compaction_idle_skip_chunk_count={len(skip_ids) if isinstance(skip_ids, list) else 0}")
     idle_skip_at = pref(prefs, "archiveCompaction.lastIdleSkipAt")
     idle_skip_age = max(0.0, now - float(idle_skip_at)) if isinstance(idle_skip_at, (int, float)) and idle_skip_at > 0 else -1.0

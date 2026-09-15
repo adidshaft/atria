@@ -4737,7 +4737,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastFrameAge: TimeInterval?,
         lastActivationAge: TimeInterval?,
         staleInterval: TimeInterval = r10LivenessStaleInterval,
-        minimumActivationInterval: TimeInterval = 45
+        minimumActivationInterval: TimeInterval = 12
     ) -> Bool {
         _ = standardHROnlyMode
         guard !streamSuppressed,
@@ -30896,7 +30896,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// Re-send 6A/01 then 51 on a qualified silent stream-5 link. Never
     /// reconnects or writes 0x3F; inactive companion CCCDs may be enabled
-    /// once. The 45-second activation lease and the stale-frame gate live in
+    /// once. The 12-second activation lease and the stale-frame gate live in
     /// `shouldRefreshProtectedBoundedRawCapture`.
     @discardableResult
     private func refreshProtectedBoundedRawCaptureIfNeeded(

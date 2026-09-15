@@ -11774,10 +11774,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "never-seen frames on a qualified owner are a silent stream")
         XCTAssertFalse(refresh(frameAge: 5),
                        "fresh frames must not be refreshed")
-        XCTAssertFalse(refresh(activationAge: 30),
-                       "the 45-second activation lease must hold")
-        XCTAssertTrue(refresh(activationAge: 60),
-                      "a silent stream past 45s must refresh even in full_protocol")
+        XCTAssertFalse(refresh(activationAge: 8),
+                       "the 12-second activation lease must hold")
+        XCTAssertTrue(refresh(activationAge: 15),
+                      "a silent stream past 12s must refresh even in full_protocol")
         XCTAssertFalse(refresh(suppressed: true))
         XCTAssertFalse(refresh(proof: true))
         XCTAssertFalse(refresh(history: true))
