@@ -380,6 +380,41 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             "AtriaCompactIMULiveDiagnostics.note(rotationRate: packet.rotationRate)"
         ))
     }
+
+    func testFreshSittingDoesNotAdvanceCompactGyroCadence() throws {
+        let sitting = [1.2, 1.6, 1.4, 1.8, 2.1]
+        XCTAssertTrue(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
+                rotationMagnitudes: sitting,
+                isFreshSitting: false
+            ),
+            "a sitting compact second must not pad a 4 s gait window"
+        )
+        XCTAssertTrue(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
+                rotationMagnitudes: [8, 9, 7, 10, 8],
+                isFreshSitting: true
+            ),
+            "typing flicks below the 12 dps walk gate stay suppressed while sitting"
+        )
+        XCTAssertFalse(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
+                rotationMagnitudes: [18, 24, 21, 19, 22],
+                isFreshSitting: true
+            ),
+            "a walk burst above the compact gate must still score"
+        )
+        XCTAssertFalse(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .whoopR10,
+                rotationMagnitudes: sitting,
+                isFreshSitting: true
+            )
+        )
+    }
 }
 
 private extension Data {

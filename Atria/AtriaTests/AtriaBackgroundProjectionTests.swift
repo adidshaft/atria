@@ -3525,7 +3525,11 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ), "sitting/lock must not resume a 134 MB pending retire")
         XCTAssertTrue(body.contains(
             "AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes"
-        ), "live Today must stay on ≤8 MB JSONL so 33 MB parses cannot wedge BLE")
+        ), "lock and typing stay on ≤8 MB JSONL")
+        XCTAssertTrue(body.contains("sittingIdleChunkByteCap()"),
+                      "desk sitting may retire isolated ≤48 MB JSONL")
+        XCTAssertTrue(body.contains("preferLargeIdle"),
+                      "desk sitting prefers one isolated 33 MB JSONL; typing keeps small shards")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),
                       "a 126 KB shard that overlaps the 134 MB monolith must not burn the lease")
         XCTAssertTrue(body.contains("catalog.chunks.filter { $0.state == .sealed }"),
@@ -3535,9 +3539,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(body.contains("Array(finishable.prefix(1))"),
                       "lock still attempts one finishable JSONL")
         XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),
-                      "sitting idle still skips duplicate-identity shards then takes small isolated JSONL")
-        XCTAssertTrue(body.contains("preferLarge: false"),
-                      "a live BLE session must not start a 33 MB JSONL")
+                      "sitting idle still skips duplicate-identity shards then takes isolated JSONL")
         XCTAssertTrue(body.contains("preferLarge: true"),
                       "BGProcessing may retire one isolated 33 MB JSONL and must skip 72/134")
         XCTAssertTrue(body.contains("sittingIdleLargeChunkBytes"),
