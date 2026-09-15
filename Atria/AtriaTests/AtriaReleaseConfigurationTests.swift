@@ -14,8 +14,8 @@ final class AtriaReleaseConfigurationTests: XCTestCase {
         XCTAssertFalse(project.contains("TARGETED_DEVICE_FAMILY = \"1,2\";"))
         XCTAssertEqual(
             project.components(separatedBy: "TARGETED_DEVICE_FAMILY = 1;").count - 1,
-            6,
-            "app, widget, and test targets must agree on the supported device family"
+            8,
+            "app, widget, tests, and UI tests must agree on the supported device family"
         )
     }
 
@@ -49,7 +49,7 @@ final class AtriaReleaseConfigurationTests: XCTestCase {
                 return Int(line[range.upperBound...].dropLast())
             }
 
-        XCTAssertEqual(buildNumbers.count, 6)
+        XCTAssertEqual(buildNumbers.count, 8)
         XCTAssertEqual(Set(buildNumbers).count, 1,
                        "app, widget, and tests must ship with one build number")
         XCTAssertGreaterThanOrEqual(buildNumbers.first ?? 0, 2,

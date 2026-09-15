@@ -9850,6 +9850,21 @@ final class SessionStore: ObservableObject {
     @Published private(set) var learnedInsightLedger: [AtriaLearnedInsight] = AtriaDurableInsightStore.loadLedger()
 
     func refreshLearnedInsights(now: Date = Date()) {
+        let filledRollups = Self.overlayFrozenSleepNeed(
+            onto: dailyRollupHistory,
+            confirmedSleeps: confirmedSleeps
+        )
+        if filledRollups != dailyRollupHistory {
+            let previous = Dictionary(
+                dailyRollupHistory.map { ($0.day, $0) },
+                uniquingKeysWith: { _, last in last }
+            )
+            for entry in filledRollups where previous[entry.day] != entry {
+                dailyRollupStore.upsert(entry)
+            }
+            dailyRollupHistory = filledRollups
+            dailyRollupHistoryRevision &+= 1
+        }
         let frozenNeed = confirmedSleeps
             .compactMap { sleep -> (Date, TimeInterval)? in
                 let need = sleep.frozenSleepNeed?.seconds ?? sleep.sleepNeedSeconds
@@ -9859,11 +9874,11 @@ final class SessionStore: ObservableObject {
             .max { $0.0 < $1.0 }?
             .1
         let learned = AtriaLearnedInsights.insights(
-            rollups: dailyRollupHistory,
+            rollups: filledRollups,
             now: now,
             sleepNeedFallbackSeconds: frozenNeed
         )
-        let daily = AtriaLearnedInsights.dailyReads(rollups: dailyRollupHistory, now: now)
+        let daily = AtriaLearnedInsights.dailyReads(rollups: filledRollups, now: now)
         let stored = AtriaDurableInsightStore.loadPayload()
         let nextCurrent = learned.isEmpty ? stored.insights : learned
         let nextLedger = AtriaDurableInsightStore.mergeLedger(
@@ -9876,6 +9891,40 @@ final class SessionStore: ObservableObject {
         learnedInsightLedger = nextLedger
         AtriaDurableInsightStore.save(nextCurrent, ledger: nextLedger, now: now)
     }
+
+    /// Fill `sleepNeedSeconds` on rollups that already stored a measured night
+    /// but omitted the frozen target. Device history currently has dozens of
+    /// those rows, which hid weekly sleep debt until a runtime fallback ran.
+    /// Latest-end-wins per wake civil day; existing stored need is left alone.
+    nonisolated static func overlayFrozenSleepNeed(
+        onto rollups: [DailyRollupStoreEntry],
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> [DailyRollupStoreEntry] {
+        var needByDay: [Date: (end: Date, need: TimeInterval)] = [:]
+        for sleep in confirmedSleeps {
+            guard confirmedSleepIsPhysiologicalMainSleep(sleep) else { continue }
+            let need = sleep.frozenSleepNeed?.seconds ?? sleep.sleepNeedSeconds
+            guard let need, need > 0 else { continue }
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            if let existing = needByDay[day], existing.end >= sleep.end { continue }
+            needByDay[day] = (sleep.end, need)
+        }
+        guard !needByDay.isEmpty else { return rollups }
+        return rollups.map { entry in
+            guard (entry.sleepSeconds ?? 0) > 0 else { return entry }
+            if let existing = entry.sleepNeedSeconds, existing > 0 { return entry }
+            guard let overlay = needByDay[entry.day] else { return entry }
+            var filled = entry
+            filled.sleepNeedSeconds = overlay.need
+            return filled
+        }
+    }
+
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
     @Published private(set) var behaviorCorrelationSummariesCache: [BehaviorCorrelationSummary] = []
@@ -23743,6 +23792,7 @@ final class SessionStore: ObservableObject {
         // records without a durable receipt remain unknown rather than being
         // assigned a retroactive target.
         let frozenSleepNeedSeconds = confirmedMainSleep?.frozenSleepNeed?.seconds
+            ?? confirmedMainSleep?.sleepNeedSeconds
         let strain = computedToday?.strain ?? wearStrain
         let strainDayEnd = min(
             now,

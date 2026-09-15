@@ -1366,6 +1366,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "r10MotionPipeline.ingest("
         ))
         XCTAssertLessThan(sourceGuard.lowerBound, pipelineIngress.lowerBound)
+        XCTAssertTrue(
+            r10Ingress.contains("noteLiveIMULiveness(receivedAt: stampAt)"),
+            "compact ingest must stamp lastR10MotionFrameAt even when sit-gate skips gyro"
+        )
         XCTAssertFalse(value.contains("r10CallbackIngressQueue.async"),
                        "an intermediate queue lets a later boundary marker overtake an admitted callback")
         XCTAssertTrue(r10Ingress.contains("sourceIsValid:"),

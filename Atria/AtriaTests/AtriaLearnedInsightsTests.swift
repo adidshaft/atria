@@ -462,6 +462,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             encoding: .utf8
         )
         XCTAssertTrue(source.contains("func refreshLearnedInsights(now: Date = Date())"))
+        XCTAssertTrue(source.contains("Self.overlayFrozenSleepNeed("))
         XCTAssertTrue(source.contains("refreshLearnedInsights()"))
         XCTAssertTrue(source.contains("didSet {\n            backupCanonicalRevision &+= 1\n            refreshLearnedInsights()"))
     }
