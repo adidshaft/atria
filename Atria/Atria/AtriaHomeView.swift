@@ -13191,11 +13191,10 @@ final class AtriaHomeModel {
         return saved + newSinceCheckpoint
     }
 
-    /// Live IMU gyro is the open-cycle source. Saved-session sums still
-    /// include accelerometer-peak and coalesced compact bursts from before
-    /// the wall-clock assembler cap; using them as a floor left Today at
-    /// ~8500 while the live detector sat at ~40. IMU drop (`live == 0`)
-    /// keeps the saved floor so a reconnect does not flash "--".
+    /// Live IMU gyro is the open-cycle source. Saved-session sums use the
+    /// gyro-cadence coordinate only; accelerometer-peak leftovers stay on
+    /// `strapStepResearchCount` and must not become Today's floor. IMU drop
+    /// (`live == 0`) keeps the gyro saved floor so a reconnect does not flash "--".
     nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
                                                         liveCumulative: Int) -> Int {
         let live = max(0, liveCumulative)

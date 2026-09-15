@@ -679,6 +679,38 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(refreshedToday.savedTodayStrapSteps, 11)
     }
 
+    func testHomeSavedAggregateIgnoresAccelerometerPeakStrapCounts() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = DateComponents(calendar: calendar,
+                                   timeZone: calendar.timeZone,
+                                   year: 2026,
+                                   month: 7,
+                                   day: 9,
+                                   hour: 8).date!
+        let accelOnly = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(20 * 60),
+            label: "Accel leftover",
+            points: (0...120).map { sample in
+                SavedSession.Point(t: TimeInterval(sample * 10), bpm: 150)
+            },
+            strapStepResearchCount: 8_516
+        )
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [accelOnly],
+            rest: 60,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            calendar: calendar,
+            now: start.addingTimeInterval(21 * 60),
+            rawSessionCount: 1
+        )
+        XCTAssertEqual(aggregate.savedTodayStrapSteps, 0)
+        XCTAssertEqual(aggregate.savedActiveSessionTotalStrapSteps, 0)
+    }
+
     func testLiveStepMergeSubtractsCheckpointedActivePrefix() {
         XCTAssertEqual(AtriaHomeModel.mergedStrapStepResearchCount(savedToday: 1_000,
                                                                    savedActiveSession: 400,
@@ -702,6 +734,10 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 18,
                                                                   liveCumulative: 36),
                        36)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 232,
+                                                                  liveCumulative: 0),
+                       232,
+                       "gyro-only saved sessions remain the floor across relaunch")
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
                                                                   liveCumulative: 0),
                        50,
@@ -1147,6 +1183,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                             label: "Saved aggregate",
                             points: points,
                             strapStepResearchCount: stepCount,
+                            gyroCadenceResearchSteps: stepCount,
                             strapStepResearchState: "research_unvalidated")
     }
 
