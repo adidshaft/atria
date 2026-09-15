@@ -29847,6 +29847,14 @@ final class SessionStore: ObservableObject {
         guard arguments.contains("--atria-ui-fresh-install") else { return }
         AtriaAppReviewDemo.deactivate()
         AtriaOnboardingPersonalization.persistNickname("")
+        sessions = []
+        dailyMetricHistory = []
+        dailyRollupStore.replaceAll([])
+        dailyRollupHistory = []
+        cachedConfirmedSleeps = []
+        cachedConfirmedWorkouts = []
+        cachedBehaviorJournalEntries = []
+        baseline = PersonalBaseline()
         profile = AthleteProfile(age: AthleteProfile.defaultAge,
                                  measuredMaxHR: AthleteProfile.defaultMeasuredMaxHR,
                                  maxHRSource: .ageEstimate,
@@ -29856,6 +29864,11 @@ final class SessionStore: ObservableObject {
                                  updated: nil,
                                  hasCompletedOnboarding: false)
         profile.save()
+        baseline.save()
+        saveBehaviorJournalEntries([])
+        markSessionPersistenceDirty()
+        scheduleSessionFilePersist(reason: "ui_test_fresh_install", delay: 0)
+        scheduleDailyMetricPersist(reason: "ui_test_fresh_install", delay: 0)
         AtriaDebugLog("ATRIADBG app_review_demo status=ui_test_fresh_install")
     }
 #endif

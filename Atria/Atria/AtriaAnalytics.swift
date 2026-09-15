@@ -207,11 +207,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Recovery is inside your target zone. Match training load to how you feel."
+                recommendation = "Recovery is inside the range you configured. See Sources for how this derived score is computed."
             case .yellow:
-                recommendation = "Low recovery -- keep today light, hydrate, and get to bed earlier."
+                recommendation = "Recovery is below the range you configured. See Sources for how this derived score is computed."
             case .red:
-                recommendation = "Very low recovery -- prioritize rest, hydration, and an easy day."
+                recommendation = "Recovery is well below the range you configured. See Sources for how this derived score is computed."
             }
 
             return AtriaMetricZone(level: level,
@@ -235,15 +235,15 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Strain is inside today's recovery-scaled target band."
+                recommendation = "Strain is inside today's recovery-scaled target band. See Sources for TRIMP."
             case .yellow where delta > 0:
-                recommendation = "You're past today's suggested strain for your recovery -- ease off to protect tomorrow."
+                recommendation = "Strain is above today's recovery-scaled target band. See Sources for TRIMP."
             case .red where delta > 0:
-                recommendation = "You're far past today's suggested strain. Keep the rest of the day light."
+                recommendation = "Strain is well above today's recovery-scaled target band. See Sources for TRIMP."
             case .yellow:
-                recommendation = "Room to add load if you feel good."
+                recommendation = "Strain is below today's recovery-scaled target band. See Sources for TRIMP."
             case .red:
-                recommendation = "Well under today's target. Add easy movement or training only if it fits how you feel."
+                recommendation = "Strain is well below today's recovery-scaled target band. See Sources for TRIMP."
             }
             return AtriaMetricZone(level: level,
                                    title: "Strain target",
@@ -285,11 +285,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "HRV is near your personal baseline. Match your day to recovery and sleep."
+                recommendation = "HRV is near your personal baseline. See Sources for the definition."
             case .yellow:
-                recommendation = "HRV is below your personal baseline. This is a comparison to your own recent nights, not a diagnosis."
+                recommendation = "HRV is below your personal baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             case .red:
-                recommendation = "HRV is well below your personal baseline. This is a comparison to your own recent nights, not a diagnosis."
+                recommendation = "HRV is well below your personal baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             }
             let current = "\(rmssd) ms vs \(baseline) ms baseline."
             let greenValue = Int((Double(baseline) * safeGreen).rounded())
@@ -335,11 +335,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Resting heart rate is near your baseline."
+                recommendation = "Resting heart rate is near your baseline. See Sources."
             case .yellow:
-                recommendation = "Resting HR is up vs your norm -- fatigue, stress, dehydration, or poor sleep can move it. Hydrate and keep the day lighter."
+                recommendation = "Resting HR is above your baseline. Fatigue, stress, or poor sleep can move this derived overnight value. See Sources."
             case .red:
-                recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
+                recommendation = "Resting HR is well above your baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             }
             let target = "Personal baseline · Green \(baseline + safeGreenDelta) bpm or lower and within 1 SD\(zScoreText), yellow to 2 SD or \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
             return AtriaMetricZone(level: level,
@@ -400,7 +400,7 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Sleep duration met your goal. Keep bed and wake times consistent."
+                recommendation = "Sleep duration met the duration you set as a goal."
             case .yellow:
                 recommendation = "Last night was a little under the sleep duration you set as a goal (\(AtriaMetricFormat.sleepHours(remaining)) remaining versus that goal)."
             case .red:
@@ -430,11 +430,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Sleep reached the perform range. Keep the routine consistent."
+                recommendation = "Sleep duration reached 85% or more of the stored need Atria computed. See Sources."
             case .yellow:
-                recommendation = "Sleep was close to the perform range. Protect more sleep when your schedule allows."
+                recommendation = "Sleep duration was 70–84% of the stored need Atria computed. See Sources."
             case .red:
-                recommendation = "Sleep was well below tonight's need. Prioritize recovery and an earlier sleep opportunity."
+                recommendation = "Sleep duration was below 70% of the stored need Atria computed. See Sources."
             }
             let needText = neededHours.map {
                 " · \(AtriaMetricFormat.sleepHours($0)) adaptive need"
@@ -502,11 +502,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "VO2max trend is improving. Keep the cardio and recovery habits consistent."
+                recommendation = "VO2max trend is improving. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             case .yellow:
-                recommendation = "VO2max trend is flat. Cardio minutes and sleep consistency are the inputs this estimate uses."
+                recommendation = "VO2max trend is flat. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             case .red:
-                recommendation = "VO2max trend is declining. Cardio minutes and sleep consistency are the inputs this estimate uses."
+                recommendation = "VO2max trend is declining. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             }
 
             return AtriaMetricZone(level: level,
@@ -535,11 +535,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Fitness age is on the younger side for your profile. Keep the RHR, HRV, zone-2, and sleep-consistency habits steady."
+                recommendation = "Fitness age is on the younger side for your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             case .yellow:
-                recommendation = "Fitness age is slightly older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses."
+                recommendation = "Fitness age is slightly older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             case .red:
-                recommendation = "Fitness age is older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses."
+                recommendation = "Fitness age is older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             }
 
             return AtriaMetricZone(level: level,
@@ -567,11 +567,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Respiratory rate is close to your local sleep baseline."
+                recommendation = "Respiratory rate is close to your local sleep baseline. See Sources."
             case .yellow:
-                recommendation = "Respiratory rate is slightly off your baseline -- environment, poor sleep, stress, or illness onset can move it. Watch the trend, not one night."
+                recommendation = "Respiratory rate is slightly off your local sleep baseline. Environment, sleep, or stress can move this derived estimate. See Sources."
             case .red:
-                recommendation = "Respiratory rate is well off your baseline. Treat this as a wellness signal only and prioritize rest if you feel off."
+                recommendation = "Respiratory rate is well off your local sleep baseline. This is a comparison to your own nights, not a diagnosis. See Sources."
             }
             return AtriaMetricZone(level: level,
                                    title: "Respiratory rate baseline",
