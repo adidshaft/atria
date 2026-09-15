@@ -3419,12 +3419,9 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
-        XCTAssertTrue(sessions.contains("? 15 * 60"),
-                      "desk sitting needs a 15-minute lease to finish one 33 MB JSONL")
-        XCTAssertTrue(sessions.contains("deskLargeIdle ? 1 : 32"),
-                      "do not start a second 33 MB JSONL after the first retire")
-        XCTAssertTrue(sessions.contains(": 180"),
-                      "typing still uses a 180s lease for ≤8 MB shards")
+        XCTAssertTrue(sessions.contains(
+            "case \"overdue_idle\": leaseLifetime = 180"
+        ), "sitting idle needs more than the 25s lock window once BLE is up")
         XCTAssertFalse(sessions.contains(
             "error: \"lease_current\""
         ), "a live idle lease must not stamp lastAttemptAt and stall the 12s poll")
@@ -3527,11 +3524,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "!overdueSceneBackgroundFastPath"
         ), "sitting/lock must not resume a 134 MB pending retire")
         XCTAssertTrue(body.contains(
-            "AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()"
-        ), "desk sitting may retire an isolated ≤48 MB JSONL; typing stays at ≤8 MB")
-        XCTAssertTrue(body.contains(
             "AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes"
-        ), "lock still stays on ≤8 MB JSONL")
+        ), "live Today must stay on ≤8 MB JSONL so 33 MB parses cannot wedge BLE")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),
                       "a 126 KB shard that overlaps the 134 MB monolith must not burn the lease")
         XCTAssertTrue(body.contains("catalog.chunks.filter { $0.state == .sealed }"),
@@ -3541,9 +3535,9 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(body.contains("Array(finishable.prefix(1))"),
                       "lock still attempts one finishable JSONL")
         XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),
-                      "desk sitting must take a 33 MB isolated JSONL before leftover 4 MB shards")
-        XCTAssertTrue(body.contains("preferLarge ? 1 : 3"),
-                      "a 33 MB JSONL is one sitting lease; typing still retries three small shards")
+                      "sitting idle still skips duplicate-identity shards then takes small isolated JSONL")
+        XCTAssertTrue(body.contains("preferLarge: false"),
+                      "a live BLE session must not start a 33 MB JSONL")
         XCTAssertTrue(body.contains("skippingIdleCutoverSkips("),
                       "a JSONL with duplicate replay keys must not stall every later isolated shard")
         XCTAssertTrue(body.contains("deferred_idle_cutover_skipped"),

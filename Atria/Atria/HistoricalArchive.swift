@@ -9740,9 +9740,7 @@ enum HistoricalArchive {
             }
             let retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
             if overdueSceneBackgroundFastPath {
-                let idleCap: UInt64 = reason == "overdue_idle"
-                    ? AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
-                    : AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                let idleCap: UInt64 = AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                 if reason == "overdue_idle" {
                     let sealed = catalog.chunks.filter { $0.state == .sealed }
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
@@ -9765,13 +9763,11 @@ enum HistoricalArchive {
                             skippedIDs: AtriaHistoricalShadowCompactionCoordinator
                                 .idleCutoverSkipChunkIDs()
                         )
-                    let preferLarge = idleCap
-                        > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                     retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
                         .orderedIdleRetirementCandidates(
                             skipFiltered,
-                            preferLarge: preferLarge,
-                            limit: preferLarge ? 1 : 3
+                            preferLarge: false,
+                            limit: 3
                         )
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
