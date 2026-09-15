@@ -27000,8 +27000,16 @@ final class SessionStore: ObservableObject {
         minimumAge: TimeInterval = 45
     ) -> Bool {
         guard let lastAttemptAt, lastAttemptAt > 0 else { return true }
-        let requiredAge = lastStatus == "deferred_catalog_warming"
-            || lastStatus == "deferred_idle_cutover_skipped" ? 12 : minimumAge
+        let requiredAge: TimeInterval
+        switch lastStatus {
+        case "deferred_catalog_warming",
+             "deferred_idle_cutover_skipped",
+             "ok_verified_consumer_cutover_raw_retired",
+             "yielded_retention_progress":
+            requiredAge = 12
+        default:
+            requiredAge = minimumAge
+        }
         return now.timeIntervalSince1970 - lastAttemptAt >= requiredAge
     }
 
@@ -27240,7 +27248,7 @@ final class SessionStore: ObservableObject {
         let leaseLifetime: TimeInterval
         switch reason {
         case "scene_background": leaseLifetime = 25
-        case "overdue_idle": leaseLifetime = 90
+        case "overdue_idle": leaseLifetime = 180
         default: leaseLifetime = 10 * 60
         }
         let lease = ArchiveCompactionBGProcessingLease(

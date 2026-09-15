@@ -9740,7 +9740,9 @@ enum HistoricalArchive {
             }
             let retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
             if overdueSceneBackgroundFastPath {
-                let idleCap: UInt64 = 8 * 1024 * 1024
+                let idleCap: UInt64 = reason == "overdue_idle"
+                    ? AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
+                    : AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                 if reason == "overdue_idle" {
                     let sealed = catalog.chunks.filter { $0.state == .sealed }
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
