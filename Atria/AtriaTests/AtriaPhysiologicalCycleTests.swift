@@ -104,7 +104,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
             points: stride(from: 0.0, through: 3_600.0, by: 10).map {
                 SavedSession.Point(t: $0, bpm: 120)
             },
-            strapStepResearchCount: 80
+            strapStepResearchCount: 80,
+            gyroCadenceResearchSteps: 80
         )
 
         let beforeSleep = SessionStore.homeSavedAggregate(
@@ -652,7 +653,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
             points: stride(from: 0.0, through: 7_200.0, by: 10).map {
                 SavedSession.Point(t: $0, bpm: 120)
             },
-            strapStepResearchCount: 200
+            strapStepResearchCount: 200,
+            gyroCadenceResearchSteps: 200
         )
         let aggregate = SessionStore.homeSavedAggregate(
             from: [crossingWorkout],
@@ -877,7 +879,8 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
                                    points: stride(from: 0.0, through: 7_200.0, by: 10.0).map {
                                        SavedSession.Point(t: $0, bpm: 120)
                                    },
-                                   strapStepResearchCount: 200)
+                                   strapStepResearchCount: 200,
+                                   gyroCadenceResearchSteps: 200)
         let aggregate = SessionStore.homeSavedAggregate(from: [session],
                                                         rest: 50,
                                                         maxHR: 190,

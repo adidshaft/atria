@@ -491,6 +491,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                    label: "Cross-midnight workout",
                                    points: points,
                                    strapStepResearchCount: 300,
+                                   gyroCadenceResearchSteps: 300,
                                    biologicalSex: .male,
                                    eventTimeZoneIdentifier: "UTC")
 

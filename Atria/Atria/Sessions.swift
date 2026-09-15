@@ -2398,12 +2398,14 @@ struct SavedSession: Codable, Identifiable {
         return (zones, trimp)
     }
 
-    /// Conservatively attributes an aggregate session step count to an
-    /// interval when historical records lack per-step timestamps. Cumulative
+    /// Conservatively attributes a gyro-cadence session step count to an
+    /// interval when historical records lack per-step timestamps. Older
+    /// accelerometer-peak `strapStepResearchCount` values are ignored so a
+    /// relaunch cannot restore a thousands-high Today floor. Cumulative
     /// floor differencing conserves the exact session total across adjacent
     /// day slices and avoids counting the whole session on both days.
     func attributedStrapSteps(within interval: DateInterval) -> Int {
-        let total = max(0, gyroCadenceResearchSteps ?? strapStepResearchCount ?? 0)
+        let total = max(0, gyroCadenceResearchSteps ?? 0)
         let sessionDuration = end.timeIntervalSince(start)
         guard total > 0, sessionDuration > 0 else { return 0 }
         let clippedStart = Swift.max(start, interval.start)
@@ -25844,7 +25846,7 @@ final class SessionStore: ObservableObject {
             day: day,
             savedTodayStrapSteps: savedToday,
             savedActiveSessionStrapSteps: active?.attributedStrapSteps(within: interval) ?? 0,
-            savedActiveSessionTotalStrapSteps: max(0, active?.strapStepResearchCount ?? 0)
+            savedActiveSessionTotalStrapSteps: max(0, active?.gyroCadenceResearchSteps ?? 0)
         )
     }
 
@@ -25970,7 +25972,7 @@ final class SessionStore: ObservableObject {
             todaySessions.first(where: { $0.id == activeID })?.attributedStrapSteps(within: dayInterval)
         } ?? 0
         let savedActiveSessionTotalStrapSteps = activeSessionID.flatMap { activeID in
-            todaySessions.first(where: { $0.id == activeID })?.strapStepResearchCount
+            todaySessions.first(where: { $0.id == activeID })?.gyroCadenceResearchSteps
         } ?? 0
         return HomeSavedAggregate(day: day,
                                   rest: rest,

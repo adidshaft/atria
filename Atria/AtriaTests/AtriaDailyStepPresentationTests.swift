@@ -762,6 +762,26 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
     }
 
+    func testGyroSavedFloorReplacesAccelerometerHeldCountAfterRelaunch() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 232,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 8_748,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 232)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
+    }
+
     func testHeldFloorDoesNotCrossANewCycle() {
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
@@ -863,6 +883,34 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 12), 12)
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 48, incomingGyro: 50), 50)
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 50, incomingGyro: 48), 50)
+    }
+
+    func testAttributedStrapStepsUseGyroCadenceNotAccelerometerPeaks() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let interval = DateInterval(start: start, duration: 3_600)
+        let accelOnly = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(3_600),
+            label: "Accel leftover",
+            points: [],
+            strapStepResearchCount: 8_516
+        )
+        XCTAssertEqual(
+            accelOnly.attributedStrapSteps(within: interval),
+            0,
+            "closed-session accel peaks must not become Today's floor after relaunch"
+        )
+        let gyro = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(3_600),
+            label: "Gyro session",
+            points: [],
+            strapStepResearchCount: 8_516,
+            gyroCadenceResearchSteps: 232
+        )
+        XCTAssertEqual(gyro.attributedStrapSteps(within: interval), 232)
     }
 
     func testHeldFloorRejectsImplausibleAccelerometerJumpAndReplacesIt() {
