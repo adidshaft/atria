@@ -3504,7 +3504,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "sceneBackgroundRetirementCandidates("
         ), "a 25s lock cannot start on the 134 MB legacy JSONL")
         let shadowRetire = try XCTUnwrap(body.range(
-            of: "if let chunkID = retention.shadowCommittedCandidateIDs.first"
+            of: "preferredIdleShadowCutoverID"
         ))
         let missingSources = try XCTUnwrap(body.range(
             of: "if !retention.missingSourceCandidateIDs.isEmpty"
@@ -3528,6 +3528,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ), "lock and typing stay on ≤8 MB JSONL")
         XCTAssertTrue(body.contains("sittingIdleChunkByteCap()"),
                       "desk sitting may retire isolated ≤48 MB JSONL")
+        XCTAssertTrue(body.contains("preferredIdleShadowCutoverID"),
+                      "sitting idle must unlink a shadow-committed 33 MB JSONL instead of parsing it again")
         XCTAssertTrue(body.contains("preferLargeIdle"),
                       "desk sitting prefers one isolated 33 MB JSONL; typing keeps small shards")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),

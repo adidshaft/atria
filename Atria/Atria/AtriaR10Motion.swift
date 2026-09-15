@@ -1141,18 +1141,23 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     }
 
     /// Desk-level compact IMU must not pad a 4 s gyro-cadence window.
-    /// Sitting packets are ~1 dps; a walk that should still score is well
-    /// above the 12 dps compact gate. Skip the current second when it is
+    /// Sitting packets are ~1 dps. Holding the phone is ~20 dps with near-1 g
+    /// stillness, which still cleared the 12 dps looking-at-phone walk gate.
+    /// Skip the current second when strap accel is still, when rotation is
     /// sitting, or when recent diagnostics say sitting and this second is
-    /// still below that walk gate. A walk burst with peak ≥ 12 dps is
-    /// admitted even if the previous diagnostic write was sitting.
+    /// still below that walk gate. A walk has gait bounce in accel, so it
+    /// is admitted even if wrist gyro looks like phone-in-hand sitting.
     nonisolated static func shouldSkipSittingCompactGyroCadence(
         deviceClock: AtriaR10MotionFrame.DeviceClock,
         rotationMagnitudes: [Double],
+        accelerationMagnitudes: [Double] = [],
         isFreshSitting: Bool = AtriaCompactIMULiveDiagnostics.isFreshSitting()
     ) -> Bool {
         guard deviceClock == .compactAssembled, !rotationMagnitudes.isEmpty else {
             return false
+        }
+        if isCompactStrapAccelStill(accelerationMagnitudes) {
+            return true
         }
         let mean = rotationMagnitudes.reduce(0, +) / Double(rotationMagnitudes.count)
         let peak = rotationMagnitudes.max() ?? 0
@@ -1162,6 +1167,21 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         }
         return isFreshSitting
             && peak < AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+    }
+
+    /// Same 1 g stillness band as `gravityValidatedFrames`. Wrist gait
+    /// modulates accel; holding a phone at a desk does not.
+    nonisolated static func isCompactStrapAccelStill(
+        _ accelerationMagnitudes: [Double]
+    ) -> Bool {
+        guard !accelerationMagnitudes.isEmpty else { return false }
+        let mean = accelerationMagnitudes.reduce(0, +)
+            / Double(accelerationMagnitudes.count)
+        let still = accelerationMagnitudes.reduce(0) { count, magnitude in
+            count + (abs(magnitude - 1) <= 0.08 ? 1 : 0)
+        }
+        let stillness = Double(still) / Double(accelerationMagnitudes.count)
+        return mean >= 0.85 && mean <= 1.15 && stillness >= 0.60
     }
 
     func ingest(_ frame: AtriaR10MotionFrame,
@@ -1740,7 +1760,8 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
             let rotationMagnitudes = frame.rotationRate.map(\.magnitude)
             let skipSittingCompact = Self.shouldSkipSittingCompactGyroCadence(
                 deviceClock: frame.deviceClock,
-                rotationMagnitudes: rotationMagnitudes
+                rotationMagnitudes: rotationMagnitudes,
+                accelerationMagnitudes: frame.acceleration.map(\.magnitude)
             )
             if !skipSittingCompact {
                 _ = gyroCadenceState.ingest(
