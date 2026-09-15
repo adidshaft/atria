@@ -182,6 +182,19 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         return String(describing: error).contains("duplicateIdentity")
     }
 
+    static func orderedIdleRetirementCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        preferLarge: Bool,
+        limit: Int
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let ordered = candidates.sorted {
+            preferLarge
+                ? $0.storedByteCount > $1.storedByteCount
+                : $0.storedByteCount < $1.storedByteCount
+        }
+        return Array(ordered.prefix(max(0, limit)))
+    }
+
     /// A 126 KB July shard that overlaps the 134 MB monolith fails shadow on
     /// this install and burns the sitting lease. Skip it; later isolated
     /// shards can still retire.

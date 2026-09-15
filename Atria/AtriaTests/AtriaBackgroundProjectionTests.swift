@@ -3410,8 +3410,12 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "allowsSeriousThermal: reason == \"overdue_idle\""
         ), "cabled BLE at thermal serious must still retire one sitting chunk")
         XCTAssertTrue(sessions.contains(
-            "case \"overdue_idle\": leaseLifetime = 180"
+            "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
+        XCTAssertTrue(sessions.contains("? 8 * 60"),
+                      "desk sitting needs an 8-minute lease to finish a 33 MB JSONL")
+        XCTAssertTrue(sessions.contains(": 180"),
+                      "typing still uses a 180s lease for ≤8 MB shards")
         XCTAssertFalse(sessions.contains(
             "error: \"lease_current\""
         ), "a live idle lease must not stamp lastAttemptAt and stall the 12s poll")
@@ -3527,9 +3531,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "only 72/134 MB legacy JSONL should isolate overlapping shards")
         XCTAssertTrue(body.contains("Array(finishable.prefix(1))"),
                       "lock still attempts one finishable JSONL")
-        XCTAssertTrue(body.contains(
-            "isolated.sorted { $0.storedByteCount < $1.storedByteCount }"
-        ), "sitting idle prefers a 50 KB JSONL over a 939 KB poison sibling")
+        XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),
+                      "desk sitting must take a 33 MB isolated JSONL before leftover 4 MB shards")
+        XCTAssertTrue(body.contains("preferLarge ? 1 : 3"),
+                      "a 33 MB JSONL is one sitting lease; typing still retries three small shards")
         XCTAssertTrue(body.contains("skippingIdleCutoverSkips("),
                       "a JSONL with duplicate replay keys must not stall every later isolated shard")
         XCTAssertTrue(body.contains("deferred_idle_cutover_skipped"),

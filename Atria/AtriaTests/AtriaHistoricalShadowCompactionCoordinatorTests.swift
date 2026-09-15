@@ -82,6 +82,29 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testDeskSittingPrefersLargestIsolatedChunk() {
+        var small = chunk(id: "raw-4mb", createdAt: now.addingTimeInterval(-40 * 86_400))
+        small.byteCount = 4_194_313
+        var large = chunk(id: "raw-33mb", createdAt: now.addingTimeInterval(-50 * 86_400))
+        large.byteCount = 33_555_830
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.orderedIdleRetirementCandidates(
+                [small, large],
+                preferLarge: true,
+                limit: 1
+            ).map(\.id),
+            [large.id]
+        )
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.orderedIdleRetirementCandidates(
+                [small, large],
+                preferLarge: false,
+                limit: 3
+            ).map(\.id),
+            [small.id, large.id]
+        )
+    }
+
     func testIdleRetirementSkipsShardsThatOverlapTheMonolith() {
         let start = now.addingTimeInterval(-80 * 86_400)
         var monolith = boundedChunk(

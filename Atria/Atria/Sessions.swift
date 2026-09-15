@@ -27248,7 +27248,11 @@ final class SessionStore: ObservableObject {
         let leaseLifetime: TimeInterval
         switch reason {
         case "scene_background": leaseLifetime = 25
-        case "overdue_idle": leaseLifetime = 180
+        case "overdue_idle":
+            leaseLifetime = AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
+                > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                ? 8 * 60
+                : 180
         default: leaseLifetime = 10 * 60
         }
         let lease = ArchiveCompactionBGProcessingLease(
