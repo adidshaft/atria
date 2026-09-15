@@ -139,6 +139,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(insights.contains { $0.kind == .weeklyStrain })
         XCTAssertTrue(insights.contains { $0.kind == .bedtimeSpread })
         XCTAssertTrue(insights.contains { $0.detail.count > 40 })
+        XCTAssertFalse(insights.contains { $0.detail.contains("Bank sleep") })
     }
 
     func testStackedRecoveryAndYesterdayStrainAreSpecific() {
@@ -320,7 +321,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         let insights = AtriaLearnedInsights.insights(rollups: rollups, now: now)
         let weekly = insights.first { $0.kind == .weeklySleepDebt }
         XCTAssertNotNil(weekly, "four short nights versus the stored 7h 39m need must surface")
-        XCTAssertTrue(weekly?.headline.contains("sleep debt this week") == true)
+        XCTAssertTrue(weekly?.headline.contains("sleep debt across recent nights") == true)
         XCTAssertTrue(weekly?.detail.contains("7h 39m") == true)
         XCTAssertFalse(weekly?.detail.contains("Bank sleep") == true)
         XCTAssertGreaterThanOrEqual(
@@ -360,6 +361,14 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             DailyRollupStoreEntry(
                 day: calendar.date(byAdding: .day, value: -3, to: today)!,
                 strain: 1.8,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -4, to: today)!,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -5, to: today)!,
                 calendar: calendar
             ),
             DailyRollupStoreEntry(
