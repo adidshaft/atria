@@ -526,6 +526,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// must carry this token so callbacks queued by a dead link cannot mutate a
     /// newer history generation after reconnect.
     private nonisolated let bleCallbackEpochFence = AtriaBLECallbackEpochFence()
+    /// Compact 0x33 is ingested on the BLE queue. Watchdog lastFrameAge must
+    /// not wait for a MainActor hop or an 8s silence gate fires on live gyro.
+    private nonisolated let liveIMULivenessUnix = OSAllocatedUnfairLock(initialState: 0.0)
     /// A replacement CBCentralManager does not synchronously cancel callbacks
     /// already queued by the retired instance. Fence every central delegate
     /// entry with exact object identity and a replacement generation.
@@ -30018,11 +30021,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieCCCDToggleAt: Date?
     private var lastR10ZombieTxRediscoverAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
-    /// Compact IMU arrives about once a second. Eight seconds of silence is a
-    /// real drop; twenty used to add a full extra poll before 6A/51.
-    nonisolated static let r10LivenessStaleInterval: TimeInterval = 8
+    /// Compact IMU arrives about once a second. Four seconds of silence is a
+    /// real drop; eight used to wait through a MainActor-stale live stream.
+    nonisolated static let r10LivenessStaleInterval: TimeInterval = 4
     /// Faster than stale so a drop is seen within one stale window, not two.
-    nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 3
+    nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 2
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
     nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 45
     nonisolated static let r10NotifyRepairMinimumInterval: TimeInterval = 30
@@ -30930,7 +30933,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     .isNotifying == true
             ),
             heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
-            lastFrameAge: lastR10MotionFrameAt.map { now.timeIntervalSince($0) },
+            lastFrameAge: currentR10MotionFrameAt().map { now.timeIntervalSince($0) },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
         ), let peripheral,
            peripheral.state == .connected,
@@ -31204,7 +31207,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             motionLeaseHeld: workoutMotionOwnerStartedAt != nil,
             historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
             r10TransportExpected: eligible,
-            lastFrameAt: lastR10MotionFrameAt,
+            lastFrameAt: currentR10MotionFrameAt(),
             now: now
         ) {
             // The stream is intentionally unavailable in this fallback. Mark
@@ -31235,7 +31238,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: connected,
             realtimeArmed: strapStream5NotifyConfirmed
                 && (realtimeArmed || protectedR10MotionIsEligible),
-            lastFrameAt: lastR10MotionFrameAt,
+            lastFrameAt: currentR10MotionFrameAt(),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
             now: now
@@ -39844,20 +39847,44 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
     }
 
+    /// Compact 0x33 is ingested on the BLE queue. Stamp here so silence
+    /// recovery does not wait on a MainActor hop.
+    nonisolated private func stampLiveIMULiveness(receivedAt: Date) {
+        let next = receivedAt.timeIntervalSince1970
+        liveIMULivenessUnix.withLock { unix in
+            if next > unix { unix = next }
+        }
+        let defaults = UserDefaults.standard
+        if let previous = defaults.object(forKey: RadioDefaults.passiveR10LastValidAt) as? Double,
+           next - previous < 1 {
+            return
+        }
+        defaults.set(next, forKey: RadioDefaults.passiveR10LastValidAt)
+    }
+
+    private func currentR10MotionFrameAt() -> Date? {
+        let stampedUnix = liveIMULivenessUnix.withLock { $0 }
+        let stamped = stampedUnix > 0 ? Date(timeIntervalSince1970: stampedUnix) : nil
+        switch (lastR10MotionFrameAt, stamped) {
+        case let (main?, queued?):
+            return main > queued ? main : queued
+        case let (main?, nil):
+            return main
+        case let (nil, queued?):
+            return queued
+        case (nil, nil):
+            return nil
+        }
+    }
+
     /// Compact 0x33 is ingested on the BLE queue, not only through the
-    /// MainActor protocol decoder. Stamp liveness here so an 8s silence gate
-    /// sees live gyro even when snapshot publish or UserDefaults lag.
+    /// MainActor protocol decoder. Keep published motion freshness in sync
+    /// after the BLE-queue stamp.
     private func noteLiveIMULiveness(receivedAt: Date) {
+        stampLiveIMULiveness(receivedAt: receivedAt)
         if let previous = lastR10MotionFrameAt, receivedAt < previous { return }
         lastR10MotionFrameAt = receivedAt
         assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
-        let defaults = UserDefaults.standard
-        if let previousUnix = defaults.object(forKey: RadioDefaults.passiveR10LastValidAt) as? Double,
-           receivedAt.timeIntervalSince1970 - previousUnix < 1 {
-            return
-        }
-        defaults.set(receivedAt.timeIntervalSince1970,
-                     forKey: RadioDefaults.passiveR10LastValidAt)
     }
 
     /// A decoded R10 frame has already passed framing, CRC and fixed-layout
@@ -40318,6 +40345,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepCountCapturedAt, nil)
         assignIfChanged(\.liveStrapStepResearchState, state)
         UserDefaults.standard.removeObject(forKey: RadioDefaults.passiveR10LastValidAt)
+        liveIMULivenessUnix.withLock { $0 = 0 }
         AtriaDebugLog(
             "ATRIADBG strap_steps status=freshness_retired state=%@ reason=%@ count=%d action=preserve_monotonic_count",
             state,
@@ -47862,6 +47890,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // the exact source immediately before detector mutation, and
         // both publication hops reject a retired source.
         guard bleCallbackEpochFence.owns(source: callbackSource) else { return }
+        stampLiveIMULiveness(receivedAt: receivedAt)
         let stampAt = receivedAt
         Task { @MainActor [weak self] in
             self?.noteLiveIMULiveness(receivedAt: stampAt)
@@ -48288,6 +48317,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         imuInferredEndian = nil
         r10MotionFrameCount = 0
         lastR10MotionFrameAt = nil
+        liveIMULivenessUnix.withLock { $0 = 0 }
         assignIfChanged(\.liveStrapMotionCapturedAt, nil)
         assignIfChanged(\.liveStrapStepCountCapturedAt, nil)
         strapStepResearchCount = 0
