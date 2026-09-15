@@ -9765,9 +9765,14 @@ enum HistoricalArchive {
                             skippedIDs: AtriaHistoricalShadowCompactionCoordinator
                                 .idleCutoverSkipChunkIDs()
                         )
-                    retirementCandidates = Array(
-                        skipFiltered.sorted { $0.storedByteCount < $1.storedByteCount }.prefix(3)
-                    )
+                    let preferLarge = idleCap
+                        > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                    retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                        .orderedIdleRetirementCandidates(
+                            skipFiltered,
+                            preferLarge: preferLarge,
+                            limit: preferLarge ? 1 : 3
+                        )
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
                         .sceneBackgroundRetirementCandidates(
