@@ -1367,6 +1367,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         XCTAssertLessThan(sourceGuard.lowerBound, pipelineIngress.lowerBound)
         XCTAssertTrue(
+            r10Ingress.contains("stampLiveIMULiveness(receivedAt: receivedAt)"),
+            "compact ingest must stamp liveness on the BLE queue before the MainActor hop"
+        )
+        XCTAssertTrue(
             r10Ingress.contains("noteLiveIMULiveness(receivedAt: stampAt)"),
             "compact ingest must stamp lastR10MotionFrameAt even when sit-gate skips gyro"
         )
@@ -6383,20 +6387,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             eligible: true,
             connected: true,
             realtimeArmed: true,
-            lastFrameAt: now.addingTimeInterval(-7),
+            lastFrameAt: now.addingTimeInterval(-3),
             lastRearmAt: nil,
             lastRediscoveryAt: nil,
             now: now
-        ), .none, "compact IMU gaps under 8s must not rearm")
+        ), .none, "compact IMU gaps under 4s must not rearm")
         XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
             eligible: true,
             connected: true,
             realtimeArmed: true,
-            lastFrameAt: now.addingTimeInterval(-9),
+            lastFrameAt: now.addingTimeInterval(-5),
             lastRearmAt: nil,
             lastRediscoveryAt: nil,
             now: now
-        ), .rearm, "8s of IMU silence must rearm 6A/51 on the live HR link")
+        ), .rearm, "4s of IMU silence must rearm 6A/51 on the live HR link")
     }
 
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
@@ -11794,12 +11798,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "a qualified silent stream-5 link must re-issue 6A/51 instead of falling back")
         XCTAssertTrue(refresh(frameAge: nil, activationAge: nil),
                       "never-seen frames on a qualified owner are a silent stream")
-        XCTAssertFalse(refresh(frameAge: 5),
+        XCTAssertFalse(refresh(frameAge: 3),
                        "fresh frames must not be refreshed")
-        XCTAssertFalse(refresh(frameAge: 8),
-                       "exactly eight seconds is still inside the live window")
-        XCTAssertTrue(refresh(frameAge: 9),
-                      "nine seconds of IMU silence must same-link refresh")
+        XCTAssertFalse(refresh(frameAge: 4),
+                       "exactly four seconds is still inside the live window")
+        XCTAssertTrue(refresh(frameAge: 5),
+                      "five seconds of IMU silence must same-link refresh")
         XCTAssertFalse(refresh(activationAge: 8),
                        "the 12-second activation lease must hold")
         XCTAssertTrue(refresh(activationAge: 15),
