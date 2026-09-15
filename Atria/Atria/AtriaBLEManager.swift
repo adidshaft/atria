@@ -39844,6 +39844,22 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
     }
 
+    /// Compact 0x33 is ingested on the BLE queue, not only through the
+    /// MainActor protocol decoder. Stamp liveness here so an 8s silence gate
+    /// sees live gyro even when snapshot publish or UserDefaults lag.
+    private func noteLiveIMULiveness(receivedAt: Date) {
+        if let previous = lastR10MotionFrameAt, receivedAt < previous { return }
+        lastR10MotionFrameAt = receivedAt
+        assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
+        let defaults = UserDefaults.standard
+        if let previousUnix = defaults.object(forKey: RadioDefaults.passiveR10LastValidAt) as? Double,
+           receivedAt.timeIntervalSince1970 - previousUnix < 1 {
+            return
+        }
+        defaults.set(receivedAt.timeIntervalSince1970,
+                     forKey: RadioDefaults.passiveR10LastValidAt)
+    }
+
     /// A decoded R10 frame has already passed framing, CRC and fixed-layout
     /// validation. Record that source truth for every radio profile; the old
     /// implementation updated freshness only in the protected-mode branch,
@@ -47846,6 +47862,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // the exact source immediately before detector mutation, and
         // both publication hops reject a retired source.
         guard bleCallbackEpochFence.owns(source: callbackSource) else { return }
+        let stampAt = receivedAt
+        Task { @MainActor [weak self] in
+            self?.noteLiveIMULiveness(receivedAt: stampAt)
+        }
         r10MotionPipeline.ingest(
             r10Frame,
             receivedAt: receivedAt,

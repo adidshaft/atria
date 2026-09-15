@@ -10,10 +10,10 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         return calendar
     }()
 
-    private func day(_ year: Int, _ month: Int, _ day: Int, hour: Int = 0) -> Date {
+    private func day(_ year: Int, _ month: Int, _ day: Int, hour: Int = 0, minute: Int = 0) -> Date {
         DateComponents(calendar: calendar,
                        timeZone: calendar.timeZone,
-                       year: year, month: month, day: day, hour: hour).date!
+                       year: year, month: month, day: day, hour: hour, minute: minute).date!
     }
 
     private func mainSleep(id: String,
@@ -282,6 +282,107 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         // receipt instead of downgrading to a bare scalar.
         XCTAssertTrue(source.contains("(need: need, receipt: sleep.frozenSleepNeed)"))
         XCTAssertTrue(source.contains("preserved = sleep.replacingFrozenSleepNeed(receipt)"))
+    }
+
+    // MARK: rollup overlay
+
+    func testOverlayFrozenSleepNeedFillsMeasuredNightsThatOmitNeed() {
+        let frozen = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 7.65,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let night = mainSleep(
+            id: "sep15",
+            start: day(2026, 9, 14, hour: 23),
+            hours: 4.359,
+            frozen: frozen
+        )
+        let wakeDay = EventCivilTime.day(
+            containing: night.end,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        let missingNeed = DailyRollupStoreEntry(
+            day: wakeDay,
+            recovery: 48,
+            sleepSeconds: 15_693,
+            bedtimeMinutes: 1_401,
+            calendar: calendar
+        )
+        let alreadyStored = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: -1, to: wakeDay)!,
+            sleepSeconds: 17_349,
+            sleepNeedSeconds: 28_000,
+            calendar: calendar
+        )
+        let noSleep = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: 1, to: wakeDay)!,
+            recovery: 65,
+            rhr: 55,
+            calendar: calendar
+        )
+        let filled = SessionStore.overlayFrozenSleepNeed(
+            onto: [missingNeed, alreadyStored, noSleep],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        XCTAssertEqual(filled[0].sleepNeedSeconds ?? 0, frozen.seconds, accuracy: 0.001)
+        XCTAssertEqual(filled[1].sleepNeedSeconds ?? 0, 28_000, accuracy: 0.001)
+        XCTAssertNil(filled[2].sleepNeedSeconds)
+    }
+
+    func testOverlayFrozenSleepNeedLatestEndWinsOnTheSameWakeDay() {
+        let earlier = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 8,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let later = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 7.65,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let first = mainSleep(
+            id: "first",
+            start: day(2026, 9, 14, hour: 22),
+            hours: 7,
+            frozen: earlier
+        )
+        let second = mainSleep(
+            id: "second",
+            start: day(2026, 9, 14, hour: 23, minute: 30),
+            hours: 7,
+            frozen: later
+        )
+        let wakeDay = EventCivilTime.day(
+            containing: second.end,
+            eventTimeZoneIdentifier: second.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        XCTAssertEqual(
+            wakeDay,
+            EventCivilTime.day(
+                containing: first.end,
+                eventTimeZoneIdentifier: first.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+        )
+        let filled = SessionStore.overlayFrozenSleepNeed(
+            onto: [DailyRollupStoreEntry(day: wakeDay, sleepSeconds: 25_200, calendar: calendar)],
+            confirmedSleeps: [first, second],
+            calendar: calendar
+        )
+        XCTAssertEqual(filled.first?.sleepNeedSeconds ?? 0, later.seconds, accuracy: 0.001)
     }
 
     // MARK: chart gap grammar
