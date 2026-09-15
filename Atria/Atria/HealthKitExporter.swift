@@ -353,6 +353,10 @@ final class HealthKitExporter {
                 restingBaselineSamples: Int,
                 confirmedWorkouts: [UserConfirmedWorkout] = [],
                 confirmedSleeps: [UserConfirmedSleep] = []) {
+        guard !AtriaAppReviewDemo.isActive else {
+            AtriaDebugLog("ATRIADBG healthkit_export status=suppressed reason=app_review_demo")
+            return
+        }
         let diagnostics = HealthKitExporter.diagnostics(for: sessions,
                                                         rest: rest,
                                                         maxHR: maxHR,

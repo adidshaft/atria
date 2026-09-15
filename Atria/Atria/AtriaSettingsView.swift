@@ -776,6 +776,13 @@ struct AtriaSettingsView: View {
         }
         heartRateBroadcastSection
         deviceSection
+        Section {
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+        }
         sensorAvailabilitySection
     }
 
@@ -999,7 +1006,7 @@ struct AtriaSettingsView: View {
                     Label(exportTapped ? "Syncing to Apple Health…" : "Export to Apple Health",
                           systemImage: exportTapped ? "checkmark.circle.fill" : "square.and.arrow.up")
                 }
-                .disabled(exportTapped)
+                .disabled(exportTapped || AtriaAppReviewDemo.isActive)
             } else {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
                                 title: "Apple Health export",
@@ -1599,6 +1606,16 @@ struct AtriaSettingsView: View {
 
     private var aboutSection: some View {
         Section {
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+            NavigationLink {
+                AtriaEvidenceCatalogScreen()
+            } label: {
+                Label("Sources", systemImage: "doc.text.magnifyingglass")
+            }
             LabeledContent("Version") {
                 Text(appVersion).foregroundStyle(.secondary).monospacedDigit()
             }
@@ -1611,7 +1628,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("About")
         } footer: {
-            Text("Independent; not medical software.")
+            Text("Independent; not affiliated with or endorsed by WHOOP. Not medical software.")
         }
     }
 

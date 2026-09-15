@@ -384,6 +384,20 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         heldCapturedAt: Date? = nil,
         calendar: Calendar = .current
     ) -> Self {
+        if AtriaAppReviewDemo.isActive,
+           let demoCount = AtriaAppReviewDemo.stepCount(on: day, now: now, calendar: calendar) {
+            let dayStart = calendar.startOfDay(for: day)
+            let isToday = calendar.isDate(dayStart, inSameDayAs: now)
+            return .init(day: dayStart,
+                         count: demoCount,
+                         completeness: isToday ? .partial : .complete,
+                         source: .verifiedCanonical,
+                         isValidated: true,
+                         capturedAt: now,
+                         coverageFraction: 1,
+                         isOpenCycle: isToday,
+                         openCycleReceiptIsCurrent: true)
+        }
         let dayStart = calendar.startOfDay(for: day)
         let isToday = calendar.isDate(dayStart, inSameDayAs: now)
         let activeWindowStart = physiologicalDayStart ?? dayStart

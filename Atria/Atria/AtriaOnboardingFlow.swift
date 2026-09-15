@@ -303,7 +303,7 @@ struct AtriaOnboardingFlow: View {
     let ble: AtriaBLEManager
     @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
     let onComplete: (AthleteProfile) -> Void
-    let onAppReviewDemo: (String) -> Void
+    let onAppReviewDemo: () -> Void
     let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -399,7 +399,7 @@ struct AtriaOnboardingFlow: View {
         init?(debugName: String?) {
             guard let debugName else { return nil }
             switch debugName.lowercased() {
-            case "welcome", "what-this-is", "what": self = .whatThisIs
+            case "welcome", "what-this-is", "what", "hardware", "compatible", "signals": self = .whatThisIs
             case "nickname", "name", "you-name": self = .nickname
             case "strap", "connect": self = .strap
             case "you", "profile": self = .you
@@ -500,7 +500,7 @@ struct AtriaOnboardingFlow: View {
          historyBootstrap: AtriaOnboardingHistoryBootstrap,
          debugInitialStep: String? = nil,
          onRestoreBackup: ((URL) async -> Bool)? = nil,
-         onAppReviewDemo: @escaping (String) -> Void = { _ in },
+         onAppReviewDemo: @escaping () -> Void = {},
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
@@ -581,11 +581,6 @@ struct AtriaOnboardingFlow: View {
                                 move(to: .strap)
                             }
                         } else {
-                            if step == .nickname,
-                               AtriaAppReviewDemo.isRequested(nickname: nicknameDraft) {
-                                onAppReviewDemo(nicknameDraft)
-                                return
-                            }
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
                     }
@@ -662,6 +657,25 @@ struct AtriaOnboardingFlow: View {
             // The ring is a layout preview. Its empty values match the real
             // fresh-install state rather than inventing first-run readings.
             Text("Your numbers appear here after your first night of wear.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("atria.onboarding.hardware-signals")
+            Button(AtriaAppReviewDemo.exploreButtonTitle) {
+                onAppReviewDemo()
+            }
+            .font(.headline.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityIdentifier("atria.onboarding.explore-sample-data")
+            .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
+            Text("No account, strap, Bluetooth, or internet required. Every screen is marked Sample data.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -742,10 +756,6 @@ struct AtriaOnboardingFlow: View {
             .atriaCard(emphasis: .soft)
 
             Text("Optional — used only for a friendlier greeting on this phone.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("For App Review, enter \"App Review\" to explore local demo data without connecting a strap.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

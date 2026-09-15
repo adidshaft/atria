@@ -454,6 +454,7 @@ struct AtriaAboutMetricSheet: View {
                 .foregroundStyle(.secondary)
                 .lineSpacing(8)
                 .fixedSize(horizontal: false, vertical: true)
+            AtriaSourcesLink(metricID: metric.rawValue)
 
             if let trend {
                 trendCard(trend)

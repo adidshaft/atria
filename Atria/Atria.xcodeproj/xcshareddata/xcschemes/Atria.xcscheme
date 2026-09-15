@@ -41,6 +41,17 @@
                ReferencedContainer = "container:Atria.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "1A0000000000000000000043"
+               BuildableName = "AtriaUITests.xctest"
+               BlueprintName = "AtriaUITests"
+               ReferencedContainer = "container:Atria.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

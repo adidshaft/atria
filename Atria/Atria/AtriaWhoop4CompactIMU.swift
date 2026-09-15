@@ -106,6 +106,9 @@ enum AtriaWhoop4CompactIMUDecoder {
 /// Batches compact IMU packets onto a 100 Hz R10 second so gyro-cadence
 /// frequencies stay physically honest. Same-callback bursts keep the native
 /// 10-sample slices; paced live packets are interpolated across wall time.
+/// CoreBluetooth can coalesce tens of 10 Hz packets into one callback; without
+/// a wall-clock budget those bursts become many device-seconds of gait in a
+/// few milliseconds and Today steps climb far faster than a walk.
 final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
@@ -113,6 +116,8 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private var lastPacketAt: Date?
     private var lastGridTime: Date?
     private var lastEmittedTimestamp: UInt32 = 0
+    private var streamStartedAt: Date?
+    private var admittedSampleCount = 0
 
     func push(_ packet: AtriaWhoop4CompactIMUDecoder.Packet,
               receivedAt: Date) -> [AtriaR10MotionFrame] {
@@ -127,6 +132,8 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             outputGyro.removeAll(keepingCapacity: true)
             lastGridTime = nil
             lastPacketAt = nil
+            streamStartedAt = nil
+            admittedSampleCount = 0
             if lastEmittedTimestamp > 0 {
                 lastEmittedTimestamp &+= 2
             }
@@ -136,8 +143,12 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             ?? receivedAt.addingTimeInterval(-Double(sampleCount) / 100.0)
         let duration = max(1e-4, receivedAt.timeIntervalSince(intervalStart))
         if duration < 0.015 {
-            outputAccel.append(contentsOf: packet.acceleration)
-            outputGyro.append(contentsOf: packet.rotationRate)
+            admit(
+                packet.acceleration,
+                packet.rotationRate,
+                count: sampleCount,
+                receivedAt: receivedAt
+            )
             let nativeEnd = (lastGridTime ?? receivedAt)
                 .addingTimeInterval(Double(sampleCount) / 100.0)
             lastGridTime = max(nativeEnd, receivedAt)
@@ -146,12 +157,17 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             if cursor < intervalStart { cursor = intervalStart }
             var tick = cursor.addingTimeInterval(0.01)
             while tick <= receivedAt.addingTimeInterval(1e-9) {
+                guard remainingSampleBudget(receivedAt: receivedAt) > 0 else { break }
                 let u = min(
                     1,
                     max(0, tick.timeIntervalSince(intervalStart) / duration)
                 )
-                outputAccel.append(Self.interpolated(packet.acceleration, u: u))
-                outputGyro.append(Self.interpolated(packet.rotationRate, u: u))
+                admit(
+                    [Self.interpolated(packet.acceleration, u: u)],
+                    [Self.interpolated(packet.rotationRate, u: u)],
+                    count: 1,
+                    receivedAt: receivedAt
+                )
                 lastGridTime = tick
                 tick = tick.addingTimeInterval(0.01)
             }
@@ -180,6 +196,35 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         lastPacketAt = nil
         lastGridTime = nil
         lastEmittedTimestamp = 0
+        streamStartedAt = nil
+        admittedSampleCount = 0
+    }
+
+    /// One assembled R10 second per wall-clock second, plus a 1.05 s slack so
+    /// a single coalesced 10-packet burst can still complete the current second.
+    private func remainingSampleBudget(receivedAt: Date) -> Int {
+        if streamStartedAt == nil {
+            streamStartedAt = receivedAt
+        }
+        let elapsed = max(0, receivedAt.timeIntervalSince(streamStartedAt ?? receivedAt))
+        let budget = Int((elapsed + 1.05) * Double(AtriaR10MotionDecoder.sampleCount))
+        return max(0, budget - admittedSampleCount)
+    }
+
+    private func admit(_ acceleration: [AtriaR10MotionFrame.Vector3],
+                       _ rotationRate: [AtriaR10MotionFrame.Vector3],
+                       count: Int,
+                       receivedAt: Date) {
+        let take = min(
+            count,
+            acceleration.count,
+            rotationRate.count,
+            remainingSampleBudget(receivedAt: receivedAt)
+        )
+        guard take > 0 else { return }
+        outputAccel.append(contentsOf: acceleration.prefix(take))
+        outputGyro.append(contentsOf: rotationRate.prefix(take))
+        admittedSampleCount += take
     }
 
     private func makeFrame(

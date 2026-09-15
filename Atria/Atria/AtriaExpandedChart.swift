@@ -237,6 +237,9 @@ struct AtriaExpandedChartView: View {
         HStack(spacing: 12) {
             Text(title)
                 .font(.headline.weight(.bold))
+            if AtriaAppReviewDemo.isActive {
+                AtriaSampleDataBadge(compact: true)
+            }
             if let summary = brushSummaryText {
                 Text(summary)
                     .font(.caption.weight(.semibold).monospacedDigit())

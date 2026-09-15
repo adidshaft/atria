@@ -1,6 +1,7 @@
 import Foundation
 import CoreBluetooth
 import UIKit
+import os
 
 /// One-shot owner for an obsolete CoreBluetooth restoration namespace. It
 /// never scans or connects; it only cancels peripherals restored from the
@@ -485,6 +486,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// transport owner prevents background reconnect paths from making a radio
     /// attempt after the reviewer intentionally chose the no-strap experience.
     private var appReviewDemoMode = false
+    private let appReviewDemoFlag = OSAllocatedUnfairLock(initialState: false)
     /// Diagnostics-only accounting for the existing historical drain.  This is
     /// deliberately kept on the main actor with the orchestrator: it observes
     /// callback/order/persistence outcomes, but never participates in protocol
@@ -6496,7 +6498,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // Retain an inert manager solely for those queries; it has no
             // delegate or restoration identity and therefore cannot scan,
             // reconnect, or receive a strap callback.
-            appReviewDemoMode = true
+            appReviewDemoMode = AtriaAppReviewDemo.isActive
+            appReviewDemoFlag.withLock { $0 = AtriaAppReviewDemo.isActive }
             central = CBCentralManager(delegate: nil,
                                        queue: nil,
                                        options: [CBCentralManagerOptionShowPowerAlertKey: false])
@@ -22083,6 +22086,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         central callbackCentral: CBCentralManager,
         reason: String
     ) -> Bool {
+        guard !appReviewDemoFlag.withLock({ $0 }) else {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=connect_suppressed reason=%@ mode=app_review_demo",
+                reason
+            )
+            return false
+        }
         guard connectedPeripheralRetainer
             .retainAndClaimConnectRequest(target) else {
             AtriaDebugLog(
@@ -22102,6 +22112,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// remains reserved for connected-link repair/rebuild requests.
     private func reconnectKnownPeripheralImmediately(_ target: CBPeripheral,
                                                      reason: String) {
+        guard !appReviewDemoMode else { return }
         guard target.state == .disconnected else {
             // `.disconnecting` will reach didDisconnectPeripheral, whose path
             // performs this same immediate known-peripheral reconnect.
@@ -22125,6 +22136,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func requestFreshScanReconnect(peripheral target: CBPeripheral,
                                            reason: String,
                                            intent: AutomaticRecoveryIntent = .repairPipeline) {
+        guard !appReviewDemoMode else { return }
         let defaults = UserDefaults.standard
         let streamState = defaults.string(forKey: StrapStreamDefaults.state)
         let streamBattery = defaults.object(forKey: StrapStreamDefaults.batteryLevel) as? Int ?? batteryLevel
@@ -25098,6 +25110,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG ble_scan status=suppressed reason=%@ mode=app_review_demo", reason)
             return
         }
+        if bluetoothStartupSuspended {
+            startLiveBluetoothTransportIfNeeded()
+        }
         guard central.state == .poweredOn else {
             pendingScanReason = reason
             AtriaDebugLog("ATRIADBG ble_scan status=skipped reason=%@ central_state=%d",
@@ -25461,10 +25476,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     func enterAppReviewDemoMode() {
         appReviewDemoMode = true
+        appReviewDemoFlag.withLock { $0 = true }
         scanRetryTask?.cancel()
         scanWideningTask?.cancel()
         reconnectWatchdogTask?.cancel()
-        central.stopScan()
+        if !bluetoothStartupSuspended {
+            central.stopScan()
+        }
         isActivelyScanning = false
         if let peripheral {
             cancelPeripheralConnection(peripheral, reason: "app_review_demo")
@@ -25474,6 +25492,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     func exitAppReviewDemoMode() {
         appReviewDemoMode = false
+        appReviewDemoFlag.withLock { $0 = false }
+        recomputeConnectionStatus(reason: "app_review_demo_exit")
+    }
+
+    /// First-run and demo launches keep CoreBluetooth inert so Explore sample
+    /// data never prompts for Bluetooth. Connect, or leaving demo into setup,
+    /// installs the live manager in-process.
+    func startLiveBluetoothTransportIfNeeded() {
+        guard bluetoothStartupSuspended, !appReviewDemoMode else { return }
+        bluetoothStartupSuspended = false
+        let initialRestoreIdentifier = centralRestoreIdentifier
+        installedCentralRestoreIdentifier = initialRestoreIdentifier
+        let delegateQueue = centralDelegateQueue
+        delegateQueue?.suspend()
+        central = CBCentralManager(
+            delegate: self,
+            queue: delegateQueue,
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey: initialRestoreIdentifier,
+                CBCentralManagerOptionShowPowerAlertKey: true
+            ]
+        )
+        centralEventFence.install(central)
+        delegateQueue?.resume()
+        AtriaDebugLog("ATRIADBG ble_manager_init status=resumed reason=first_run_or_demo_exit")
     }
 
     /// A retained multi-file restore marker means canonical persistence is not
@@ -26380,6 +26423,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         peripheral: CBPeripheral
     ) {
+        guard !appReviewDemoMode else { return }
         reconnectWatchdogTask?.cancel()
         let delay = Self.reconnectWatchdogDelaySeconds(
             reconnectWatchdogSeconds: reconnectWatchdogSeconds,

@@ -108,6 +108,9 @@ private final class AtriaAppDependencies {
 
     init() {
         let store = SessionStore()
+#if DEBUG
+        store.prepareUITestFreshInstallIfRequested()
+#endif
         // A retained restore marker means canonical files may disagree. Do not
         // start any producer that could append new evidence until recovery can
         // resolve that transaction on a later launch.
@@ -117,7 +120,9 @@ private final class AtriaAppDependencies {
             AtriaPendingWorkoutIntentStore.shared.beginPreparing()
         }
         let ble = AtriaBLEManager(
-            startsBluetooth: !store.restoreInitializationBlocked && !AtriaAppReviewDemo.isActive
+            startsBluetooth: !store.restoreInitializationBlocked
+                && store.profile.hasCompletedOnboarding
+                && !AtriaAppReviewDemo.isActive
         )
         store.installRecoveredDataRecomputationDeferralProvider {
             [weak ble] isExactRecoveryPublication in
