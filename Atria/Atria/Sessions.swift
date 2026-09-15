@@ -27248,11 +27248,7 @@ final class SessionStore: ObservableObject {
         let leaseLifetime: TimeInterval
         switch reason {
         case "scene_background": leaseLifetime = 25
-        case "overdue_idle":
-            leaseLifetime = AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
-                > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
-                ? 15 * 60
-                : 180
+        case "overdue_idle": leaseLifetime = 180
         default: leaseLifetime = 10 * 60
         }
         let lease = ArchiveCompactionBGProcessingLease(
@@ -27632,14 +27628,9 @@ final class SessionStore: ObservableObject {
                 }
                 return
             }
-            let deskLargeIdle = admission.reason == "overdue_idle"
-                && AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
-                    > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
             let convergingBudget = Self.archiveCompactionConvergingBudget(
                 remainingLease: admission.backgroundLease
-                    .map { $0.expiresAt.timeIntervalSinceNow },
-                maximumElapsed: deskLargeIdle ? 15 * 60 : 8 * 60,
-                maximumIterations: deskLargeIdle ? 1 : 32
+                    .map { $0.expiresAt.timeIntervalSinceNow }
             )
             let result = HistoricalArchive.compactArchiveConverging(
                 pinnedWindows: pinnedWindows,
