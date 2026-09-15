@@ -281,7 +281,10 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         for offset in 0..<10 {
             let t = Double(sampleIndex) * packetPeriod + Double(offset) * samplePeriod
             let gyro = max(0, level + swing * sin(2 * .pi * cadenceHz * t))
-            acceleration.append(.init(x: 0, y: 0, z: 1))
+            // Phone-in-hand walking still has vertical gait bounce. A
+            // perfectly still 1 g vector is holding the phone at a desk.
+            let bounce = 0.28 * sin(2 * .pi * cadenceHz * t)
+            acceleration.append(.init(x: 0, y: bounce * 0.12, z: 1 + bounce))
             rotation.append(.init(x: gyro, y: 0, z: 0))
         }
         return AtriaWhoop4CompactIMUDecoder.Packet(
@@ -383,6 +386,8 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
 
     func testFreshSittingDoesNotAdvanceCompactGyroCadence() throws {
         let sitting = [1.2, 1.6, 1.4, 1.8, 2.1]
+        let stillAccel = [0.98, 1.01, 0.99, 1.02, 0.97, 1.00]
+        let walkingAccel = [0.72, 1.38, 0.71, 1.41, 0.74, 1.36]
         XCTAssertTrue(
             AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
                 deviceClock: .compactAssembled,
@@ -399,18 +404,29 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             ),
             "typing flicks below the 12 dps walk gate stay suppressed while sitting"
         )
+        XCTAssertTrue(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
+                rotationMagnitudes: [18, 24, 21, 19, 22],
+                accelerationMagnitudes: stillAccel,
+                isFreshSitting: false
+            ),
+            "holding the phone at a desk is still even when wrist gyro clears 12 dps"
+        )
         XCTAssertFalse(
             AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
                 deviceClock: .compactAssembled,
                 rotationMagnitudes: [18, 24, 21, 19, 22],
+                accelerationMagnitudes: walkingAccel,
                 isFreshSitting: true
             ),
-            "a walk burst above the compact gate must still score"
+            "a walk burst with gait bounce must still score"
         )
         XCTAssertFalse(
             AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
                 deviceClock: .whoopR10,
                 rotationMagnitudes: sitting,
+                accelerationMagnitudes: stillAccel,
                 isFreshSitting: true
             )
         )

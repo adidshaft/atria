@@ -9739,6 +9739,7 @@ enum HistoricalArchive {
                 )
             }
             let retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
+            var preferredIdleShadowCutoverID: String?
             if overdueSceneBackgroundFastPath {
                 // Lock stays on ≤8 MB. Sitting Today may take isolated ≤48 MB
                 // JSONL when compact IMU mean is under 8 dps; typing stays on
@@ -9770,12 +9771,28 @@ enum HistoricalArchive {
                             skippedIDs: AtriaHistoricalShadowCompactionCoordinator
                                 .idleCutoverSkipChunkIDs()
                         )
-                    retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                    let shadowed = skipFiltered.filter {
+                        retention.shadowCommittedCandidateIDs.contains($0.id)
+                    }
+                    preferredIdleShadowCutoverID = AtriaHistoricalShadowCompactionCoordinator
                         .orderedIdleRetirementCandidates(
-                            skipFiltered,
+                            shadowed,
                             preferLarge: preferLargeIdle,
-                            limit: preferLargeIdle ? 1 : 3
-                        )
+                            limit: 1
+                        ).first?.id
+                    // A shadow-committed isolated JSONL only needs cutover
+                    // plus unlink. Rebuilding it from 33 MB source on live
+                    // BLE is what kept sealed storage at multiple GB.
+                    if preferredIdleShadowCutoverID != nil {
+                        retirementCandidates = []
+                    } else {
+                        retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                            .orderedIdleRetirementCandidates(
+                                skipFiltered,
+                                preferLarge: preferLargeIdle,
+                                limit: preferLargeIdle ? 1 : 3
+                            )
+                    }
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
                         .sceneBackgroundRetirementCandidates(
@@ -9878,7 +9895,8 @@ enum HistoricalArchive {
             switch outcome {
             case .noCandidates:
                 let status: String
-                if let chunkID = retention.shadowCommittedCandidateIDs.first(where: {
+                if let chunkID = preferredIdleShadowCutoverID
+                    ?? retention.shadowCommittedCandidateIDs.first(where: {
                     !AtriaHistoricalShadowCompactionCoordinator
                         .idleCutoverSkipChunkIDs()
                         .contains($0)
