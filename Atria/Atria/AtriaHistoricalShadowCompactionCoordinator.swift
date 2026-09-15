@@ -142,9 +142,11 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         return finishable
     }
 
-    /// Raw JSONL with duplicate replay keys cannot cut over. Remember the
-    /// chunk so sitting idle can drain later isolated shards instead.
-    static let idleCutoverSkipChunkIDsKey = "atria.archiveCompaction.idleSkipChunkIDs"
+    /// Raw JSONL that still cannot cut over (torn rows, missing identity)
+    /// is remembered so sitting idle can drain later isolated shards.
+    /// v2 retries files that only failed on duplicate history keys after
+    /// first-wins collapse became legal.
+    static let idleCutoverSkipChunkIDsKey = "atria.archiveCompaction.idleSkipChunkIDs.v2"
 
     static func idleCutoverSkipChunkIDs(
         defaults: UserDefaults = .standard

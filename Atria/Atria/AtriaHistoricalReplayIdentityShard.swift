@@ -62,22 +62,23 @@ struct AtriaHistoricalReplayIdentityShard: Codable, Equatable, Sendable {
         }
         var entries: [Entry] = []
         entries.reserveCapacity(source.rawRowCount)
+        var seenKeys = Set<String>()
+        seenKeys.reserveCapacity(source.rawRowCount)
         var row = 0
         try streamLines(at: sourceURL) { line in
             guard let identity = AtriaHistoricalArchiveDurableStore.decoratedIdentity(from: line) else {
                 throw ShardError.missingExactIdentity(row: row)
             }
-            entries.append(.init(stableKey: identity.key,
-                                 observedAtUnix: identity.observedAtUnix))
+            if seenKeys.insert(identity.key).inserted {
+                entries.append(.init(stableKey: identity.key,
+                                     observedAtUnix: identity.observedAtUnix))
+            }
             row += 1
         }
         guard row == source.rawRowCount else {
             throw ShardError.rowCountMismatch(expected: source.rawRowCount, actual: row)
         }
         entries.sort { $0.stableKey < $1.stableKey }
-        guard Set(entries.map(\.stableKey)).count == entries.count else {
-            throw ShardError.duplicateIdentity
-        }
         return .init(schema: currentSchema,
                      source: .init(chunkID: source.chunkID,
                                    rawSHA256: source.rawSHA256,
@@ -87,7 +88,9 @@ struct AtriaHistoricalReplayIdentityShard: Codable, Equatable, Sendable {
 
     func encodedArtifact() throws -> Data {
         guard schema == Self.currentSchema,
-              entries.count == source.rawRowCount,
+              entries.count <= source.rawRowCount,
+              (source.rawRowCount == 0 && entries.isEmpty)
+                || (source.rawRowCount > 0 && !entries.isEmpty),
               Set(entries.map(\.stableKey)).count == entries.count,
               entries == entries.sorted(by: { $0.stableKey < $1.stableKey }) else {
             throw ShardError.invalidArtifact
@@ -186,7 +189,6 @@ struct AtriaHistoricalReplayIdentityShard: Codable, Equatable, Sendable {
               receipt.dependencyEnd == source.lastTimestamp,
               receipt.completionWatermark >= source.lastTimestamp,
               receipt.outcome == .materialized,
-              receipt.recordCount == source.rawRowCount,
               UInt64(artifact.count) == receipt.artifactByteCount else {
             return false
         }
@@ -195,7 +197,10 @@ struct AtriaHistoricalReplayIdentityShard: Codable, Equatable, Sendable {
               decoded.source == .init(chunkID: source.chunkID,
                                       rawSHA256: source.rawSHA256,
                                       rawRowCount: source.rawRowCount),
-              decoded.entries.count == source.rawRowCount,
+              decoded.entries.count <= source.rawRowCount,
+              (source.rawRowCount == 0 && decoded.entries.isEmpty)
+                || (source.rawRowCount > 0 && !decoded.entries.isEmpty),
+              decoded.entries.count == receipt.recordCount,
               decoded.entries == decoded.entries.sorted(by: {
                   $0.stableKey < $1.stableKey
               }),
