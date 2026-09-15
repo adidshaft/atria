@@ -287,6 +287,8 @@ final class AtriaHistoricalArchiveCatalogStore {
 
     /// A snapshot is proof input only when every live file still has the byte
     /// size recorded by that generation and every sealed digest still matches.
+    /// Pass `chunkIDs` to hash only those rows — one-chunk retirement must not
+    /// SHA-256 sibling 72/134 MB JSONL on a 25s idle lease.
     /// This catches appends to the new active chunk after a terminal record.
     ///
     /// Concurrency (2026-08-01): whole-archive hashing/decompression runs for
@@ -303,6 +305,7 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// the whole verification retries on a fresh copy — bounded, then the
     /// existing verification error is thrown rather than looping forever.
     func snapshotVerifiedAgainstFiles(
+        chunkIDs: Set<String>? = nil,
         shouldContinue: () -> Bool = { true }
     ) throws -> AtriaHistoricalArchiveCatalog {
         let maximumAttempts = 3
@@ -314,6 +317,7 @@ final class AtriaHistoricalArchiveCatalogStore {
             do {
                 try verifyFiles(
                     match: candidate,
+                    chunkIDs: chunkIDs,
                     shouldContinue: shouldContinue
                 )
             } catch {
@@ -352,9 +356,17 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// identical to the pre-2026-08-01 in-lock loop.
     private func verifyFiles(
         match catalog: AtriaHistoricalArchiveCatalog,
+        chunkIDs: Set<String>?,
         shouldContinue: () -> Bool
     ) throws {
+        if let chunkIDs {
+            let known = Set(catalog.chunks.map(\.id))
+            guard chunkIDs.isSubset(of: known) else {
+                throw StoreError.catalogFileMismatch
+            }
+        }
         for chunk in catalog.chunks where chunk.state != .retired {
+            if let chunkIDs, !chunkIDs.contains(chunk.id) { continue }
             guard shouldContinue() else {
                 throw StoreError.maintenanceAuthorityRevoked
             }

@@ -27,6 +27,100 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         XCTAssertEqual(failures.map(\.chunkID), [poison.id])
     }
 
+    func testSceneBackgroundRetirementSkipsHugeLegacyChunks() {
+        var huge = chunk(id: "legacy-monolith", createdAt: now.addingTimeInterval(-80 * 86_400))
+        huge.byteCount = 134_218_092
+        var medium = chunk(id: "july-shard", createdAt: now.addingTimeInterval(-70 * 86_400))
+        medium.byteCount = 72_358_010
+        var small = chunk(id: "finishable", createdAt: now.addingTimeInterval(-40 * 86_400))
+        small.byteCount = 20_217
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .sceneBackgroundRetirementCandidates([huge, medium, small])
+        XCTAssertEqual(selected.map(\.id), [small.id])
+
+        let onlyHuge = AtriaHistoricalShadowCompactionCoordinator
+            .sceneBackgroundRetirementCandidates([huge, medium])
+        XCTAssertTrue(
+            onlyHuge.isEmpty,
+            "an 8-25s pass must not start a 72/134 MB JSONL"
+        )
+    }
+
+    func testOverdueIdleRetirementCapsAtEightMegabytes() {
+        var tooBig = chunk(id: "median-12mb", createdAt: now.addingTimeInterval(-50 * 86_400))
+        tooBig.byteCount = 12 * 1024 * 1024
+        var finishable = chunk(id: "finishable-2mb", createdAt: now.addingTimeInterval(-40 * 86_400))
+        finishable.byteCount = 2_395_673
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .sceneBackgroundRetirementCandidates(
+                [tooBig, finishable],
+                maximumByteCount: 8 * 1024 * 1024
+            )
+        XCTAssertEqual(
+            selected.map(\.id),
+            [finishable.id],
+            "a 45s sitting lease must skip a 12 MB JSONL and take 2.4 MB"
+        )
+    }
+
+    func testIdleRetirementSkipsShardsThatOverlapTheMonolith() {
+        let start = now.addingTimeInterval(-80 * 86_400)
+        var monolith = boundedChunk(
+            id: "legacy-monolith",
+            first: start,
+            last: start.addingTimeInterval(26 * 86_400),
+            bytes: 134_218_092
+        )
+        monolith.relativePath = "historical-archive.jsonl"
+        let overlapping = boundedChunk(
+            id: "july-overlap",
+            first: start.addingTimeInterval(20 * 86_400),
+            last: start.addingTimeInterval(21 * 86_400),
+            bytes: 125_934
+        )
+        let isolated = boundedChunk(
+            id: "july-29-isolated",
+            first: start.addingTimeInterval(43 * 86_400),
+            last: start.addingTimeInterval(43 * 86_400 + 90),
+            bytes: 130_052
+        )
+        let active = activeChunk(id: "active", createdAt: now)
+        let catalog = AtriaHistoricalArchiveCatalog(
+            version: AtriaHistoricalArchiveCatalog.currentVersion,
+            generation: 1,
+            activeChunkID: active.id,
+            chunks: [monolith, overlapping, isolated, active]
+        )
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .skippingOversizedTimeOverlaps(
+                [overlapping, isolated],
+                catalog: catalog,
+                oversizedByteCount: 2 * 1024 * 1024
+            )
+        XCTAssertEqual(selected.map(\.id), [isolated.id])
+    }
+
+    func testIdleRetirementSkipsDuplicateIdentityCutoverPoison() {
+        let poison = chunk(id: "dup-identity", createdAt: now.addingTimeInterval(-200))
+        let valid = chunk(id: "valid-4mb", createdAt: now.addingTimeInterval(-100))
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .skippingIdleCutoverSkips(
+                [poison, valid],
+                skippedIDs: ["dup-identity"]
+            )
+        XCTAssertEqual(selected.map(\.id), [valid.id])
+        XCTAssertTrue(
+            AtriaHistoricalShadowCompactionCoordinator.isPermanentIdleCutoverSkip(
+                AtriaHistoricalReplayIdentityShard.ShardError.duplicateIdentity
+            )
+        )
+        XCTAssertFalse(
+            AtriaHistoricalShadowCompactionCoordinator.isPermanentIdleCutoverSkip(
+                AtriaHistoricalReplayIdentityShard.ShardError.sourceMissing
+            )
+        )
+    }
+
     func testAllFailuresRemainExplicitInsteadOfBecomingNoop() {
         let first = chunk(id: "first", createdAt: now.addingTimeInterval(-200))
         let second = chunk(id: "second", createdAt: now.addingTimeInterval(-100))
@@ -168,6 +262,51 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         XCTAssertEqual(queue.provisionalTimestampCandidateIDs, [legacy.id])
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceURL.path),
                       "selection and an existing shadow aggregate must never remove raw")
+    }
+
+    func testMissingOldestLegacyFileDoesNotHideLaterShadowCommittedCandidate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaHistoricalMissingSourceQueueTests")
+            .appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let missing = chunk(
+            id: "legacy-monolith",
+            createdAt: now.addingTimeInterval(
+                -AtriaHistoricalRetentionPolicy.production.rawHorizon - 2 * 86_400
+            )
+        )
+        var missingHuge = missing
+        missingHuge.byteCount = 134_218_092
+        let later = chunk(
+            id: "verified-later",
+            createdAt: now.addingTimeInterval(
+                -AtriaHistoricalRetentionPolicy.production.rawHorizon - 86_400
+            )
+        )
+        try Data("raw\n".utf8).write(
+            to: directory.appendingPathComponent(later.relativePath)
+        )
+        let active = activeChunk(id: "active", createdAt: now)
+        let catalog = AtriaHistoricalArchiveCatalog(
+            version: AtriaHistoricalArchiveCatalog.currentVersion,
+            generation: 1,
+            activeChunkID: active.id,
+            chunks: [missingHuge, later, active]
+        )
+
+        let queue = AtriaHistoricalShadowCompactionCoordinator.retentionQueue(
+            catalog: catalog,
+            archiveDirectory: directory,
+            committedChunkIDs: [later.id],
+            policy: .production,
+            now: now
+        )
+
+        XCTAssertEqual(queue.missingSourceCandidateIDs, [missingHuge.id])
+        XCTAssertEqual(queue.shadowCommittedCandidateIDs, [later.id])
+        XCTAssertTrue(queue.uncommittedCandidates.isEmpty)
     }
 
     func testAggregateCapCandidateIsExecutedEvenWhenRawPolicyIsWithinBounds() throws {

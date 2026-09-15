@@ -36,6 +36,8 @@ older binary's runtime evidence.
 Pulled files, when present:
   - sessions.json
   - daily-rollups.json
+  - learned-insights-v1.json
+  - historical-archive.catalog-v2.json
   - atria-active-session.json
   - atria-active-session.segments/
   - historical-archive.jsonl
@@ -351,6 +353,10 @@ copy_from_container "Documents/sessions-cold.json" "$evidence_dir/sessions-cold.
 deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"
 deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
+copy_from_container "Documents/learned-insights-v1.json" "$evidence_dir/learned-insights-v1.json" "learned_insights" || true
+copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
+  "$evidence_dir/historical-archive.catalog-v2.json" \
+  "historical_archive_catalog" || true
 copy_from_container "Documents/daily-metrics.json" "$evidence_dir/daily-metrics.json" "daily_metrics" || true
 copy_from_container "Documents/confirmed-workouts.json" "$evidence_dir/confirmed-workouts.json" "confirmed_workouts" || true
 
@@ -982,6 +988,7 @@ def emit_offline_sync_preferences():
     print(f"protocol_last_notify_callback_uuid={pref(prefs, 'protocol.lastNotifyCallbackUUID', 'none') or 'none'}")
     print(f"protocol_last_notify_callback_length={int(pref(prefs, 'protocol.lastNotifyCallbackLength', 0) or 0)}")
     print(f"protocol_last_notify_callback_hex={pref(prefs, 'protocol.lastNotifyCallbackHex', 'none') or 'none'}")
+    print(f"protocol_last_notify_callback_type={pref(prefs, 'protocol.lastNotifyCallbackType', 'none') or 'none'}")
     print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
     print(f"radio_tx_ready={bool_int(pref(prefs, 'radio.txReady', False))}")
     print(f"radio_last_wwr_allowed={pref(prefs, 'radio.lastWWRAllowed', 'none')}")
@@ -991,6 +998,13 @@ def emit_offline_sync_preferences():
     print(f"r10_zombie_tx_rediscover_at={pref(prefs, 'r10.zombieTxRediscoverAt', 'none')}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
     print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
+    compact_rot_at = pref(prefs, "compactIMU.lastRotationAt")
+    compact_rot_age = max(0.0, now - float(compact_rot_at)) if isinstance(compact_rot_at, (int, float)) and compact_rot_at > 0 else -1.0
+    print(f"compact_imu_rotation_mean_dps={float(pref(prefs, 'compactIMU.lastRotationMeanDps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_max_dps={float(pref(prefs, 'compactIMU.lastRotationMaxDps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_peak60_dps={float(pref(prefs, 'compactIMU.lastRotationPeak60Dps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_samples={int(pref(prefs, 'compactIMU.lastRotationSamples', 0) or 0)}")
+    print(f"compact_imu_rotation_age_s={compact_rot_age:.1f}")
     print(f"step_source=strap_r10_imu")
     print("phone_step_fallback=0")
     print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
@@ -1202,6 +1216,21 @@ def emit_duty_cycle_and_compaction_preferences():
     print(f"duty_cycle_sleep_window_end_min={int(sleep_window_end) if isinstance(sleep_window_end, (int, float)) else -1}")
     print(f"archive_compaction_last_run_at={last_run_at if isinstance(last_run_at, (int, float)) and last_run_at > 0 else 'none'}")
     print(f"archive_compaction_last_run_age_s={last_run_age:.1f}")
+    last_attempt_at = pref(prefs, "archiveCompaction.lastAttemptAt")
+    last_attempt_age = max(0.0, now - float(last_attempt_at)) if isinstance(last_attempt_at, (int, float)) and last_attempt_at > 0 else -1.0
+    print(f"archive_compaction_last_attempt_age_s={last_attempt_age:.1f}")
+    print(f"archive_compaction_last_status={pref(prefs, 'archiveCompaction.lastStatus', 'none') or 'none'}")
+    print(f"archive_compaction_last_reason={pref(prefs, 'archiveCompaction.lastReason', 'none') or 'none'}")
+    print(f"archive_compaction_last_compacted_rows={int(pref(prefs, 'archiveCompaction.lastCompactedRows', 0) or 0)}")
+    print(f"archive_compaction_last_bytes_before={int(pref(prefs, 'archiveCompaction.lastBytesBefore', 0) or 0)}")
+    print(f"archive_compaction_last_bytes_after={int(pref(prefs, 'archiveCompaction.lastBytesAfter', 0) or 0)}")
+    print(f"archive_compaction_last_error={pref(prefs, 'archiveCompaction.lastError', 'none') or 'none'}")
+    skip_ids = pref(prefs, "archiveCompaction.idleSkipChunkIDs") or []
+    print(f"archive_compaction_idle_skip_chunk_count={len(skip_ids) if isinstance(skip_ids, list) else 0}")
+    idle_skip_at = pref(prefs, "archiveCompaction.lastIdleSkipAt")
+    idle_skip_age = max(0.0, now - float(idle_skip_at)) if isinstance(idle_skip_at, (int, float)) and idle_skip_at > 0 else -1.0
+    print(f"archive_compaction_idle_skip_reason={pref(prefs, 'archiveCompaction.lastIdleSkipReason', 'none') or 'none'}")
+    print(f"archive_compaction_idle_skip_age_s={idle_skip_age:.1f}")
 
 def emit_watchdog_preferences():
     prefs_path = evidence / "preferences.plist"

@@ -27,6 +27,9 @@ final class AtriaLiveZonePillLabelTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaTodayScreen.swift"), encoding: .utf8)
         XCTAssertTrue(source.contains("pulse.heartRateZone.map { \"Live · \\($0.compactLabel)\" } ?? \"Live\""))
         XCTAssertTrue(source.contains("pulse.heartRateZone.map { \" \\($0.spokenLabel).\" } ?? \"\""))
+        XCTAssertTrue(source.contains("live.dailyStepPresentation"))
+        XCTAssertTrue(source.contains("steps.valueText"),
+                      "the live pill must show today's strap step count next to HR")
         XCTAssertFalse(source.contains("Live · Zone"))
     }
 }

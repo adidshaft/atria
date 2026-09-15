@@ -36,6 +36,83 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         }
     }
 
+    /// Larger, more pictorial glyph for Today's read rings. Distinct from the
+    /// compact-bar icon so Sleep / Recovery / Strain can be recognized at a
+    /// glance.
+    var pictureSystemImage: String {
+        switch kind {
+        case .sleepDebt: return "moon.stars.fill"
+        case .weeklySleepDebt: return "moon.fill"
+        case .bedtimeSpread: return "clock.fill"
+        case .recoveryDrift, .readiness: return "heart.circle.fill"
+        case .stackedRecovery: return "square.stack.3d.up.fill"
+        case .hrvDrift: return "waveform.path.ecg"
+        case .restingHRDrift: return "heart.fill"
+        case .loadMismatch, .weeklyStrain: return "bolt.heart.fill"
+        case .yesterdayStrain: return "flame.fill"
+        case .daySnapshot: return "sun.max.fill"
+        }
+    }
+
+    enum RingFamily: String, Equatable, Sendable {
+        case recovery
+        case sleep
+        case strain
+        case other
+
+        var title: String {
+            switch self {
+            case .recovery: return "Recovery"
+            case .sleep: return "Sleep"
+            case .strain: return "Strain"
+            case .other: return "Read"
+            }
+        }
+    }
+
+    var ringFamily: RingFamily {
+        switch kind {
+        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread: return .sleep
+        case .recoveryDrift, .readiness, .stackedRecovery, .hrvDrift, .restingHRDrift:
+            return .recovery
+        case .loadMismatch, .weeklyStrain, .yesterdayStrain: return .strain
+        case .daySnapshot: return .other
+        }
+    }
+
+    /// Visual valence for the picture ring. Not a metric score.
+    var pictureRingFill: Double {
+        isPositive ? 0.84 : 0.36
+    }
+
+    /// Lower ranks win the Sleep / Recovery / Strain hero slot.
+    var ringHeroRank: Int {
+        switch kind {
+        case .stackedRecovery: return 0
+        case .recoveryDrift: return 1
+        case .readiness: return 2
+        case .hrvDrift: return 3
+        case .restingHRDrift: return 4
+        case .sleepDebt: return 0
+        case .weeklySleepDebt: return 1
+        case .bedtimeSpread: return 2
+        case .yesterdayStrain: return 0
+        case .loadMismatch: return 1
+        case .weeklyStrain: return 2
+        case .daySnapshot: return 9
+        }
+    }
+
+    /// One Sleep / Recovery / Strain read, in the same order as Today's rings.
+    static func ringHeroInsights(from insights: [AtriaLearnedInsight]) -> [AtriaLearnedInsight] {
+        let order: [RingFamily] = [.recovery, .sleep, .strain]
+        return order.compactMap { family in
+            insights
+                .filter { $0.ringFamily == family }
+                .min { $0.ringHeroRank < $1.ringHeroRank }
+        }
+    }
+
     var emphasisLabel: String {
         switch kind {
         case .sleepDebt: return isPositive ? "Covered" : "Short"
@@ -55,15 +132,38 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
 }
 
 /// Compact ledger written beside rollups. Raw historical chunks may be retired
-/// after 7 days; this file is never a retention candidate.
+/// after 7 days; this file is never a retention candidate. Schema 1 stored
+/// only the current read; schema 2 keeps a 21-day day-by-day ledger so a
+/// later refresh cannot erase earlier captures.
 enum AtriaDurableInsightStore {
     static let filename = "learned-insights-v1.json"
-    static let schema = 1
+    static let schema = 2
+    static let supportedSchemas: Set<Int> = [1, 2]
+    static let ledgerHorizonDays = 21
 
     struct Payload: Codable, Equatable {
         var schema: Int
         var updatedAt: Date
         var insights: [AtriaLearnedInsight]
+        var ledger: [AtriaLearnedInsight]
+
+        init(schema: Int = AtriaDurableInsightStore.schema,
+             updatedAt: Date,
+             insights: [AtriaLearnedInsight],
+             ledger: [AtriaLearnedInsight] = []) {
+            self.schema = schema
+            self.updatedAt = updatedAt
+            self.insights = insights
+            self.ledger = ledger
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schema = try container.decode(Int.self, forKey: .schema)
+            updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+            insights = try container.decode([AtriaLearnedInsight].self, forKey: .insights)
+            ledger = try container.decodeIfPresent([AtriaLearnedInsight].self, forKey: .ledger) ?? []
+        }
     }
 
     static func fileURL(
@@ -74,20 +174,49 @@ enum AtriaDurableInsightStore {
         documents?.appendingPathComponent(filename)
     }
 
-    static func load(from url: URL? = fileURL()) -> [AtriaLearnedInsight] {
+    static func loadPayload(from url: URL? = fileURL()) -> Payload {
         guard let url,
               let data = try? Data(contentsOf: url),
               let payload = try? JSONDecoder().decode(Payload.self, from: data),
-              payload.schema == schema else { return [] }
-        return payload.insights
+              supportedSchemas.contains(payload.schema) else {
+            return Payload(updatedAt: Date(timeIntervalSince1970: 0), insights: [])
+        }
+        return payload
+    }
+
+    static func load(from url: URL? = fileURL()) -> [AtriaLearnedInsight] {
+        loadPayload(from: url).insights
+    }
+
+    static func loadLedger(from url: URL? = fileURL()) -> [AtriaLearnedInsight] {
+        loadPayload(from: url).ledger
+    }
+
+    /// Keep one snapshot per civil day. Incoming rollup reads win for that
+    /// day; days the current rollup set no longer has still stay until they
+    /// fall outside the 21-day horizon.
+    static func mergeLedger(existing: [AtriaLearnedInsight],
+                            incoming: [AtriaLearnedInsight],
+                            now: Date,
+                            calendar: Calendar = .current) -> [AtriaLearnedInsight] {
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(byAdding: .day, value: -ledgerHorizonDays, to: today) ?? today
+        var byDay: [TimeInterval: AtriaLearnedInsight] = [:]
+        for insight in existing + incoming {
+            let day = calendar.startOfDay(for: insight.asOf)
+            guard day >= cutoff else { continue }
+            byDay[day.timeIntervalSince1970] = insight
+        }
+        return byDay.values.sorted { $0.asOf > $1.asOf }
     }
 
     @discardableResult
     static func save(_ insights: [AtriaLearnedInsight],
+                     ledger: [AtriaLearnedInsight] = [],
                      at url: URL? = fileURL(),
                      now: Date = Date()) -> Bool {
         guard let url else { return false }
-        let payload = Payload(schema: schema, updatedAt: now, insights: insights)
+        let payload = Payload(updatedAt: now, insights: insights, ledger: ledger)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(payload) else { return false }
@@ -112,10 +241,10 @@ enum AtriaLearnedInsights {
         guard let latest = ordered.first else { return [] }
         var results: [AtriaLearnedInsight] = []
 
-        if let stacked = stackedRecovery(latest: latest, now: now) {
+        if let stacked = stackedRecovery(ordered: ordered, now: now) {
             results.append(stacked)
         }
-        if let sleep = sleepDebt(latest: latest, now: now) {
+        if let sleep = sleepDebt(ordered: ordered, now: now) {
             results.append(sleep)
         }
         if let recovery = recoveryDrift(ordered: ordered, now: now) {
@@ -165,30 +294,75 @@ enum AtriaLearnedInsights {
         return "\(hrs)h \(mins)m"
     }
 
-    private static func sleepDebt(latest: DailyRollupStoreEntry,
-                                  now: Date) -> AtriaLearnedInsight? {
-        guard let slept = latest.sleepSeconds, slept > 0,
-              let need = latest.sleepNeedSeconds, need > 0 else { return nil }
-        let deltaHours = hours(need - slept)
-        guard abs(deltaHours) >= 0.4 else { return nil }
-        let sleptText = hourText(hours(slept))
-        let needText = hourText(hours(need))
-        if deltaHours > 0 {
-            return AtriaLearnedInsight(
-                id: "sleep-debt",
-                kind: .sleepDebt,
-                headline: "Last night was \(hourText(deltaHours)) under your need",
-                detail: "You slept \(sleptText) against a \(needText) need. That gap is tonight's first recovery lever.",
-                isPositive: false,
-                asOf: now
-            )
+    /// Most recent night that actually recorded sleep. Today's in-progress
+    /// rollup is often empty at dawn, which previously hid last night entirely.
+    private static func mostRecentSleepNight(
+        _ ordered: [DailyRollupStoreEntry]
+    ) -> DailyRollupStoreEntry? {
+        ordered.first { ($0.sleepSeconds ?? 0) > 0 }
+    }
+
+    /// Frozen sleep-need when present; otherwise the median of other measured
+    /// nights. Never writes a fabricated need back onto the rollup.
+    private static func sleepReferenceSeconds(
+        for entry: DailyRollupStoreEntry,
+        ordered: [DailyRollupStoreEntry]
+    ) -> (seconds: TimeInterval, kind: String)? {
+        if let need = entry.sleepNeedSeconds, need > 0 {
+            return (need, "need")
         }
+        let others = ordered.compactMap { other -> TimeInterval? in
+            guard other.day != entry.day, let slept = other.sleepSeconds, slept > 0 else {
+                return nil
+            }
+            return slept
+        }
+        guard others.count >= 3 else { return nil }
+        let sorted = others.sorted()
+        return (sorted[sorted.count / 2], "usual")
+    }
+
+    private static let shortNightSeconds: TimeInterval = 6.5 * 3_600
+
+    private static func sleepDebt(ordered: [DailyRollupStoreEntry],
+                                  now: Date) -> AtriaLearnedInsight? {
+        guard let night = mostRecentSleepNight(ordered),
+              let slept = night.sleepSeconds, slept > 0 else { return nil }
+        let sleptText = hourText(hours(slept))
+        if let reference = sleepReferenceSeconds(for: night, ordered: ordered) {
+            let deltaHours = hours(reference.seconds - slept)
+            if abs(deltaHours) >= 0.4 {
+                let referenceText = hourText(hours(reference.seconds))
+                if deltaHours > 0 {
+                    let versus = reference.kind == "need"
+                        ? "against a \(referenceText) need"
+                        : "versus your usual \(referenceText)"
+                    return AtriaLearnedInsight(
+                        id: "sleep-debt",
+                        kind: .sleepDebt,
+                        headline: "Last night was \(hourText(deltaHours)) under your \(reference.kind)",
+                        detail: "You slept \(sleptText) \(versus). That gap is tonight's first recovery lever.",
+                        isPositive: false,
+                        asOf: now
+                    )
+                }
+                return AtriaLearnedInsight(
+                    id: "sleep-surplus",
+                    kind: .sleepDebt,
+                    headline: "Last night covered your sleep \(reference.kind)",
+                    detail: "You slept \(sleptText) against \(referenceText) — a real surplus, not a rounded guess.",
+                    isPositive: true,
+                    asOf: now
+                )
+            }
+        }
+        guard slept < shortNightSeconds else { return nil }
         return AtriaLearnedInsight(
-            id: "sleep-surplus",
+            id: "sleep-short",
             kind: .sleepDebt,
-            headline: "Last night covered your sleep need",
-            detail: "You slept \(sleptText) against a \(needText) need — a real surplus, not a rounded guess.",
-            isPositive: true,
+            headline: "Last night was only \(sleptText)",
+            detail: "That's a short night even without a stored sleep-need. Protect this evening if you can.",
+            isPositive: false,
             asOf: now
         )
     }
@@ -196,9 +370,11 @@ enum AtriaLearnedInsights {
     private static func weeklySleepDebt(ordered: [DailyRollupStoreEntry],
                                         now: Date) -> AtriaLearnedInsight? {
         let window = ordered.prefix(7).compactMap { entry -> Double? in
-            guard let slept = entry.sleepSeconds, slept > 0,
-                  let need = entry.sleepNeedSeconds, need > 0 else { return nil }
-            return hours(need - slept)
+            guard let slept = entry.sleepSeconds, slept > 0 else { return nil }
+            if let reference = sleepReferenceSeconds(for: entry, ordered: ordered) {
+                return hours(reference.seconds - slept)
+            }
+            return hours(shortNightSeconds - slept)
         }
         guard window.count >= 4 else { return nil }
         let total = window.reduce(0, +)
@@ -207,7 +383,7 @@ enum AtriaLearnedInsights {
             id: "weekly-sleep-debt",
             kind: .weeklySleepDebt,
             headline: "\(hourText(total)) of sleep debt this week",
-            detail: "Across \(window.count) measured nights you are still short of your own need. Bank sleep before stacking strain.",
+            detail: "Across \(window.count) measured nights you are still short of a full night. Bank sleep before stacking strain.",
             isPositive: false,
             asOf: now
         )
@@ -492,20 +668,80 @@ enum AtriaLearnedInsights {
         )
     }
 
-    private static func stackedRecovery(latest: DailyRollupStoreEntry,
+    private static func stackedRecovery(ordered: [DailyRollupStoreEntry],
                                         now: Date) -> AtriaLearnedInsight? {
-        guard let recovery = latest.recovery, recovery <= 49,
-              let slept = latest.sleepSeconds, slept > 0,
-              let need = latest.sleepNeedSeconds, need > 0 else { return nil }
-        let deltaHours = hours(need - slept)
+        guard let latest = ordered.first,
+              let recovery = latest.recovery, recovery <= 49,
+              let night = mostRecentSleepNight(ordered),
+              let slept = night.sleepSeconds, slept > 0 else { return nil }
+        let referenceSeconds = sleepReferenceSeconds(for: night, ordered: ordered)?.seconds
+            ?? shortNightSeconds
+        let deltaHours = hours(referenceSeconds - slept)
         guard deltaHours >= 1 else { return nil }
         return AtriaLearnedInsight(
             id: "stacked-recovery",
             kind: .stackedRecovery,
             headline: "Low recovery is stacked on short sleep",
-            detail: "Recovery is \(recovery)% and last night was \(hourText(deltaHours)) under need. Easy movement only until both move.",
+            detail: "Recovery is \(recovery)% and last night was \(hourText(deltaHours)) under a full night. Easy movement only until both move.",
             isPositive: false,
             asOf: now
+        )
+    }
+
+    /// One captured read per civil day for the last 21 nights. Today's
+    /// current-state cards stay in `insights(rollups:)`; this is the ledger
+    /// that must survive a later refresh overwriting those seven.
+    static func dailyReads(rollups: [DailyRollupStoreEntry],
+                           now: Date = Date(),
+                           calendar: Calendar = .current) -> [AtriaLearnedInsight] {
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(
+            byAdding: .day,
+            value: -AtriaDurableInsightStore.ledgerHorizonDays,
+            to: today
+        ) ?? today
+        return rollups
+            .filter { $0.day >= cutoff }
+            .sorted { $0.day > $1.day }
+            .compactMap { dayRead(entry: $0, calendar: calendar) }
+    }
+
+    private static func dayRead(entry: DailyRollupStoreEntry,
+                                calendar: Calendar) -> AtriaLearnedInsight? {
+        var parts: [String] = []
+        if let recovery = entry.recovery { parts.append("recovery \(recovery)%") }
+        if let strain = entry.strain {
+            parts.append(String(format: "strain %.1f", strain))
+        }
+        if let slept = entry.sleepSeconds, slept > 0 {
+            parts.append("sleep \(hourText(hours(slept)))")
+        }
+        if let rhr = entry.rhr, rhr > 0 { parts.append("RHR \(rhr)") }
+        if let hrv = entry.lnRMSSD, hrv > 0 {
+            parts.append(String(format: "HRV %.0f", hrv))
+        }
+        guard !parts.isEmpty else { return nil }
+        let day = calendar.startOfDay(for: entry.day)
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "EEE d MMM"
+        let dayText = formatter.string(from: day)
+        let headline: String
+        if let recovery = entry.recovery {
+            headline = "\(dayText) · recovery \(recovery)%"
+        } else if let slept = entry.sleepSeconds, slept > 0 {
+            headline = "\(dayText) · slept \(hourText(hours(slept)))"
+        } else {
+            headline = dayText
+        }
+        return AtriaLearnedInsight(
+            id: "day-read-\(Int(day.timeIntervalSince1970))",
+            kind: .daySnapshot,
+            headline: headline,
+            detail: parts.joined(separator: " · ") + ".",
+            isPositive: (entry.recovery ?? 50) >= 50,
+            asOf: day
         )
     }
 }

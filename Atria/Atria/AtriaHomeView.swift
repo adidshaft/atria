@@ -6626,7 +6626,9 @@ enum AtriaSyncProgressFooterPresentation {
             drainedThroughUnix: drainedThroughUnix,
             abandonedThroughUnix: abandonedThroughUnix
         )
-        let displayUnix = newestUnix ?? fillUnix
+        // One cursor: the oldest-first fill moving toward now. The newest-ever
+        // watermark is not a second clock.
+        let displayUnix = fillUnix ?? newestUnix
         let behindSeconds = displayUnix.map {
             now.timeIntervalSince1970 - $0
         }
@@ -6684,19 +6686,11 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
-        let usingFillCursor = newestUnix == nil && fillUnix != nil
-        // Same frontier, same correction as the banner above: this reads the
-        // newest-ever watermark, so "through X" and "N behind" both overstated
-        // it. `behind` is `now - frontier` — the AGE OF THE NEWEST RECORD, not
-        // the size of the backlog, which is larger whenever holes remain behind
-        // the frontier. A Start-fresh stamp equal to abandoned-through is not
-        // a record; the fill cursor is.
-        if usingFillCursor {
-            // A zero-row drain is not proof the strap is empty — it is also
-            // how a timed-out or preempted fill looks (device 2026-09-11:
-            // lastDrainYieldedRows=false while 807 idle-window records were
-            // still pending). Only a FRESH caught-up strap reading may say
-            // older pages aren't on the strap.
+        let fillingFromPast = fillUnix != nil
+            && (newestUnix == nil || (fillUnix ?? 0) + 30 < (newestUnix ?? 0))
+        // One user-facing cursor: the oldest-first fill moving toward now.
+        // "Last fill 3:06pm yesterday" and "newest record" cannot disagree.
+        if fillingFromPast {
             let strapEmpty = freshlyCaughtUp
             let remainingMinutes = (!strapEmpty && debtFresh)
                 ? max(1, (debtRecords ?? 0) / 60)
@@ -6704,10 +6698,16 @@ enum AtriaSyncProgressFooterPresentation {
             let detail: String
             if strapEmpty {
                 detail = "Older pages aren't on the strap"
+            } else if active {
+                if let remainingMinutes, (debtRecords ?? 0) > caughtUpRecordFloor {
+                    detail = "catching up toward now · ~\(remainingMinutes) min still on the strap"
+                } else {
+                    detail = "catching up toward now · \(behindText(behind)) still to cover"
+                }
             } else if let remainingMinutes, (debtRecords ?? 0) > caughtUpRecordFloor {
                 detail = "~\(remainingMinutes) min still on the strap"
             } else {
-                detail = "\(behindText(behind)) old"
+                detail = "\(behindText(behind)) old · resumes in the background"
             }
             return Footer(
                 headline: "Last fill \(throughText)",
@@ -6717,11 +6717,9 @@ enum AtriaSyncProgressFooterPresentation {
             )
         }
         return Footer(
-            headline: "Newest strap record \(throughText)",
-            // Numbers-first visible line; the reassurance clauses live in
-            // accessibilityDetail (and the icon still shows active/paused).
-            detail: "Newest \(throughText) · \(behindText(behind)) old",
-            accessibilityDetail: "Newest record \(behindText(behind)) old · \(liveText)\(stateText)",
+            headline: "Last fill \(throughText)",
+            detail: "\(behindText(behind)) old",
+            accessibilityDetail: "History fill last reached \(throughText). \(behindText(behind)) old · \(liveText)\(stateText)",
             active: active
         )
     }
@@ -6730,7 +6728,7 @@ enum AtriaSyncProgressFooterPresentation {
 private struct AtriaSyncProgressFooter: View {
     let liveHeartRateIsCurrent: Bool
     @State private var now = Date()
-    private let refresh = Timer.publish(every: 30, on: .main, in: .common)
+    private let refresh = Timer.publish(every: 5, on: .main, in: .common)
         .autoconnect()
 
     var body: some View {
@@ -6742,27 +6740,25 @@ private struct AtriaSyncProgressFooter: View {
                           : "pause.circle")
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(footer.active ? Color.cyan : Color.secondary)
-                        .frame(width: 30, height: 30)
-                        .background(AtriaIconTileBackground(
-                            cornerRadius: 9,
-                            tint: footer.active ? .cyan : .gray))
+                        .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(footer.headline)
                             .font(.caption.weight(.semibold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.82)
+                            .layoutPriority(2)
                         Text(footer.detail)
                             .font(.caption2)
                             .foregroundStyle(Color.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color(uiColor: .secondarySystemBackground),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(minHeight: 44)
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(footer.headline). \(footer.accessibilityDetail).")
             }
@@ -7066,7 +7062,8 @@ enum AtriaMissedDataBannerPresentation {
             oldestPageIsStuck: stuck
         ) else { return nil }
         defaults.set(seek, forKey: drainCursorKey)
-        if stuck {
+        let coveredLive = stuck && seek + 0.5 >= now.timeIntervalSince1970
+        if coveredLive {
             // Accept the abandoned prefix so skip-rearm will not pull the
             // radio back onto pages that just timed out.
             defaults.set(seek, forKey: acceptedCursorKey)
@@ -7077,6 +7074,21 @@ enum AtriaMissedDataBannerPresentation {
             defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
             defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt)
             defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason)
+        } else if stuck {
+            // One dead page toward now. Do not cover-live: remaining history
+            // after this skip can still fill. Clear the failed-page bits so
+            // reconcile cannot skip another 15 minutes without a drain.
+            defaults.set(0, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+            defaults.set(true,
+                         forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows)
+            if let status = defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus
+            ), status.contains("no_rows")
+                || status.contains("first_frame_timeout")
+                || status.contains("history_start_timeout") {
+                defaults.set("history_drain_page_skip",
+                             forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus)
+            }
         }
         return seek
     }
@@ -11490,6 +11502,7 @@ final class AtriaHomeModel {
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$liveStrapStepResearchCumulativeCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepCountCapturedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -13021,6 +13034,7 @@ final class AtriaHomeModel {
                                           savedAggregate: SavedAggregate,
                                           canonicalStepDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
                                           motionTickDailyStore: AtriaWhoop4MotionTickDailyStore = .shared) -> CoreLiveState {
+        ble.noteOpenPhysiologicalCycleStart(savedAggregate.cycleStart)
         let deviceName = ble.resolvedDeviceName
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping
@@ -13051,11 +13065,14 @@ final class AtriaHomeModel {
                                                                isCharging: false)
             batteryChargeLastVerifiedAt = nil
         }
-        let strapStepsToday = mergedStrapStepResearchCount(
-            savedToday: savedAggregate.savedTodayStrapSteps,
-            savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
-            savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
-            liveActiveSession: ble.liveStrapStepResearchCount
+        let strapStepsToday = presentedDailyStrapStepCount(
+            savedMerge: mergedStrapStepResearchCount(
+                savedToday: savedAggregate.savedTodayStrapSteps,
+                savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
+                savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
+                liveActiveSession: ble.liveStrapStepResearchTodayCount
+            ),
+            liveCumulative: ble.liveStrapStepResearchTodayCount
         )
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -13106,7 +13123,8 @@ final class AtriaHomeModel {
             heldCount: heldFloor?.count ?? 0,
             heldCapturedAt: heldFloor?.capturedAt
         )
-        if let count = dailyStepPresentation.count, count > 0 {
+        if dailyStepPresentation.source == .live,
+           let count = dailyStepPresentation.count, count > 0 {
             AtriaHeldDailyStepFloor.persist(
                 count: count,
                 cycleStart: savedAggregate.cycleStart,
@@ -13171,6 +13189,13 @@ final class AtriaHomeModel {
         let checkpointRaw = max(0, savedActiveSessionTotal)
         let newSinceCheckpoint = max(0, liveActiveSession - checkpointRaw)
         return saved + newSinceCheckpoint
+    }
+
+    /// Saved-session merge can lose today's IMU prefix after reconnect.
+    /// The durable ledger cumulative is the floor new walking adds onto.
+    nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
+                                                        liveCumulative: Int) -> Int {
+        max(0, savedMerge, liveCumulative)
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager,

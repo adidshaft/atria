@@ -2853,16 +2853,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastStrapStepLedgerSavedRawSteps = 0
     private var lastStrapStepLedgerSavedGyroCadenceResearchSteps = 0
     /// Cumulative gyro total before the active ledger segment. Combined with
-    /// the queue-owned segment value, this survives process and R10 boundaries
-    /// without exposing the challenger as an all-day production count.
+    /// the queue-owned segment value this is today's strap-only coordinate:
+    /// new IMU ticks add on top of the restored floor instead of competing
+    /// with it through `max(liveSegment, heldFloor)`.
     private var strapStepLedgerGyroCumulativePrefix = 0
     private var lastStrapStepLedgerSaveAt: Date?
     @Published private(set) var liveStrapStepResearchCount = 0
+    /// Prefix plus the current detector segment. Home/widgets use this as the
+    /// open-cycle live count so a 10-step walk after reconnect shows 7855,
+    /// not the frozen 7845 floor.
+    @Published private(set) var liveStrapStepResearchCumulativeCount = 0
     @Published private(set) var liveStrapStepResearchTodayCount = 0
     @Published private(set) var liveStrapStepResearchState = "research_unvalidated"
     private var strapStepResearchState = "research_unvalidated"
     private var strapStepResearchDay = Calendar.current.startOfDay(for: Date())
     private var strapStepResearchDayBaseline = 0
+    /// Wake boundary the live step coordinate is attributed to. Distinct from
+    /// civil midnight so a confirmed sleep starts a new day's count.
+    private var strapStepResearchCycleStart: Date?
+    private var strapStepResearchCycleBaseline = 0
     /// The R10 gyro cadence coordinate is owned by the atomic pipeline. It is
     /// the only coordinate promoted to the daily strap-only total for this
     /// device; the parallel acceleration-peak counter remains diagnostic.
@@ -3302,6 +3311,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return centralQueue
     }
     private nonisolated let proprietaryFrameReassembler = AtriaWhoop4FrameReassembler()
+    private nonisolated let compactIMUAssembler = AtriaWhoop4CompactIMUAssembler()
     private nonisolated let r10MotionPipeline = AtriaR10MotionPipeline()
     /// RESEARCH-ONLY: consumes the same decoded R10 stream read-only; issues
     /// no strap writes and never influences production step accounting.
@@ -17422,10 +17432,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func finishHistoricalDrainTelemetry(generation: UInt64, trigger: String) {
         emitHistoricalDrainTelemetry(generation: generation, trigger: trigger)
         if historicalDrainTelemetry.generation == generation {
+            let yieldedDurableRows = historicalDrainTelemetry.persisted > 0
             UserDefaults.standard.set(
-                historicalDrainTelemetry.stream5Received > 0,
+                yieldedDurableRows,
                 forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
             )
+            if !yieldedDurableRows {
+                _ = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+                    defaults: .standard
+                )
+            }
         }
         historicalDrainTelemetryTask?.cancel()
         historicalDrainTelemetryTask = nil
@@ -22361,10 +22377,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             storeProprietaryFramesMode = true
             AtriaDebugLog("ATRIADBG ble_frame_history enabled=1 reason=launch_arg")
         }
-        protocolDiagnosticsPersistenceEnabled =
-            arguments.contains("--atria-active-motion-imu-check")
-            || arguments.contains("--atria-reset-protocol-diagnostics")
-            || verboseBLEFrameLogging
+        // Production long-wear must persist this-connection packet counters.
+        // Gating on launch-args hid live 0x33 IMU (CRC-valid 152-byte stream-5
+        // frames, device 2026-09-15) behind packetsThisConnection=0.
+        protocolDiagnosticsPersistenceEnabled = true
         if arguments.contains("--atria-standard-hr-only") {
             applyStandardHROnly(enabled: true, persist: false, reconnect: false, reason: "launch_arg")
             AtriaDebugLog("ATRIADBG protected_r10_minimal enabled=1 full_realtime_start=skipped stream5_r10=enabled history_ack=disabled")
@@ -39116,11 +39132,18 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             | (UInt32(b[len + 1]) << 8)
             | (UInt32(b[len + 2]) << 16)
             | (UInt32(b[len + 3]) << 24)
-        guard expectedCRC == actualCRC else {
-            protectedR10CRCRejectedFramesThisConnection += 1
-            AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
-                  payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
-            return
+        if expectedCRC != actualCRC {
+            // Isolated complete frames are admitted by the reassembler even
+            // when the trailer CRC does not match ISO-HDLC. Re-checking here
+            // was dropping live IMU 0x33 (device 2026-09-15).
+            guard b.count == len + 4 else {
+                protectedR10CRCRejectedFramesThisConnection += 1
+                AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
+                      payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
+                return
+            }
+            AtriaDebugLog("ATRIADBG frameAdmit reason=crc32_mismatch_admitted type=%02x len=%d expected=%08x actual=%08x",
+                  payload.first ?? 0, b.count, expectedCRC, actualCRC)
         }
         if readOnlyHistoryCaptureActive,
            payload.first == Packet.metadata || payload.first == Packet.historical {
@@ -46446,6 +46469,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 historyPhase: historyPhase
             )
         case .historyMetadata(let payload):
+            recordProtocolPacket(type: Packet.metadata, length: payload.count)
             handleHistoryMetadata(payload, historyPhase: historyPhase)
         case .historical(let payload):
             handleHistoricalData(payload, historyPhase: historyPhase)
@@ -47330,13 +47354,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             let pending = self.strapStepLedgerSavePending
             self.strapStepLedgerSavePending = false
             let restoredFloor = max(
-                record.segmentGyroCadenceResearchSteps ?? 0,
-                record.cumulativeGyroCadenceResearchSteps ?? 0
+                0,
+                (record.segmentGyroCadenceResearchSteps ?? 0)
             )
-            if restoredFloor > 0 {
+            if restoredFloor > 0, let cycle = self.strapStepResearchCycleStart {
                 AtriaHeldDailyStepFloor.persistLiveCoordinate(
                     count: restoredFloor,
-                    capturedAt: record.updatedAt
+                    capturedAt: record.updatedAt,
+                    cycleStart: cycle
                 )
                 if self.liveStrapStepCountCapturedAt == nil {
                     self.assignIfChanged(\.liveStrapStepCountCapturedAt, record.updatedAt)
@@ -47742,6 +47767,53 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
     }
 
+    private nonisolated func compactIMUSecond(
+        from completeFrame: Data,
+        receivedAt: Date
+    ) -> [AtriaR10MotionFrame] {
+        guard let packet = AtriaWhoop4CompactIMUDecoder.decode(frame: completeFrame) else {
+            return []
+        }
+        AtriaCompactIMULiveDiagnostics.note(rotationRate: packet.rotationRate)
+        return compactIMUAssembler.push(packet, receivedAt: receivedAt)
+    }
+
+    private nonisolated func ingestLiveMotionFrame(
+        _ r10Frame: AtriaR10MotionFrame,
+        receivedAt: Date,
+        callbackSource: AtriaBLECallbackEpochFence.Source
+    ) {
+        AtriaStrengthSetWindow.ingestLiveR10(frame: r10Frame, receivedAt: receivedAt)
+        // CoreBluetooth already invokes this delegate on one serial
+        // lane. Submit to the pipeline from that lane directly so a
+        // later MainActor boundary marker cannot overtake a frame that
+        // this callback has admitted. The pipeline still revalidates
+        // the exact source immediately before detector mutation, and
+        // both publication hops reject a retired source.
+        guard bleCallbackEpochFence.owns(source: callbackSource) else { return }
+        r10MotionPipeline.ingest(
+            r10Frame,
+            receivedAt: receivedAt,
+            sourceIsValid: { [weak self] in
+                self?.bleCallbackEpochFence.owns(
+                    source: callbackSource
+                ) == true
+            }
+        ) { [weak self] snapshot in
+            guard let self,
+                  self.bleCallbackEpochFence.owns(
+                    source: callbackSource
+                  ) else { return }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.bleCallbackEpochFence.owns(
+                        source: callbackSource
+                      ) else { return }
+                self.applyR10MotionSnapshot(snapshot)
+            }
+        }
+    }
+
     private func applyR10MotionSnapshot(
         _ snapshot: AtriaR10MotionPipeline.Snapshot,
         schedulesCheckpoint: Bool = true
@@ -47788,7 +47860,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // lower snapshot. The pipeline remains responsible for adding future
         // motion to its seeded/committed prefix; this guard only prevents stale
         // state from moving daily and workout totals backwards.
-        strapStepResearchCount = reconciledTotals.steps
+        // `Snapshot.steps` is the accelerometer-peak coordinate. Session
+        // carry used to copy it onto this field, and monotonic max then
+        // froze thousands of sitting peaks into Today. Keep the user-facing
+        // count on gyro cadence only.
+        strapStepResearchCount = Self.gyroOnlySessionSteps(
+            current: strapStepResearchCount,
+            incomingGyro: gyroCadenceSteps
+        )
         strapStepResearchPeakCount = reconciledTotals.rawSteps
         if snapshot.deviceTimestamp > 0 {
             strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
@@ -47935,6 +48014,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                         rawSteps: max(0, max(currentRawSteps, incomingRawSteps)))
     }
 
+    /// Sitting compact IMU still produces thousands of accelerometer-peak
+    /// "steps". If those leak into the session coordinate, monotonic max
+    /// cannot come back down. Drop a contaminated current back onto gyro.
+    nonisolated static func gyroOnlySessionSteps(
+        current: Int,
+        incomingGyro: Int,
+        contaminationSlack: Int = 30
+    ) -> Int {
+        let incoming = max(0, incomingGyro)
+        let current = max(0, current)
+        if current > incoming + max(0, contaminationSlack) { return incoming }
+        return max(current, incoming)
+    }
+
     /// Snapshot callbacks can reach the MainActor out of order even though the
     /// detector itself is serial. Keep the persisted replay watermark moving
     /// only forward, including across the UInt32 seconds-clock wrap.
@@ -47953,32 +48046,77 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         return (imuStillnessRatioSum / frames, imuMovementIntensitySum / frames, sampleRate)
     }
 
-    static func shouldPublishLiveStrapStepResearch(currentCount: Int,
+    nonisolated static func shouldPublishLiveStrapStepResearch(currentCount: Int,
                                                    publishedCount: Int,
+                                                   currentCumulativeCount: Int = 0,
+                                                   publishedCumulativeCount: Int = 0,
                                                    force: Bool = false) -> Bool {
         if force { return true }
         return currentCount != publishedCount
+            || currentCumulativeCount != publishedCumulativeCount
+    }
+
+    /// Durable ledger prefix plus the current detector segment. Session-local
+    /// snapshots stay 0-based after reconnect; this is what Today must show.
+    nonisolated static func cumulativeGyroCadenceResearchSteps(
+        prefix: Int,
+        segment: Int,
+        maximum: Int = AtriaStrapStepLedger.maximumCount
+    ) -> Int {
+        min(max(0, maximum), max(0, prefix) + max(0, segment))
     }
 
     private func publishLiveStrapStepResearchIfNeeded(now: Date = Date(),
                                                       force: Bool = false) {
         rollStrapStepResearchDayIfNeeded(now: now, currentSessionCount: strapStepResearchCount)
-        guard Self.shouldPublishLiveStrapStepResearch(currentCount: strapStepResearchCount,
-                                                      publishedCount: liveStrapStepResearchCount,
-                                                      force: force) else {
+        let cumulative = Self.cumulativeGyroCadenceResearchSteps(
+            prefix: strapStepLedgerGyroCumulativePrefix,
+            segment: strapStepResearchCount
+        )
+        let cycleCount = Self.dayScopedStrapStepCount(
+            sessionCount: strapStepResearchCount,
+            dayBaseline: strapStepResearchCycleBaseline
+        )
+        let todayCount = Self.dayScopedStrapStepCount(
+            sessionCount: strapStepResearchCount,
+            dayBaseline: strapStepResearchDayBaseline
+        )
+        guard Self.shouldPublishLiveStrapStepResearch(
+            currentCount: strapStepResearchCount,
+            publishedCount: liveStrapStepResearchCount,
+            currentCumulativeCount: cumulative,
+            publishedCumulativeCount: liveStrapStepResearchCumulativeCount,
+            force: force
+        ) else {
             return
         }
         assignIfChanged(\.liveStrapStepResearchCount, strapStepResearchCount)
+        assignIfChanged(\.liveStrapStepResearchCumulativeCount, cumulative)
         assignIfChanged(\.liveStrapStepResearchTodayCount,
-                        Self.dayScopedStrapStepCount(sessionCount: strapStepResearchCount,
-                                                     dayBaseline: strapStepResearchDayBaseline))
-        let publishedFloor = max(strapStepResearchCount, liveStrapStepResearchTodayCount)
-        if publishedFloor > 0 {
+                        strapStepResearchCycleStart == nil ? todayCount : cycleCount)
+        let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
+        if persistCount > 0 {
             AtriaHeldDailyStepFloor.persistLiveCoordinate(
-                count: publishedFloor,
-                capturedAt: liveStrapStepCountCapturedAt ?? now
+                count: persistCount,
+                capturedAt: liveStrapStepCountCapturedAt ?? now,
+                cycleStart: strapStepResearchCycleStart,
+                trustedPrefix: strapStepLedgerGyroCumulativePrefix
             )
         }
+    }
+
+    func noteOpenPhysiologicalCycleStart(_ start: Date, now: Date = Date()) {
+        if let existing = strapStepResearchCycleStart,
+           abs(start.timeIntervalSince(existing)) < 1 {
+            return
+        }
+        let cycleChanged = strapStepResearchCycleStart != nil
+        strapStepResearchCycleStart = start
+        strapStepResearchCycleBaseline = strapStepResearchCount
+        if cycleChanged {
+            AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: start)
+        }
+        publishLiveStrapStepResearchIfNeeded(now: now, force: true)
     }
 
     nonisolated static func dayScopedStrapStepCount(sessionCount: Int, dayBaseline: Int) -> Int {
@@ -48085,7 +48223,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         strapStepResearchDeviceTimestamp = nil
         strapStepResearchState = "research_unvalidated"
         if let carriedMotionSnapshot {
-            strapStepResearchCount = carriedMotionSnapshot.steps
+            strapStepResearchCount = carriedMotionSnapshot.gyroCadenceResearchSteps
             strapStepResearchPeakCount = carriedMotionSnapshot.rawSteps
             strapStepResearchDeviceTimestamp = carriedMotionSnapshot.deviceTimestamp > 0
                 ? carriedMotionSnapshot.deviceTimestamp : nil
@@ -48947,6 +49085,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         let callbackEpoch = bleCallbackEpochFence.activate(
             peripheralID: peripheral.identifier,
             peripheralObjectID: ObjectIdentifier(peripheral)
@@ -49423,6 +49562,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         // Step 2 natural-gap signal: a strap-initiated teardown surfaces a CBError
         // (remote_range_loss et al.); an app-initiated cancel disconnects with no
         // error. Only the former leaves a naturally-ended epoch that a bounded
@@ -50310,6 +50450,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         }
         let failedCallbackEpoch = bleCallbackEpochFence.epoch
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         let savedPeripheralIdentifier = UserDefaults.standard
             .string(forKey: LinkDefaults.savedPeripheralUUID)
             .flatMap(UUID.init(uuidString:))
@@ -51883,9 +52024,15 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             defaults.set(data.count,
                          forKey: ProtocolDefaults.lastNotifyCallbackLength)
             defaults.set(
-                data.prefix(24).map { String(format: "%02x", $0) }.joined(),
+                data.prefix(256).map { String(format: "%02x", $0) }.joined(),
                 forKey: ProtocolDefaults.lastNotifyCallbackHex
             )
+            if data.count >= 5, data[0] == 0xAA {
+                defaults.set(
+                    String(format: "%02x", data[4]),
+                    forKey: ProtocolDefaults.lastNotifyCallbackType
+                )
+            }
             if uuid == Self.UUIDs.strapStream4 {
                 defaults.set(
                     defaults.integer(forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection) + 1,
@@ -52343,41 +52490,29 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     receivedAt: receivedAt
                 )
             }
-            if let r10Frame = AtriaR10MotionDecoder.decode(frame: completeFrame) {
-                AtriaStrengthSetWindow.ingestLiveR10(frame: r10Frame, receivedAt: receivedAt)
-                // CoreBluetooth already invokes this delegate on one serial
-                // lane. Submit to the pipeline from that lane directly so a
-                // later MainActor boundary marker cannot overtake a frame that
-                // this callback has admitted. The pipeline still revalidates
-                // the exact source immediately before detector mutation, and
-                // both publication hops reject a retired source.
-                if bleCallbackEpochFence.owns(source: callbackSource) {
-                    r10MotionPipeline.ingest(
-                        r10Frame,
+            if let nativeR10 = AtriaR10MotionDecoder.decode(frame: completeFrame) {
+                if !historyPhase.isActive {
+                    ingestLiveMotionFrame(
+                        nativeR10,
                         receivedAt: receivedAt,
-                        sourceIsValid: { [weak self] in
-                            self?.bleCallbackEpochFence.owns(
-                                source: callbackSource
-                            ) == true
-                        }
-                    ) { [weak self] snapshot in
-                        guard let self,
-                              self.bleCallbackEpochFence.owns(
-                                source: callbackSource
-                              ) else { return }
-                        Task { @MainActor [weak self] in
-                            guard let self,
-                                  self.bleCallbackEpochFence.owns(
-                                    source: callbackSource
-                                  ) else { return }
-                            self.applyR10MotionSnapshot(snapshot)
-                        }
-                    }
+                        callbackSource: callbackSource
+                    )
                 }
                 if !storesProprietaryFrames {
                     let payloadLength = max(0, completeFrame.count - 8)
                     pendingMainActorWork.append(.r10Metadata(payloadLength: payloadLength))
                     continue
+                }
+            } else if !historyPhase.isActive {
+                for compactSecond in compactIMUSecond(
+                    from: completeFrame,
+                    receivedAt: receivedAt
+                ) {
+                    ingestLiveMotionFrame(
+                        compactSecond,
+                        receivedAt: receivedAt,
+                        callbackSource: callbackSource
+                    )
                 }
             }
 
@@ -52711,7 +52846,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             | (UInt32(data[data.index(payloadEnd, offsetBy: 1)]) << 8)
             | (UInt32(data[data.index(payloadEnd, offsetBy: 2)]) << 16)
             | (UInt32(data[data.index(payloadEnd, offsetBy: 3)]) << 24)
-        guard expectedCRC == actualCRC else { return nil }
+        if expectedCRC != actualCRC {
+            guard data.count == len + 4 else { return nil }
+        }
 
         switch payload.first {
         case Packet.realtime:

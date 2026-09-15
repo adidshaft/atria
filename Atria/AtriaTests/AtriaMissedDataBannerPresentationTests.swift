@@ -418,9 +418,9 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
         XCTAssertNotNil(f)
         // "old", not "behind": the number is now - frontier, i.e. the AGE of
-        // the newest record, not the size of the backlog behind it.
+        // the fill cursor, not the size of the backlog behind it.
         XCTAssertTrue(f!.detail.contains("old"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("History fill last reached"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {
@@ -430,13 +430,13 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         // R17: the visible detail is numbers-first; the reassurance
         // clauses are relocated to the accessibility sentence, not deleted.
         XCTAssertTrue(f!.detail.contains("19h 0m old"))
-        XCTAssertTrue(f!.detail.contains("Newest"))
+        XCTAssertFalse(f!.detail.contains("Newest"))
         XCTAssertFalse(f!.detail.contains("live HR current"))
         XCTAssertFalse(f!.detail.contains("catching up now"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 19h 0m old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("19h 0m old"))
         XCTAssertTrue(f!.accessibilityDetail.contains("live HR current"))
         XCTAssertTrue(f!.accessibilityDetail.contains("catching up now"))
-        XCTAssertTrue(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
         XCTAssertTrue(f!.headline.contains("yesterday"),
                       "a 19h-old frontier at 5 AM lands yesterday morning")
     }
@@ -470,7 +470,8 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertFalse(f!.headline.contains("yesterday"))
         XCTAssertFalse(f!.detail.contains("yesterday"))
         XCTAssertTrue(f!.detail.contains("30m old"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 30m old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("30m old"))
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
     }
 
     /// Device 2026-09-05: Start fresh stamped drainedThrough AND abandonedThrough

@@ -1280,7 +1280,9 @@ enum AtriaActivityTimelineSignalProjection {
         guard targetPointCount > 1, totalSampleCount > targetPointCount else { return samples }
         let proportional = Int((Double(samples.count) / Double(totalSampleCount)
                                 * Double(targetPointCount)).rounded())
-        let budget = min(samples.count, max(2, proportional))
+        let span = samples[samples.count - 1].t.timeIntervalSince(samples[0].t)
+        let minBySpan = max(2, Int(span / max(1, ambientHeartRateGapThreshold * 0.8)) + 1)
+        let budget = min(samples.count, max(2, proportional, minBySpan))
         guard samples.count > budget else { return samples }
         guard budget > 2 else { return [samples[0], samples[samples.count - 1]] }
 

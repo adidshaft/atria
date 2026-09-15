@@ -431,15 +431,16 @@ final class AtriaGapTerminalStallTests: XCTestCase {
     }
 
     /// Device 2026-09-08: after skip-ahead left Friday 9:44, drain parked on
-    /// Saturday 09:28 with no_rows / first-frame timeout. That page is lost.
-    /// Bring the cursor to now and do not re-arm the abandoned prefix.
-    func testStuckSaturdayParkBringsCursorToNowAndSkipsAbandonedPrefix() {
-        let suite = "atria.cover-live.\(UUID().uuidString)"
+    /// Saturday 09:28 with no_rows. That page is lost. Skip one 15-minute
+    /// page toward now so Last fill moves and later history can still land.
+    func testStuckSaturdayParkSkipsOneDeadPageTowardNow() {
+        let suite = "atria.page-skip.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let friday944: TimeInterval = 1_788_495_274
         let saturday928: TimeInterval = 1_788_580_736.647
         let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let expected = saturday928 + AtriaBLEManager.historyDrainDeadPageSkip
         defaults.set(saturday928, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
         defaults.set(friday944,
                      forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix)
@@ -449,30 +450,45 @@ final class AtriaGapTerminalStallTests: XCTestCase {
         defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
 
         let seek = P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
-        XCTAssertEqual(seek ?? -1, now.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(seek ?? -1, expected, accuracy: 0.001)
         XCTAssertEqual(
             defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix),
-            now.timeIntervalSince1970,
+            expected,
             accuracy: 0.001
         )
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix),
+            0,
+            accuracy: 0.001,
+            "a mid-gap page skip must keep filling toward now"
+        )
+        XCTAssertTrue(defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending))
+        XCTAssertNil(
+            P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now),
+            "the skipped page is pending a drain, not another 15-minute jump"
+        )
+    }
+
+    func testStuckParkWithinOnePageOfLiveCoversNow() {
+        let suite = "atria.cover-live.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let parked = now.timeIntervalSince1970 - 120
+        defaults.set(parked, forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix)
+        defaults.set(false, forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows)
+        defaults.set(1, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        defaults.set("no_rows", forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus)
+        defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+
+        let seek = P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
+        XCTAssertEqual(seek ?? -1, now.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(
             defaults.double(forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix),
             now.timeIntervalSince1970,
             accuracy: 0.001
         )
         XCTAssertFalse(defaults.bool(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending))
-        XCTAssertTrue(
-            P.shouldSkipRangeLossRearm(
-                acceptedCursorUnix: now.timeIntervalSince1970,
-                drainCursorUnix: now.timeIntervalSince1970,
-                proposedGapStartUnix: saturday928
-            ),
-            "the abandoned Saturday prefix must not re-arm after cover-live"
-        )
-        XCTAssertNil(
-            P.applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now),
-            "cover-live is idempotent for this park"
-        )
         XCTAssertTrue(
             P.shouldSkipRangeLossRearm(defaults: defaults, now: now),
             "cover-live must not re-arm history when a reconnect opens a later gap"

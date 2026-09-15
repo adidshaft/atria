@@ -742,6 +742,20 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         )
     }
 
+    func publishRawRetirementReceipts(
+        source: AtriaHistoricalAggregateChunk,
+        prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared,
+        configuration: Configuration,
+        settledAt: Date
+    ) throws -> [AtriaHistoricalConsumerReceiptLedger.Published] {
+        try publishReceiptSet(
+            source: source,
+            prepared: prepared,
+            configuration: configuration,
+            settledAt: settledAt
+        )
+    }
+
     private func publishReceiptSet(
         source: AtriaHistoricalAggregateChunk,
         prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared,

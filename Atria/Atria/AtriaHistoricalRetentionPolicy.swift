@@ -26,6 +26,46 @@ struct AtriaHistoricalRetentionPolicy: Equatable, Sendable {
         self.maximumRawBytes = maximumRawBytes
     }
 
+    /// Longest feasible raw window among 90 / 30 / 7 days. IMU-rate archives
+    /// that would overflow the 512 MB cap at 30 or 90 days keep 7 days; a
+    /// small archive can keep a month or a quarter. Insights never use this.
+    static let candidateHorizonDays = [90, 30, 7]
+
+    static func coverageDays(from earliest: Date?, to latest: Date?, now: Date) -> Double {
+        guard let earliest else { return 1 }
+        let end = max(earliest, latest ?? now)
+        return max(1, end.timeIntervalSince(earliest) / 86_400)
+    }
+
+    static func resolvedHorizonDays(
+        storedRawBytes: UInt64,
+        coverageDays: Double,
+        maximumRawBytes: UInt64 = production.maximumRawBytes
+    ) -> Int {
+        let observedDays = max(coverageDays, 1)
+        let bytesPerDay = Double(storedRawBytes) / observedDays
+        for days in candidateHorizonDays {
+            if bytesPerDay * Double(days) <= Double(maximumRawBytes) {
+                return days
+            }
+        }
+        return 7
+    }
+
+    static func policy(
+        storedRawBytes: UInt64,
+        coverageDays: Double
+    ) -> AtriaHistoricalRetentionPolicy {
+        let days = resolvedHorizonDays(
+            storedRawBytes: storedRawBytes,
+            coverageDays: coverageDays
+        )
+        return AtriaHistoricalRetentionPolicy(
+            rawHorizon: TimeInterval(days) * 24 * 60 * 60,
+            maximumRawBytes: production.maximumRawBytes
+        )
+    }
+
     struct Chunk: Equatable, Sendable {
         let identifier: String
         let url: URL

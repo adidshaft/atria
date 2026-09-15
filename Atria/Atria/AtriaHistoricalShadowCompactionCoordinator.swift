@@ -130,6 +130,84 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         )
     }
 
+    /// Scene-background has ~25s. A 134 MB legacy JSONL cannot finish in that
+    /// window; skip it and keep oldest-first among chunks that can.
+    static func sceneBackgroundRetirementCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        maximumByteCount: UInt64 = 8 * 1024 * 1024
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let finishable = candidates.filter {
+            $0.storedByteCount > 0 && $0.storedByteCount <= maximumByteCount
+        }
+        return finishable
+    }
+
+    /// Raw JSONL with duplicate replay keys cannot cut over. Remember the
+    /// chunk so sitting idle can drain later isolated shards instead.
+    static let idleCutoverSkipChunkIDsKey = "atria.archiveCompaction.idleSkipChunkIDs"
+
+    static func idleCutoverSkipChunkIDs(
+        defaults: UserDefaults = .standard
+    ) -> Set<String> {
+        Set(defaults.stringArray(forKey: idleCutoverSkipChunkIDsKey) ?? [])
+    }
+
+    static func recordIdleCutoverSkip(
+        chunkID: String,
+        defaults: UserDefaults = .standard
+    ) {
+        var ids = defaults.stringArray(forKey: idleCutoverSkipChunkIDsKey) ?? []
+        guard !ids.contains(chunkID) else { return }
+        ids.append(chunkID)
+        defaults.set(ids, forKey: idleCutoverSkipChunkIDsKey)
+    }
+
+    static func skippingIdleCutoverSkips(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        skippedIDs: Set<String>
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        candidates.filter { !skippedIDs.contains($0.id) }
+    }
+
+    static func isPermanentIdleCutoverSkip(_ error: Error) -> Bool {
+        if let shard = error as? AtriaHistoricalReplayIdentityShard.ShardError {
+            switch shard {
+            case .duplicateIdentity, .tornTrailingRow, .missingExactIdentity,
+                 .rowCountMismatch, .invalidArtifact, .retainedArtifactTooLarge:
+                return true
+            case .sourceMissing, .sourceDigestMismatch:
+                return false
+            }
+        }
+        return String(describing: error).contains("duplicateIdentity")
+    }
+
+    /// A 126 KB July shard that overlaps the 134 MB monolith fails shadow on
+    /// this install and burns the sitting lease. Skip it; later isolated
+    /// shards can still retire.
+    static func skippingOversizedTimeOverlaps(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        catalog: AtriaHistoricalArchiveCatalog,
+        oversizedByteCount: UInt64
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let oversized = catalog.chunks.filter {
+            $0.state == .sealed && $0.storedByteCount > oversizedByteCount
+        }
+        return candidates.filter { chunk in
+            guard let first = chunk.firstTimestamp, let last = chunk.lastTimestamp else {
+                return false
+            }
+            return !oversized.contains { sibling in
+                guard sibling.id != chunk.id,
+                      let siblingFirst = sibling.firstTimestamp,
+                      let siblingLast = sibling.lastTimestamp else {
+                    return false
+                }
+                return first <= siblingLast && last >= siblingFirst
+            }
+        }
+    }
+
     static func commitFirst<Value>(
         candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
         attempt: (AtriaHistoricalArchiveCatalog.RawChunk) throws -> Value

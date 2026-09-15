@@ -2360,6 +2360,9 @@ extension AtriaBLEManager {
     /// A parked oldest-first page is "behind live" once it is this far in the
     /// past. Smaller than that and the cursor is already covering now.
     nonisolated static let historyDrainLiveCoverageMinimumAge: TimeInterval = 60
+    /// One empty history page. Skip this far toward now so Last fill moves
+    /// without abandoning the rest of the gap in a single jump.
+    nonisolated static let historyDrainDeadPageSkip: TimeInterval = 15 * 60
 
     /// True when oldest-first drain is parked on a dead page: no rows, first
     /// frame timeout, or a zero-progress slice, and the park is no longer the
@@ -2392,11 +2395,11 @@ extension AtriaBLEManager {
 
     /// When the oldest-first drain cursor is parked on a proven-dead page
     /// (device 2026-09-08: Friday 09:44 IST), skip to the next recoverable
-    /// seek. A stuck park (no_rows / first-frame timeout) jumps to `now` so
-    /// live capture is not starved by pages the strap no longer has. Never
-    /// regresses, never jumps into the future, and never treats a Start-fresh
-    /// `drainedThrough == abandonedThrough` stamp as a fill destination —
-    /// that watermark is not a newest record.
+    /// seek. A stuck park skips one 15-minute page toward now so Last fill
+    /// moves and remaining history can still land. A park already within one
+    /// page of live covers now. Never regresses, never jumps into the future,
+    /// and never treats a Start-fresh `drainedThrough == abandonedThrough`
+    /// stamp as a fill destination — that watermark is not a newest record.
     nonisolated static func resilientHistoryDrainSeekUnix(
         parkedCursorUnix: TimeInterval,
         acceptedUnrecoverableUnix: TimeInterval,
@@ -2404,7 +2407,8 @@ extension AtriaBLEManager {
         drainedThroughUnix: TimeInterval,
         nextRecoverableStartUnix: TimeInterval?,
         nowUnix: TimeInterval,
-        oldestPageIsStuck: Bool = false
+        oldestPageIsStuck: Bool = false,
+        deadPageSkip: TimeInterval = historyDrainDeadPageSkip
     ) -> TimeInterval? {
         guard parkedCursorUnix.isFinite, parkedCursorUnix > 0,
               nowUnix.isFinite, nowUnix >= parkedCursorUnix else {
@@ -2434,7 +2438,10 @@ extension AtriaBLEManager {
             seek = abandonedThroughUnix
         }
         if oldestPageIsStuck, nowUnix > seek + 0.5 {
-            seek = nowUnix
+            let skip = deadPageSkip.isFinite && deadPageSkip > 0
+                ? deadPageSkip
+                : historyDrainDeadPageSkip
+            seek = min(nowUnix, seek + skip)
         }
         seek = min(seek, nowUnix)
         guard seek.isFinite, seek > parkedCursorUnix + 0.5 else { return nil }

@@ -329,6 +329,67 @@ struct AtriaHistoricalActivityInspectionProofFactory {
         case malformedAggregateSnapshotWrapper
     }
 
+    /// Sitting/lock raw retirement may cut over one sealed chunk even when an
+    /// overlapping 72/134 MB sibling has no aggregate yet. Drain inspection
+    /// still requires those siblings; unlinking this file does not.
+    func prepareForRawRetirementCutover(
+        verifiedCatalog catalog: AtriaHistoricalArchiveCatalog,
+        catalogData: Data,
+        aggregate: AtriaHistoricalAggregateChunk,
+        completionGeneration: UInt64
+    ) throws -> Prepared {
+        try catalog.validate()
+        guard let target = catalog.chunks.first(where: {
+            $0.id == aggregate.source.chunkID
+        }) else {
+            throw FactoryError.aggregateNotInCatalog(aggregate.source.chunkID)
+        }
+        guard let active = catalog.activeChunk else {
+            throw FactoryError.unknownCatalogTimeBounds(catalog.activeChunkID)
+        }
+        let slicedChunks = target.id == active.id ? [target] : [target, active]
+        let sliced = AtriaHistoricalArchiveCatalog(
+            version: catalog.version,
+            generation: catalog.generation,
+            activeChunkID: catalog.activeChunkID,
+            chunks: slicedChunks
+        )
+        try sliced.validate()
+        // Sleep/workout receipts inspect 12h lookback + civil day. Cover that
+        // window with explicit 0-row gaps so a 50 KB shard can cut over alone.
+        let start = aggregate.source.firstTimestamp.addingTimeInterval(-36 * 60 * 60)
+        let end = aggregate.source.lastTimestamp.addingTimeInterval(24 * 60 * 60)
+        let lookahead = max(
+            AtriaHistoricalActivityProjection.requiredLookahead,
+            AtriaHistoricalSleepProjection.requiredLookahead,
+            AtriaHistoricalWorkoutProjection.requiredLookahead
+        )
+        // Daily metrics close at the next civil midnight, which can be almost
+        // 24h after lastTimestamp. Sleep lookahead (4h) is not enough.
+        let completionWatermark = max(
+            end,
+            aggregate.source.lastTimestamp.addingTimeInterval(lookahead)
+        )
+        return try Self.prepareVerified(
+            catalog: sliced,
+            catalogData: catalogData,
+            aggregateSnapshot: .init(
+                aggregates: [aggregate],
+                diagnostics: .init(
+                    committedManifests: 1,
+                    acceptedAggregates: 1,
+                    rejectedManifests: 0
+                )
+            ),
+            requestedStart: start,
+            requestedEnd: end,
+            completionWatermark: completionWatermark,
+            completionGeneration: completionGeneration,
+            generationIdentifier:
+                "raw-retirement-\(aggregate.source.chunkID)-catalog-\(catalog.generation)"
+        )
+    }
+
     let completionStore: AtriaHistoricalDrainCompletionGenerationStore
 
     func prepare(
@@ -537,9 +598,8 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                 // The catalog intentionally does not publish time bounds for
                 // its mutable active chunk. Live capture may append there
                 // immediately after a terminal scan. It cannot be a dependency
-                // of an already-closed requested interval when the chunk
-                // itself was created strictly after that interval ended.
-                if chunk.state == .active, chunk.createdAt > requestedEnd {
+                // of an already-closed requested interval.
+                if chunk.state == .active {
                     return nil
                 }
                 throw FactoryError.unknownCatalogTimeBounds(chunk.id)

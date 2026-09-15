@@ -70,6 +70,15 @@ final class AtriaWhoop4FrameReassemblerTests: XCTestCase {
         XCTAssertEqual(reassembler.bufferedByteCount(source: "stream5"), 0)
     }
 
+    func testAdmitsIsolatedCompleteFrameWhenTrailerCRCMismatches() {
+        var frame = encodeFrame([0x33, 0x01] + [UInt8](repeating: 0x11, count: 20))
+        frame[frame.index(before: frame.endIndex)] ^= 0xFF
+        let reassembler = AtriaWhoop4FrameReassembler()
+
+        XCTAssertEqual(reassembler.feed(frame, source: "stream5"), [frame])
+        XCTAssertEqual(reassembler.bufferedByteCount(source: "stream5"), 0)
+    }
+
     func testHistoricalFragmentCannotCrossServeArmBoundary() throws {
         let frame = encodeFrame(
             [0x2f, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]

@@ -410,7 +410,14 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
         } == true
         let livePositive = max(0, liveCount)
-        let heldPositive = heldCapturedInCycle ? heldCount : 0
+        let rawHeld = heldCapturedInCycle ? heldCount : 0
+        let heldPositive = AtriaHeldDailyStepFloor.usableHeldCount(
+            held: rawHeld,
+            live: livePositive,
+            heldCapturedAt: heldCapturedAt,
+            liveCapturedAt: liveCapturedAt,
+            now: now
+        )
         let mergedLiveCount = max(livePositive, heldPositive)
         let mergedLiveCapturedAt: Date? = {
             if heldPositive > livePositive { return heldCapturedAt }
@@ -758,7 +765,13 @@ enum AtriaHeldDailyStepFloor {
                         defaults: UserDefaults = .standard) {
         guard count > 0 else { return }
         if let existing = load(cycleStart: cycleStart, defaults: defaults),
-           count < existing.count {
+           count < existing.count,
+           !shouldReplaceContaminatedHeld(
+                existing: existing.count,
+                incoming: count,
+                sameCycle: true,
+                trustedPrefix: 0
+           ) {
             return
         }
         defaults.set(count, forKey: countKey)
@@ -772,21 +785,121 @@ enum AtriaHeldDailyStepFloor {
 
     /// BLE/ledger producer. Does not require the wake boundary; `load`
     /// still refuses to attribute a capturedAt before the current cycle.
+    static let contaminationSlack = 30
+    static let maximumPlausibleStepsPerSecond = 6.0
+
+    static func resetForNewCycle(cycleStart: Date,
+                                 defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: countKey)
+        defaults.removeObject(forKey: capturedKey)
+        defaults.set(cycleStart.timeIntervalSince1970, forKey: cycleKey)
+    }
+
+    static func storedCycleMatches(_ cycleStart: Date?,
+                                   defaults: UserDefaults) -> Bool {
+        guard let cycleStart else { return false }
+        let stored = defaults.double(forKey: cycleKey)
+        return stored > 0
+            && abs(stored - cycleStart.timeIntervalSince1970) < 1
+    }
+
+    /// Gyro today of 18 vs a leftover 9482 floor is not a dropout (dropout
+    /// is live == 0). A trusted all-time prefix may also replace accel peaks.
+    static func shouldReplaceContaminatedHeld(existing: Int,
+                                              incoming: Int,
+                                              sameCycle: Bool,
+                                              trustedPrefix: Int) -> Bool {
+        let existing = max(0, existing)
+        let incoming = max(0, incoming)
+        guard incoming > 0,
+              existing > incoming + contaminationSlack else { return false }
+        if trustedPrefix > 0, incoming >= trustedPrefix { return true }
+        return sameCycle && existing > incoming * 2
+    }
+
     static func persistLiveCoordinate(count: Int,
                                       capturedAt: Date,
+                                      cycleStart: Date? = nil,
+                                      trustedPrefix: Int = 0,
                                       defaults: UserDefaults = .standard) {
         guard count > 0 else { return }
         let existingCount = defaults.integer(forKey: countKey)
         let existingCaptured = (defaults.object(forKey: capturedKey) as? Double)
             .map(Date.init(timeIntervalSince1970:))
-        if existingCount > 0,
-           let existingCaptured,
-           abs(capturedAt.timeIntervalSince(existingCaptured))
-                <= AtriaStrapStepLedger.maximumRestoreAge {
-            if count <= existingCount { return }
+        if existingCount > 0 {
+            if count > existingCount {
+                if let existingCaptured,
+                   !stepIncrementIsPlausible(
+                    from: existingCount,
+                    to: count,
+                    startedAt: existingCaptured,
+                    endedAt: capturedAt
+                   ) {
+                    return
+                }
+            } else if count < existingCount {
+                let sameCycle = storedCycleMatches(cycleStart, defaults: defaults)
+                let cycleChanged = cycleStart.map { start in
+                    let stored = defaults.double(forKey: cycleKey)
+                    return stored <= 0
+                        || abs(stored - start.timeIntervalSince1970) >= 1
+                } ?? false
+                let canReplaceContamination = cycleChanged
+                    || shouldReplaceContaminatedHeld(
+                        existing: existingCount,
+                        incoming: count,
+                        sameCycle: sameCycle,
+                        trustedPrefix: trustedPrefix
+                    )
+                if !canReplaceContamination { return }
+            }
         }
         defaults.set(count, forKey: countKey)
         defaults.set(capturedAt.timeIntervalSince1970, forKey: capturedKey)
+        if let cycleStart {
+            defaults.set(cycleStart.timeIntervalSince1970, forKey: cycleKey)
+        } else {
+            // An unkeyed live coordinate must not keep yesterday's wake key.
+            defaults.removeObject(forKey: cycleKey)
+        }
+    }
+
+    static func stepIncrementIsPlausible(from startCount: Int,
+                                         to endCount: Int,
+                                         startedAt: Date,
+                                         endedAt: Date,
+                                         maximumStepsPerSecond: Double = maximumPlausibleStepsPerSecond) -> Bool {
+        guard endCount > startCount else { return true }
+        let dt = max(0.5, endedAt.timeIntervalSince(startedAt))
+        return Double(endCount - startCount) / dt <= maximumStepsPerSecond
+    }
+
+    /// Accel-peak / historical-IMU contamination can ratchet the held floor
+    /// thousands of steps. Live gyro in this cycle is the truth when it is
+    /// actually flowing. Dropout is `live == 0` and keeps the floor.
+    static func usableHeldCount(held: Int,
+                                live: Int,
+                                heldCapturedAt: Date?,
+                                liveCapturedAt: Date?,
+                                now: Date) -> Int {
+        let held = max(0, held)
+        let live = max(0, live)
+        if live > 0,
+           shouldReplaceContaminatedHeld(
+            existing: held,
+            incoming: live,
+            sameCycle: true,
+            trustedPrefix: 0
+           ) {
+            return live
+        }
+        guard held > live + contaminationSlack, live > 0 else { return held }
+        let start = min(heldCapturedAt ?? now, liveCapturedAt ?? now)
+        let end = max(heldCapturedAt ?? now, liveCapturedAt ?? now)
+        if stepIncrementIsPlausible(from: live, to: held, startedAt: start, endedAt: end) {
+            return held
+        }
+        return live
     }
 
     static func load(cycleStart: Date,
@@ -796,10 +909,11 @@ enum AtriaHeldDailyStepFloor {
         guard count > 0 else { return nil }
         let capturedRaw = defaults.object(forKey: capturedKey) as? Double
         let captured = capturedRaw.map(Date.init(timeIntervalSince1970:))
-        if let captured, captured >= cycleStart, captured <= now.addingTimeInterval(5) {
-            return (count, captured)
-        }
         let storedCycle = defaults.double(forKey: cycleKey)
+        // A live coordinate without a wake key used to attach to the next
+        // confirmed sleep because capturedAt was "now". Sleep confirm must
+        // start a new day's count; only a matching cycle key may speak.
+        _ = now
         guard storedCycle > 0,
               abs(Date(timeIntervalSince1970: storedCycle).timeIntervalSince(cycleStart)) < 1 else {
             return nil

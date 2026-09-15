@@ -1575,11 +1575,15 @@ enum WidgetSnapshotPublisher {
                 ? strainPresentation.coverageText ?? "Partial · sparse HR"
                 : "Current cycle")
             : nil
-        let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
-            savedToday: savedAggregate.savedTodayStrapSteps,
-            savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
-            savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
-            liveActiveSession: ble.liveStrapStepResearchCount
+        ble.noteOpenPhysiologicalCycleStart(physiologicalCycle.start, now: now)
+        let strapStepsToday = AtriaHomeModel.presentedDailyStrapStepCount(
+            savedMerge: AtriaHomeModel.mergedStrapStepResearchCount(
+                savedToday: savedAggregate.savedTodayStrapSteps,
+                savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
+                savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
+                liveActiveSession: ble.liveStrapStepResearchTodayCount
+            ),
+            liveCumulative: ble.liveStrapStepResearchTodayCount
         )
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -2130,7 +2134,8 @@ enum WidgetSnapshotPublisher {
             heldCapturedAt: held?.capturedAt,
             calendar: calendar
         )
-        if let count = presentation.count, count > 0 {
+        if presentation.source == .live,
+           let count = presentation.count, count > 0 {
             AtriaHeldDailyStepFloor.persist(
                 count: count,
                 cycleStart: cycleStart,

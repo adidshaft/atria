@@ -477,6 +477,54 @@ final class AtriaHistoricalActivityInspectionProofFactoryTests: XCTestCase {
         }
     }
 
+    func testRawRetirementPrepareDoesNotRequireSiblingAggregates() throws {
+        let fixture = try makeCommittedFixture()
+        let catalog = try fixture.catalogStore.snapshot()
+        var chunks = catalog.chunks
+        chunks.insert(
+            .init(id: "legacy-monolith",
+                  relativePath: "historical-archive.jsonl",
+                  createdAt: start.addingTimeInterval(-86_400),
+                  sealedAt: start.addingTimeInterval(10_000),
+                  byteCount: 134_218_092,
+                  rowCount: 50_000,
+                  firstTimestamp: start.addingTimeInterval(-86_400),
+                  lastTimestamp: start.addingTimeInterval(10_000),
+                  contentSHA256: String(repeating: "ab", count: 32),
+                  state: .sealed,
+                  retirementManifestRelativePath: nil),
+            at: 0
+        )
+        let catalogWithSibling = AtriaHistoricalArchiveCatalog(
+            version: catalog.version,
+            generation: catalog.generation,
+            activeChunkID: catalog.activeChunkID,
+            chunks: chunks
+        )
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalogWithSibling)
+        let prepared = try AtriaHistoricalActivityInspectionProofFactory(
+            completionStore: makeCompletionStore(root: fixture.root)
+        ).prepareForRawRetirementCutover(
+            verifiedCatalog: catalogWithSibling,
+            catalogData: catalogData,
+            aggregate: fixture.aggregate,
+            completionGeneration: 7
+        )
+        XCTAssertEqual(prepared.dependencyChunks.map(\.source.chunkID), ["sealed-source"])
+        XCTAssertEqual(prepared.completionGeneration, 7)
+        XCTAssertGreaterThanOrEqual(
+            prepared.completionWatermark,
+            fixture.aggregate.source.lastTimestamp.addingTimeInterval(24 * 60 * 60)
+        )
+        XCTAssertFalse(prepared.generationIdentifier.contains("legacy-monolith"))
+        XCTAssertLessThan(
+            prepared.closedCoverageIntervals.first?.start ?? start,
+            fixture.aggregate.source.firstTimestamp,
+            "sleep/workout lookback must be covered with explicit empty gaps"
+        )
+    }
+
     private struct Fixture {
         let root: URL
         let catalogStore: AtriaHistoricalArchiveCatalogStore

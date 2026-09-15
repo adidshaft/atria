@@ -85,9 +85,37 @@ extension AtriaBLEManager {
                 minimumSpan: .infinity
             )
         }
+        // 11–15 sit next to the 10% restoration sentinel. A mid-range SOC
+        // (39%) must not become 11% just because two notify packets agreed.
+        if isBatteryNearSentinel(incomingLevel),
+           (20...99).contains(previousLevel),
+           abs(previousLevel - incomingLevel) > 5 {
+            return corroboratedBatteryLevelDecision(
+                incomingLevel: incomingLevel,
+                receivedAt: receivedAt,
+                pending: pending,
+                minimumSpan: .infinity
+            )
+        }
         if requiresFreshConfirmation,
            trustedCurrentConnectionNotification,
            !isBatterySentinel(incomingLevel) {
+            if isBatteryNearSentinel(incomingLevel)
+                || shouldQuarantineBatteryLevel(
+                    previousLevel: previousLevel,
+                    previousAcceptedAt: previousAcceptedAt,
+                    incomingLevel: incomingLevel,
+                    receivedAt: receivedAt
+                ) {
+                return corroboratedBatteryLevelDecision(
+                    incomingLevel: incomingLevel,
+                    receivedAt: receivedAt,
+                    pending: pending,
+                    minimumSpan: transitionBatteryMinimumConfirmationSpan(
+                        incomingLevel: incomingLevel
+                    )
+                )
+            }
             return .accept
         }
         if requiresFreshConfirmation {
@@ -349,6 +377,13 @@ extension AtriaBLEManager {
 
     nonisolated static func isBatterySentinel(_ level: Int) -> Bool {
         level <= 10 || level >= 100
+    }
+
+    /// 11–15 sit on the displayable side of the 10% restoration sentinel and
+    /// still jump the pill (device 2026-09-15: 39 → 11 → 27). They need the
+    /// same corroboration as a 20-point drop.
+    nonisolated static func isBatteryNearSentinel(_ level: Int) -> Bool {
+        (11...15).contains(level)
     }
 
     nonisolated static func isPlausibleBatterySentinelTransition(
