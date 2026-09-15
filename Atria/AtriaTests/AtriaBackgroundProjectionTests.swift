@@ -3530,6 +3530,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "desk sitting may retire isolated ≤48 MB JSONL")
         XCTAssertTrue(body.contains("sittingIdleBuildCandidates("),
                       "sitting idle must drain isolated ≤8 MB JSONL even when a 33 MB shadow cutover is pending")
+        XCTAssertTrue(body.contains("preferredIdleShadowCutoverChunkID("),
+                      "sitting idle must unlink small shadow-committed JSONL before any 33 MB parse")
+        XCTAssertTrue(body.contains("shouldIncludeLargeIdleChunk("),
+                      "desk sitting may take 33 MB only after isolated ≤8 MB JSONL is gone")
         XCTAssertTrue(body.contains("preferredIdleShadowCutoverID"),
                       "sitting idle may unlink a shadow-committed JSONL before rebuilding")
         XCTAssertTrue(body.contains("preferLargeIdle"),

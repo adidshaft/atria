@@ -196,14 +196,14 @@ struct AtriaHistoricalShadowCompactionCoordinator {
     }
 
     /// Sitting Today tries cheap isolated ≤8 MB JSONL first so a 33 MB
-    /// `duplicateIdentity` cutover cannot starve the 140 small shards that
-    /// still retire. Desk sitting may still append one isolated 33 MB file
-    /// after those small candidates.
+    /// parse cannot starve the remaining small shards. Desk sitting may
+    /// append one isolated 33 MB file only after those small candidates
+    /// are gone.
     static func sittingIdleBuildCandidates(
         _ isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
         smallChunkBytes: UInt64,
         includeOneLarge: Bool,
-        smallLimit: Int = 3
+        smallLimit: Int = 8
     ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
         let small = orderedIdleRetirementCandidates(
             isolatedUnskipped.filter { $0.storedByteCount <= smallChunkBytes },
@@ -218,6 +218,43 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         )
         let smallIDs = Set(small.map(\.id))
         return small + large.filter { !smallIDs.contains($0.id) }
+    }
+
+    /// A 33 MB identity parse holds `already_running` for the whole sitting
+    /// lease. Keep large JSONL off the queue while any isolated ≤8 MB file
+    /// can still retire.
+    static func shouldIncludeLargeIdleChunk(
+        isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        preferLarge: Bool
+    ) -> Bool {
+        guard preferLarge else { return false }
+        return !isolatedUnskipped.contains {
+            $0.storedByteCount > 0 && $0.storedByteCount <= smallChunkBytes
+        }
+    }
+
+    static func preferredIdleShadowCutoverChunkID(
+        shadowed: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        allowLarge: Bool
+    ) -> String? {
+        let smallShadowed = shadowed.filter {
+            $0.storedByteCount > 0 && $0.storedByteCount <= smallChunkBytes
+        }
+        if let small = orderedIdleRetirementCandidates(
+            smallShadowed,
+            preferLarge: false,
+            limit: 1
+        ).first {
+            return small.id
+        }
+        guard allowLarge else { return nil }
+        return orderedIdleRetirementCandidates(
+            shadowed,
+            preferLarge: false,
+            limit: 1
+        ).first?.id
     }
 
     /// A 126 KB July shard that overlaps the 134 MB monolith fails shadow on

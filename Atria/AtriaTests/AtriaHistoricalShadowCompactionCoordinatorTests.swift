@@ -130,6 +130,58 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testSittingIdleDoesNotStartLargeJSONLWhileSmallFilesRemain() {
+        var tiny = chunk(id: "raw-2mb", createdAt: now.addingTimeInterval(-30 * 86_400))
+        tiny.byteCount = 2_000_000
+        var large = chunk(id: "raw-33mb", createdAt: now.addingTimeInterval(-50 * 86_400))
+        large.byteCount = 33_555_830
+        XCTAssertFalse(
+            AtriaHistoricalShadowCompactionCoordinator.shouldIncludeLargeIdleChunk(
+                isolatedUnskipped: [tiny, large],
+                smallChunkBytes: 8 * 1024 * 1024,
+                preferLarge: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaHistoricalShadowCompactionCoordinator.shouldIncludeLargeIdleChunk(
+                isolatedUnskipped: [large],
+                smallChunkBytes: 8 * 1024 * 1024,
+                preferLarge: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaHistoricalShadowCompactionCoordinator.shouldIncludeLargeIdleChunk(
+                isolatedUnskipped: [large],
+                smallChunkBytes: 8 * 1024 * 1024,
+                preferLarge: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.preferredIdleShadowCutoverChunkID(
+                shadowed: [large, tiny],
+                smallChunkBytes: 8 * 1024 * 1024,
+                allowLarge: false
+            ),
+            tiny.id
+        )
+        XCTAssertNil(
+            AtriaHistoricalShadowCompactionCoordinator.preferredIdleShadowCutoverChunkID(
+                shadowed: [large],
+                smallChunkBytes: 8 * 1024 * 1024,
+                allowLarge: false
+            ),
+            "a 33 MB shadow cutover must wait until isolated ≤8 MB JSONL is gone"
+        )
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.preferredIdleShadowCutoverChunkID(
+                shadowed: [large],
+                smallChunkBytes: 8 * 1024 * 1024,
+                allowLarge: true
+            ),
+            large.id
+        )
+    }
+
     func testIdleRetirementSkipsShardsThatOverlapTheMonolith() {
         let start = now.addingTimeInterval(-80 * 86_400)
         var monolith = boundedChunk(
