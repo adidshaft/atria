@@ -9778,7 +9778,30 @@ enum HistoricalArchive {
                     retirementCandidates = Array(finishable.prefix(1))
                 }
             } else {
-                retirementCandidates = retention.uncommittedCandidates
+                let sealed = catalog.chunks.filter { $0.state == .sealed }
+                let finishable = AtriaHistoricalShadowCompactionCoordinator
+                    .sceneBackgroundRetirementCandidates(
+                        sealed,
+                        maximumByteCount: AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes
+                    )
+                let isolated = AtriaHistoricalShadowCompactionCoordinator
+                    .skippingOversizedTimeOverlaps(
+                        finishable,
+                        catalog: catalog,
+                        oversizedByteCount: 64 * 1024 * 1024
+                    )
+                let skipFiltered = AtriaHistoricalShadowCompactionCoordinator
+                    .skippingIdleCutoverSkips(
+                        isolated,
+                        skippedIDs: AtriaHistoricalShadowCompactionCoordinator
+                            .idleCutoverSkipChunkIDs()
+                    )
+                retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                    .orderedIdleRetirementCandidates(
+                        skipFiltered,
+                        preferLarge: true,
+                        limit: 1
+                    )
             }
             if overdueSceneBackgroundFastPath,
                retirementCandidates.first?.id != retention.uncommittedCandidates.first?.id {
