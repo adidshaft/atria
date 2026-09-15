@@ -399,13 +399,15 @@ enum AtriaLearnedInsights {
             ordered,
             sleepNeedFallbackSeconds: sleepNeedFallbackSeconds
         )
-        let window = ordered.prefix(7).compactMap { entry -> Double? in
+        // Last 7 *measured* nights, not last 7 civil days. Empty rollup days
+        // after midnight otherwise hide chronic short sleep.
+        let window = Array(ordered.compactMap { entry -> Double? in
             guard let slept = entry.sleepSeconds, slept > 0 else { return nil }
             if let need = entry.sleepNeedSeconds ?? storedNeed, need > 0 {
                 return hours(need - slept)
             }
             return nil
-        }
+        }.prefix(7))
         guard window.count >= 4 else { return nil }
         let total = window.reduce(0, +)
         guard total >= 2.5 else { return nil }
@@ -415,7 +417,7 @@ enum AtriaLearnedInsights {
         return AtriaLearnedInsight(
             id: "weekly-sleep-debt",
             kind: .weeklySleepDebt,
-            headline: "\(hourText(total)) of sleep debt this week",
+            headline: "\(hourText(total)) of sleep debt across recent nights",
             detail: "Across \(window.count) measured nights the shortfall adds up \(versus).",
             isPositive: false,
             asOf: now
@@ -613,7 +615,7 @@ enum AtriaLearnedInsights {
                 id: "strain-up",
                 kind: .weeklyStrain,
                 headline: "This week's load is up \(Int(((ratio - 1) * 100).rounded()))%",
-                detail: String(format: "Strain summed to %.0f over %d days versus %.0f the week before. Bank sleep or this compounds.",
+                detail: String(format: "Strain summed to %.0f over %d days versus %.0f the week before.",
                                currentSum, current.count, previousSum),
                 isPositive: false,
                 asOf: now
@@ -623,7 +625,7 @@ enum AtriaLearnedInsights {
             id: "strain-down",
             kind: .weeklyStrain,
             headline: "This week's load is down \(Int(((1 - ratio) * 100).rounded()))%",
-            detail: String(format: "Strain summed to %.0f over %d days versus %.0f the week before. Use the room, or keep deloading if recovery is still catching up.",
+            detail: String(format: "Strain summed to %.0f over %d days versus %.0f the week before.",
                            currentSum, current.count, previousSum),
             isPositive: true,
             asOf: now
