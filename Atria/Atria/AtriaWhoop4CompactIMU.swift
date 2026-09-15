@@ -246,6 +246,11 @@ enum AtriaCompactIMULiveDiagnostics {
     /// Desk typing is ~10–40 dps mean with occasional flicks. A walk that
     /// should not compete with archive I/O is sustained ~80+ dps.
     static let archiveIOMeanCeilingDps = 80.0
+    /// A 32–48 MB JSONL parse on live BLE is only safe at a desk. Typing
+    /// (~10–40 dps) still retires isolated ≤8 MB shards.
+    static let largeArchiveIOMeanCeilingDps = 8.0
+    static let sittingIdleSmallChunkBytes: UInt64 = 8 * 1024 * 1024
+    static let sittingIdleLargeChunkBytes: UInt64 = 48 * 1024 * 1024
 
     static func note(rotationRate: [AtriaR10MotionFrame.Vector3],
                      now: Date = Date(),
@@ -319,6 +324,33 @@ enum AtriaCompactIMULiveDiagnostics {
         }
         return defaults.double(forKey: meanKey) < meanCeiling
             && defaults.double(forKey: maxKey) < maxCeiling
+    }
+
+    static func lastFreshMeanDps(
+        now: Date = Date(),
+        maxAge: TimeInterval = sittingMaxAge
+    ) -> Double? {
+        lock.lock()
+        let memoryWriteAt = lastWriteAt
+        let memoryMean = lastMean
+        lock.unlock()
+        if let memoryWriteAt, now.timeIntervalSince(memoryWriteAt) <= maxAge {
+            return memoryMean
+        }
+        let defaults = UserDefaults.standard
+        let at = defaults.double(forKey: atKey)
+        guard at > 0, now.timeIntervalSince1970 - at <= maxAge else {
+            return nil
+        }
+        return defaults.double(forKey: meanKey)
+    }
+
+    static func sittingIdleChunkByteCap(now: Date = Date()) -> UInt64 {
+        guard let mean = lastFreshMeanDps(now: now),
+              mean < largeArchiveIOMeanCeilingDps else {
+            return sittingIdleSmallChunkBytes
+        }
+        return sittingIdleLargeChunkBytes
     }
 
     /// One-chunk overdue retention may run while the wrist is at a desk.

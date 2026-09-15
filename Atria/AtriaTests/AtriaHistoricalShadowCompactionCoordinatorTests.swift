@@ -59,7 +59,26 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             selected.map(\.id),
             [finishable.id],
-            "a 45s sitting lease must skip a 12 MB JSONL and take 2.4 MB"
+            "a 180s sitting lease must skip a 12 MB JSONL and take 2.4 MB"
+        )
+    }
+
+    func testDeskSittingCapStillSkipsLegacyMonoliths() {
+        var huge = chunk(id: "legacy-monolith", createdAt: now.addingTimeInterval(-80 * 86_400))
+        huge.byteCount = 134_218_092
+        var medium = chunk(id: "july-shard", createdAt: now.addingTimeInterval(-70 * 86_400))
+        medium.byteCount = 72_358_010
+        var mid = chunk(id: "isolated-33mb", createdAt: now.addingTimeInterval(-40 * 86_400))
+        mid.byteCount = 33_555_393
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .sceneBackgroundRetirementCandidates(
+                [huge, medium, mid],
+                maximumByteCount: AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes
+            )
+        XCTAssertEqual(
+            selected.map(\.id),
+            [mid.id],
+            "desk sitting may take 33 MB but must never start 72/134 MB JSONL"
         )
     }
 

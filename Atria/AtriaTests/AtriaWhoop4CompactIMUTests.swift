@@ -314,6 +314,28 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertFalse(AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention(
             now: now.addingTimeInterval(2)
         ), "a walk-level mean must keep archive I/O off the radio")
+        AtriaCompactIMULiveDiagnostics.resetDiagnosticsForTests()
+        AtriaCompactIMULiveDiagnostics.note(
+            rotationRate: [AtriaR10MotionFrame.Vector3(x: 0.6, y: 0, z: 0)],
+            now: now,
+            force: true
+        )
+        XCTAssertEqual(
+            AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap(now: now),
+            AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes
+        )
+        AtriaCompactIMULiveDiagnostics.note(
+            rotationRate: [AtriaR10MotionFrame.Vector3(x: 18, y: 0, z: 0)],
+            now: now.addingTimeInterval(1),
+            force: true
+        )
+        XCTAssertEqual(
+            AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap(
+                now: now.addingTimeInterval(1)
+            ),
+            AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes,
+            "typing must not start a 32–48 MB JSONL on live BLE"
+        )
     }
 
     func testLiveCompactIMUSecondsRecordRotationDiagnostics() throws {

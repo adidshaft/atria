@@ -736,12 +736,12 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ))
         XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
             lastAttemptAt: now.timeIntervalSince1970 - 12,
-            lastStatus: "deferred_idle_cutover_skipped",
+            lastStatus: "ok_verified_consumer_cutover_raw_retired",
             now: now
         ))
         XCTAssertFalse(SessionStore.archiveCompactionAttemptIsStale(
             lastAttemptAt: now.timeIntervalSince1970 - 10,
-            lastStatus: "deferred_idle_cutover_skipped",
+            lastStatus: "ok_verified_consumer_cutover_raw_retired",
             now: now
         ))
     }
@@ -3410,7 +3410,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "allowsSeriousThermal: reason == \"overdue_idle\""
         ), "cabled BLE at thermal serious must still retire one sitting chunk")
         XCTAssertTrue(sessions.contains(
-            "case \"overdue_idle\": leaseLifetime = 90"
+            "case \"overdue_idle\": leaseLifetime = 180"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
         XCTAssertFalse(sessions.contains(
             "error: \"lease_current\""
@@ -3514,8 +3514,11 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "!overdueSceneBackgroundFastPath"
         ), "sitting/lock must not resume a 134 MB pending retire")
         XCTAssertTrue(body.contains(
-            "let idleCap: UInt64 = 8 * 1024 * 1024"
-        ), "sitting idle may retire an isolated ≤8 MB JSONL once ≤2 MB shards are gone")
+            "AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()"
+        ), "desk sitting may retire an isolated ≤48 MB JSONL; typing stays at ≤8 MB")
+        XCTAssertTrue(body.contains(
+            "AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes"
+        ), "lock still stays on ≤8 MB JSONL")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),
                       "a 126 KB shard that overlaps the 134 MB monolith must not burn the lease")
         XCTAssertTrue(body.contains("catalog.chunks.filter { $0.state == .sealed }"),
