@@ -9850,7 +9850,19 @@ final class SessionStore: ObservableObject {
     @Published private(set) var learnedInsightLedger: [AtriaLearnedInsight] = AtriaDurableInsightStore.loadLedger()
 
     func refreshLearnedInsights(now: Date = Date()) {
-        let learned = AtriaLearnedInsights.insights(rollups: dailyRollupHistory, now: now)
+        let frozenNeed = confirmedSleeps
+            .compactMap { sleep -> (Date, TimeInterval)? in
+                let need = sleep.frozenSleepNeed?.seconds ?? sleep.sleepNeedSeconds
+                guard let need, need > 0 else { return nil }
+                return (sleep.end, need)
+            }
+            .max { $0.0 < $1.0 }?
+            .1
+        let learned = AtriaLearnedInsights.insights(
+            rollups: dailyRollupHistory,
+            now: now,
+            sleepNeedFallbackSeconds: frozenNeed
+        )
         let daily = AtriaLearnedInsights.dailyReads(rollups: dailyRollupHistory, now: now)
         let stored = AtriaDurableInsightStore.loadPayload()
         let nextCurrent = learned.isEmpty ? stored.insights : learned

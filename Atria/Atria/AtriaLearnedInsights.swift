@@ -236,21 +236,23 @@ enum AtriaLearnedInsights {
     static let maximumInsights = 7
 
     static func insights(rollups: [DailyRollupStoreEntry],
-                         now: Date = Date()) -> [AtriaLearnedInsight] {
+                         now: Date = Date(),
+                         sleepNeedFallbackSeconds: TimeInterval? = nil) -> [AtriaLearnedInsight] {
         let ordered = rollups.sorted { $0.day > $1.day }
         guard let latest = ordered.first else { return [] }
         var results: [AtriaLearnedInsight] = []
+        let fallbackNeed = sleepNeedFallbackSeconds.flatMap { $0 > 0 ? $0 : nil }
 
-        if let stacked = stackedRecovery(ordered: ordered, now: now) {
+        if let stacked = stackedRecovery(ordered: ordered, now: now, sleepNeedFallbackSeconds: fallbackNeed) {
             results.append(stacked)
         }
-        if let sleep = sleepDebt(ordered: ordered, now: now) {
+        if let sleep = sleepDebt(ordered: ordered, now: now, sleepNeedFallbackSeconds: fallbackNeed) {
             results.append(sleep)
         }
         if let recovery = recoveryDrift(ordered: ordered, now: now) {
             results.append(recovery)
         }
-        if let weekly = weeklySleepDebt(ordered: ordered, now: now) {
+        if let weekly = weeklySleepDebt(ordered: ordered, now: now, sleepNeedFallbackSeconds: fallbackNeed) {
             results.append(weekly)
         }
         if let yesterday = yesterdayStrain(ordered: ordered, now: now) {
@@ -306,10 +308,14 @@ enum AtriaLearnedInsights {
     /// nights. Never writes a fabricated need back onto the rollup.
     private static func sleepReferenceSeconds(
         for entry: DailyRollupStoreEntry,
-        ordered: [DailyRollupStoreEntry]
+        ordered: [DailyRollupStoreEntry],
+        sleepNeedFallbackSeconds: TimeInterval? = nil
     ) -> (seconds: TimeInterval, kind: String)? {
         if let need = entry.sleepNeedSeconds, need > 0 {
             return (need, "need")
+        }
+        if let fallback = sleepNeedFallbackSeconds, fallback > 0 {
+            return (fallback, "need")
         }
         let others = ordered.compactMap { other -> TimeInterval? in
             guard other.day != entry.day, let slept = other.sleepSeconds, slept > 0 else {
@@ -325,11 +331,16 @@ enum AtriaLearnedInsights {
     private static let shortNightSeconds: TimeInterval = 6.5 * 3_600
 
     private static func sleepDebt(ordered: [DailyRollupStoreEntry],
-                                  now: Date) -> AtriaLearnedInsight? {
+                                  now: Date,
+                                  sleepNeedFallbackSeconds: TimeInterval? = nil) -> AtriaLearnedInsight? {
         guard let night = mostRecentSleepNight(ordered),
               let slept = night.sleepSeconds, slept > 0 else { return nil }
         let sleptText = hourText(hours(slept))
-        if let reference = sleepReferenceSeconds(for: night, ordered: ordered) {
+        if let reference = sleepReferenceSeconds(
+            for: night,
+            ordered: ordered,
+            sleepNeedFallbackSeconds: sleepNeedFallbackSeconds
+        ) {
             let deltaHours = hours(reference.seconds - slept)
             if abs(deltaHours) >= 0.4 {
                 let referenceText = hourText(hours(reference.seconds))
@@ -372,16 +383,22 @@ enum AtriaLearnedInsights {
     /// median, which previously hid several hours of debt versus the need
     /// already on the latest rollup.
     private static func weeklyStoredSleepNeedSeconds(
-        _ ordered: [DailyRollupStoreEntry]
+        _ ordered: [DailyRollupStoreEntry],
+        sleepNeedFallbackSeconds: TimeInterval? = nil
     ) -> TimeInterval? {
         let week = ordered.prefix(7).compactMap(\.sleepNeedSeconds).filter { $0 > 0 }
         if let latest = week.first { return latest }
+        if let fallback = sleepNeedFallbackSeconds, fallback > 0 { return fallback }
         return ordered.compactMap(\.sleepNeedSeconds).first { $0 > 0 }
     }
 
     private static func weeklySleepDebt(ordered: [DailyRollupStoreEntry],
-                                        now: Date) -> AtriaLearnedInsight? {
-        let storedNeed = weeklyStoredSleepNeedSeconds(ordered)
+                                        now: Date,
+                                        sleepNeedFallbackSeconds: TimeInterval? = nil) -> AtriaLearnedInsight? {
+        let storedNeed = weeklyStoredSleepNeedSeconds(
+            ordered,
+            sleepNeedFallbackSeconds: sleepNeedFallbackSeconds
+        )
         let window = ordered.prefix(7).compactMap { entry -> Double? in
             guard let slept = entry.sleepSeconds, slept > 0 else { return nil }
             if let need = entry.sleepNeedSeconds ?? storedNeed, need > 0 {
@@ -615,7 +632,7 @@ enum AtriaLearnedInsights {
 
     private static func bedtimeSpread(ordered: [DailyRollupStoreEntry],
                                       now: Date) -> AtriaLearnedInsight? {
-        let times = ordered.prefix(7).compactMap(\.bedtimeMinutes)
+        let times = Array(ordered.compactMap(\.bedtimeMinutes).prefix(7))
         guard times.count >= 4 else { return nil }
         let mean = Double(times.reduce(0, +)) / Double(times.count)
         let variance = times.reduce(0.0) { $0 + pow(Double($1) - mean, 2) } / Double(times.count)
@@ -685,12 +702,17 @@ enum AtriaLearnedInsights {
     }
 
     private static func stackedRecovery(ordered: [DailyRollupStoreEntry],
-                                        now: Date) -> AtriaLearnedInsight? {
+                                        now: Date,
+                                        sleepNeedFallbackSeconds: TimeInterval? = nil) -> AtriaLearnedInsight? {
         guard let latest = ordered.first,
               let recovery = latest.recovery, recovery <= 49,
               let night = mostRecentSleepNight(ordered),
               let slept = night.sleepSeconds, slept > 0 else { return nil }
-        let referenceSeconds = sleepReferenceSeconds(for: night, ordered: ordered)?.seconds
+        let referenceSeconds = sleepReferenceSeconds(
+            for: night,
+            ordered: ordered,
+            sleepNeedFallbackSeconds: sleepNeedFallbackSeconds
+        )?.seconds
             ?? shortNightSeconds
         let deltaHours = hours(referenceSeconds - slept)
         guard deltaHours >= 1 else { return nil }
