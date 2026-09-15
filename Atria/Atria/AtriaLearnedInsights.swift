@@ -367,23 +367,39 @@ enum AtriaLearnedInsights {
         )
     }
 
+    /// Prefer a stored sleep-need from this week so chronic short nights are
+    /// not compared only to each other. A week of 4–5 h nights has a low
+    /// median, which previously hid several hours of debt versus the need
+    /// already on the latest rollup.
+    private static func weeklyStoredSleepNeedSeconds(
+        _ ordered: [DailyRollupStoreEntry]
+    ) -> TimeInterval? {
+        let week = ordered.prefix(7).compactMap(\.sleepNeedSeconds).filter { $0 > 0 }
+        if let latest = week.first { return latest }
+        return ordered.compactMap(\.sleepNeedSeconds).first { $0 > 0 }
+    }
+
     private static func weeklySleepDebt(ordered: [DailyRollupStoreEntry],
                                         now: Date) -> AtriaLearnedInsight? {
+        let storedNeed = weeklyStoredSleepNeedSeconds(ordered)
         let window = ordered.prefix(7).compactMap { entry -> Double? in
             guard let slept = entry.sleepSeconds, slept > 0 else { return nil }
-            if let reference = sleepReferenceSeconds(for: entry, ordered: ordered) {
-                return hours(reference.seconds - slept)
+            if let need = entry.sleepNeedSeconds ?? storedNeed, need > 0 {
+                return hours(need - slept)
             }
-            return hours(shortNightSeconds - slept)
+            return nil
         }
         guard window.count >= 4 else { return nil }
         let total = window.reduce(0, +)
         guard total >= 2.5 else { return nil }
+        let needText = storedNeed.map { hourText(hours($0)) }
+        let versus = needText.map { "versus a \($0) sleep need" }
+            ?? "versus the sleep need stored from your nights"
         return AtriaLearnedInsight(
             id: "weekly-sleep-debt",
             kind: .weeklySleepDebt,
             headline: "\(hourText(total)) of sleep debt this week",
-            detail: "Across \(window.count) measured nights you are still short of a full night. Bank sleep before stacking strain.",
+            detail: "Across \(window.count) measured nights the shortfall adds up \(versus).",
             isPositive: false,
             asOf: now
         )

@@ -266,6 +266,70 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertFalse(insights.contains("style: .compactBar"))
     }
 
+    func testWeeklySleepDebtUsesStoredNeedAcrossShortNightsWithoutOne() {
+        let today = calendar.startOfDay(for: now)
+        let rollups: [DailyRollupStoreEntry] = [
+            DailyRollupStoreEntry(
+                day: today,
+                recovery: 53,
+                sleepSeconds: 15_693,
+                sleepNeedSeconds: 27_519,
+                sleepPerformance: 57,
+                bedtimeMinutes: 1_401,
+                strain: 0.6,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -1, to: today)!,
+                recovery: 54,
+                sleepSeconds: 17_349,
+                bedtimeMinutes: 1_478,
+                strain: 0.5,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -2, to: today)!,
+                strain: 1.7,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -3, to: today)!,
+                strain: 0.6,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -4, to: today)!,
+                strain: 0.3,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -5, to: today)!,
+                recovery: 78,
+                sleepSeconds: 20_398,
+                bedtimeMinutes: 1_448,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -6, to: today)!,
+                recovery: 94,
+                sleepSeconds: 26_876,
+                bedtimeMinutes: 1_290,
+                calendar: calendar
+            )
+        ]
+        let insights = AtriaLearnedInsights.insights(rollups: rollups, now: now)
+        let weekly = insights.first { $0.kind == .weeklySleepDebt }
+        XCTAssertNotNil(weekly, "four short nights versus the stored 7h 39m need must surface")
+        XCTAssertTrue(weekly?.headline.contains("sleep debt this week") == true)
+        XCTAssertTrue(weekly?.detail.contains("7h 39m") == true)
+        XCTAssertFalse(weekly?.detail.contains("Bank sleep") == true)
+        XCTAssertGreaterThanOrEqual(
+            Set(insights.map(\.kind)).count,
+            5,
+            "this week's rollups must yield at least five distinct insight kinds"
+        )
+    }
+
     func testShortSleepAgainstNeedProducesAFeaturedRead() {
         let today = calendar.startOfDay(for: now)
         let rollup = DailyRollupStoreEntry(
