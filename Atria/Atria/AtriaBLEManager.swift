@@ -47146,9 +47146,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // `Snapshot.steps` is the legacy accelerometer-peak coordinate. The
         // saved Session must use the same gyro coordinate as Home so a segment
         // roll/relaunch cannot reintroduce the inferior source.
+        let gyroSessionSteps = currentGyroCadenceResearchSessionSteps()
         let snapshotStrapSteps = max(
             strapStepResearchCount,
-            currentGyroCadenceResearchSessionSteps()
+            gyroSessionSteps
         )
         // A count of zero is valid evidence only after this session has
         // received at least one strap R10 motion frame.  Keep unknown separate
@@ -47250,6 +47251,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             imuActivityBursts: decodedIMUSampleCount > 0 ? imuActivityBurstCount : nil,
                             imuValidationState: decodedIMUSampleCount > 0 ? imuValidationState : nil,
                             strapStepResearchCount: snapshotStrapSteps > 0 ? snapshotStrapSteps : nil,
+                            gyroCadenceResearchSteps: gyroSessionSteps > 0
+                                ? gyroSessionSteps : nil,
                             strapStepResearchAgreement: nil,
                             strapStepResearchState: snapshotStrapSteps > 0
                                 ? strapStepResearchState : nil,

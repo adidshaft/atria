@@ -13191,11 +13191,16 @@ final class AtriaHomeModel {
         return saved + newSinceCheckpoint
     }
 
-    /// Saved-session merge can lose today's IMU prefix after reconnect.
-    /// The durable ledger cumulative is the floor new walking adds onto.
+    /// Live IMU gyro is the open-cycle source. Saved-session sums still
+    /// include accelerometer-peak and coalesced compact bursts from before
+    /// the wall-clock assembler cap; using them as a floor left Today at
+    /// ~8500 while the live detector sat at ~40. IMU drop (`live == 0`)
+    /// keeps the saved floor so a reconnect does not flash "--".
     nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
                                                         liveCumulative: Int) -> Int {
-        max(0, savedMerge, liveCumulative)
+        let live = max(0, liveCumulative)
+        if live > 0 { return live }
+        return max(0, savedMerge)
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager,

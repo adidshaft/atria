@@ -694,10 +694,18 @@ final class AtriaPerfFixesTests: XCTestCase {
                        1_300)
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
                                                                   liveCumulative: 12),
-                       50)
+                       12,
+                       "live IMU gyro outranks a leftover saved floor")
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 8_516,
+                                                                  liveCumulative: 41),
+                       41)
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 18,
                                                                   liveCumulative: 36),
                        36)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
+                                                                  liveCumulative: 0),
+                       50,
+                       "IMU drop keeps the saved floor")
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
                                                                   liveCumulative: 0),
                        0)
