@@ -9800,10 +9800,12 @@ enum HistoricalArchive {
                         .maintenanceAuthorityRevoked
                 }
                 let sourceURL = archiveDirectory.appendingPathComponent(chunk.relativePath)
-                let build = try AtriaHistoricalAggregateBuilder.build(sourceURL: sourceURL,
-                                                                      chunkID: chunk.id,
-                                                                      createdAt: chunk.sealedAt
-                                                                        ?? chunk.createdAt)
+                let build = try AtriaHistoricalAggregateBuilder.build(
+                    sourceURL: sourceURL,
+                    chunkID: chunk.id,
+                    createdAt: chunk.sealedAt ?? chunk.createdAt,
+                    shouldContinue: maintenanceShouldContinue
+                )
                 guard maintenanceShouldContinue() else {
                     throw AtriaHistoricalRetentionTransaction.TransactionError
                         .maintenanceAuthorityRevoked
@@ -9951,6 +9953,12 @@ enum HistoricalArchive {
                                         bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
                                         bytesAfter: Int(clamping: retention.plan.rawBytesBefore))
             case let .allFailed(failures):
+                guard maintenanceShouldContinue() else {
+                    return maintenanceAuthorityRevokedCompactionResult(
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                    )
+                }
                 for failure in failures {
                     AtriaDebugLog("ATRIADBG archive_retention status=shadow_chunk_deferred reason=%@ chunk=%@ error=%@ raw_retained=1",
                                   reason,
