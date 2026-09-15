@@ -102,7 +102,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
         case .healthDeviation:
             return "When a vital runs outside your typical range for 2 days."
         case .strapBattery:
-            return "When the strap battery runs low."
+            return "When the strap battery runs low. Off by default so jumpy 2A19 values do not fire alerts or extra radio work."
         case .bluetoothOff:
             return "When Bluetooth is off and strap capture stops."
         case .fitCheck:
@@ -128,7 +128,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
     /// category starts OFF so the user explicitly opts in.
     var defaultEnabled: Bool {
         switch self {
-        case .secondSleepPrimary, .bedtimeWindDown, .catchUpComplete, .parkedInterval:
+        case .secondSleepPrimary, .bedtimeWindDown, .catchUpComplete, .parkedInterval, .strapBattery:
             return false
         default:
             return true

@@ -471,7 +471,45 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 0,
                                                                          publishedCount: 42,
                                                                          force: true))
+        XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(
+            currentCount: 0,
+            publishedCount: 0,
+            currentCumulativeCount: 7_845,
+            publishedCumulativeCount: 0
+        ))
+    }
 
+    func testDailyStepPresentationUsesLedgerCumulativeInsteadOfRestartedSegment() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let ble = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let home = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let widget = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift"), encoding: .utf8)
+
+        XCTAssertTrue(ble.contains("liveStrapStepResearchCumulativeCount"))
+        XCTAssertTrue(ble.contains("cumulativeGyroCadenceResearchSteps("))
+        XCTAssertTrue(ble.contains("gyroOnlySessionSteps("))
+        XCTAssertTrue(ble.contains("carriedMotionSnapshot.gyroCadenceResearchSteps"))
+        XCTAssertTrue(ble.contains("trustedPrefix: strapStepLedgerGyroCumulativePrefix"))
+        XCTAssertFalse(ble.contains("publishedFloor = max(cumulative, liveStrapStepResearchTodayCount)"))
+        XCTAssertFalse(ble.contains("strapStepResearchCount = carriedMotionSnapshot.steps"))
+        XCTAssertTrue(home.contains("presentedDailyStrapStepCount("))
+        XCTAssertTrue(home.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(home.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(widget.contains("presentedDailyStrapStepCount("))
+        XCTAssertTrue(widget.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(widget.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(home.contains("ble.$liveStrapStepResearchCumulativeCount"))
+        XCTAssertTrue(home.contains("noteOpenPhysiologicalCycleStart"))
+        XCTAssertTrue(ble.contains("AtriaHeldDailyStepFloor.resetForNewCycle"))
+        XCTAssertTrue(home.contains("dailyStepPresentation.source == .live"))
+        XCTAssertTrue(widget.contains("presentation.source == .live"))
+        XCTAssertTrue(ble.contains("historicalDrainTelemetry.persisted > 0"))
     }
 
 
@@ -654,6 +692,15 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                    savedActiveSession: 0,
                                                                    liveActiveSession: 300),
                        1_300)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
+                                                                  liveCumulative: 12),
+                       50)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 18,
+                                                                  liveCumulative: 36),
+                       36)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
+                                                                  liveCumulative: 0),
+                       0)
     }
 
     func testSavedAggregateIdentifiesActiveCheckpointSteps() {

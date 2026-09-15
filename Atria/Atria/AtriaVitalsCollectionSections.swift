@@ -1745,8 +1745,10 @@ enum AtriaVitalsHeartRateTimeline {
         for run in runs {
             let share = max(2, Int((Double(run.count) / Double(visible.count)
                                     * Double(displayBudget)).rounded()))
+            let span = (run.last?.t.timeIntervalSince(run.first?.t ?? Date()) ?? 0)
+            let minBySpan = max(2, Int(span / max(1, gapThreshold * 0.8)) + 1)
             out.append(contentsOf: thinnedWithinRun(run,
-                                                    budget: share,
+                                                    budget: min(run.count, max(share, minBySpan)),
                                                     gapThreshold: gapThreshold))
         }
         return out
@@ -3750,12 +3752,31 @@ struct AtriaHeartRateChartSeries: Equatable {
             let index = min(targetBuckets - 1, max(0, Int(point.t.timeIntervalSince(first) / width)))
             accumulators[index].append(point.bpm)
         }
-        return accumulators.indices.compactMap { index in
-            accumulators[index].bucket(
+        var out: [AtriaHeartRateBucket] = []
+        var runSegment = segment
+        var broken = false
+        for index in accumulators.indices {
+            if let bucket = accumulators[index].bucket(
                 centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width),
-                segment: segment
-            )
+                segment: runSegment
+            ) {
+                if broken {
+                    runSegment += 1
+                    broken = false
+                    out.append(AtriaHeartRateBucket(id: bucket.id,
+                                                    t: bucket.t,
+                                                    average: bucket.average,
+                                                    minBPM: bucket.minBPM,
+                                                    maxBPM: bucket.maxBPM,
+                                                    segment: runSegment))
+                } else {
+                    out.append(bucket)
+                }
+            } else if !out.isEmpty {
+                broken = true
+            }
         }
+        return out
     }
 }
 

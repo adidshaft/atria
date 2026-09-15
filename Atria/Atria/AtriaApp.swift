@@ -575,6 +575,10 @@ struct AtriaApp: App {
                             ) else { return }
                             ble.flushLifecycleRealtimeState(reason: "scene_inactive_deferred_checkpoint")
                             store.requestPersistenceFlush(reason: "scene_inactive_deferred")
+                            if SessionStore.archiveCompactionIsOverdue(),
+                               !ble.historicalRadioTransportOwnsLink {
+                                offerOverdueSceneBackgroundRetention()
+                            }
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
@@ -642,6 +646,17 @@ struct AtriaApp: App {
                     // This notification only retries the retained scene request.
                     // The authority below prevents a second BLE/archive pass if
                     // the scene-started task is already running or complete.
+                }
+                .task(id: scenePhase) {
+                    // A long-lived `.task` captures the launch-time
+                    // AtriaApp value, which is often `.inactive`. Bind the
+                    // loop to the live phase so sitting Today can offer.
+                    guard scenePhase == .active else { return }
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(12))
+                        guard !Task.isCancelled else { return }
+                        offerOverdueIdleRetentionIfSafe()
+                    }
                 }
         }
     }
@@ -1014,6 +1029,10 @@ struct AtriaApp: App {
             finishBackgroundTaskIfReady()
         }
         scheduleBackgroundMaintenance(reason: reason)
+        if SessionStore.archiveCompactionIsOverdue(),
+           !ble.historicalRadioTransportOwnsLink {
+            offerOverdueSceneBackgroundRetention()
+        }
         ble.flushLifecycleRealtimeState(reason: reason) {
             journalFlushFinished = true
             finishBackgroundTaskIfReady()
@@ -1021,6 +1040,104 @@ struct AtriaApp: App {
         AtriaDebugLog("ATRIADBG background_flush status=awaiting_durable_writes reason=%@ offline_sync_required=%d",
                       reason,
                       syncRequired ? 1 : 0)
+    }
+
+    /// 5.5 GB of sealed raw on 2026-09-15 with zero retired chunks: the
+    /// 7/30/90-day policy never ran because BGProcessing waited while the
+    /// app stayed foregrounded. An overdue scene-background lease is 25s —
+    /// enough for one verified chunk — and revokes if the user comes back.
+    private func offerOverdueSceneBackgroundRetention() {
+        var retentionTask = UIBackgroundTaskIdentifier.invalid
+        retentionTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria overdue retention"
+        ) { [self] in
+            store.invalidateArchiveCompactionBGProcessingLease(
+                reason: "scene_background_expired"
+            )
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+        }
+        guard let lease = store.beginArchiveCompactionBGProcessingLeaseIfSafe(
+            reason: "scene_background"
+        ) else {
+            SessionStore.recordIdleRetentionSkip(reason: "lease_denied")
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+            return
+        }
+        store.compactHistoricalArchiveIfUseful(
+            reason: "scene_background",
+            backgroundLease: lease
+        ) { [self] _ in
+            store.endArchiveCompactionBGProcessingLease(
+                lease,
+                reason: "scene_background"
+            )
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+        }
+    }
+
+    /// 5.5 GB / 0 retired on 2026-09-15 because Today stayed foregrounded.
+    /// Sitting compact IMU (~0.5 dps) is a safe signal that archive I/O will
+    /// not fight a walk. Skip >8 MB legacy JSONL via the same fast path as
+    /// lock retention; never start while history radio owns the link.
+    private func offerOverdueIdleRetentionIfSafe() {
+        guard !store.restoreInitializationBlocked else {
+            SessionStore.recordIdleRetentionSkip(reason: "restore_blocked")
+            return
+        }
+        guard scenePhase == .active
+                || UIApplication.shared.applicationState == .active else {
+            SessionStore.recordIdleRetentionSkip(reason: "scene_not_active")
+            return
+        }
+        guard SessionStore.archiveCompactionIsOverdue() else {
+            SessionStore.recordIdleRetentionSkip(reason: "not_overdue")
+            return
+        }
+        guard SessionStore.archiveCompactionAttemptIsStale() else {
+            SessionStore.recordIdleRetentionSkip(reason: "attempt_fresh")
+            return
+        }
+        guard AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention() else {
+            SessionStore.recordIdleRetentionSkip(reason: "wrist_walking")
+            return
+        }
+        if store.hasCurrentArchiveCompactionLease()
+            || SessionStore.archiveCompactionWorkerIsInFlight() {
+            SessionStore.recordIdleRetentionSkip(reason: "already_running")
+            return
+        }
+        guard let lease = store.beginArchiveCompactionBGProcessingLeaseIfSafe(
+            reason: "overdue_idle"
+        ) else {
+            SessionStore.recordArchiveCompactionAttempt(
+                status: "lease_denied",
+                reason: "overdue_idle"
+            )
+            SessionStore.recordIdleRetentionSkip(reason: "lease_denied")
+            return
+        }
+        SessionStore.recordIdleRetentionSkip(reason: "offered")
+        AtriaDebugLog(
+            "ATRIADBG archive_retention status=overdue_idle_offered action=one_chunk_sitting_today"
+        )
+        store.compactHistoricalArchiveIfUseful(
+            reason: "overdue_idle",
+            backgroundLease: lease
+        ) { [self] _ in
+            store.endArchiveCompactionBGProcessingLease(
+                lease,
+                reason: "overdue_idle"
+            )
+        }
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {
@@ -1057,6 +1174,7 @@ struct AtriaApp: App {
         let backlogPending =
             AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
             || SessionStore.automaticRecoveredDataBootstrapIntentIsPending
+            || SessionStore.archiveCompactionIsOverdue()
         request.earliestBeginDate = Date(
             timeIntervalSinceNow: backgroundProcessingEarliestDelay(
                 backlogPending: backlogPending

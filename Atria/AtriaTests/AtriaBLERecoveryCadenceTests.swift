@@ -730,6 +730,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                                                 incoming: 100), 101)
         XCTAssertEqual(AtriaBLEManager.newestR10DeviceTimestamp(existing: UInt32.max - 1,
                                                                 incoming: 1), 1)
+        XCTAssertEqual(
+            AtriaBLEManager.newestR10DeviceTimestamp(
+                existing: 32_075_883,
+                incoming: 31_562_616
+            ),
+            32_075_883,
+            "live compact 0x33 time sits behind the restored R10 ledger"
+        )
     }
 
     func testHRContinuityTimeoutDoesNotAttackHealthySparseStrapCadence() {
@@ -1336,16 +1344,23 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(value.contains("callbackSource: callbackSource"),
                       "HR and realtime queue elements must retain callback source")
-        let r10Start = try XCTUnwrap(value.range(
-            of: "if let r10Frame = AtriaR10MotionDecoder.decode(frame: completeFrame)"
+        XCTAssertTrue(value.contains("AtriaR10MotionDecoder.decode(frame: completeFrame)"))
+        XCTAssertTrue(value.contains("compactIMUSecond("))
+        XCTAssertTrue(value.contains("ingestLiveMotionFrame("))
+        XCTAssertTrue(
+            value.contains("if !historyPhase.isActive {\n                    ingestLiveMotionFrame("),
+            "history-channel 0x33/R10 must not increment today's live step coordinate"
+        )
+        let r10Start = try XCTUnwrap(source.range(
+            of: "private nonisolated func ingestLiveMotionFrame("
         ))
-        let r10End = try XCTUnwrap(value.range(
-            of: "if !storesProprietaryFrames",
-            range: r10Start.upperBound..<value.endIndex
+        let r10End = try XCTUnwrap(source.range(
+            of: "private func applyR10MotionSnapshot(",
+            range: r10Start.upperBound..<source.endIndex
         ))
-        let r10Ingress = String(value[r10Start.lowerBound..<r10End.lowerBound])
+        let r10Ingress = String(source[r10Start.lowerBound..<r10End.lowerBound])
         let sourceGuard = try XCTUnwrap(r10Ingress.range(
-            of: "if bleCallbackEpochFence.owns(source: callbackSource)"
+            of: "guard bleCallbackEpochFence.owns(source: callbackSource) else { return }"
         ))
         let pipelineIngress = try XCTUnwrap(r10Ingress.range(
             of: "r10MotionPipeline.ingest("
@@ -7188,6 +7203,58 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         }
     }
 
+    func testTrustedNotificationStillQuarantinesNearSentinelAndImplausibleJumps() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: 39,
+            previousAcceptedAt: now.addingTimeInterval(-30),
+            incomingLevel: 11,
+            receivedAt: now,
+            pending: nil,
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        ) else {
+            return XCTFail("39% → 11% is a restoration flicker, not a trusted SOC")
+        }
+        guard case .quarantine = AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: -1,
+            previousAcceptedAt: nil,
+            incomingLevel: 11,
+            receivedAt: now,
+            pending: nil,
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        ) else {
+            return XCTFail("11% sits on the 10% sentinel and needs corroboration")
+        }
+        XCTAssertEqual(AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: 39,
+            previousAcceptedAt: now.addingTimeInterval(-30),
+            incomingLevel: 37,
+            receivedAt: now,
+            pending: nil,
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        ), .accept)
+        let flicker = AtriaBLEManager.batteryLevelAcceptanceDecision(
+            previousLevel: 39,
+            previousAcceptedAt: now.addingTimeInterval(-30),
+            incomingLevel: 11,
+            receivedAt: now.addingTimeInterval(30),
+            pending: AtriaBLEManager.BatteryDropCandidate(
+                level: 11,
+                firstSeenAt: now,
+                lastSeenAt: now,
+                confirmations: 4
+            ),
+            requiresFreshConfirmation: true,
+            trustedCurrentConnectionNotification: true
+        )
+        guard case .quarantine = flicker else {
+            return XCTFail("a corroborated 11% after 39% is still a restoration flicker")
+        }
+    }
+
     @MainActor
     func testActiveBatteryNotificationLeaseDoesNotRewriteLevelSampleAge() throws {
         let suite = "AtriaBLERecoveryCadenceTests.battery-notification-lease"
@@ -8320,6 +8387,59 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             snapshotGeneration: 9,
             activeGeneration: 8
         ))
+    }
+
+    func testCumulativeGyroCadenceAddsLiveSegmentOntoLedgerPrefix() {
+        XCTAssertEqual(
+            AtriaBLEManager.cumulativeGyroCadenceResearchSteps(prefix: 7_845, segment: 12),
+            7_857
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.cumulativeGyroCadenceResearchSteps(prefix: 7_845, segment: 0),
+            7_845
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.cumulativeGyroCadenceResearchSteps(prefix: 0, segment: 40),
+            40
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.cumulativeGyroCadenceResearchSteps(prefix: -8, segment: -3),
+            0
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.cumulativeGyroCadenceResearchSteps(
+                prefix: AtriaStrapStepLedger.maximumCount,
+                segment: 12
+            ),
+            AtriaStrapStepLedger.maximumCount
+        )
+    }
+
+    func testLiveStrapStepResearchPublishesWhenOnlyTheCumulativeFloorMoves() {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishLiveStrapStepResearch(
+                currentCount: 0,
+                publishedCount: 0,
+                currentCumulativeCount: 7_845,
+                publishedCumulativeCount: 7_845
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPublishLiveStrapStepResearch(
+                currentCount: 0,
+                publishedCount: 0,
+                currentCumulativeCount: 7_845,
+                publishedCumulativeCount: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPublishLiveStrapStepResearch(
+                currentCount: 12,
+                publishedCount: 0,
+                currentCumulativeCount: 7_857,
+                publishedCumulativeCount: 7_845
+            )
+        )
     }
 
     func testFreshR10SnapshotAdvancesBothCumulativeStepCounters() {
@@ -13866,6 +13986,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(manager.contains(
             "evaluateAllDayMotionGovernor(reason: \"protected_v9_qualified_terminal\")"
         ))
+    }
+
+    func testIsolatedHarvardIMUFramesAreAdmittedWhenTrailerCRCMismatches() throws {
+        let source = try managerSource()
+        XCTAssertTrue(source.contains("crc32_mismatch_admitted"))
+        XCTAssertTrue(source.contains("data.prefix(256)"))
+        XCTAssertTrue(source.contains("ProtocolDefaults.lastNotifyCallbackType"))
+        XCTAssertTrue(source.contains("protocolDiagnosticsPersistenceEnabled = true"))
+        XCTAssertTrue(
+            source.contains("recordProtocolPacket(type: Packet.metadata, length: payload.count)")
+        )
+        let parseStart = try XCTUnwrap(source.range(
+            of: "private nonisolated static func parseProprietaryUpdate(_ data: Data,"
+        ))
+        let parse = String(source[parseStart.lowerBound...].prefix(2_200))
+        XCTAssertTrue(parse.contains("if expectedCRC != actualCRC"))
+        XCTAssertTrue(parse.contains("guard data.count == len + 4 else { return nil }"))
+        XCTAssertFalse(parse.contains("guard expectedCRC == actualCRC else { return nil }"))
     }
 
     private func managerSource() throws -> String {

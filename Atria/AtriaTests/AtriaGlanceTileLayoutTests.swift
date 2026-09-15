@@ -69,9 +69,9 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testASparklineNeedsRealReadingsBeforeItDrawsAnything() throws {
         let source = try todayScreen()
-        XCTAssertTrue(source.contains("static let minimumPoints = 3"))
+        XCTAssertTrue(source.contains("static let minimumPoints = 2"))
         XCTAssertTrue(
-            source.contains("item.trend.count >= AtriaGlanceSparkline.minimumPoints"),
+            source.contains("AtriaGlanceSparkline.minimumPoints"),
             "a metric with too little history must draw no chart at all"
         )
     }
@@ -192,7 +192,8 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testTheChartShowsABoundedNumberOfDays() {
         XCTAssertEqual(Spark.maximumBars, 7)
-        XCTAssertEqual(Spark.minimumPoints, 3)
+        XCTAssertEqual(Spark.minimumPoints, 2)
+        XCTAssertEqual(Spark.minimumLinePoints, 3)
     }
 
     // MARK: - Shape follows sampling

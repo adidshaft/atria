@@ -71,7 +71,7 @@ struct AtriaNotificationSettings: Codable, Equatable {
     var morningSummary = true
     var weeklyReport = true
     var healthDeviation = true
-    var strapBattery = true
+    var strapBattery = false
     var bluetoothOff = true
     var fitCheck = true
     // Kinds that previously fell through `allows` to an implicit `true`; now
@@ -97,7 +97,7 @@ struct AtriaNotificationSettings: Codable, Equatable {
         morningSummary = try container.decodeIfPresent(Bool.self, forKey: .morningSummary) ?? true
         weeklyReport = try container.decodeIfPresent(Bool.self, forKey: .weeklyReport) ?? true
         healthDeviation = try container.decodeIfPresent(Bool.self, forKey: .healthDeviation) ?? true
-        strapBattery = try container.decodeIfPresent(Bool.self, forKey: .strapBattery) ?? true
+        strapBattery = try container.decodeIfPresent(Bool.self, forKey: .strapBattery) ?? false
         bluetoothOff = try container.decodeIfPresent(Bool.self, forKey: .bluetoothOff) ?? true
         fitCheck = try container.decodeIfPresent(Bool.self, forKey: .fitCheck) ?? true
         sleepLogged = try container.decodeIfPresent(Bool.self, forKey: .sleepLogged) ?? true
@@ -131,9 +131,17 @@ struct AtriaNotificationSettings: Codable, Equatable {
     private static let key = "atria.notificationSettings.v1"
 
     static func load() -> AtriaNotificationSettings {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode(AtriaNotificationSettings.self, from: data) else {
+        let defaults = UserDefaults.standard
+        let migratedKey = "atria.notification.strapBattery.defaultOff.2026-09-15"
+        guard let data = defaults.data(forKey: key),
+              var decoded = try? JSONDecoder().decode(AtriaNotificationSettings.self, from: data) else {
+            defaults.set(true, forKey: migratedKey)
             return AtriaNotificationSettings()
+        }
+        if !defaults.bool(forKey: migratedKey) {
+            decoded.strapBattery = false
+            decoded.save()
+            defaults.set(true, forKey: migratedKey)
         }
         return decoded
     }

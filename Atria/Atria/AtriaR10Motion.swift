@@ -9,10 +9,29 @@ struct AtriaR10MotionFrame: Equatable, Sendable {
         var magnitude: Double { sqrt(x * x + y * y + z * z) }
     }
 
+    /// Compact `0x33` seconds use a firmware clock that can sit behind the
+    /// last R10 ledger watermark. Remap those frames onto the live detector
+    /// clock instead of dropping them as replay.
+    enum DeviceClock: Equatable, Sendable {
+        case whoopR10
+        case compactAssembled
+    }
+
     let deviceTimestamp: UInt32
     let heartRate: Int
     let acceleration: [Vector3]
     let rotationRate: [Vector3]
+    var deviceClock: DeviceClock = .whoopR10
+
+    func withDeviceTimestamp(_ timestamp: UInt32) -> AtriaR10MotionFrame {
+        AtriaR10MotionFrame(
+            deviceTimestamp: timestamp,
+            heartRate: heartRate,
+            acceleration: acceleration,
+            rotationRate: rotationRate,
+            deviceClock: deviceClock
+        )
+    }
 }
 
 /// Fixed-layout decoder for the WHOOP 4 R10 record carried by packet 0x2B.
@@ -362,6 +381,9 @@ enum AtriaGyroCadenceResearchPedometer {
     static let spectrumFloorHz = 0.3
     static let spectrumCeilingHz = 4.0
     static let rotationLevelGate = 35.0
+    /// Wrist compact `0x33` rest is ~1 dps. Native R10 walking was fitted at
+    /// 35 dps with a free arm; looking at the phone while walking sits lower.
+    static let compactAssembledRotationLevelGate = 12.0
     static let prominenceGate = 1.6
     static let swayRatio = 1.4
     static let minAnchorWindows = 2
@@ -519,8 +541,12 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         private(set) var closedSpans = 0
         private(set) var observedTotalSteps = 0.0
 
+        private var scoringRotationLevelGate = AtriaGyroCadenceResearchPedometer.rotationLevelGate
+
         mutating func ingest(deviceTimestamp: UInt32,
-                             rotationMagnitudes: [Double]) -> Snapshot? {
+                             rotationMagnitudes: [Double],
+                             rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate) -> Snapshot? {
+            scoringRotationLevelGate = rotationLevelGate
             var scored = false
             switch AtriaGyroCadenceResearchShadow.spanContinuity(
                 previousDeviceTimestamp: lastDeviceTimestamp,
@@ -540,7 +566,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                 spanSampleCount: spanMagnitudes.count
             ) {
                 closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
-                    contiguousRotationMagnitudes: Array(spanMagnitudes[..<prefix])
+                    contiguousRotationMagnitudes: Array(spanMagnitudes[..<prefix]),
+                    rotationLevelGate: scoringRotationLevelGate
                 )
                 spanMagnitudes.removeFirst(prefix)
                 closedSpans += 1
@@ -556,7 +583,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         mutating func boundaryTotalSteps() -> Double {
             let open = spanMagnitudes.isEmpty ? 0
                 : AtriaGyroCadenceResearchPedometer.steps(
-                    contiguousRotationMagnitudes: spanMagnitudes
+                    contiguousRotationMagnitudes: spanMagnitudes,
+                    rotationLevelGate: scoringRotationLevelGate
                 )
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps + open)
             return observedTotalSteps
@@ -565,7 +593,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         mutating func closeOpenSpan() {
             guard !spanMagnitudes.isEmpty else { return }
             closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
-                contiguousRotationMagnitudes: spanMagnitudes
+                contiguousRotationMagnitudes: spanMagnitudes,
+                rotationLevelGate: scoringRotationLevelGate
             )
             spanMagnitudes.removeAll(keepingCapacity: false)
             closedSpans += 1
@@ -622,10 +651,12 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
     /// only when a span was scored (total may have advanced).
     func ingest(deviceTimestamp: UInt32,
                 rotationMagnitudes: [Double],
+                rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate,
                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         queue.async { [self] in
             if let snapshot = state.ingest(deviceTimestamp: deviceTimestamp,
-                                           rotationMagnitudes: rotationMagnitudes) {
+                                           rotationMagnitudes: rotationMagnitudes,
+                                           rotationLevelGate: rotationLevelGate) {
                 onUpdate(snapshot)
             }
         }
@@ -1141,18 +1172,25 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         // other R10 work or a session boundary while its link was retired.
         guard sourceIsValid() else { return }
         guard accept(frame, receivedAt: receivedAt) else { return }
+        // Compact `0x33` frames keep their firmware clock on the value
+        // passed in; `accept` remaps them onto the live detector second.
+        // Snapshots, journal, and the step ledger must publish that
+        // accepted watermark. The compact clock sits behind the restored
+        // R10 ledger and `newestR10DeviceTimestamp` would otherwise keep
+        // the stale watermark forever.
+        let publishedTimestamp = lastAcceptedDeviceTimestamp ?? frame.deviceTimestamp
         let firstFrame = totalFrames == 1
         guard Self.shouldEvaluateSnapshot(firstFrame: firstFrame,
                                           lastEvaluatedAt: lastSnapshotEvaluationAt,
                                           receivedAt: receivedAt,
                                           minimumInterval: snapshotMinimumInterval) else {
-            scheduleTrailingSnapshot(deviceTimestamp: frame.deviceTimestamp,
+            scheduleTrailingSnapshot(deviceTimestamp: publishedTimestamp,
                                      receivedAt: receivedAt,
                                      onUpdate: onUpdate)
             return
         }
         cancelTrailingSnapshot()
-        publishSnapshot(deviceTimestamp: frame.deviceTimestamp,
+        publishSnapshot(deviceTimestamp: publishedTimestamp,
                         evaluatedAt: receivedAt,
                         onUpdate: onUpdate)
     }
@@ -1571,12 +1609,40 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     func ingestSynchronouslyForTesting(_ frame: AtriaR10MotionFrame) -> Snapshot? {
         queue.sync { [self] in
             guard accept(frame, receivedAt: nil) else { return nil }
-            return makeSnapshot(deviceTimestamp: frame.deviceTimestamp,
-                                receivedAt: nil)
+            return makeSnapshot(
+                deviceTimestamp: lastAcceptedDeviceTimestamp ?? frame.deviceTimestamp,
+                receivedAt: nil
+            )
         }
     }
 
+    /// Compact assembled seconds may legally sit behind a restored R10
+    /// watermark. Keep native R10 replay rejection; only this clock is
+    /// allowed to continue the live detector second.
+    nonisolated static func reconcileCompactAssembledClock(
+        frame: AtriaR10MotionFrame,
+        lastAcceptedDeviceTimestamp: UInt32?
+    ) -> AtriaR10MotionFrame {
+        guard frame.deviceClock == .compactAssembled else { return frame }
+        let proposed = frame.deviceTimestamp == 0 ? 1 : frame.deviceTimestamp
+        guard let lastAccepted = lastAcceptedDeviceTimestamp, lastAccepted > 0 else {
+            return proposed == frame.deviceTimestamp
+                ? frame
+                : frame.withDeviceTimestamp(proposed)
+        }
+        if forwardDeviceTimestampDelta(from: lastAccepted, to: proposed) != nil {
+            return proposed == frame.deviceTimestamp
+                ? frame
+                : frame.withDeviceTimestamp(proposed)
+        }
+        return frame.withDeviceTimestamp(lastAccepted &+ 1)
+    }
+
     private func accept(_ frame: AtriaR10MotionFrame, receivedAt: Date?) -> Bool {
+        let frame = Self.reconcileCompactAssembledClock(
+            frame: frame,
+            lastAcceptedDeviceTimestamp: lastAcceptedDeviceTimestamp
+        )
         guard frame.acceleration.count == AtriaR10MotionDecoder.sampleCount else { return false }
         var forwardDeviceTimestampDelta: UInt32?
         if frame.deviceTimestamp > 0 {
@@ -1647,7 +1713,10 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         if frame.rotationRate.count == AtriaR10MotionDecoder.sampleCount {
             _ = gyroCadenceState.ingest(
                 deviceTimestamp: frame.deviceTimestamp,
-                rotationMagnitudes: frame.rotationRate.map(\.magnitude)
+                rotationMagnitudes: frame.rotationRate.map(\.magnitude),
+                rotationLevelGate: frame.deviceClock == .compactAssembled
+                    ? AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+                    : AtriaGyroCadenceResearchPedometer.rotationLevelGate
             )
         }
         let magnitudes = frame.acceleration.map(\.magnitude)

@@ -21,6 +21,7 @@ struct AtriaTodaySessionState: Equatable {
     let behaviorImpactSummaries: [BehaviorImpactSummary]
     let behaviorInsights: [AtriaInsight]
     let learnedInsights: [AtriaLearnedInsight]
+    let learnedInsightLedger: [AtriaLearnedInsight]
     let baseline: PersonalBaseline
     let sleepHistorySnapshot: SleepHistorySnapshot
     let sleepHistorySnapshotRevision: Int
@@ -52,6 +53,7 @@ struct AtriaTodaySessionState: Equatable {
             if !stored.isEmpty { return stored }
             return AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory, now: now)
         }()
+        learnedInsightLedger = store.learnedInsightLedger
         baseline = store.baseline
         baselineSamplesKey = store.baseline.samples.map {
             BaselineSampleKey(date: $0.date,
@@ -78,6 +80,7 @@ struct AtriaTodaySessionState: Equatable {
             && lhs.behaviorImpactSummaries == rhs.behaviorImpactSummaries
             && lhs.behaviorInsights == rhs.behaviorInsights
             && lhs.learnedInsights == rhs.learnedInsights
+            && lhs.learnedInsightLedger == rhs.learnedInsightLedger
             && lhs.baselineSamplesKey == rhs.baselineSamplesKey
             && lhs.baseline.restingHR == rhs.baseline.restingHR
             && lhs.baseline.hrvEMA == rhs.baseline.hrvEMA
@@ -124,6 +127,7 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             store.$behaviorImpactSummariesCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$behaviorInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$learnedInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$learnedInsightLedger.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$profile.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -388,10 +392,19 @@ struct AtriaTodayScreen: View {
                 }
             }
 
-            if !sessionProjectionStore.state.learnedInsights.isEmpty {
-                AtriaLearnedInsightsBoard(
-                    insights: sessionProjectionStore.state.learnedInsights
-                )
+            if !sessionProjectionStore.state.learnedInsights.isEmpty
+                || !sessionProjectionStore.state.learnedInsightLedger.isEmpty {
+                Button {
+                    showInsights = true
+                } label: {
+                    AtriaLearnedInsightsBoard(
+                        insights: sessionProjectionStore.state.learnedInsights,
+                        ledger: sessionProjectionStore.state.learnedInsightLedger,
+                        usesOwnCard: true,
+                        style: .compactBar
+                    )
+                }
+                .buttonStyle(.plain)
             }
 
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
@@ -457,10 +470,11 @@ struct AtriaTodayScreen: View {
             }
         }
         .sheet(isPresented: $showInsights) {
-            ScrollView {
-                AtriaInsightsCardHost(store: store)
-                    .padding(AtriaDesignTokens.Spacing.lg)
-            }
+            AtriaLearnedInsightsSheet(
+                insights: sessionProjectionStore.state.learnedInsights,
+                ledger: sessionProjectionStore.state.learnedInsightLedger,
+                tagged: sessionProjectionStore.state.behaviorInsights
+            )
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
@@ -679,7 +693,8 @@ struct AtriaTodayScreen: View {
                                              liveStore: liveStore,
                                              layoutSize: layoutSize(for: metric),
                                              showsDetail: layoutConfig.legendStatStyle != .value,
-                                             isBar: isBar)
+                                             isBar: isBar,
+                                             trend: weekStepTrend)
             }
             .buttonStyle(AtriaPressableCardStyle())
         case .calories:
@@ -2598,48 +2613,39 @@ struct AtriaTodayScreen: View {
     private func glanceTrend(for metric: AtriaTodayMetric) -> [Double] {
         let history = sessionProjectionStore.state.dailyRollupHistory
             .sorted { $0.day < $1.day }
-            .suffix(7)
+            .suffix(21)
         switch metric {
         case .recovery:
-            return history.compactMap { $0.recovery.map(Double.init) }
-        case .sleep:
-            return history.compactMap { $0.sleepSeconds.map { $0 / 3_600 } }
-        case .strain, .strainCompare:
-            // Same overlay History, the strain chart, and the weekly/monthly
-            // reports use. The tile number is cycle strain; the sparkline
-            // used to plot the civil rollup, so a shifted sleeper's last bar
-            // could disagree with the number it sits under.
-            return WeeklyReport.applyingCycleStrain(
+            return Array(history.compactMap { $0.recovery.map(Double.init) }.suffix(7))
+        case .sleep, .sleepHistory:
+            return Array(history.compactMap { $0.sleepSeconds.map { $0 / 3_600 } }.suffix(7))
+        case .strain, .strainCompare, .load:
+            return Array(WeeklyReport.applyingCycleStrain(
                 Array(history),
                 store.physiologicalCycleStrainByDisplayDay,
                 calendar: .current
-            ).compactMap(\.strain)
+            ).compactMap(\.strain).suffix(7))
         case .hrv:
-            return history.compactMap(\.lnRMSSD)
+            return Array(history.compactMap(\.lnRMSSD).suffix(7))
         case .rhr, .trend:
-            return history.compactMap { $0.rhr.map(Double.init) }
+            return Array(history.compactMap { $0.rhr.map(Double.init) }.suffix(7))
         case .sleepPerformance:
-            return history.compactMap { $0.sleepPerformance.map(Double.init) }
+            return Array(history.compactMap { $0.sleepPerformance.map(Double.init) }.suffix(7))
+        case .sleepEfficiency:
+            return Array(history.compactMap(\.sleepEfficiencyPercent).suffix(7))
         case .stress:
             // Intra-day, not daily: a line must be fed the shape the day
             // actually had.
             return stressIntradaySeries()
         case .respiratoryRate:
-            return history.compactMap(\.respiratoryRate)
+            return Array(history.compactMap(\.respiratoryRate).suffix(7))
         case .bodyTemp:
-            return history.compactMap(\.skinTemperatureDeviationCelsius)
+            return Array(history.compactMap(\.skinTemperatureDeviationCelsius).suffix(7))
         case .bioAge:
-            return history.compactMap { $0.fitnessAgeDelta.map(Double.init) }
+            return Array(history.compactMap { $0.fitnessAgeDelta.map(Double.init) }.suffix(7))
         case .steps:
-            // Not in the daily rollup — strap steps live in their own receipt
-            // store, so they are loaded into `weekStepTrend` instead.
             return weekStepTrend
         default:
-            // Deliberately empty, and it must stay that way for these: VO2max,
-            // calories and blood oxygen have NO stored per-day series anywhere
-            // in the app, so there is nothing to draw. A chart here could only
-            // be made of invented numbers, and a blank corner is the honest
-            // answer to "no history for this yet".
             return []
         }
     }
@@ -3859,8 +3865,10 @@ struct AtriaGlanceSparkline: View {
     let tint: Color
     var style: Style = .bars
 
-    /// Below this there is no shape to show, only noise.
-    static let minimumPoints = 3
+    /// Below this there is no shape to show, only noise. Two real days is
+    /// enough for a bar sparkline; a line still needs a travel.
+    static let minimumPoints = 2
+    static let minimumLinePoints = 3
     static let maximumBars = 7
 
     /// Bar height as a fraction of the chart's height, for one value against
@@ -4022,6 +4030,7 @@ private struct AtriaTodayLiveGlanceTileHost: View {
     let layoutSize: AtriaTodayGlanceItem.LayoutSize
     let showsDetail: Bool
     let isBar: Bool
+    var trend: [Double] = []
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayLiveGlanceTileHost")
@@ -4029,7 +4038,8 @@ private struct AtriaTodayLiveGlanceTileHost: View {
         if let item = Self.item(for: metric,
                                 live: live,
                                 layoutSize: layoutSize,
-                                showsDetail: showsDetail) {
+                                showsDetail: showsDetail,
+                                trend: trend) {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
     }
@@ -4037,7 +4047,8 @@ private struct AtriaTodayLiveGlanceTileHost: View {
     private static func item(for metric: AtriaTodayMetric,
                              live: AtriaHomeModel.CoreLiveState,
                              layoutSize: AtriaTodayGlanceItem.LayoutSize,
-                             showsDetail: Bool) -> AtriaTodayGlanceItem? {
+                             showsDetail: Bool,
+                             trend: [Double]) -> AtriaTodayGlanceItem? {
         switch metric {
         case .steps:
             let steps = live.dailyStepPresentation
@@ -4049,7 +4060,8 @@ private struct AtriaTodayLiveGlanceTileHost: View {
                                         systemImage: metric.systemImage,
                                         tint: steps.count == nil ? .secondary
                                             : (steps.completeness == .complete ? .green : .orange),
-                                        layoutSize: layoutSize)
+                                        layoutSize: layoutSize,
+                                        trend: trend)
         case .calories:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -4085,17 +4097,30 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                ?? (pulse.heartRate > 0 ? .green : .secondary))
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")")
+            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")\(liveStepAccessibility)")
+    }
+
+    private var liveStepSuffix: String {
+        let steps = live.dailyStepPresentation
+        guard let count = steps.count, count > 0 else { return "" }
+        return " · \(steps.valueText)"
+    }
+
+    private var liveStepAccessibility: String {
+        let steps = live.dailyStepPresentation
+        guard let count = steps.count, count > 0 else { return "" }
+        return " \(count) strap steps."
     }
 
     private var liveStatusText: String {
-        if pulse.heartRate > 0 { return "\(pulse.heartRate) bpm" }
-        return AtriaLiveSignalTruth.valueText(
+        if pulse.heartRate > 0 { return "\(pulse.heartRate) bpm\(liveStepSuffix)" }
+        let signal = AtriaLiveSignalTruth.valueText(
             status: live.status,
             streamState: live.strapStreamState,
             hasRecentHeartRate: live.hasRecentHeartRateSample,
             attribution: live.strapWearAttribution
         )
+        return "\(signal)\(liveStepSuffix)"
     }
 }
 
@@ -4450,7 +4475,10 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     .foregroundStyle(item.tint)
                     .frame(width: 24, height: 24)
                 Spacer(minLength: 0)
-                if item.trend.count >= AtriaGlanceSparkline.minimumPoints {
+                if item.trend.count >= (item.trendStyle == .line
+                                        ? max(AtriaGlanceSparkline.minimumLinePoints,
+                                              AtriaGlanceSparkline.minimumPoints)
+                                        : AtriaGlanceSparkline.minimumPoints) {
                     AtriaGlanceSparkline(values: item.trend,
                                          tint: item.tint,
                                          style: item.trendStyle)

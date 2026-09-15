@@ -149,21 +149,27 @@ struct AtriaHistoricalConsumerReceiptLedger {
         let artifactDigest = Self.sha256(publication.artifact)
         let artifactFilename = "consumer-artifact-\(publication.kind.rawValue)-\(artifactDigest).bin"
         let artifactURL = directoryURL.appendingPathComponent(artifactFilename)
+        let source = Source(
+            chunkID: publication.source.chunkID,
+            rawSHA256: publication.source.rawSHA256,
+            firstTimestamp: Self.iso8601Stable(publication.source.firstTimestamp),
+            lastTimestamp: Self.iso8601Stable(publication.source.lastTimestamp)
+        )
         let receipt = Receipt(version: Receipt.currentVersion,
-                              source: publication.source,
+                              source: source,
                               kind: publication.kind,
                               consumerSchemaVersion: publication.consumerSchemaVersion,
                               algorithmVersion: publication.algorithmVersion,
                               configurationSHA256: publication.configurationSHA256,
-                              dependencyStart: publication.dependencyStart,
-                              dependencyEnd: publication.dependencyEnd,
-                              completionWatermark: publication.completionWatermark,
+                              dependencyStart: Self.iso8601Stable(publication.dependencyStart),
+                              dependencyEnd: Self.iso8601Stable(publication.dependencyEnd),
+                              completionWatermark: Self.iso8601Stable(publication.completionWatermark),
                               outcome: publication.outcome,
                               recordCount: publication.recordCount,
                               artifactFilename: artifactFilename,
                               artifactSHA256: artifactDigest,
                               artifactByteCount: UInt64(publication.artifact.count),
-                              settledAt: publication.settledAt)
+                              settledAt: Self.iso8601Stable(publication.settledAt))
         let receiptData = try Self.encode(receipt)
         let receiptDigest = Self.sha256(receiptData)
         let receiptFilename = "consumer-receipt-\(publication.kind.rawValue)-\(sourceKey(publication.source))-\(receiptDigest).json"
@@ -187,7 +193,7 @@ struct AtriaHistoricalConsumerReceiptLedger {
 
         if fileManager.fileExists(atPath: receiptURL.path) {
             guard try validatedReceipt(at: receiptURL,
-                                       expectedSource: publication.source,
+                                       expectedSource: source,
                                        expectedKind: publication.kind,
                                        maximumReceiptBytes: UInt64(receiptData.count),
                                        maximumArtifactBytes: UInt64(publication.artifact.count)) == receipt else {
@@ -210,7 +216,7 @@ struct AtriaHistoricalConsumerReceiptLedger {
         try checkpoint(.receiptPublished)
 
         guard try validatedReceipt(at: receiptURL,
-                                   expectedSource: publication.source,
+                                   expectedSource: source,
                                    expectedKind: publication.kind,
                                    maximumReceiptBytes: UInt64(receiptData.count),
                                    maximumArtifactBytes: UInt64(publication.artifact.count)) == receipt else {
@@ -688,6 +694,10 @@ struct AtriaHistoricalConsumerReceiptLedger {
     private func fileByteCount(at url: URL) throws -> UInt64 {
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+
+    private static func iso8601Stable(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded(.down))
     }
 
     private static func encode<T: Encodable>(_ value: T) throws -> Data {

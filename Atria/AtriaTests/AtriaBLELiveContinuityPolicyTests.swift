@@ -1298,8 +1298,21 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 nowUnix: now,
                 oldestPageIsStuck: true
             ),
+            saturday + AtriaBLEManager.historyDrainDeadPageSkip,
+            "a stuck oldest page skips one drain page toward now so Last fill moves"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: now - 120,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now,
+                oldestPageIsStuck: true
+            ),
             now,
-            "a stuck oldest page brings the cursor to now so live capture can run"
+            "a stuck page already within one skip of live covers now"
         )
     }
 

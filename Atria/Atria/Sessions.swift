@@ -9840,12 +9840,24 @@ final class SessionStore: ObservableObject {
     /// tag-correlation engine (device 2026-09-14 23:15: rollups present,
     /// board empty).
     @Published private(set) var learnedInsights: [AtriaLearnedInsight] = AtriaDurableInsightStore.load()
+    /// Day-by-day captured reads. Distinct from the current seven so a later
+    /// refresh cannot erase the previous 21 days.
+    @Published private(set) var learnedInsightLedger: [AtriaLearnedInsight] = AtriaDurableInsightStore.loadLedger()
 
     func refreshLearnedInsights(now: Date = Date()) {
         let learned = AtriaLearnedInsights.insights(rollups: dailyRollupHistory, now: now)
-        guard learned != learnedInsights else { return }
-        learnedInsights = learned
-        AtriaDurableInsightStore.save(learned)
+        let daily = AtriaLearnedInsights.dailyReads(rollups: dailyRollupHistory, now: now)
+        let stored = AtriaDurableInsightStore.loadPayload()
+        let nextCurrent = learned.isEmpty ? stored.insights : learned
+        let nextLedger = AtriaDurableInsightStore.mergeLedger(
+            existing: stored.ledger,
+            incoming: daily,
+            now: now
+        )
+        guard nextCurrent != learnedInsights || nextLedger != learnedInsightLedger else { return }
+        learnedInsights = nextCurrent
+        learnedInsightLedger = nextLedger
+        AtriaDurableInsightStore.save(nextCurrent, ledger: nextLedger, now: now)
     }
     /// Cached correlation summaries (per tag) so the Journal section reads O(1)
     /// instead of recomputing on every render / checkpoint tick.
@@ -10598,6 +10610,13 @@ final class SessionStore: ObservableObject {
     /// superseded snapshot work before it touches the archive.
     nonisolated private static let historySnapshotProjectionQueue =
         HistoricalArchive.consumerProjectionQueue
+    /// One-chunk overdue idle/lock retention must not sit behind a recovered
+    /// 5.5 GB consumer-projection scan. That queue left `inFlight` set and the
+    /// 8s lease expired before work started.
+    nonisolated private static let archiveIdleCompactionQueue = DispatchQueue(
+        label: "atria.archive.idle-compaction",
+        qos: .utility
+    )
     private var historicalArchiveStatusObserver: NSObjectProtocol?
     /// Archive durability posts once per raw history ACK. Keep those cheap
     /// notifications out of the retained 24–48 h derived pipeline: a material
@@ -16479,12 +16498,14 @@ final class SessionStore: ObservableObject {
         thermalState: ProcessInfo.ThermalState,
         isLowPowerModeEnabled: Bool,
         batteryState: UIDevice.BatteryState,
-        batteryLevel: Float
+        batteryLevel: Float,
+        allowsSeriousThermal: Bool = false
     ) -> Bool {
-        guard thermalState != .serious, thermalState != .critical else { return false }
+        guard thermalState != .critical else { return false }
+        guard allowsSeriousThermal || thermalState != .serious else { return false }
         guard !isLowPowerModeEnabled else { return false }
         let charging = AtriaBLEManager.phoneStateIsCharging(batteryState)
-        guard charging || batteryLevel >= 0.5 else { return false }
+        guard charging || batteryLevel < 0 || batteryLevel >= 0.5 else { return false }
         return true
     }
 
@@ -26855,6 +26876,16 @@ final class SessionStore: ObservableObject {
     /// yielded runs are retried soon and never consume the once-daily success
     /// lease.
     private static let archiveCompactionLastRunKey = "atria.archiveCompaction.lastRunAt"
+    private static let archiveCompactionLastAttemptAtKey = "atria.archiveCompaction.lastAttemptAt"
+    private static let archiveCompactionLastStatusKey = "atria.archiveCompaction.lastStatus"
+    private static let archiveCompactionLastReasonKey = "atria.archiveCompaction.lastReason"
+    private static let archiveCompactionLastCompactedRowsKey = "atria.archiveCompaction.lastCompactedRows"
+    private static let archiveCompactionLastBytesBeforeKey = "atria.archiveCompaction.lastBytesBefore"
+    private static let archiveCompactionLastBytesAfterKey = "atria.archiveCompaction.lastBytesAfter"
+    private static let archiveCompactionIdleSkipReasonKey = "atria.archiveCompaction.lastIdleSkipReason"
+    private static let archiveCompactionIdleSkipAtKey = "atria.archiveCompaction.lastIdleSkipAt"
+    private static let archiveCompactionLastErrorKey = "atria.archiveCompaction.lastError"
+    private static let archiveCompactionOverdueAfter: TimeInterval = 7 * 24 * 60 * 60
     private static var archiveCompactionInFlight = false
     private static var archiveCompactionPressureProbeInFlight = false
 
@@ -26875,15 +26906,16 @@ final class SessionStore: ObservableObject {
 
         func shouldContinue(
             thermalState: ProcessInfo.ThermalState,
-            isLowPowerModeEnabled: Bool
+            isLowPowerModeEnabled: Bool,
+            allowsSeriousThermal: Bool = false
         ) -> Bool {
             lock.lock()
             let isRevoked = revoked
             lock.unlock()
-            return !isRevoked
-                && thermalState != .serious
-                && thermalState != .critical
-                && !isLowPowerModeEnabled
+            if isRevoked || isLowPowerModeEnabled { return false }
+            if thermalState == .critical { return false }
+            if thermalState == .serious && !allowsSeriousThermal { return false }
+            return true
         }
     }
 
@@ -26892,6 +26924,8 @@ final class SessionStore: ObservableObject {
         fileprivate let expiresAt: Date
         fileprivate let cancellationToken:
             ArchiveCompactionCancellationToken
+        fileprivate let allowsForeground: Bool
+        fileprivate let allowsSeriousThermal: Bool
     }
 
     private struct ArchiveCompactionSafeBackgroundAdmission {
@@ -26908,13 +26942,121 @@ final class SessionStore: ObservableObject {
         case compaction
     }
 
+    /// Overdue raw retention is a drainable backlog: 7/30/90-day deletion
+    /// cannot wait for the 2h BGProcessing floor after a missed week.
+    nonisolated static func archiveCompactionIsOverdue(
+        lastRunAt: TimeInterval? = UserDefaults.standard.object(
+            forKey: archiveCompactionLastRunKey
+        ) as? TimeInterval,
+        now: Date = Date(),
+        overdueAfter: TimeInterval = archiveCompactionOverdueAfter
+    ) -> Bool {
+        guard let lastRunAt, lastRunAt > 0 else { return true }
+        return now.timeIntervalSince1970 - lastRunAt >= overdueAfter
+    }
+
+    /// Durable compact-attempt receipt for live pulls. `lastRunAt` still only
+    /// advances on a stable noop so overdue 7/30/90-day work keeps retrying;
+    /// this record shows whether a lock actually entered the graph.
+    nonisolated static func recordArchiveCompactionAttempt(
+        status: String,
+        reason: String,
+        compactedRows: Int = 0,
+        bytesBefore: Int = 0,
+        bytesAfter: Int = 0,
+        error: String? = nil,
+        now: Date = Date()
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(now.timeIntervalSince1970, forKey: archiveCompactionLastAttemptAtKey)
+        defaults.set(status, forKey: archiveCompactionLastStatusKey)
+        defaults.set(reason, forKey: archiveCompactionLastReasonKey)
+        defaults.set(compactedRows, forKey: archiveCompactionLastCompactedRowsKey)
+        defaults.set(bytesBefore, forKey: archiveCompactionLastBytesBeforeKey)
+        defaults.set(bytesAfter, forKey: archiveCompactionLastBytesAfterKey)
+        if let error, !error.isEmpty {
+            defaults.set(error, forKey: archiveCompactionLastErrorKey)
+        } else if status.hasPrefix("ok_") {
+            defaults.removeObject(forKey: archiveCompactionLastErrorKey)
+        }
+    }
+
+    /// Expired idle leases still leave the worker running; minting a second
+    /// 45s lease only records `reserved_in_flight` and does not start a chunk.
+    static func archiveCompactionWorkerIsInFlight() -> Bool {
+        archiveCompactionInFlight || archiveCompactionPressureProbeInFlight
+    }
+
+    /// Sitting Today polls this so a refused idle pass does not retry every
+    /// 20s and fight live BLE.
+    nonisolated static func archiveCompactionAttemptIsStale(
+        lastAttemptAt: TimeInterval? = UserDefaults.standard.object(
+            forKey: archiveCompactionLastAttemptAtKey
+        ) as? TimeInterval,
+        lastStatus: String? = UserDefaults.standard.string(
+            forKey: archiveCompactionLastStatusKey
+        ),
+        now: Date = Date(),
+        minimumAge: TimeInterval = 45
+    ) -> Bool {
+        guard let lastAttemptAt, lastAttemptAt > 0 else { return true }
+        let requiredAge = lastStatus == "deferred_catalog_warming"
+            || lastStatus == "deferred_idle_cutover_skipped" ? 12 : minimumAge
+        return now.timeIntervalSince1970 - lastAttemptAt >= requiredAge
+    }
+
+    nonisolated static func recordIdleRetentionSkip(
+        reason: String,
+        now: Date = Date()
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(reason, forKey: archiveCompactionIdleSkipReasonKey)
+        defaults.set(now.timeIntervalSince1970, forKey: archiveCompactionIdleSkipAtKey)
+    }
+
+    /// Scene-background and sitting-Today idle retention are admitted only
+    /// while the 7/30/90-day window is overdue. Ordinary app-switch
+    /// backgrounding stays refused.
+    nonisolated static func automaticArchiveCompactionIsOverdueSceneBackground(
+        reason: String,
+        lastRunAt: TimeInterval? = UserDefaults.standard.object(
+            forKey: archiveCompactionLastRunKey
+        ) as? TimeInterval,
+        now: Date = Date()
+    ) -> Bool {
+        (reason == "scene_background" || reason == "overdue_idle")
+            && archiveCompactionIsOverdue(lastRunAt: lastRunAt, now: now)
+    }
+
+    /// Spend the live lease instead of stopping after 8 seconds. A 10-minute
+    /// BGProcessing window used to yield after one chunk; 5.5 GB never moved.
+    nonisolated static func archiveCompactionConvergingBudget(
+        remainingLease: TimeInterval?,
+        nowReserve: TimeInterval = 2,
+        fallbackElapsed: TimeInterval = 8,
+        maximumElapsed: TimeInterval = 8 * 60,
+        fallbackIterations: Int = 8,
+        maximumIterations: Int = 32
+    ) -> (iterations: Int, elapsed: TimeInterval) {
+        guard let remainingLease, remainingLease.isFinite, remainingLease > 0 else {
+            return (fallbackIterations, fallbackElapsed)
+        }
+        let elapsed = min(maximumElapsed, max(2, remainingLease - nowReserve))
+        let iterations = min(
+            maximumIterations,
+            max(fallbackIterations, Int((elapsed / 2).rounded(.down)))
+        )
+        return (iterations, elapsed)
+    }
+
     /// Retention accounting itself walks the complete archive, even when the
     /// resulting plan says there is nothing to compact. Automatic callers may
-    /// therefore enter only from the real BGProcessing handler under the same
-    /// power/thermal fence as background projection. The cap-pressure
-    /// continuation must retain the same live lease; yielded work is reserved
-    /// for a future task instead of arming a timer. Foreground archive
-    /// notifications can never manufacture this authority.
+    /// therefore enter from the live BGProcessing handler, or from one overdue
+    /// scene-background pass, under the same power/thermal fence as background
+    /// projection. The cap-pressure continuation must retain the same live
+    /// lease; yielded work is reserved for a future task instead of arming a
+    /// timer. Foreground archive notifications can never manufacture this
+    /// authority.
     nonisolated static func shouldAdmitAutomaticArchiveCompaction(
         reason: String,
         applicationIsBackground: Bool,
@@ -26923,20 +27065,40 @@ final class SessionStore: ObservableObject {
         batteryState: UIDevice.BatteryState,
         batteryLevel: Float,
         exactRecoveryOwnsPriority: Bool,
-        recoveredCycleEngaged: Bool
+        recoveredCycleEngaged: Bool,
+        compactionOverdue: Bool = false
     ) -> Bool {
         let isBackgroundProcessingReason = reason == "bg_processing"
             || reason == "bg_processing_cap_pressure"
-        return isBackgroundProcessingReason
-            && applicationIsBackground
-            && !exactRecoveryOwnsPriority
-            && !recoveredCycleEngaged
+        let isOverdueSceneBackground = reason == "scene_background"
+            && compactionOverdue
+        let isOverdueIdle = reason == "overdue_idle" && compactionOverdue
+        return (isBackgroundProcessingReason || isOverdueSceneBackground || isOverdueIdle)
+            && (applicationIsBackground || isOverdueIdle)
+            && (!exactRecoveryOwnsPriority || isOverdueIdle)
+            && (!recoveredCycleEngaged || isOverdueSceneBackground || isOverdueIdle)
             && shouldStartBackgroundArchiveProjection(
                 thermalState: thermalState,
                 isLowPowerModeEnabled: isLowPowerModeEnabled,
                 batteryState: batteryState,
-                batteryLevel: batteryLevel
+                batteryLevel: batteryLevel,
+                allowsSeriousThermal: isOverdueIdle
             )
+    }
+
+    /// Overdue 7/30/90-day one-chunk retirement may start on lock's
+    /// `.inactive` as well as `.background`. Ordinary BGProcessing still
+    /// requires a true backgrounded app.
+    nonisolated static func applicationAllowsAutomaticArchiveCompaction(
+        reason: String,
+        applicationState: UIApplication.State,
+        compactionOverdue: Bool
+    ) -> Bool {
+        if applicationState == .background { return true }
+        if reason == "overdue_idle", compactionOverdue { return true }
+        return reason == "scene_background"
+            && compactionOverdue
+            && applicationState == .inactive
     }
 
     /// Release fence for the archive-wide graph.
@@ -26991,7 +27153,8 @@ final class SessionStore: ObservableObject {
         return lease.cancellationToken.shouldContinue(
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled:
-                ProcessInfo.processInfo.isLowPowerModeEnabled
+                ProcessInfo.processInfo.isLowPowerModeEnabled,
+            allowsSeriousThermal: lease.allowsSeriousThermal
         )
     }
 
@@ -27009,12 +27172,16 @@ final class SessionStore: ObservableObject {
     func beginArchiveCompactionBGProcessingLeaseIfSafe(
         reason: String
     ) -> ArchiveCompactionBGProcessingLease? {
-        guard reason == "bg_processing" else {
+        guard reason == "bg_processing"
+                || reason == "scene_background"
+                || reason == "overdue_idle" else {
             reserveArchiveCompactionForSafeBackground()
             return nil
         }
         if let active = activeArchiveCompactionBGProcessingLease {
-            if Date() <= active.expiresAt { return nil }
+            if Date() <= active.expiresAt {
+                return nil
+            }
             active.cancellationToken.revoke()
             activeArchiveCompactionBGProcessingLease = nil
             finishArchiveCompactionLeaseCompletion(
@@ -27028,26 +27195,63 @@ final class SessionStore: ObservableObject {
             || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
         guard Self.shouldAdmitAutomaticArchiveCompaction(
             reason: reason,
-            applicationIsBackground:
-                UIApplication.shared.applicationState == .background,
+            applicationIsBackground: Self.applicationAllowsAutomaticArchiveCompaction(
+                reason: reason,
+                applicationState: UIApplication.shared.applicationState,
+                compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground(
+                    reason: reason
+                )
+            ),
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled:
                 ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryState: UIDevice.current.batteryState,
             batteryLevel: UIDevice.current.batteryLevel,
             exactRecoveryOwnsPriority: exactRecoveryOwnsPriority,
-            recoveredCycleEngaged: recoveredProjectionScanActive
+            recoveredCycleEngaged: recoveredProjectionScanActive,
+            compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground(
+                reason: reason
+            )
         ) else {
+            let thermal = ProcessInfo.processInfo.thermalState
+            let deny: String
+            if thermal == .critical {
+                deny = "thermal_critical"
+            } else if thermal == .serious {
+                deny = "thermal_serious"
+            } else if ProcessInfo.processInfo.isLowPowerModeEnabled {
+                deny = "low_power_mode"
+            } else if exactRecoveryOwnsPriority {
+                deny = "exact_recovery"
+            } else if recoveredProjectionScanActive {
+                deny = "recovered_cycle"
+            } else {
+                deny = "admission_refused"
+            }
+            Self.recordArchiveCompactionAttempt(
+                status: "lease_denied",
+                reason: reason,
+                error: deny
+            )
             reserveArchiveCompactionForSafeBackground()
             return nil
         }
         archiveCompactionBGProcessingLeaseGeneration &+= 1
+        let leaseLifetime: TimeInterval
+        switch reason {
+        case "scene_background": leaseLifetime = 25
+        case "overdue_idle": leaseLifetime = 90
+        default: leaseLifetime = 10 * 60
+        }
         let lease = ArchiveCompactionBGProcessingLease(
             generation: archiveCompactionBGProcessingLeaseGeneration,
-            expiresAt: Date().addingTimeInterval(10 * 60),
-            cancellationToken: ArchiveCompactionCancellationToken()
+            expiresAt: Date().addingTimeInterval(leaseLifetime),
+            cancellationToken: ArchiveCompactionCancellationToken(),
+            allowsForeground: reason == "overdue_idle",
+            allowsSeriousThermal: reason == "overdue_idle"
         )
         activeArchiveCompactionBGProcessingLease = lease
+        UserDefaults.standard.removeObject(forKey: Self.archiveCompactionLastErrorKey)
         return lease
     }
 
@@ -27082,6 +27286,9 @@ final class SessionStore: ObservableObject {
         guard let active = activeArchiveCompactionBGProcessingLease else {
             return
         }
+        if reason == "scene_active", active.allowsForeground {
+            return
+        }
         active.cancellationToken.revoke()
         activeArchiveCompactionBGProcessingLease = nil
         finishArchiveCompactionLeaseCompletion(
@@ -27097,10 +27304,17 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    func hasCurrentArchiveCompactionLease(now: Date = Date()) -> Bool {
+        guard let active = activeArchiveCompactionBGProcessingLease else {
+            return false
+        }
+        return now <= active.expiresAt
+    }
+
     private func archiveCompactionBGProcessingLeaseIsCurrent(
         _ lease: ArchiveCompactionBGProcessingLease
     ) -> Bool {
-        UIApplication.shared.applicationState == .background
+        (UIApplication.shared.applicationState != .active || lease.allowsForeground)
             && Self.archiveCompactionWorkerLeaseIsCurrent(
             leaseGeneration: lease.generation,
             activeLeaseGeneration:
@@ -27111,7 +27325,8 @@ final class SessionStore: ObservableObject {
             && lease.cancellationToken.shouldContinue(
                 thermalState: ProcessInfo.processInfo.thermalState,
                 isLowPowerModeEnabled:
-                    ProcessInfo.processInfo.isLowPowerModeEnabled
+                    ProcessInfo.processInfo.isLowPowerModeEnabled,
+                allowsSeriousThermal: lease.allowsSeriousThermal
             )
     }
 
@@ -27200,15 +27415,23 @@ final class SessionStore: ObservableObject {
               ) else { return false }
         return Self.shouldAdmitAutomaticArchiveCompaction(
             reason: admission.reason,
-            applicationIsBackground:
-                UIApplication.shared.applicationState == .background,
+            applicationIsBackground: Self.applicationAllowsAutomaticArchiveCompaction(
+                reason: admission.reason,
+                applicationState: UIApplication.shared.applicationState,
+                compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground(
+                    reason: admission.reason
+                )
+            ),
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled:
                 ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryState: UIDevice.current.batteryState,
             batteryLevel: UIDevice.current.batteryLevel,
             exactRecoveryOwnsPriority: exactRecoveryOwnsPriority,
-            recoveredCycleEngaged: recoveredProjectionScanActive
+            recoveredCycleEngaged: recoveredProjectionScanActive,
+            compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground(
+                reason: admission.reason
+            )
         )
     }
 
@@ -27250,26 +27473,41 @@ final class SessionStore: ObservableObject {
         // path. The explicit developer launch argument remains the sole
         // execution authority until every composite stage is cooperative.
         // `shouldAdmitAutomaticArchiveCompaction` models the full environmental
-        // gate — BGProcessing reason, backgrounded app, no exact-recovery or
-        // recovered-cycle owner, and the shared thermal/battery/Low-Power
-        // admission. It was written for this and then left unreachable behind
-        // the fence above.
+        // gate — BGProcessing reason, backgrounded app, no exact-recovery owner,
+        // and the shared thermal/battery/Low-Power admission. Overdue
+        // scene-background one-chunk retirement may run during a recovered
+        // rest window so 5.5 GB does not wait on that lane forever.
+        let overdueSceneBackground = Self.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: reason
+        )
         let automaticAdmission = Self.shouldAdmitAutomaticArchiveCompaction(
             reason: reason,
-            applicationIsBackground: UIApplication.shared.applicationState == .background,
+            applicationIsBackground: Self.applicationAllowsAutomaticArchiveCompaction(
+                reason: reason,
+                applicationState: UIApplication.shared.applicationState,
+                compactionOverdue: overdueSceneBackground
+            ),
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryState: UIDevice.current.batteryState,
             batteryLevel: UIDevice.current.batteryLevel,
             exactRecoveryOwnsPriority: exactRecoveryArchivePriorityLeaseActive
                 || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
-            recoveredCycleEngaged: recoveredProjectionScanActive
+            recoveredCycleEngaged: recoveredProjectionScanActive,
+            compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground(
+                reason: reason
+            )
         )
         guard Self.shouldExecuteArchiveWideMaintenance(
             explicitDebugOverride: explicitDebugOverride,
             automaticAdmission: automaticAdmission
         ) else {
             reserveArchiveCompactionForSafeBackground()
+            Self.recordArchiveCompactionAttempt(
+                status: "reserved_automatic_execution_disabled",
+                reason: reason,
+                now: now
+            )
             AtriaDebugLog(
                 "ATRIADBG archive_compaction_driver status=reserved_automatic_execution_disabled reason=%@ action=preserve_durable_archive_for_explicit_maintenance",
                 reason
@@ -27283,9 +27521,14 @@ final class SessionStore: ObservableObject {
         }
         let exactRecoveryOwnsPriority = exactRecoveryArchivePriorityLeaseActive
             || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
-        guard !exactRecoveryOwnsPriority,
-              !recoveredProjectionScanActive else {
+        guard !exactRecoveryOwnsPriority || overdueSceneBackground,
+              (!recoveredProjectionScanActive || overdueSceneBackground) else {
             reserveArchiveCompactionForSafeBackground()
+            Self.recordArchiveCompactionAttempt(
+                status: "reserved_for_safe_background",
+                reason: reason,
+                now: now
+            )
             AtriaDebugLog(
                 "ATRIADBG archive_compaction_driver status=reserved_for_safe_background reason=%@ action=preserve_shared_archive_owner",
                 reason
@@ -27299,6 +27542,11 @@ final class SessionStore: ObservableObject {
         }
         guard !Self.archiveCompactionInFlight,
               !Self.archiveCompactionPressureProbeInFlight else {
+            Self.recordArchiveCompactionAttempt(
+                status: "reserved_in_flight",
+                reason: reason,
+                now: now
+            )
             finishArchiveCompactionLeaseCompletion(
                 lease: backgroundLease,
                 fallback: completion,
@@ -27321,7 +27569,10 @@ final class SessionStore: ObservableObject {
                 maximumHeartRate: profile.maxHR,
                 timeZoneIdentifier: TimeZone.current.identifier
             )
-        Self.historySnapshotProjectionQueue.async { [weak self] in
+        let workerQueue = (reason == "overdue_idle" || reason == "scene_background")
+            ? Self.archiveIdleCompactionQueue
+            : Self.historySnapshotProjectionQueue
+        workerQueue.async { [weak self] in
             let shouldContinue = {
                 admission.explicitDebugOverride
                     || Self.archiveCompactionWorkerShouldContinue(
@@ -27347,6 +27598,11 @@ final class SessionStore: ObservableObject {
                 return true
             }
             guard workerAdmissionAllowed else {
+                Self.recordArchiveCompactionAttempt(
+                    status: "reserved_worker_boundary",
+                    reason: admission.reason,
+                    now: now
+                )
                 AtriaDebugLog(
                     "ATRIADBG archive_compaction_driver status=reserved_worker_boundary reason=%@ action=wait_for_next_guarded_bg_processing",
                     admission.reason
@@ -27364,12 +27620,27 @@ final class SessionStore: ObservableObject {
                 }
                 return
             }
+            let convergingBudget = Self.archiveCompactionConvergingBudget(
+                remainingLease: admission.backgroundLease
+                    .map { $0.expiresAt.timeIntervalSinceNow }
+            )
             let result = HistoricalArchive.compactArchiveConverging(
                 pinnedWindows: pinnedWindows,
                 reason: admission.reason,
                 configuration: historicalConsumerConfiguration,
                 now: now,
+                maximumIterations: convergingBudget.iterations,
+                maximumElapsed: convergingBudget.elapsed,
                 shouldContinue: shouldContinue
+            )
+            Self.recordArchiveCompactionAttempt(
+                status: result.status,
+                reason: admission.reason,
+                compactedRows: result.compactedRows,
+                bytesBefore: result.bytesBefore,
+                bytesAfter: result.bytesAfter,
+                error: result.error,
+                now: now
             )
             AtriaDebugLog("ATRIADBG archive_compaction_driver status=%@ reason=%@ scanned=%d kept=%d compacted=%d summaries=%d bytes_before=%d bytes_after=%d",
                           result.status,

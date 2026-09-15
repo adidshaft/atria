@@ -122,6 +122,27 @@ final class AtriaHistoricalConsumerReceiptLedgerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: retry.artifactURL.path))
     }
 
+    func testFractionalSettledAtRoundTripsThroughISO8601Receipt() throws {
+        let ledger = makeLedger()
+        let source = makeSource()
+        let published = try ledger.publish(.init(
+            source: source,
+            kind: .activity,
+            consumerSchemaVersion: 1,
+            algorithmVersion: "activity-v1",
+            configurationSHA256: String(repeating: "b", count: 64),
+            dependencyStart: source.firstTimestamp,
+            dependencyEnd: source.lastTimestamp,
+            completionWatermark: source.lastTimestamp,
+            outcome: .materialized,
+            recordCount: 1,
+            artifact: Data("[\"activity\"]".utf8),
+            settledAt: Date(timeIntervalSince1970: 2_000_003_600.375)
+        ))
+        XCTAssertEqual(published.receipt.settledAt.timeIntervalSince1970, 2_000_003_600)
+        XCTAssertFalse(published.reusedExistingReceipt)
+    }
+
     private var requiredKinds: [AtriaHistoricalAggregateChunk.MaterializedProjection.Kind] {
         AtriaHistoricalAggregateChunk.rawRetirementRequiredProjectionKinds
             .sorted { $0.rawValue < $1.rawValue }

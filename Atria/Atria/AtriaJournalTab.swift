@@ -211,7 +211,6 @@ struct AtriaJournalTab: View {
                                                    store: store)
         Group {
             AtriaJournalCheckInDeck(store: store, projection: projection)
-            AtriaLearnedInsightsHost(store: store)
             AtriaJournalTypedInsightsSection(insights: projection.typedInsights,
                                              answeredDayCount: projection.answeredDayCount)
             AtriaBehaviorImpactCard(model: impactModel)
@@ -497,14 +496,6 @@ private struct AtriaCyclePeriodLogSheet: View {
             if newValue < startDate { endDate = startDate }
         }
         .presentationDetents([.medium])
-    }
-}
-
-private struct AtriaLearnedInsightsHost: View {
-    @ObservedObject var store: SessionStore
-
-    var body: some View {
-        AtriaLearnedInsightsBoard(insights: store.learnedInsights)
     }
 }
 

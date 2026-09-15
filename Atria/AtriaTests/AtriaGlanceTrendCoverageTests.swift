@@ -37,7 +37,8 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
     func testTheNewlyWiredMetricsReadRealStoredFields() throws {
         let body = try glanceTrendBody()
         // Each of these is an actual field on DailyRollupStoreEntry.
-        for expected in ["case .respiratoryRate", "case .bodyTemp", "case .bioAge", "case .steps"] {
+        for expected in ["case .respiratoryRate", "case .bodyTemp", "case .bioAge", "case .steps",
+                         "case .sleep, .sleepHistory", "case .sleepEfficiency"] {
             XCTAssertTrue(body.contains(expected), "\(expected) must have a trend")
         }
         let rollup = try source("DailyRollupStore.swift")
@@ -79,6 +80,12 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
                        "the second copy of the folding rule must be gone — two "
                            + "copies is how the card and its own chart came to "
                            + "disagree")
+    }
+
+    func testTheStepsTileIsFedTheWeekTrend() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertTrue(today.contains("trend: weekStepTrend"),
+                      "the live steps tile must draw the same week bars as glanceTrend")
     }
 
     func testTheOpenCycleIsPinnedToTodayAndClosedOnesSum() {
@@ -133,7 +140,7 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
     /// they sit under.
     func testStrainSparklineAndCompareMedianOverlayTheCycleSeries() throws {
         let today = try source("AtriaTodayScreen.swift")
-        XCTAssertTrue(today.contains("case .strain, .strainCompare:"),
+        XCTAssertTrue(today.contains("case .strain, .strainCompare, .load:"),
                       "both strain tiles share the sparkline")
         XCTAssertTrue(today.contains("WeeklyReport.applyingCycleStrain(\n                Array(history),"),
                       "the sparkline overlays the same cycle series as the tile number")

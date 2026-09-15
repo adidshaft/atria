@@ -9827,6 +9827,7 @@ struct AtriaInsightsCardHost: View {
 
     var body: some View {
         AtriaInsightsCard(learned: store.learnedInsights,
+                          ledger: store.learnedInsightLedger,
                           insights: store.behaviorInsights,
                           taggedDays: store.behaviorJournalEntries.count)
             .equatable()
@@ -9839,6 +9840,7 @@ struct AtriaInsightsCardHost: View {
 /// baseline-gated inputs. Local, never medical.
 struct AtriaInsightsCard: View, Equatable {
     let learned: [AtriaLearnedInsight]
+    var ledger: [AtriaLearnedInsight] = []
     let insights: [AtriaInsight]
     let taggedDays: Int
 
@@ -9846,7 +9848,7 @@ struct AtriaInsightsCard: View, Equatable {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Insights", subtitle: "What moved you")
 
-            if learned.isEmpty && insights.isEmpty {
+            if learned.isEmpty && ledger.isEmpty && insights.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .foregroundStyle(.secondary)
@@ -9861,6 +9863,7 @@ struct AtriaInsightsCard: View, Equatable {
                 if !learned.isEmpty {
                     AtriaLearnedInsightsBoard(
                         insights: Array(learned.prefix(5)),
+                        ledger: ledger,
                         showsHeader: false,
                         usesOwnCard: false
                     )
@@ -9870,32 +9873,30 @@ struct AtriaInsightsCard: View, Equatable {
                 }
             }
         }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
+        .padding(.vertical, 4)
     }
 
     private func insightRow(_ i: AtriaInsight) -> some View {
         let tint: Color = i.isPositive ? .green : .red
-        return HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        return HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(i.tagLabel)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                    .font(.headline)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(2)
                 Text("\(i.headline) · \(i.detail.lowercased())")
-                    .font(.caption)
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Image(systemName: i.isPositive ? "arrow.up.right" : "arrow.down.right")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(tint)
-                .padding(8)
-                .background(tint.opacity(0.14), in: Circle())
+                .frame(width: 28, height: 28)
         }
-        .padding(12)
-        .atriaInsetCard(tint: tint)
+        .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(i.tagLabel). \(i.headline). \(i.detail).")
     }

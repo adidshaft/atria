@@ -36,6 +36,46 @@ final class AtriaHistoricalRetentionPolicyTests: XCTestCase {
                        7 * 24 * 60 * 60)
         XCTAssertEqual(AtriaHistoricalRetentionPolicy.production.maximumRawBytes,
                        512 * 1024 * 1024)
+        XCTAssertEqual(AtriaHistoricalRetentionPolicy.candidateHorizonDays, [90, 30, 7])
+    }
+
+    func testSizeBasedHorizonPicksNinetyThirtyOrSevenDays() {
+        let cap = AtriaHistoricalRetentionPolicy.production.maximumRawBytes
+        XCTAssertEqual(
+            AtriaHistoricalRetentionPolicy.resolvedHorizonDays(
+                storedRawBytes: 20 * 1_024 * 1_024,
+                coverageDays: 7
+            ),
+            90
+        )
+        XCTAssertEqual(
+            AtriaHistoricalRetentionPolicy.resolvedHorizonDays(
+                storedRawBytes: 80 * 1_024 * 1_024,
+                coverageDays: 7
+            ),
+            30
+        )
+        XCTAssertEqual(
+            AtriaHistoricalRetentionPolicy.resolvedHorizonDays(
+                storedRawBytes: 400 * 1_024 * 1_024,
+                coverageDays: 7
+            ),
+            7
+        )
+        XCTAssertEqual(
+            AtriaHistoricalRetentionPolicy.resolvedHorizonDays(
+                storedRawBytes: 3 * cap,
+                coverageDays: 7
+            ),
+            7
+        )
+        XCTAssertEqual(
+            AtriaHistoricalRetentionPolicy.policy(
+                storedRawBytes: 20 * 1_024 * 1_024,
+                coverageDays: 7
+            ).rawHorizon,
+            90 * 24 * 60 * 60
+        )
     }
 
     func testHardCapPressureChoosesOldestRemainingSealedChunks() {
@@ -99,6 +139,20 @@ final class AtriaHistoricalRetentionPolicyTests: XCTestCase {
             XCTAssertEqual(plan.blockedActiveBytes, dailyBytes)
             XCTAssertGreaterThan(plan.candidates.count, 0)
         }
+    }
+
+    func testCompactionUsesSizeBasedHorizonInsteadOfAFixedSevenDayPolicy() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/HistoricalArchive.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains("AtriaHistoricalRetentionPolicy.policy("))
+        XCTAssertTrue(source.contains("storedRawBytes: storedRawBytes"))
+        XCTAssertTrue(source.contains("horizon_days=%d"))
+        XCTAssertFalse(source.contains("policy: .production,"))
     }
 
     private func chunk(_ id: String,

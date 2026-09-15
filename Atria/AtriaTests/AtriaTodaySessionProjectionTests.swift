@@ -178,9 +178,10 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
                        "The Insights tile must not count unrelated Today highlights")
 
         XCTAssertTrue(source.contains("showInsights = true"))
-        XCTAssertTrue(source.contains("AtriaInsightsCardHost(store: store)"),
-                      "Today should reuse the canonical ranked-insights card")
+        XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet("),
+                      "Today should open the naked Insights sheet, not a nested card host")
         XCTAssertTrue(source.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
+        XCTAssertTrue(source.contains("style: .compactBar"))
         XCTAssertTrue(source.contains("AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory"))
     }
 

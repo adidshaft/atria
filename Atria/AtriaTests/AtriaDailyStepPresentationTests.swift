@@ -721,7 +721,27 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
     }
 
-    func testHeldFloorIsNotDroppedByASmallerRestartedLiveSegment() {
+    func testFreshCumulativeLiveIMUTicksRaiseTheHeldFloor() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 7_857,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 7_845,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 7_857)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
+    }
+
+    func testLiveGyroWinsOverAContaminatedHeldFloorAfterRestart() {
         let now = day.addingTimeInterval(14 * 3_600)
         let heldAt = now.addingTimeInterval(-120)
         let value = AtriaDailyStepPresentation.resolve(
@@ -736,9 +756,10 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 7_845)
-        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
-        XCTAssertEqual(value.capturedAt, heldAt)
+        XCTAssertEqual(value.count, 10)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
     }
 
     func testHeldFloorDoesNotCrossANewCycle() {
@@ -777,7 +798,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         ))
     }
 
-    func testHeldFloorPersistLiveCoordinateLoadsWithoutCycleKey() {
+    func testHeldFloorPersistLiveCoordinateRequiresMatchingCycleKey() {
         let suiteName = "AtriaHeldDailyStepFloorLiveCoordinate.\(UUID().uuidString)"
         let suite = UserDefaults(suiteName: suiteName)!
         defer { suite.removePersistentDomain(forName: suiteName) }
@@ -788,17 +809,18 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             capturedAt: captured,
             defaults: suite
         )
-        XCTAssertEqual(
+        XCTAssertNil(
             AtriaHeldDailyStepFloor.load(
                 cycleStart: cycle,
                 now: captured.addingTimeInterval(120),
                 defaults: suite
             )?.count,
-            7_845
+            "an unkeyed live coordinate must not attach to a new wake"
         )
         AtriaHeldDailyStepFloor.persistLiveCoordinate(
-            count: 10,
-            capturedAt: captured.addingTimeInterval(60),
+            count: 7_845,
+            capturedAt: captured,
+            cycleStart: cycle,
             defaults: suite
         )
         XCTAssertEqual(
@@ -807,9 +829,179 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                 now: captured.addingTimeInterval(120),
                 defaults: suite
             )?.count,
-            7_845,
-            "a restarted IMU segment must not lower the in-cycle floor"
+            7_845
         )
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle.addingTimeInterval(86_400),
+                now: captured.addingTimeInterval(86_400 + 120),
+                defaults: suite
+            )?.count,
+            "confirming last night's sleep must not keep yesterday's floor"
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 10,
+            capturedAt: captured.addingTimeInterval(60),
+            cycleStart: cycle,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            10,
+            "cycle-scoped gyro must replace a leftover thousands-high floor"
+        )
+    }
+
+    func testGyroOnlySessionStepsDropsAccelerometerPeakContamination() {
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 0, incomingGyro: 4), 4)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 4, incomingGyro: 12), 12)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 0), 0)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 12), 12)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 48, incomingGyro: 50), 50)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 50, incomingGyro: 48), 50)
+    }
+
+    func testHeldFloorRejectsImplausibleAccelerometerJumpAndReplacesIt() {
+        let suiteName = "AtriaHeldDailyStepFloorContamination.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_849,
+            capturedAt: captured,
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 14_269,
+            capturedAt: captured.addingTimeInterval(40),
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            7_849,
+            "6k sitting accel peaks in 40s must not raise Today"
+        )
+    }
+
+    func testHeldFloorReplacesAlreadyPersistedAccelerometerContamination() {
+        let suiteName = "AtriaHeldDailyStepFloorReplaceContamination.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 14_269,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_849,
+            capturedAt: captured.addingTimeInterval(2),
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            7_849
+        )
+    }
+
+    func testPresentationDropsHugeHeldFloorWhenLiveGyroIsTiny() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 18,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 9_482,
+            heldCapturedAt: now.addingTimeInterval(-40),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 18)
+        XCTAssertEqual(value.source, .live)
+    }
+
+    func testHeldFloorReplacesCycleScopedGyroContaminationWithoutTrustedPrefix() {
+        let suiteName = "AtriaHeldDailyStepFloorTinyGyro.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 9_482,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 18,
+            capturedAt: captured.addingTimeInterval(2),
+            cycleStart: cycle,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            18
+        )
+    }
+
+    func testNewCycleClearsTheHeldFloor() {
+        let suiteName = "AtriaHeldDailyStepFloorNewCycle.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        AtriaHeldDailyStepFloor.persist(
+            count: 9_482,
+            cycleStart: cycle,
+            capturedAt: cycle.addingTimeInterval(3_600),
+            defaults: suite
+        )
+        let next = cycle.addingTimeInterval(24 * 3_600)
+        AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: next, defaults: suite)
+        XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: cycle, defaults: suite))
+        XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: next, defaults: suite))
+    }
+
+    func testPresentationDropsImplausibleHeldFloorWhenLiveGyroIsNearby() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 7_849,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 14_269,
+            heldCapturedAt: now.addingTimeInterval(-40),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 7_849)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
     }
 
     // 2026-08-01: a prior cycle that ended overnight (before 6 AM today) or

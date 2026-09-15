@@ -31,6 +31,62 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
             .contains(where: { $0.relativePath.contains("raw-v2") }))
     }
 
+    /// One-chunk retirement must not SHA-256 the 72/134 MB sibling JSONL.
+    func testTargetedFileVerificationDoesNotHashSiblingSealedChunks() throws {
+        let root = try temporaryDirectory()
+        let keep = root.appendingPathComponent("historical-archive.jsonl")
+        let poison = root.appendingPathComponent("segments/old.jsonl")
+        try FileManager.default.createDirectory(
+            at: poison.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("keep-row\n".utf8).write(to: keep)
+        try Data("poison-row\n".utf8).write(to: poison)
+        let ids = IdentifierSource(["legacy-keep", "legacy-poison", "active-a"])
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: ids.next
+        )
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [keep, poison], now: now)
+        let catalog = try store.snapshot()
+        let sealed = catalog.chunks.filter { $0.state == .sealed }
+        XCTAssertEqual(sealed.count, 2)
+        let keepChunk = try XCTUnwrap(sealed.first {
+            $0.relativePath == "historical-archive.jsonl"
+        })
+        let poisonChunk = try XCTUnwrap(sealed.first {
+            $0.relativePath == "segments/old.jsonl"
+        })
+        try store.recordSealedMetadata(
+            chunkID: keepChunk.id,
+            rowCount: 1,
+            firstTimestamp: now,
+            lastTimestamp: now,
+            contentSHA256: try AtriaHistoricalJSONLInput.identity(at: keep).sha256
+        )
+        try store.recordSealedMetadata(
+            chunkID: poisonChunk.id,
+            rowCount: 1,
+            firstTimestamp: now,
+            lastTimestamp: now,
+            contentSHA256: try AtriaHistoricalJSONLInput.identity(at: poison).sha256
+        )
+        try Data("poison-row-corrupted\n".utf8).write(to: poison)
+
+        XCTAssertThrowsError(try store.snapshotVerifiedAgainstFiles()) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalArchiveCatalogStore.StoreError,
+                .catalogFileMismatch
+            )
+        }
+        let targeted = try store.snapshotVerifiedAgainstFiles(chunkIDs: [keepChunk.id])
+        XCTAssertEqual(
+            targeted.chunks.first { $0.id == keepChunk.id }?.contentSHA256,
+            try AtriaHistoricalJSONLInput.identity(at: keep).sha256
+        )
+    }
+
     func testSizeRotationSealsOldChunkAndNeverReopensItsFilename() throws {
         let root = try temporaryDirectory()
         let ids = IdentifierSource(["active-a", "active-b", "active-c"])

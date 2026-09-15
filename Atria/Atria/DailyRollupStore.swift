@@ -725,6 +725,12 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
 
     var id: Date { day }
 
+    /// Nightly efficiency when the composite stored one; missing nights stay
+    /// off the glance bars instead of becoming a zero.
+    var sleepEfficiencyPercent: Double? {
+        sleepScore?.components.first(where: { $0.component == .efficiency })?.percent
+    }
+
     private enum CodingKeys: String, CodingKey {
         case day
         case tzOffsetMinutes
