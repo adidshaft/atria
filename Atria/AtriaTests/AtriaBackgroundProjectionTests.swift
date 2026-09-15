@@ -762,6 +762,13 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         )
         XCTAssertEqual(processing.elapsed, 8 * 60)
         XCTAssertEqual(processing.iterations, 32)
+        let desk = SessionStore.archiveCompactionConvergingBudget(
+            remainingLease: 15 * 60,
+            maximumElapsed: 15 * 60,
+            maximumIterations: 1
+        )
+        XCTAssertEqual(desk.elapsed, 15 * 60 - 2)
+        XCTAssertEqual(desk.iterations, 1)
     }
 
     func testAutomaticFullBackgroundProjectionFailsClosedInRelease() {
@@ -3412,8 +3419,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
-        XCTAssertTrue(sessions.contains("? 8 * 60"),
-                      "desk sitting needs an 8-minute lease to finish a 33 MB JSONL")
+        XCTAssertTrue(sessions.contains("? 15 * 60"),
+                      "desk sitting needs a 15-minute lease to finish one 33 MB JSONL")
+        XCTAssertTrue(sessions.contains("deskLargeIdle ? 1 : 32"),
+                      "do not start a second 33 MB JSONL after the first retire")
         XCTAssertTrue(sessions.contains(": 180"),
                       "typing still uses a 180s lease for ≤8 MB shards")
         XCTAssertFalse(sessions.contains(
@@ -3542,6 +3551,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(body.contains(
             "singleSourceRetention: overdueSceneBackgroundFastPath"
         ), "sitting/lock must not stream every aggregate or hash sibling JSONL")
+        XCTAssertTrue(body.contains("shouldContinue: maintenanceShouldContinue"),
+                      "a 33 MB JSONL parse must abort when the sitting lease ends")
         XCTAssertTrue(body.contains("loadCommittedChunkIDs("),
                       "BGProcessing still uses the strict committed index")
         XCTAssertTrue(archive.contains(
