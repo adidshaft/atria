@@ -6375,6 +6375,24 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastRediscoveryAt: nil,
             now: now
         ), .rearm)
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: now.addingTimeInterval(-7),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .none, "compact IMU gaps under 8s must not rearm")
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: now.addingTimeInterval(-9),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .rearm, "8s of IMU silence must rearm 6A/51 on the live HR link")
     }
 
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
@@ -11774,6 +11792,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "never-seen frames on a qualified owner are a silent stream")
         XCTAssertFalse(refresh(frameAge: 5),
                        "fresh frames must not be refreshed")
+        XCTAssertFalse(refresh(frameAge: 8),
+                       "exactly eight seconds is still inside the live window")
+        XCTAssertTrue(refresh(frameAge: 9),
+                      "nine seconds of IMU silence must same-link refresh")
         XCTAssertFalse(refresh(activationAge: 8),
                        "the 12-second activation lease must hold")
         XCTAssertTrue(refresh(activationAge: 15),
@@ -11883,7 +11905,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let armBody = String(source[armStart.lowerBound..<armEnd.lowerBound])
         XCTAssertTrue(armBody.contains("reason: \"arm\""),
-                      "IMU silence must be evaluated on arm, not after the first 20s sleep")
+                      "IMU silence must be evaluated on arm, not after the first poll sleep")
+        XCTAssertTrue(armBody.contains("r10LivenessWatchdogInterval"),
+                      "the watchdog must poll faster than the 8s stale gate")
+        XCTAssertFalse(armBody.contains("Task.sleep(for: .seconds(Self.r10LivenessStaleInterval))"))
 
         let liveStart = try XCTUnwrap(source.range(
             of: "private func evaluateR10Liveness(now: Date = Date(), reason: String)"

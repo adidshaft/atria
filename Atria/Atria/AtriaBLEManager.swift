@@ -30018,7 +30018,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieCCCDToggleAt: Date?
     private var lastR10ZombieTxRediscoverAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
-    nonisolated static let r10LivenessStaleInterval: TimeInterval = 20
+    /// Compact IMU arrives about once a second. Eight seconds of silence is a
+    /// real drop; twenty used to add a full extra poll before 6A/51.
+    nonisolated static let r10LivenessStaleInterval: TimeInterval = 8
+    /// Faster than stale so a drop is seen within one stale window, not two.
+    nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 3
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
     nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 45
     nonisolated static let r10NotifyRepairMinimumInterval: TimeInterval = 30
@@ -30762,12 +30766,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard r10LivenessTask == nil else { return }
         r10LivenessTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ interval_s=%.0f",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ poll_s=%.0f stale_s=%.0f",
                           reason,
+                          Self.r10LivenessWatchdogInterval,
                           Self.r10LivenessStaleInterval)
             self.evaluateR10Liveness(now: Date(), reason: "arm")
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Self.r10LivenessStaleInterval))
+                try? await Task.sleep(for: .seconds(Self.r10LivenessWatchdogInterval))
                 guard !Task.isCancelled else { return }
                 self.evaluateR10Liveness(now: Date(), reason: "periodic")
             }
