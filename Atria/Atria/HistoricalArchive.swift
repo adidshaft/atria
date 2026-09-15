@@ -9738,7 +9738,7 @@ enum HistoricalArchive {
                     bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
                 )
             }
-            let retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
+            var retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
             var preferredIdleShadowCutoverID: String?
             if overdueSceneBackgroundFastPath {
                 // Lock stays on ≤8 MB. Sitting Today may take isolated ≤48 MB
@@ -9777,22 +9777,20 @@ enum HistoricalArchive {
                     preferredIdleShadowCutoverID = AtriaHistoricalShadowCompactionCoordinator
                         .orderedIdleRetirementCandidates(
                             shadowed,
-                            preferLarge: preferLargeIdle,
+                            preferLarge: false,
                             limit: 1
                         ).first?.id
-                    // A shadow-committed isolated JSONL only needs cutover
-                    // plus unlink. Rebuilding it from 33 MB source on live
-                    // BLE is what kept sealed storage at multiple GB.
-                    if preferredIdleShadowCutoverID != nil {
-                        retirementCandidates = []
-                    } else {
-                        retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
-                            .orderedIdleRetirementCandidates(
-                                skipFiltered,
-                                preferLarge: preferLargeIdle,
-                                limit: preferLargeIdle ? 1 : 3
-                            )
-                    }
+                    // Always keep isolated ≤8 MB JSONL on the build list.
+                    // Emptying it for a 33 MB shadow cutover burned the lease
+                    // on duplicateIdentity and never drained the 140 small
+                    // shards that still retire.
+                    retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                        .sittingIdleBuildCandidates(
+                            skipFiltered,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            includeOneLarge: preferLargeIdle
+                        )
                 } else {
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
                         .sceneBackgroundRetirementCandidates(
@@ -9834,6 +9832,81 @@ enum HistoricalArchive {
                               retention.uncommittedCandidates.first?.id ?? "none",
                               retirementCandidates.first?.id ?? "none",
                               retirementCandidates.first?.storedByteCount ?? 0)
+            }
+            if reason == "overdue_idle",
+               let chunkID = preferredIdleShadowCutoverID {
+                do {
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    let cutover = try publishAndVerifyHistoricalConsumerCutover(
+                        chunkID: chunkID,
+                        archiveRoot: archiveDirectory,
+                        catalogStore: store,
+                        configuration: configuration,
+                        shouldContinue: maintenanceShouldContinue,
+                        singleSourceRetention: overdueSceneBackgroundFastPath
+                    )
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    let retired = try retirementExecutor.retire(
+                        chunkID: cutover.chunkID,
+                        shouldContinue: maintenanceShouldContinue
+                    )
+                    AtriaDebugLog("ATRIADBG archive_retention status=retired_verified_raw reason=%@ chunk=%@ completion_generation=%llu receipts=%d reused=%d source_deleted=%d catalog_retired=%d",
+                                  reason,
+                                  cutover.chunkID,
+                                  cutover.completionGeneration,
+                                  cutover.receiptCount,
+                                  cutover.reusedReceiptCount,
+                                  retired.sourceDeleted ? 1 : 0,
+                                  retired.catalogRetired ? 1 : 0)
+                    return CompactionResult(
+                        status: "ok_verified_consumer_cutover_raw_retired",
+                        scannedRows: 0,
+                        keptRows: 0,
+                        compactedRows: 0,
+                        summaryRows: 0,
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                    )
+                } catch {
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    if AtriaHistoricalShadowCompactionCoordinator
+                        .isPermanentIdleCutoverSkip(error) {
+                        AtriaHistoricalShadowCompactionCoordinator
+                            .recordIdleCutoverSkip(chunkID: chunkID)
+                        preferredIdleShadowCutoverID = nil
+                        retirementCandidates.removeAll { $0.id == chunkID }
+                    } else {
+                        AtriaDebugLog("ATRIADBG archive_retention status=deferred_verified_consumer_cutover reason=%@ chunk=%@ error=%@ raw_retained=1 retirement_authority=0",
+                                      reason,
+                                      chunkID,
+                                      String(describing: error))
+                        return CompactionResult(
+                            status: "deferred_verified_consumer_cutover_required",
+                            scannedRows: 0,
+                            keptRows: 0,
+                            compactedRows: 0,
+                            summaryRows: 0,
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                            error: String(describing: error)
+                        )
+                    }
+                }
             }
             let outcome = AtriaHistoricalShadowCompactionCoordinator.commitFirst(
                 candidates: retirementCandidates
@@ -9896,11 +9969,13 @@ enum HistoricalArchive {
             case .noCandidates:
                 let status: String
                 if let chunkID = preferredIdleShadowCutoverID
-                    ?? retention.shadowCommittedCandidateIDs.first(where: {
+                    ?? (reason == "overdue_idle"
+                        ? nil
+                        : retention.shadowCommittedCandidateIDs.first(where: {
                     !AtriaHistoricalShadowCompactionCoordinator
                         .idleCutoverSkipChunkIDs()
                         .contains($0)
-                }) {
+                })) {
                     guard maintenanceShouldContinue() else {
                         return maintenanceAuthorityRevokedCompactionResult(
                             bytesBefore: Int(clamping: retention.plan.rawBytesBefore),

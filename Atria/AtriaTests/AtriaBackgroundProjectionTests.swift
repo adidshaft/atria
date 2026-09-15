@@ -3528,8 +3528,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ), "lock and typing stay on ≤8 MB JSONL")
         XCTAssertTrue(body.contains("sittingIdleChunkByteCap()"),
                       "desk sitting may retire isolated ≤48 MB JSONL")
+        XCTAssertTrue(body.contains("sittingIdleBuildCandidates("),
+                      "sitting idle must drain isolated ≤8 MB JSONL even when a 33 MB shadow cutover is pending")
         XCTAssertTrue(body.contains("preferredIdleShadowCutoverID"),
-                      "sitting idle must unlink a shadow-committed 33 MB JSONL instead of parsing it again")
+                      "sitting idle may unlink a shadow-committed JSONL before rebuilding")
         XCTAssertTrue(body.contains("preferLargeIdle"),
                       "desk sitting prefers one isolated 33 MB JSONL; typing keeps small shards")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),

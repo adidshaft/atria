@@ -195,6 +195,31 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         return Array(ordered.prefix(max(0, limit)))
     }
 
+    /// Sitting Today tries cheap isolated ≤8 MB JSONL first so a 33 MB
+    /// `duplicateIdentity` cutover cannot starve the 140 small shards that
+    /// still retire. Desk sitting may still append one isolated 33 MB file
+    /// after those small candidates.
+    static func sittingIdleBuildCandidates(
+        _ isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        includeOneLarge: Bool,
+        smallLimit: Int = 3
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let small = orderedIdleRetirementCandidates(
+            isolatedUnskipped.filter { $0.storedByteCount <= smallChunkBytes },
+            preferLarge: false,
+            limit: smallLimit
+        )
+        guard includeOneLarge else { return small }
+        let large = orderedIdleRetirementCandidates(
+            isolatedUnskipped.filter { $0.storedByteCount > smallChunkBytes },
+            preferLarge: true,
+            limit: 1
+        )
+        let smallIDs = Set(small.map(\.id))
+        return small + large.filter { !smallIDs.contains($0.id) }
+    }
+
     /// A 126 KB July shard that overlaps the 134 MB monolith fails shadow on
     /// this install and burns the sitting lease. Skip it; later isolated
     /// shards can still retire.

@@ -105,6 +105,31 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testSittingIdleBuildCandidatesTrySmallFilesBeforeOneLarge() {
+        var tiny = chunk(id: "raw-2mb", createdAt: now.addingTimeInterval(-30 * 86_400))
+        tiny.byteCount = 2_000_000
+        var small = chunk(id: "raw-4mb", createdAt: now.addingTimeInterval(-40 * 86_400))
+        small.byteCount = 4_194_313
+        var large = chunk(id: "raw-33mb", createdAt: now.addingTimeInterval(-50 * 86_400))
+        large.byteCount = 33_555_830
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.sittingIdleBuildCandidates(
+                [large, small, tiny],
+                smallChunkBytes: 8 * 1024 * 1024,
+                includeOneLarge: true
+            ).map(\.id),
+            [tiny.id, small.id, large.id]
+        )
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.sittingIdleBuildCandidates(
+                [large, small, tiny],
+                smallChunkBytes: 8 * 1024 * 1024,
+                includeOneLarge: false
+            ).map(\.id),
+            [tiny.id, small.id]
+        )
+    }
+
     func testIdleRetirementSkipsShardsThatOverlapTheMonolith() {
         let start = now.addingTimeInterval(-80 * 86_400)
         var monolith = boundedChunk(
