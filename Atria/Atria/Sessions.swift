@@ -1345,6 +1345,9 @@ struct SavedSession: Codable, Identifiable {
     /// epochs preserve only the alignment needed by staging and review.
     var recoveredMotionEpochs: [AtriaRecoveredMotionEpoch]? = nil
     var strapStepResearchCount: Int? = nil
+    /// Gyro-cadence coordinate for this saved session. Older files have only
+    /// `strapStepResearchCount`, which may be an accelerometer-peak leftover.
+    var gyroCadenceResearchSteps: Int? = nil
     var strapStepResearchAgreement: Double? = nil
     var strapStepResearchState: String? = nil
     var sleepWakeResearchState: String? = nil
@@ -2400,7 +2403,7 @@ struct SavedSession: Codable, Identifiable {
     /// floor differencing conserves the exact session total across adjacent
     /// day slices and avoids counting the whole session on both days.
     func attributedStrapSteps(within interval: DateInterval) -> Int {
-        let total = max(0, strapStepResearchCount ?? 0)
+        let total = max(0, gyroCadenceResearchSteps ?? strapStepResearchCount ?? 0)
         let sessionDuration = end.timeIntervalSince(start)
         guard total > 0, sessionDuration > 0 else { return 0 }
         let clippedStart = Swift.max(start, interval.start)
@@ -28182,6 +28185,10 @@ final class SessionStore: ObservableObject {
         let existingStrapSteps = existing.strapStepResearchCount.flatMap { $0 >= 0 ? $0 : nil }
         merged.strapStepResearchCount = monotonicOptionalCount(incomingStrapSteps,
                                                                existingStrapSteps)
+        let incomingGyroSteps = incoming.gyroCadenceResearchSteps.flatMap { $0 >= 0 ? $0 : nil }
+        let existingGyroSteps = existing.gyroCadenceResearchSteps.flatMap { $0 >= 0 ? $0 : nil }
+        merged.gyroCadenceResearchSteps = monotonicOptionalCount(incomingGyroSteps,
+                                                                existingGyroSteps)
         let incomingCheckpointIsWeaker = incomingStrapSteps.map { incoming in
             existingStrapSteps.map { incoming < $0 } ?? false
         } ?? (existingStrapSteps != nil)
@@ -37593,6 +37600,7 @@ final class SessionStore: ObservableObject {
         // already-attached, checked in-window evidence without any disk read.
         clipped.recoveredMotionEpochs = recoveredMotionEpochs
         clipped.strapStepResearchCount = source.strapStepResearchCount
+        clipped.gyroCadenceResearchSteps = source.gyroCadenceResearchSteps
         clipped.strapStepResearchAgreement = source.strapStepResearchAgreement
         clipped.strapStepResearchState = source.strapStepResearchState
         clipped.sleepWakeResearchState = source.sleepWakeResearchState
