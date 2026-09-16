@@ -130,6 +130,22 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testSittingIdlePicksSmallestIsolatedLargeFileWhenSmallShardsAreGone() {
+        var mid = chunk(id: "raw-8mb", createdAt: now.addingTimeInterval(-40 * 86_400))
+        mid.byteCount = 8_515_342
+        var large = chunk(id: "raw-33mb", createdAt: now.addingTimeInterval(-50 * 86_400))
+        large.byteCount = 33_555_830
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.sittingIdleBuildCandidates(
+                [large, mid],
+                smallChunkBytes: 8 * 1024 * 1024,
+                includeOneLarge: true
+            ).map(\.id),
+            [mid.id],
+            "an 8.5 MB isolated shard must finish before a 33 MB parse holds already_running"
+        )
+    }
+
     func testSittingIdleDoesNotStartLargeJSONLWhileSmallFilesRemain() {
         var tiny = chunk(id: "raw-2mb", createdAt: now.addingTimeInterval(-30 * 86_400))
         tiny.byteCount = 2_000_000

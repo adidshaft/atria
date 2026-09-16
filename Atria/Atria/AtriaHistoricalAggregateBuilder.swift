@@ -68,7 +68,15 @@ enum AtriaHistoricalAggregateBuilder {
                       materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = [],
                       shouldContinue: () -> Bool = { true }) throws -> FileBuildResult {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { throw BuildError.sourceMissing }
-        let identity = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
+        let identity: AtriaHistoricalJSONLInput.Identity
+        do {
+            identity = try AtriaHistoricalJSONLInput.identity(
+                at: sourceURL,
+                shouldContinue: shouldContinue
+            )
+        } catch AtriaHistoricalJSONLInput.InputError.maintenanceAuthorityRevoked {
+            throw BuildError.maintenanceAuthorityRevoked
+        }
         return try build(
             sourceURL: sourceURL,
             chunkID: chunkID,
