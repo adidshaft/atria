@@ -6529,6 +6529,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .none, "healthy assembled seconds must not rearm on a 2s 0x33 trickle")
     }
 
+    func testIMURecoveryPersistedAgeKeepsTriggerSilenceNotPostWriteFreshness() {
+        XCTAssertEqual(
+            AtriaBLEManager.imuRecoveryPersistedIMUAge(
+                evidenceAge: 42,
+                connectionAge: 3
+            ),
+            42
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.imuRecoveryPersistedIMUAge(
+                evidenceAge: nil,
+                connectionAge: 12
+            ),
+            12
+        )
+        XCTAssertNil(
+            AtriaBLEManager.imuRecoveryPersistedIMUAge(
+                evidenceAge: nil,
+                connectionAge: nil
+            )
+        )
+    }
+
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let staleFrame = now.addingTimeInterval(-61)
@@ -12080,6 +12103,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("6a51"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessEvidenceAt"),
                       "silent 6A/51 must use compact-second evidence, not only raw 0x33")
+        XCTAssertTrue(refreshBody.contains("imuRecoveryTriggerSnapshot"),
+                      "6A/51 must stamp trigger IMU silence, not post-write freshness")
+        XCTAssertTrue(refreshBody.contains("imuAge: recoveryAges.imuAge"),
+                      "the post-write persist must reuse the trigger IMU age")
         XCTAssertTrue(refreshBody.contains("heartRateEpochAllowsIMURefresh"),
                       "IMU 6A/51 must treat a fresh HR sample as a live epoch")
 

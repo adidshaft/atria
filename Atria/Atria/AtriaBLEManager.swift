@@ -30959,6 +30959,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            !stream5.isNotifying {
             peripheral.setNotifyValue(true, for: stream5)
         }
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
@@ -30985,32 +30986,62 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           Cmd.workoutRawCaptureDurationMilliseconds)
             self.persistLastIMURecovery(
                 command: "6a51",
-                action: "same_link_no_disconnect_no_proof_no_3f"
+                action: "same_link_no_disconnect_no_proof_no_3f",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
             )
         }
         return true
+    }
+
+    /// 6A/51 restarts IMU. Stamp the silence that triggered recovery, not
+    /// the post-write frames that would make `imu_recovery_hr_stayed_up=0`.
+    nonisolated static func imuRecoveryPersistedIMUAge(
+        evidenceAge: TimeInterval?,
+        connectionAge: TimeInterval?
+    ) -> TimeInterval? {
+        evidenceAge ?? connectionAge
+    }
+
+    private func imuRecoveryTriggerSnapshot(now: Date) -> (
+        heartRateNotifying: Bool,
+        heartRateAge: TimeInterval?,
+        imuAge: TimeInterval?
+    ) {
+        let evidenceAge = currentR10LivenessEvidenceAt(now: now).map {
+            now.timeIntervalSince($0)
+        }
+        let connectionAge = connectedAt.map { max(0, now.timeIntervalSince($0)) }
+        return (
+            heartRateCharacteristic?.isNotifying == true,
+            (lastAcceptedHRAt ?? lastRawHRNotificationAt).map { now.timeIntervalSince($0) },
+            Self.imuRecoveryPersistedIMUAge(
+                evidenceAge: evidenceAge,
+                connectionAge: connectionAge
+            )
+        )
     }
 
     private func persistLastIMURecovery(
         command: String,
         action: String,
         now: Date = Date(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        heartRateNotifying: Bool? = nil,
+        heartRateAge: TimeInterval? = nil,
+        imuAge: TimeInterval? = nil
     ) {
-        let hrAge = (lastAcceptedHRAt ?? lastRawHRNotificationAt).map {
-            now.timeIntervalSince($0)
-        }
-        let imuAge = currentR10LivenessEvidenceAt(now: now).map {
-            now.timeIntervalSince($0)
-        }
+        let snapshot = imuRecoveryTriggerSnapshot(now: now)
         Self.persistLastIMURecovery(
             command: command,
             action: action,
             now: now,
             defaults: defaults,
-            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
-            heartRateAge: hrAge,
-            imuAge: imuAge
+            heartRateNotifying: heartRateNotifying ?? snapshot.heartRateNotifying,
+            heartRateAge: heartRateAge ?? snapshot.heartRateAge,
+            imuAge: imuAge ?? snapshot.imuAge
         )
     }
 
@@ -31142,11 +31173,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: Self.protectedR10ActivationCountKey)
         defaults.set("qualified_silent_stream_refresh",
                      forKey: RadioDefaults.passiveR10Status)
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
         persistLastIMURecovery(
             command: "6a51",
             action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
             now: now,
-            defaults: defaults
+            defaults: defaults,
+            heartRateNotifying: recoveryAges.heartRateNotifying,
+            heartRateAge: recoveryAges.heartRateAge,
+            imuAge: recoveryAges.imuAge
         )
         lastR10RecoveryRearmAt = now
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
@@ -31199,7 +31234,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           companions)
             self.persistLastIMURecovery(
                 command: "6a51",
-                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect"
+                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
             )
         }
         return true
@@ -31296,11 +31335,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(connectedAt.timeIntervalSince1970,
                      forKey: Self.protectedR10ShortBurstRetryConnectionAtKey)
         defaults.set("short_burst_retry_started", forKey: RadioDefaults.passiveR10Status)
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
         persistLastIMURecovery(
             command: "6a51",
             action: "paced_pair_same_link_no_3f_no_reconnect",
             now: now,
-            defaults: defaults
+            defaults: defaults,
+            heartRateNotifying: recoveryAges.heartRateNotifying,
+            heartRateAge: recoveryAges.heartRateAge,
+            imuAge: recoveryAges.imuAge
         )
         // Give the retry its own complete density window. Keeping the original
         // deadline would leave fewer than 75 possible 1 Hz records after the
@@ -31359,7 +31402,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           self.protectedR10FramesAfterActivation)
             self.persistLastIMURecovery(
                 command: "6a51",
-                action: "paced_pair_same_link_no_3f_no_reconnect"
+                action: "paced_pair_same_link_no_3f_no_reconnect",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
             )
         }
         return true
