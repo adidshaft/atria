@@ -312,6 +312,30 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: AtriaCompactIMULiveDiagnostics.samplesKey), 1)
     }
 
+    func testCompactGyroSecondDiagnosticsSeparateSkipFromScore() {
+        AtriaCompactIMULiveDiagnostics.resetDiagnosticsForTests()
+        let now = Date(timeIntervalSince1970: 1_800_000_200)
+        AtriaCompactIMULiveDiagnostics.noteCompactGyroSecond(
+            skippedSitting: true,
+            meanDps: 1.2,
+            now: now
+        )
+        AtriaCompactIMULiveDiagnostics.noteCompactGyroSecond(
+            skippedSitting: false,
+            meanDps: 86,
+            now: now.addingTimeInterval(1)
+        )
+        let defaults = UserDefaults.standard
+        XCTAssertFalse(defaults.bool(forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey))
+        XCTAssertEqual(
+            defaults.double(forKey: AtriaCompactIMULiveDiagnostics.lastScoredMeanKey),
+            86,
+            accuracy: 0.01
+        )
+        XCTAssertEqual(defaults.integer(forKey: AtriaCompactIMULiveDiagnostics.skippedSittingCountKey), 1)
+        XCTAssertEqual(defaults.integer(forKey: AtriaCompactIMULiveDiagnostics.scoredSecondsCountKey), 1)
+    }
+
     func testFreshSittingUsesRecentLowRotation() {
         AtriaCompactIMULiveDiagnostics.resetDiagnosticsForTests()
         let now = Date(timeIntervalSince1970: 1_800_000_100)

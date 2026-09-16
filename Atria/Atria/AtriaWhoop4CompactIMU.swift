@@ -278,6 +278,10 @@ enum AtriaCompactIMULiveDiagnostics {
     static let peak60Key = "atria.compactIMU.lastRotationPeak60Dps"
     static let atKey = "atria.compactIMU.lastRotationAt"
     static let samplesKey = "atria.compactIMU.lastRotationSamples"
+    static let lastSecondSkippedKey = "atria.compactIMU.lastSecondSkippedSitting"
+    static let lastScoredMeanKey = "atria.compactIMU.lastScoredMeanDps"
+    static let skippedSittingCountKey = "atria.compactIMU.skippedSittingSeconds"
+    static let scoredSecondsCountKey = "atria.compactIMU.scoredSeconds"
 
     private static let lock = NSLock()
     private static var lastWriteAt: Date?
@@ -337,6 +341,30 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.set(rotationRate.count, forKey: samplesKey)
     }
 
+    /// Assembled compact seconds, not native packets. A 175 dps flick in
+    /// one packet must not look like a scored walk second.
+    static func noteCompactGyroSecond(
+        skippedSitting: Bool,
+        meanDps: Double,
+        now: Date = Date()
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(skippedSitting, forKey: lastSecondSkippedKey)
+        defaults.set(now.timeIntervalSince1970, forKey: atKey)
+        if skippedSitting {
+            defaults.set(
+                defaults.integer(forKey: skippedSittingCountKey) + 1,
+                forKey: skippedSittingCountKey
+            )
+        } else {
+            defaults.set(meanDps, forKey: lastScoredMeanKey)
+            defaults.set(
+                defaults.integer(forKey: scoredSecondsCountKey) + 1,
+                forKey: scoredSecondsCountKey
+            )
+        }
+    }
+
     /// Foreground overdue retention may run one ≤8 MB chunk only while the
     /// live compact IMU says the wrist is sitting. A walk (≥12 dps gate)
     /// must not compete with archive I/O.
@@ -353,6 +381,10 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.removeObject(forKey: peak60Key)
         defaults.removeObject(forKey: atKey)
         defaults.removeObject(forKey: samplesKey)
+        defaults.removeObject(forKey: lastSecondSkippedKey)
+        defaults.removeObject(forKey: lastScoredMeanKey)
+        defaults.removeObject(forKey: skippedSittingCountKey)
+        defaults.removeObject(forKey: scoredSecondsCountKey)
     }
 
     static func isFreshSitting(

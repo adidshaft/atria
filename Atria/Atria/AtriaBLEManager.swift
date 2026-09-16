@@ -48187,6 +48187,11 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             sessionCount: strapStepResearchCount,
             dayBaseline: strapStepResearchDayBaseline
         )
+        let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: persistCount,
+            capturedAt: now
+        )
         guard Self.shouldPublishLiveStrapStepResearch(
             currentCount: strapStepResearchCount,
             publishedCount: liveStrapStepResearchCount,
@@ -48200,11 +48205,6 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepResearchCumulativeCount, cumulative)
         assignIfChanged(\.liveStrapStepResearchTodayCount,
                         strapStepResearchCycleStart == nil ? todayCount : cycleCount)
-        let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
-        AtriaHeldDailyStepFloor.persistLiveGyroToday(
-            count: persistCount,
-            capturedAt: liveStrapStepCountCapturedAt ?? now
-        )
         if persistCount > 0 {
             AtriaHeldDailyStepFloor.persistLiveCoordinate(
                 count: persistCount,

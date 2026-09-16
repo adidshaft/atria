@@ -1764,6 +1764,15 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                 rotationMagnitudes: rotationMagnitudes,
                 accelerationMagnitudes: frame.acceleration.map(\.magnitude)
             )
+            if frame.deviceClock == .compactAssembled {
+                let mean = rotationMagnitudes.reduce(0, +)
+                    / Double(rotationMagnitudes.count)
+                AtriaCompactIMULiveDiagnostics.noteCompactGyroSecond(
+                    skippedSitting: skipSittingCompact,
+                    meanDps: mean,
+                    now: receivedAt ?? Date()
+                )
+            }
             if !skipSittingCompact {
                 _ = gyroCadenceState.ingest(
                     deviceTimestamp: frame.deviceTimestamp,
