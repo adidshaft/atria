@@ -21331,6 +21331,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
 
+        if let rebindSource = Self.strapStepLedgerUnhandedRebindSource(
+            currentSessionID: liveSessionID,
+            nextSessionID: record.id,
+            hasPersistedLedger: lastStrapStepLedgerSavedRawSteps > 0
+                || lastStrapStepLedgerSavedGyroCadenceResearchSteps > 0
+                || lastStrapStepLedgerSavedSegmentSteps > 0
+        ) {
+            strapStepLedgerUnhandedRestoreRebindSourceSegmentID = rebindSource
+        }
         liveSessionID = record.id
         liveSessionEventTimeZoneIdentifier = record.eventTimeZoneIdentifier ?? TimeZone.current.identifier
         sessionStart = first.t
@@ -21408,6 +21417,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let duration = last.t.timeIntervalSince(first.t)
         AtriaDebugLog("ATRIADBG active_session_journal status=restored reason=%@ samples=%d rr_values=%d duration_s=%.0f age_s=%.0f label=%@",
               reason, session.count, rrArchive.count, duration, payload.age, captureLabel)
+        persistStrapStepLedgerIfNeeded(reason: "journal_restore_rebind", force: true)
     }
 
     private func persistActiveSessionJournalIfNeeded(reason: String,
@@ -47806,6 +47816,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             return ledger
         }
         return liveGyroToday
+    }
+
+    /// Journal restore runs after the ledger adopt and replaces `liveSessionID`.
+    /// Without this rebind, every later checkpoint throws `mismatchedSegment`.
+    nonisolated static func strapStepLedgerUnhandedRebindSource(
+        currentSessionID: UUID,
+        nextSessionID: UUID,
+        hasPersistedLedger: Bool
+    ) -> UUID? {
+        guard hasPersistedLedger, currentSessionID != nextSessionID else { return nil }
+        return currentSessionID
     }
 
     nonisolated static func strapStepLedgerCheckpointDelay(
