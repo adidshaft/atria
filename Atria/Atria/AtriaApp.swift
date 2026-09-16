@@ -1050,22 +1050,32 @@ struct AtriaApp: App {
     /// 5.5 GB of sealed raw on 2026-09-15 with zero retired chunks: the
     /// 7/30/90-day policy never ran because BGProcessing waited while the
     /// app stayed foregrounded. An overdue scene-background lease is 25s —
-    /// enough for one verified chunk — and revokes if the user comes back.
+    /// enough for one verified ≤8 MB chunk — and revokes if the user comes
+    /// back. Desk sitting (compact IMU under 8 dps) uses the 180s idle
+    /// lease instead so isolated 24–48 MB shards can finish while locked;
+    /// bluetooth-central keeps the process after the system background
+    /// task expires.
     private func offerOverdueSceneBackgroundRetention() {
+        let sittingDesk = AtriaCompactIMULiveDiagnostics
+            .shouldUseSittingIdleRetentionLease()
+        let reason = sittingDesk ? "overdue_idle" : "scene_background"
         var retentionTask = UIBackgroundTaskIdentifier.invalid
         retentionTask = UIApplication.shared.beginBackgroundTask(
             withName: "Atria overdue retention"
         ) { [self] in
-            store.invalidateArchiveCompactionBGProcessingLease(
-                reason: "scene_background_expired"
-            )
+            if !(sittingDesk
+                 && AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention()) {
+                store.invalidateArchiveCompactionBGProcessingLease(
+                    reason: "scene_background_expired"
+                )
+            }
             if retentionTask != .invalid {
                 UIApplication.shared.endBackgroundTask(retentionTask)
                 retentionTask = .invalid
             }
         }
         guard let lease = store.beginArchiveCompactionBGProcessingLeaseIfSafe(
-            reason: "scene_background"
+            reason: reason
         ) else {
             SessionStore.recordIdleRetentionSkip(reason: "lease_denied")
             if retentionTask != .invalid {
@@ -1075,12 +1085,12 @@ struct AtriaApp: App {
             return
         }
         store.compactHistoricalArchiveIfUseful(
-            reason: "scene_background",
+            reason: reason,
             backgroundLease: lease
         ) { [self] _ in
             store.endArchiveCompactionBGProcessingLease(
                 lease,
-                reason: "scene_background"
+                reason: reason
             )
             if retentionTask != .invalid {
                 UIApplication.shared.endBackgroundTask(retentionTask)

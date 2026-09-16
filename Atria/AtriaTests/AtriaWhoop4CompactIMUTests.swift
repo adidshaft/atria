@@ -358,6 +358,9 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap(now: now),
             AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes
         )
+        XCTAssertTrue(
+            AtriaCompactIMULiveDiagnostics.shouldUseSittingIdleRetentionLease(now: now)
+        )
         AtriaCompactIMULiveDiagnostics.note(
             rotationRate: [AtriaR10MotionFrame.Vector3(x: 18, y: 0, z: 0)],
             now: now.addingTimeInterval(1),
@@ -369,6 +372,11 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             ),
             AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes,
             "typing must not start a 32–48 MB JSONL on live BLE"
+        )
+        XCTAssertFalse(
+            AtriaCompactIMULiveDiagnostics.shouldUseSittingIdleRetentionLease(
+                now: now.addingTimeInterval(1)
+            )
         )
     }
 

@@ -398,6 +398,12 @@ enum AtriaCompactIMULiveDiagnostics {
         return sittingIdleLargeChunkBytes
     }
 
+    /// Isolated 24–48 MB JSONL is only safe at a desk. Lock and Today both
+    /// use this so a 43% unplugged phone can keep draining those shards.
+    static func shouldUseSittingIdleRetentionLease(now: Date = Date()) -> Bool {
+        sittingIdleChunkByteCap(now: now) > sittingIdleSmallChunkBytes
+    }
+
     /// One-chunk overdue retention may run while the wrist is at a desk.
     /// `isFreshSitting` is too strict: a 28 dps typing mean and a 380 dps
     /// flick look like a walk. Stale IMU is also safe — nothing to fight.
