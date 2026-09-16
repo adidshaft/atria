@@ -1001,6 +1001,21 @@ def emit_offline_sync_preferences():
     print(f"imu_recovery_command={pref(prefs, 'radio.lastIMURecoveryCommand', 'none') or 'none'}")
     print(f"imu_recovery_action={pref(prefs, 'radio.lastIMURecoveryAction', 'none') or 'none'}")
     print(f"imu_recovery_age_s={imu_recovery_age:.1f}")
+    imu_recovery_hr_age = pref(prefs, "radio.lastIMURecoveryHRAge")
+    imu_recovery_imu_age = pref(prefs, "radio.lastIMURecoveryIMUAge")
+    print(f"imu_recovery_hr_notifying={bool_int(pref(prefs, 'radio.lastIMURecoveryHRNotifying'))}")
+    print(f"imu_recovery_hr_age_s={float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1:.1f}")
+    print(f"imu_recovery_imu_age_s={float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1:.1f}")
+    imu_hr_age_n = float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1.0
+    imu_imu_age_n = float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1.0
+    print(f"imu_recovery_hr_stayed_up={bool_int(imu_imu_age_n > 4 and 0 <= imu_hr_age_n <= 15)}")
+    live_hr_at = pref(prefs, "radio.liveHRSampleAt")
+    live_imu_at = pref(prefs, "radio.liveIMUFrameAt")
+    live_hr_age = max(0.0, now - float(live_hr_at)) if isinstance(live_hr_at, (int, float)) and live_hr_at > 0 else -1.0
+    live_imu_age = max(0.0, now - float(live_imu_at)) if isinstance(live_imu_at, (int, float)) and live_imu_at > 0 else -1.0
+    print(f"live_hr_notifying={bool_int(pref(prefs, 'radio.liveHRNotifying'))}")
+    print(f"live_hr_sample_age_s={live_hr_age:.1f}")
+    print(f"live_imu_frame_age_s={live_imu_age:.1f}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
     print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
     compact_rot_at = pref(prefs, "compactIMU.lastRotationAt")
