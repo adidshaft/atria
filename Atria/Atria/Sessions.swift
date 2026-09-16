@@ -27679,6 +27679,11 @@ final class SessionStore: ObservableObject {
             backgroundLease: backgroundLease
         )
         Self.archiveCompactionInFlight = true
+        Self.recordArchiveCompactionAttempt(
+            status: "in_flight",
+            reason: reason,
+            now: now
+        )
         var pinned: [(start: Date, end: Date)] = confirmedSleeps.map { ($0.start, $0.end) }
         pinned.append(contentsOf: confirmedWorkouts.map { ($0.start, $0.end) })
         let pinnedWindows = pinned

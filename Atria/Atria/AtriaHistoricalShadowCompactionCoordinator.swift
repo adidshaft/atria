@@ -236,8 +236,9 @@ struct AtriaHistoricalShadowCompactionCoordinator {
 
     /// Sitting Today tries cheap isolated ≤8 MB JSONL first so a 33 MB
     /// parse cannot starve the remaining small shards. Desk sitting may
-    /// append one isolated 33 MB file only after those small candidates
-    /// are gone.
+    /// append one isolated >8 MB file only after those small candidates
+    /// are gone, smallest first, so an 8.5 MB shard can finish inside the
+    /// sitting lease instead of hashing the largest 33 MB file.
     static func sittingIdleBuildCandidates(
         _ isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
         smallChunkBytes: UInt64,
@@ -252,7 +253,7 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         guard includeOneLarge else { return small }
         let large = orderedIdleRetirementCandidates(
             isolatedUnskipped.filter { $0.storedByteCount > smallChunkBytes },
-            preferLarge: true,
+            preferLarge: false,
             limit: 1
         )
         let smallIDs = Set(small.map(\.id))
@@ -305,7 +306,8 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         oversizedByteCount: UInt64
     ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
         let oversized = catalog.chunks.filter {
-            $0.state == .sealed && $0.storedByteCount > oversizedByteCount
+            $0.state == .sealed
+                && max($0.storedByteCount, $0.byteCount) > oversizedByteCount
         }
         return candidates.filter { chunk in
             guard let first = chunk.firstTimestamp, let last = chunk.lastTimestamp else {
