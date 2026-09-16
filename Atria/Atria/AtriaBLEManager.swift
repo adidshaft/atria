@@ -2858,6 +2858,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastStrapStepLedgerSavedRawSteps = 0
     private var lastStrapStepLedgerSavedSegmentSteps = 0
     private var lastStrapStepLedgerSavedGyroCadenceResearchSteps = 0
+    private var lastStrapStepLedgerSegmentID: UUID?
     /// Cumulative gyro total before the active ledger segment. Combined with
     /// the queue-owned segment value this is today's strap-only coordinate:
     /// new IMU ticks add on top of the restored floor instead of competing
@@ -47510,6 +47511,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             self.lastStrapStepLedgerSavedSegmentSteps = record.segmentSteps
             self.lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 record.segmentGyroCadenceResearchSteps ?? 0
+            self.lastStrapStepLedgerSegmentID = record.segmentID
             self.strapStepLedgerGyroCumulativePrefix = max(
                 0,
                 (record.cumulativeGyroCadenceResearchSteps ?? 0)
@@ -47618,7 +47620,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let segmentStartedAt = sessionStart
         let deviceTimestamp = strapStepResearchDeviceTimestamp
         let state = strapStepResearchState
-        let unhandedRebindingSourceSegmentID = strapStepLedgerUnhandedRestoreRebindSourceSegmentID
+        let unhandedRebindingSourceSegmentID =
+            Self.strapStepLedgerUnhandedRebindSource(
+                currentSessionID: lastStrapStepLedgerSegmentID ?? liveSessionID,
+                nextSessionID: liveSessionID,
+                hasPersistedLedger: lastStrapStepLedgerSegmentID != nil
+            ) ?? strapStepLedgerUnhandedRestoreRebindSourceSegmentID
         let savedAt = Date()
         Task.detached(priority: .utility) { [weak self] in
             let result: Result<(AtriaStrapStepLedger.Record, URL?), Error> = Result {
@@ -47672,6 +47679,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         case let .success((record, quarantinedMalformedURL)):
             strapStepLedgerConsecutiveSaveFailures = 0
             strapStepLedgerLastFailureDescription = nil
+            lastStrapStepLedgerSegmentID = record.segmentID
             if liveSessionID == segmentID {
                 if strapStepLedgerUnhandedRestoreRebindSourceSegmentID != nil {
                     strapStepLedgerUnhandedRestoreRebindSourceSegmentID = nil
@@ -47913,6 +47921,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             )
             lastStrapStepLedgerSavedRawSteps = rotated.segmentRawSteps
             lastStrapStepLedgerSavedSegmentSteps = rotated.segmentSteps
+            lastStrapStepLedgerSegmentID = rotated.segmentID
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 rotated.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
@@ -47983,6 +47992,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             )
             lastStrapStepLedgerSavedRawSteps = resegmented.segmentRawSteps
             lastStrapStepLedgerSavedSegmentSteps = resegmented.segmentSteps
+            lastStrapStepLedgerSegmentID = resegmented.segmentID
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 resegmented.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
