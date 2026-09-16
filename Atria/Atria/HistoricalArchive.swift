@@ -9800,12 +9800,18 @@ enum HistoricalArchive {
                             includeOneLarge: includeOneLarge
                         )
                 } else {
-                    let finishable = AtriaHistoricalShadowCompactionCoordinator
-                        .sceneBackgroundRetirementCandidates(
+                    // A 25s lock used to pick a 126 KB shard that overlaps the
+                    // 134 MB monolith, then stall identity verification for
+                    // the whole sitting `already_running` window.
+                    let isolated = AtriaHistoricalShadowCompactionCoordinator
+                        .isolatedFinishableIdleCandidates(
                             retention.uncommittedCandidates,
-                            maximumByteCount: idleCap
+                            catalog: catalog,
+                            maximumByteCount: idleCap,
+                            skippedIDs: AtriaHistoricalShadowCompactionCoordinator
+                                .idleCutoverSkipChunkIDs()
                         )
-                    retirementCandidates = Array(finishable.prefix(1))
+                    retirementCandidates = Array(isolated.prefix(1))
                 }
             } else {
                 let sealed = catalog.chunks.filter { $0.state == .sealed }
@@ -10062,6 +10068,10 @@ enum HistoricalArchive {
                     }
                 } else if !retention.missingSourceCandidateIDs.isEmpty {
                     status = "deferred_retention_source_unavailable"
+                } else if overdueSceneBackgroundFastPath {
+                    // Fast path skips high-volume diagnostics, so `.none` used
+                    // to look like the 512 MB cap was already satisfied.
+                    status = "deferred_idle_no_isolated_small"
                 } else {
                     switch highVolumeReport?.plan.state {
                     case .protectedActiveException:
@@ -10092,7 +10102,15 @@ enum HistoricalArchive {
                                   failure.chunkID,
                                   failure.message)
                 }
-                return CompactionResult(status: "deferred_shadow_verification_failed",
+                AtriaHistoricalShadowCompactionCoordinator
+                    .recordPermanentIdleCutoverSkips(failures)
+                let skipped = failures.contains {
+                    AtriaHistoricalShadowCompactionCoordinator
+                        .isPermanentIdleCutoverSkipMessage($0.message)
+                }
+                return CompactionResult(status: skipped
+                                            ? "deferred_idle_cutover_skipped"
+                                            : "deferred_shadow_verification_failed",
                                         scannedRows: 0,
                                         keptRows: 0,
                                         compactedRows: 0,
@@ -10107,6 +10125,8 @@ enum HistoricalArchive {
                                   failure.chunkID,
                                   failure.message)
                 }
+                AtriaHistoricalShadowCompactionCoordinator
+                    .recordPermanentIdleCutoverSkips(precedingFailures)
                 let build = value.build
                 let result = value.result
                 AtriaDebugLog("ATRIADBG archive_retention status=shadow_committed reason=%@ chunk=%@ rows=%d raw_bytes=%llu aggregate=%@ manifest=%@ reused=%d raw_retained=1",
