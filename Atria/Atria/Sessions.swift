@@ -27203,7 +27203,7 @@ final class SessionStore: ObservableObject {
                 batteryState: batteryState,
                 batteryLevel: batteryLevel,
                 allowsSeriousThermal: false,
-                minimumBatteryLevel: isOverdueIdle ? 0.25 : 0.5
+                minimumBatteryLevel: (isOverdueIdle || isOverdueSceneBackground) ? 0.15 : 0.5
             )
     }
 
