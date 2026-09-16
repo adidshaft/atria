@@ -10067,10 +10067,15 @@ enum HistoricalArchive {
                         )
                     }
                 } else if overdueSceneBackgroundFastPath {
-                    // Isolated ≤8 MB JSONL is gone or overlaps 72/134. Ghost
-                    // missing catalog rows must not look like the drain is
-                    // blocked; sitting idle still has 24–48 MB shards.
-                    status = "deferred_idle_no_isolated_small"
+                    // Isolated unique JSONL is gone, or it only overlaps 72/134.
+                    // Once the 512 MB cap is met, do not spin sitting idle
+                    // every 12s on a live BLE link. Leftover monolith overlaps
+                    // wait for a non-foreground pass.
+                    if retention.plan.hardCapSatisfied {
+                        status = "noop_retention_within_bounds"
+                    } else {
+                        status = "deferred_idle_no_isolated_small"
+                    }
                 } else if !retention.missingSourceCandidateIDs.isEmpty {
                     status = "deferred_retention_source_unavailable"
                 } else {
