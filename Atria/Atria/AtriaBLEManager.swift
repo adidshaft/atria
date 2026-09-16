@@ -30979,6 +30979,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: Self.protectedR10ActivationCountKey)
         defaults.set("qualified_silent_stream_refresh",
                      forKey: RadioDefaults.passiveR10Status)
+        persistLastIMURecovery(
+            command: "6a51",
+            action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
+            now: now,
+            defaults: defaults
+        )
         lastR10RecoveryRearmAt = now
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             defer { self?.protectedR10CommandSequenceTask = nil }
@@ -31113,6 +31119,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(connectedAt.timeIntervalSince1970,
                      forKey: Self.protectedR10ShortBurstRetryConnectionAtKey)
         defaults.set("short_burst_retry_started", forKey: RadioDefaults.passiveR10Status)
+        persistLastIMURecovery(
+            command: "6a51",
+            action: "paced_pair_same_link_no_3f_no_reconnect",
+            now: now,
+            defaults: defaults
+        )
         // Give the retry its own complete density window. Keeping the original
         // deadline would leave fewer than 75 possible 1 Hz records after the
         // stale decision, making successful qualification unreachable.
@@ -47560,13 +47572,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             strapStepLedgerSavePending = strapStepLedgerSavePending || force
             return
         }
-        let gyroCadenceResearchSteps = currentGyroCadenceResearchSessionSteps()
+        let gyroCadenceResearchSteps = Self.strapStepLedgerGyroStepsForCheckpoint(
+            pipelineGyroSteps: currentGyroCadenceResearchSessionSteps(),
+            sessionGyroSteps: strapStepResearchCount
+        )
         let segmentSteps = Self.strapStepLedgerSegmentStepsForCheckpoint(
             liveGyroSteps: strapStepResearchCount,
             persistedSegmentSteps: lastStrapStepLedgerSavedSegmentSteps
         )
+        let segmentRawSteps = Self.strapStepLedgerRawStepsForCheckpoint(
+            liveRawSteps: strapStepResearchPeakCount,
+            persistedRawSteps: lastStrapStepLedgerSavedRawSteps
+        )
         guard Self.strapStepLedgerHasUnsavedResearchSteps(
-            currentRawSteps: strapStepResearchPeakCount,
+            currentRawSteps: segmentRawSteps,
             persistedRawSteps: lastStrapStepLedgerSavedRawSteps,
             currentGyroSteps: gyroCadenceResearchSteps,
             persistedGyroSteps: lastStrapStepLedgerSavedGyroCadenceResearchSteps
@@ -47587,7 +47606,6 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         strapStepLedgerSaveInFlight = true
         let segmentID = liveSessionID
         let segmentStartedAt = sessionStart
-        let segmentRawSteps = strapStepResearchPeakCount
         let deviceTimestamp = strapStepResearchDeviceTimestamp
         let state = strapStepResearchState
         let unhandedRebindingSourceSegmentID = strapStepLedgerUnhandedRestoreRebindSourceSegmentID
@@ -47755,6 +47773,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         persistedSegmentSteps: Int
     ) -> Int {
         max(0, liveGyroSteps, persistedSegmentSteps)
+    }
+
+    nonisolated static func strapStepLedgerRawStepsForCheckpoint(
+        liveRawSteps: Int,
+        persistedRawSteps: Int
+    ) -> Int {
+        max(0, liveRawSteps, persistedRawSteps)
+    }
+
+    nonisolated static func strapStepLedgerGyroStepsForCheckpoint(
+        pipelineGyroSteps: Int,
+        sessionGyroSteps: Int
+    ) -> Int {
+        max(0, pipelineGyroSteps, sessionGyroSteps)
     }
 
     /// Same-day UserDefaults gyro is the walk that failed to checkpoint when

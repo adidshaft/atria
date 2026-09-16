@@ -248,8 +248,8 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertThrowsError(try AtriaStrapStepLedger.checkpoint(
             segmentID: segment,
             segmentStartedAt: now.addingTimeInterval(-3_600),
-            segmentSteps: liveGyro,
-            segmentRawSteps: 12_714,
+            segmentSteps: leftover.segmentSteps,
+            segmentRawSteps: 400,
             deviceTimestamp: 9_001,
             state: "r10_live_preliminary",
             gyroCadenceResearchSteps: liveGyro,
@@ -263,12 +263,17 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
             liveGyroSteps: liveGyro,
             persistedSegmentSteps: leftover.segmentSteps
         )
+        let segmentRawSteps = AtriaBLEManager.strapStepLedgerRawStepsForCheckpoint(
+            liveRawSteps: 400,
+            persistedRawSteps: leftover.segmentRawSteps
+        )
         XCTAssertEqual(segmentSteps, 6_420)
+        XCTAssertEqual(segmentRawSteps, 12_714)
         let saved = try AtriaStrapStepLedger.checkpoint(
             segmentID: segment,
             segmentStartedAt: now.addingTimeInterval(-3_600),
             segmentSteps: segmentSteps,
-            segmentRawSteps: 12_714,
+            segmentRawSteps: segmentRawSteps,
             deviceTimestamp: 9_001,
             state: "r10_live_preliminary",
             gyroCadenceResearchSteps: liveGyro,
@@ -531,6 +536,20 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
                 persistedSegmentSteps: 6_420
             ),
             7_000
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerRawStepsForCheckpoint(
+                liveRawSteps: 400,
+                persistedRawSteps: 12_714
+            ),
+            12_714
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerGyroStepsForCheckpoint(
+                pipelineGyroSteps: 18,
+                sessionGyroSteps: 290
+            ),
+            290
         )
         XCTAssertEqual(
             AtriaBLEManager.strapStepLedgerGyroFloorForRestore(
