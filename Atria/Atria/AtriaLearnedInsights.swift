@@ -16,6 +16,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case readiness
         case yesterdayStrain
         case stackedRecovery
+        case easyLoadSleepDebt
     }
 
     let id: String
@@ -27,7 +28,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
 
     var systemImage: String {
         switch kind {
-        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread: return "moon.zzz.fill"
+        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread, .easyLoadSleepDebt: return "moon.zzz.fill"
         case .loadMismatch, .weeklyStrain, .yesterdayStrain: return "bolt.heart.fill"
         case .restingHRDrift: return "heart.fill"
         case .recoveryDrift, .readiness, .stackedRecovery: return "figure.walk"
@@ -43,6 +44,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         switch kind {
         case .sleepDebt: return "moon.stars.fill"
         case .weeklySleepDebt: return "moon.fill"
+        case .easyLoadSleepDebt: return "moon.zzz.fill"
         case .bedtimeSpread: return "clock.fill"
         case .recoveryDrift, .readiness: return "heart.circle.fill"
         case .stackedRecovery: return "square.stack.3d.up.fill"
@@ -72,7 +74,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
 
     var ringFamily: RingFamily {
         switch kind {
-        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread: return .sleep
+        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread, .easyLoadSleepDebt: return .sleep
         case .recoveryDrift, .readiness, .stackedRecovery, .hrvDrift, .restingHRDrift:
             return .recovery
         case .loadMismatch, .weeklyStrain, .yesterdayStrain: return .strain
@@ -95,6 +97,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .restingHRDrift: return 4
         case .sleepDebt: return 0
         case .weeklySleepDebt: return 1
+        case .easyLoadSleepDebt: return 0
         case .bedtimeSpread: return 2
         case .yesterdayStrain: return 0
         case .loadMismatch: return 1
@@ -117,6 +120,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         switch kind {
         case .sleepDebt: return isPositive ? "Covered" : "Short"
         case .weeklySleepDebt: return "Week"
+        case .easyLoadSleepDebt: return "Nights"
         case .loadMismatch: return isPositive ? "Cleared" : "Load"
         case .restingHRDrift: return isPositive ? "Calmer" : "Elevated"
         case .recoveryDrift: return isPositive ? "Up" : "Down"
@@ -280,6 +284,13 @@ enum AtriaLearnedInsights {
         }
         if let weekly = weeklySleepDebt(ordered: ordered, now: now, sleepNeedFallbackSeconds: fallbackNeed) {
             results.append(weekly)
+        }
+        if let easyLoad = easyLoadSleepDebt(
+            ordered: ordered,
+            now: now,
+            sleepNeedFallbackSeconds: fallbackNeed
+        ) {
+            results.append(easyLoad)
         }
         if let yesterday = yesterdayStrain(ordered: ordered, now: now) {
             results.append(yesterday)
@@ -445,6 +456,45 @@ enum AtriaLearnedInsights {
             kind: .weeklySleepDebt,
             headline: "\(hourText(total)) of sleep debt across recent nights",
             detail: "Across \(window.count) measured nights the shortfall adds up \(versus).",
+            isPositive: false,
+            asOf: now
+        )
+    }
+
+    /// Desk weeks still accumulate sleep debt. Strain floors of 6–8 hide that
+    /// the shortfall is nights, not workouts.
+    private static func easyLoadSleepDebt(
+        ordered: [DailyRollupStoreEntry],
+        now: Date,
+        sleepNeedFallbackSeconds: TimeInterval? = nil
+    ) -> AtriaLearnedInsight? {
+        let strains = Array(ordered.prefix(7).compactMap(\.strain))
+        guard strains.count >= 3 else { return nil }
+        let meanStrain = strains.reduce(0, +) / Double(strains.count)
+        guard meanStrain < 4 else { return nil }
+        let storedNeed = weeklyStoredSleepNeedSeconds(
+            ordered,
+            sleepNeedFallbackSeconds: sleepNeedFallbackSeconds
+        )
+        let window = Array(ordered.compactMap { entry -> Double? in
+            guard let slept = entry.sleepSeconds, slept > 0 else { return nil }
+            if let need = entry.sleepNeedSeconds ?? storedNeed, need > 0 {
+                return hours(need - slept)
+            }
+            return nil
+        }.prefix(7))
+        guard window.count >= 4 else { return nil }
+        let total = window.reduce(0, +)
+        guard total >= 6 else { return nil }
+        return AtriaLearnedInsight(
+            id: "easy-load-sleep-debt",
+            kind: .easyLoadSleepDebt,
+            headline: "Sleep debt is from nights, not load",
+            detail: String(
+                format: "Strain averaged %.1f over %d days while sleep is \(hourText(total)) short of need. Easy days are not paying that down.",
+                meanStrain,
+                strains.count
+            ),
             isPositive: false,
             asOf: now
         )
