@@ -430,6 +430,24 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertFalse(
             AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
                 deviceClock: .compactAssembled,
+                rotationMagnitudes: [80, 96, 88, 110, 86],
+                accelerationMagnitudes: stillAccel,
+                isFreshSitting: false
+            ),
+            "a walk-level wrist swing must score even when compact accel looks 1 g-still"
+        )
+        XCTAssertFalse(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
+                rotationMagnitudes: [48, 52, 44, 56, 50],
+                accelerationMagnitudes: stillAccel,
+                isFreshSitting: false
+            ),
+            "a slower walk in the 40–80 dps band must still score under still-looking compact gravity"
+        )
+        XCTAssertFalse(
+            AtriaR10MotionPipeline.shouldSkipSittingCompactGyroCadence(
+                deviceClock: .compactAssembled,
                 rotationMagnitudes: [18, 24, 21, 19, 22],
                 accelerationMagnitudes: walkingAccel,
                 isFreshSitting: true

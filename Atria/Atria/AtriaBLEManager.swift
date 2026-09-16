@@ -48201,6 +48201,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepResearchTodayCount,
                         strapStepResearchCycleStart == nil ? todayCount : cycleCount)
         let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: persistCount,
+            capturedAt: liveStrapStepCountCapturedAt ?? now
+        )
         if persistCount > 0 {
             AtriaHeldDailyStepFloor.persistLiveCoordinate(
                 count: persistCount,
