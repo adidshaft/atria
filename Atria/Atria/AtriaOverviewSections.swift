@@ -2598,6 +2598,18 @@ struct AtriaStrapStepLiveStatus: Equatable {
 
     var isLive: Bool { freshness == .live }
 
+    /// What to do when motion is not live. BLE can keep running in the
+    /// background (`bluetooth-central`); the wearer should not have to keep
+    /// Atria open. Closing official WHOOP and staying in range is the
+    /// actual radio hygiene. This is not a promise that silent seconds will
+    /// be reconstructed — 6A/51 re-arms the live stream going forward.
+    static let delayedMotionGuidance =
+        "Keep the phone nearby with Bluetooth on. Atria can stay in the background — you do not need to keep it open. Close the official WHOOP app if it is running."
+
+    var wearerGuidance: String? {
+        isLive ? nil : Self.delayedMotionGuidance
+    }
+
     var tileValue: String {
         if freshness == .unavailable, count <= 0 { return "--" }
         return isValidated ? "\(count)" : "~\(count)"
@@ -2625,6 +2637,34 @@ struct AtriaStrapStepLiveStatus: Equatable {
         if motionAge < 60 { return "motion \(max(1, Int(motionAge.rounded())))s ago" }
         if motionAge < 3_600 { return "motion \(max(1, Int((motionAge / 60).rounded())))m ago" }
         return "motion \(max(1, Int((motionAge / 3_600).rounded())))h ago"
+    }
+
+    /// Today glance line. A live IMU keeps the existing step-presentation
+    /// copy; a stall must not keep saying "Today so far · live".
+    func glanceDetail(liveFallback: String) -> String {
+        isLive ? liveFallback : tileDetail
+    }
+
+    /// Persistent Today/Home live-strip title. Heart rate can stay current
+    /// after IMU stalls; "Live" alone is the lie that hid those stalls.
+    func liveStripTitle(zoneLabel: String?, hasPulse: Bool) -> String {
+        if hasPulse, !isLive {
+            return zoneLabel.map { "HR live · \($0)" } ?? "HR live"
+        }
+        return zoneLabel.map { "Live · \($0)" } ?? "Live"
+    }
+
+    func liveStripStepSuffix(valueText: String, hasCount: Bool) -> String {
+        guard hasCount else { return "" }
+        return isLive ? " · \(valueText)" : " · \(valueText) held"
+    }
+
+    func liveStripStepAccessibility(count: Int) -> String {
+        guard count > 0 else { return "" }
+        if isLive {
+            return " \(count) strap steps."
+        }
+        return " \(count) strap steps held. \(lastMotionText)."
     }
 
     var tint: Color {
@@ -2761,7 +2801,9 @@ struct AtriaStrapStepsDetailSheet: View {
 
                     HStack(spacing: 10) {
                         statusRow(title: "Measurement",
-                                  value: presentation.detailText,
+                                  value: status.isLive
+                                    ? presentation.detailText
+                                    : status.tileDetail,
                                   systemImage: presentation.completeness == .complete
                                     ? "checkmark.seal.fill" : "waveform.path.ecg")
                         // "Saved today" printed presentation.valueText a third
@@ -2790,7 +2832,12 @@ struct AtriaStrapStepsDetailSheet: View {
                                 // forward-looking promise when the transport is a
                                 // terminal pure-HR fallback (motion won't sync in
                                 // this mode); the verified count above is unchanged.
-                                Text(presentation.motionAvailabilityFootnote
+                                // A stalled IMU must not keep promising that the
+                                // number "grows as you move" — silent seconds are
+                                // not reconstructed. Wearer guidance says what
+                                // actually keeps the live stream healthy.
+                                Text(status.wearerGuidance
+                                     ?? presentation.motionAvailabilityFootnote
                                      ?? (presentation.source == .live
                                          ? "Counting so far — grows as you move."
                                          : "Counted so far — fills in as your strap syncs."))
@@ -2800,7 +2847,8 @@ struct AtriaStrapStepsDetailSheet: View {
                         } else {
                             Text(presentation.detailText)
                                 .font(.caption.weight(.semibold))
-                            Text("Appears when reliable strap steps are available.")
+                            Text(status.wearerGuidance
+                                 ?? "Appears when reliable strap steps are available.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }

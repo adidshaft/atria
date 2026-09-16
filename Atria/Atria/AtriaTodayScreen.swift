@@ -4031,8 +4031,11 @@ private struct AtriaTodayLiveStatusHost: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayLiveStatusHost")
-        AtriaTodayLiveStatusStrip(live: liveStore.state,
-                                  pulse: pulseStore.state)
+        TimelineView(.periodic(from: .now, by: AtriaStrapStepLiveStatus.liveWindow)) { context in
+            AtriaTodayLiveStatusStrip(live: liveStore.state,
+                                      pulse: pulseStore.state,
+                                      now: context.date)
+        }
     }
 }
 
@@ -4046,12 +4049,24 @@ private struct AtriaTodayLiveGlanceTileHost: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayLiveGlanceTileHost")
+        if metric == .steps {
+            TimelineView(.periodic(from: .now, by: AtriaStrapStepLiveStatus.liveWindow)) { context in
+                glanceTile(now: context.date)
+            }
+        } else {
+            glanceTile(now: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func glanceTile(now: Date) -> some View {
         let live = liveStore.state
         if let item = Self.item(for: metric,
                                 live: live,
                                 layoutSize: layoutSize,
                                 showsDetail: showsDetail,
-                                trend: trend) {
+                                trend: trend,
+                                now: now) {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
     }
@@ -4060,18 +4075,27 @@ private struct AtriaTodayLiveGlanceTileHost: View {
                              live: AtriaHomeModel.CoreLiveState,
                              layoutSize: AtriaTodayGlanceItem.LayoutSize,
                              showsDetail: Bool,
-                             trend: [Double]) -> AtriaTodayGlanceItem? {
+                             trend: [Double],
+                             now: Date) -> AtriaTodayGlanceItem? {
         switch metric {
         case .steps:
             let steps = live.dailyStepPresentation
+            let motion = AtriaStrapStepLiveStatus.make(
+                count: live.strapStepResearchCount,
+                validationState: live.strapStepResearchState,
+                capturedAt: AtriaStrapStepLiveStatus.persistedMotionDate(),
+                now: now,
+                authorityQualified:
+                    AtriaWhoop4GravityCadenceStepModel
+                        .releaseDailyAuthorityQualified
+            )
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: steps.valueText,
-                                        detail: legendDetail(steps.detailText,
+                                        detail: legendDetail(motion.glanceDetail(liveFallback: steps.detailText),
                                                              showsDetail: showsDetail),
                                         systemImage: metric.systemImage,
-                                        tint: steps.count == nil ? .secondary
-                                            : (steps.completeness == .complete ? .green : .orange),
+                                        tint: steps.count == nil ? .secondary : motion.tint,
                                         layoutSize: layoutSize,
                                         trend: trend)
         case .calories:
@@ -4096,32 +4120,53 @@ private struct AtriaTodayLiveGlanceTileHost: View {
 private struct AtriaTodayLiveStatusStrip: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
     let pulse: AtriaHomeModel.HeroPulseState
+    let now: Date
 
     var body: some View {
         // One pill, not two (owner stack audit 2026-08-28): the zone is a
         // qualifier of the live pulse, so it rides inside the same pill as
         // "72 bpm · Z3" instead of claiming its own row space. A zone needs a
         // pulse — without one it would only repeat what the pill already says.
-        AtriaTodayLivePill(title: pulse.heartRateZone.map { "Live · \($0.compactLabel)" } ?? "Live",
+        // Motion freshness is a second truth on the same pill: HR can stay
+        // current after IMU stalls, and "Live" alone hid that.
+        AtriaTodayLivePill(title: liveStripTitle,
                            value: liveStatusText,
                            systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
                            tint: pulse.heartRateZone?.tint
                                ?? (pulse.heartRate > 0 ? .green : .secondary))
             .frame(maxWidth: .infinity)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")\(liveStepAccessibility)")
+            .accessibilityLabel("\(liveStripTitle). \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " \($0.spokenLabel)." } ?? "")\(liveStepAccessibility)")
+    }
+
+    private var motionStatus: AtriaStrapStepLiveStatus {
+        AtriaStrapStepLiveStatus.make(
+            count: live.strapStepResearchCount,
+            validationState: live.strapStepResearchState,
+            capturedAt: AtriaStrapStepLiveStatus.persistedMotionDate(),
+            now: now,
+            authorityQualified:
+                AtriaWhoop4GravityCadenceStepModel
+                    .releaseDailyAuthorityQualified
+        )
+    }
+
+    private var liveStripTitle: String {
+        motionStatus.liveStripTitle(zoneLabel: pulse.heartRateZone?.compactLabel,
+                                    hasPulse: pulse.heartRate > 0)
     }
 
     private var liveStepSuffix: String {
         let steps = live.dailyStepPresentation
-        guard let count = steps.count, count > 0 else { return "" }
-        return " · \(steps.valueText)"
+        return motionStatus.liveStripStepSuffix(
+            valueText: steps.valueText,
+            hasCount: (steps.count ?? 0) > 0
+        )
     }
 
     private var liveStepAccessibility: String {
         let steps = live.dailyStepPresentation
-        guard let count = steps.count, count > 0 else { return "" }
-        return " \(count) strap steps."
+        return motionStatus.liveStripStepAccessibility(count: steps.count ?? 0)
     }
 
     private var liveStatusText: String {
