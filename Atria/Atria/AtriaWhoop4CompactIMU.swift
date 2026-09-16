@@ -291,8 +291,11 @@ enum AtriaCompactIMULiveDiagnostics {
     /// Desk typing is ~10–40 dps mean with occasional flicks. A walk that
     /// should not compete with archive I/O is sustained ~80+ dps.
     static let archiveIOMeanCeilingDps = 80.0
-    /// A 32–48 MB JSONL parse on live BLE is only safe at a desk. Typing
-    /// (~10–40 dps) still retires isolated ≤8 MB shards.
+    /// Isolated ≤8 MB JSONL can retire during typing. Isolated 24–48 MB
+    /// files also may, once those small shards are gone:
+    /// `shouldIncludeLargeIdleChunk` keeps a 33 MB parse off the queue while
+    /// any isolated ≤8 MB remains. A walk (≥80 dps) stays on the small cap
+    /// and `isSafeForOneChunkRetention` refuses the pass entirely.
     static let largeArchiveIOMeanCeilingDps = 8.0
     static let sittingIdleSmallChunkBytes: UInt64 = 8 * 1024 * 1024
     static let sittingIdleLargeChunkBytes: UInt64 = 48 * 1024 * 1024
@@ -391,15 +394,17 @@ enum AtriaCompactIMULiveDiagnostics {
     }
 
     static func sittingIdleChunkByteCap(now: Date = Date()) -> UInt64 {
-        guard let mean = lastFreshMeanDps(now: now),
-              mean < largeArchiveIOMeanCeilingDps else {
+        guard let mean = lastFreshMeanDps(now: now) else {
+            return sittingIdleLargeChunkBytes
+        }
+        guard mean < archiveIOMeanCeilingDps else {
             return sittingIdleSmallChunkBytes
         }
         return sittingIdleLargeChunkBytes
     }
 
-    /// Isolated 24–48 MB JSONL is only safe at a desk. Lock and Today both
-    /// use this so a 43% unplugged phone can keep draining those shards.
+    /// Isolated 24–48 MB JSONL may run while compact IMU is under the walk
+    /// gate. Lock and Today share this so leftover 33 MB shards keep draining.
     static func shouldUseSittingIdleRetentionLease(now: Date = Date()) -> Bool {
         sittingIdleChunkByteCap(now: now) > sittingIdleSmallChunkBytes
     }

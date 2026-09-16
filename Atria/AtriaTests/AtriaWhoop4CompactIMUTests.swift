@@ -348,6 +348,12 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertFalse(AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention(
             now: now.addingTimeInterval(2)
         ), "a walk-level mean must keep archive I/O off the radio")
+        XCTAssertEqual(
+            AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap(
+                now: now.addingTimeInterval(2)
+            ),
+            AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+        )
         AtriaCompactIMULiveDiagnostics.resetDiagnosticsForTests()
         AtriaCompactIMULiveDiagnostics.note(
             rotationRate: [AtriaR10MotionFrame.Vector3(x: 0.6, y: 0, z: 0)],
@@ -370,10 +376,10 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap(
                 now: now.addingTimeInterval(1)
             ),
-            AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes,
-            "typing must not start a 32–48 MB JSONL on live BLE"
+            AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes,
+            "typing may retire isolated 33 MB once ≤8 MB isolated shards are gone"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AtriaCompactIMULiveDiagnostics.shouldUseSittingIdleRetentionLease(
                 now: now.addingTimeInterval(1)
             )

@@ -2324,6 +2324,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("protectedR10StabilityWindowIsProven"))
         XCTAssertTrue(body.contains("response_event_data_short_burst_retry_insufficient_density"))
         XCTAssertTrue(body.contains("response_event_data_retry_receiving_crc_valid"))
+        XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"),
+                       "short-burst IMU retry must not write 0x3F on a live HR link")
+        XCTAssertTrue(body.contains("Cmd.toggleIMUMode"))
+        XCTAssertTrue(body.contains("Cmd.startRawData"))
+        XCTAssertTrue(body.contains("paced_pair_same_link_no_3f_no_reconnect"))
     }
 
     func testInterruptedV9ProofSelectsFreshPureHRV10WithoutReplayingCommands() throws {
