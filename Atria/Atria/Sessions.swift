@@ -27201,7 +27201,7 @@ final class SessionStore: ObservableObject {
                 isLowPowerModeEnabled: isLowPowerModeEnabled,
                 batteryState: batteryState,
                 batteryLevel: batteryLevel,
-                allowsSeriousThermal: isOverdueIdle
+                allowsSeriousThermal: false
             )
     }
 
@@ -27367,7 +27367,7 @@ final class SessionStore: ObservableObject {
             expiresAt: Date().addingTimeInterval(leaseLifetime),
             cancellationToken: ArchiveCompactionCancellationToken(),
             allowsForeground: reason == "overdue_idle",
-            allowsSeriousThermal: reason == "overdue_idle"
+            allowsSeriousThermal: false
         )
         activeArchiveCompactionBGProcessingLease = lease
         UserDefaults.standard.removeObject(forKey: Self.archiveCompactionLastErrorKey)
