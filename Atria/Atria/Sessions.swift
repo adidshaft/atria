@@ -26996,6 +26996,11 @@ final class SessionStore: ObservableObject {
     private static let archiveCompactionIdleSkipReasonKey = "atria.archiveCompaction.lastIdleSkipReason"
     private static let archiveCompactionIdleSkipAtKey = "atria.archiveCompaction.lastIdleSkipAt"
     private static let archiveCompactionLastErrorKey = "atria.archiveCompaction.lastError"
+    /// Pull-summary `battery_level` is the WHOOP strap. Retention gates on
+    /// `UIDevice` phone battery; persist it so the two cannot be confused.
+    private static let phoneBatteryLevelKey = "atria.phoneBattery.level"
+    private static let phoneBatteryStateKey = "atria.phoneBattery.state"
+    private static let phoneBatteryAtKey = "atria.phoneBattery.at"
     private static let archiveCompactionOverdueAfter: TimeInterval = 7 * 24 * 60 * 60
     private static var archiveCompactionInFlight = false
     private static var archiveCompactionPressureProbeInFlight = false
@@ -27090,6 +27095,28 @@ final class SessionStore: ObservableObject {
         } else if status.hasPrefix("ok_") {
             defaults.removeObject(forKey: archiveCompactionLastErrorKey)
         }
+        recordPhoneBatterySnapshot(now: now, defaults: defaults)
+    }
+
+    /// Phone `UIDevice` battery, never WHOOP 2A19. Strap percent lives in
+    /// `atria.battery.level` and pull-summary `battery_level`.
+    nonisolated static func recordPhoneBatterySnapshot(
+        level: Float = UIDevice.current.batteryLevel,
+        state: UIDevice.BatteryState = UIDevice.current.batteryState,
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) {
+        defaults.set(level, forKey: phoneBatteryLevelKey)
+        let stateName: String
+        switch state {
+        case .unplugged: stateName = "unplugged"
+        case .charging: stateName = "charging"
+        case .full: stateName = "full"
+        case .unknown: stateName = "unknown"
+        @unknown default: stateName = "unknown"
+        }
+        defaults.set(stateName, forKey: phoneBatteryStateKey)
+        defaults.set(now.timeIntervalSince1970, forKey: phoneBatteryAtKey)
     }
 
     /// Expired idle leases still leave the worker running; minting a second
@@ -27116,6 +27143,7 @@ final class SessionStore: ObservableObject {
         case "deferred_catalog_warming",
              "deferred_idle_cutover_skipped",
              "deferred_idle_no_isolated_small",
+             "deferred_retention_source_unavailable",
              "ok_verified_consumer_cutover_raw_retired",
              "yielded_retention_progress":
             requiredAge = 12
@@ -27132,6 +27160,7 @@ final class SessionStore: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.set(reason, forKey: archiveCompactionIdleSkipReasonKey)
         defaults.set(now.timeIntervalSince1970, forKey: archiveCompactionIdleSkipAtKey)
+        recordPhoneBatterySnapshot(now: now, defaults: defaults)
     }
 
     /// Scene-background and sitting-Today idle retention are admitted only

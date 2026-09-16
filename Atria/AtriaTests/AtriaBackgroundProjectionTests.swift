@@ -129,9 +129,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(guarded(thermal: .nominal, lowPower: false, battery: .unplugged, level: 0.40))
     }
 
-    func testGuardFailsClosedOnUnknownBattery() {
-        // UIDevice reports -1 when the level is unknown; must not start.
-        XCTAssertFalse(guarded(thermal: .nominal, lowPower: false, battery: .unknown, level: -1.0))
+    func testGuardAllowsUnknownPhoneBattery() {
+        // UIDevice reports -1 when monitoring is off. That must not be read as
+        // a 0% phone. Strap 2A19 is a different key (`battery_level` in pulls).
+        XCTAssertTrue(guarded(thermal: .nominal, lowPower: false, battery: .unknown, level: -1.0))
     }
 
     func testConnectedRawPublicationYieldRequiresCoolActiveForeground() {
@@ -717,6 +718,30 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         )
     }
 
+    func testPhoneBatterySnapshotIsNotTheStrapPercent() {
+        let suite = "atria.phoneBattery.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        SessionStore.recordPhoneBatterySnapshot(
+            level: 0.82,
+            state: .unplugged,
+            now: Date(timeIntervalSince1970: 2_000_000_000),
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            defaults.float(forKey: "atria.phoneBattery.level"),
+            0.82,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.phoneBattery.state"), "unplugged")
+        XCTAssertEqual(
+            defaults.double(forKey: "atria.phoneBattery.at"),
+            2_000_000_000,
+            accuracy: 0.001
+        )
+        defaults.removePersistentDomain(forName: suite)
+    }
+
     func testOverdueArchiveCompactionIsADrainableBacklog() {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertTrue(SessionStore.archiveCompactionIsOverdue(lastRunAt: nil, now: now))
@@ -786,6 +811,11 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             lastStatus: "ok_verified_consumer_cutover_raw_retired",
             now: now
         ))
+        XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 12,
+            lastStatus: "deferred_retention_source_unavailable",
+            now: now
+        ), "ghost missing catalog rows must not stall sitting idle for 45s")
     }
 
     func testArchiveCompactionConvergingBudgetSpendsTheLiveLease() {
@@ -1111,11 +1141,11 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(compactionAdmitted(
             battery: .unplugged,
             level: 0.49
-        ))
-        XCTAssertFalse(compactionAdmitted(
+        ), "BGProcessing still uses the 50% phone-battery floor")
+        XCTAssertTrue(compactionAdmitted(
             battery: .unknown,
             level: -1
-        ))
+        ), "unknown UIDevice battery must not block overdue work")
         XCTAssertFalse(compactionAdmitted(exactOwner: true))
         XCTAssertFalse(compactionAdmitted(recoveredOwner: true))
     }
@@ -3169,6 +3199,23 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(app.contains(
             "archiveCompactionWorkerIsInFlight()"
         ), "an expired lease must not mint another while the first worker still runs")
+        let lockOfferStart = try XCTUnwrap(app.range(
+            of: "private func offerOverdueSceneBackgroundRetention()"
+        ))
+        let lockOfferEnd = try XCTUnwrap(app.range(
+            of: "private func offerOverdueIdleRetentionIfSafe()",
+            range: lockOfferStart.upperBound..<app.endIndex
+        ))
+        let lockOffer = String(app[lockOfferStart.lowerBound..<lockOfferEnd.lowerBound])
+        XCTAssertTrue(lockOffer.contains(
+            "shouldUseSittingIdleRetentionLease()"
+        ), "desk sitting on lock must use the 180s isolated 24–48 MB idle lease")
+        XCTAssertTrue(lockOffer.contains(
+            "sittingDesk ? \"overdue_idle\" : \"scene_background\""
+        ), "typing on lock stays on the 25s ≤8 MB path")
+        XCTAssertTrue(lockOffer.contains(
+            "isSafeForOneChunkRetention()"
+        ), "a desk-sitting 24 MB parse must survive the 30s background-task expiry")
     }
 
     func testRecoveredLifecycleRevocationAndBGLeaseRetirementPrecedeRestoreGuard()
@@ -3457,7 +3504,13 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ), "sitting Today leases must survive an active application state")
         XCTAssertTrue(sessions.contains(
             "minimumBatteryLevel: (isOverdueIdle || isOverdueSceneBackground) ? 0.15 : 0.5"
-        ), "one-chunk sitting/lock drain must not stall around 40% battery")
+        ), "one-chunk sitting/lock drain uses phone battery, never strap 2A19")
+        XCTAssertTrue(sessions.contains(
+            "batteryLevel: UIDevice.current.batteryLevel"
+        ), "archive compaction admits on phone battery, never WHOOP 2A19")
+        XCTAssertTrue(sessions.contains(
+            "atria.phoneBattery.level"
+        ), "pull-summary must show phone battery separately from strap battery_level")
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
@@ -3555,6 +3608,14 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             shadowRetire.lowerBound,
             missingSources.lowerBound,
             "a missing 72/134 MB catalog row must not block retiring a later verified chunk"
+        )
+        let noIsolated = try XCTUnwrap(body.range(
+            of: "status = \"deferred_idle_no_isolated_small\""
+        ))
+        XCTAssertLessThan(
+            noIsolated.lowerBound,
+            missingSources.lowerBound,
+            "ghost missing catalog rows must not hide empty isolated ≤8 MB as source_unavailable"
         )
         XCTAssertTrue(body.contains(
             "AtriaHistoricalGeneratedArtifactGC("

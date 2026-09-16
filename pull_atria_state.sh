@@ -1070,6 +1070,7 @@ def emit_battery_preferences():
     recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
     charging = charge_status in ("charging", "full")
     print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
+    print("battery_kind=strap")
     print(f"battery_level={int(level) if isinstance(level, int) else -1}")
     print(f"battery_source={source}")
     print(f"battery_age_s={age:.1f}")
@@ -1084,6 +1085,18 @@ def emit_battery_preferences():
     print(f"battery_drop_recent={bool_int(recent_drop)}")
     print(f"battery_drop_delta={drop_delta}")
     print(f"battery_drop_age_s={drop_age:.1f}")
+    phone_level = pref(prefs, "phoneBattery.level")
+    phone_state = pref(prefs, "phoneBattery.state", "missing") or "missing"
+    phone_at = pref(prefs, "phoneBattery.at")
+    phone_age = max(0.0, now - float(phone_at)) if isinstance(phone_at, (int, float)) and phone_at > 0 else -1.0
+    if isinstance(phone_level, (int, float)) and float(phone_level) >= 0:
+        fraction = float(phone_level)
+        phone_pct = int(round(fraction * 100)) if fraction <= 1.0 else int(fraction)
+    else:
+        phone_pct = -1
+    print(f"phone_battery_level={phone_pct}")
+    print(f"phone_battery_state={phone_state}")
+    print(f"phone_battery_age_s={phone_age:.1f}")
 
 def emit_motion_context_preferences():
     prefs_path = evidence / "preferences.plist"

@@ -10066,12 +10066,13 @@ enum HistoricalArchive {
                             error: String(describing: error)
                         )
                     }
+                } else if overdueSceneBackgroundFastPath {
+                    // Isolated ≤8 MB JSONL is gone or overlaps 72/134. Ghost
+                    // missing catalog rows must not look like the drain is
+                    // blocked; sitting idle still has 24–48 MB shards.
+                    status = "deferred_idle_no_isolated_small"
                 } else if !retention.missingSourceCandidateIDs.isEmpty {
                     status = "deferred_retention_source_unavailable"
-                } else if overdueSceneBackgroundFastPath {
-                    // Fast path skips high-volume diagnostics, so `.none` used
-                    // to look like the 512 MB cap was already satisfied.
-                    status = "deferred_idle_no_isolated_small"
                 } else {
                     switch highVolumeReport?.plan.state {
                     case .protectedActiveException:

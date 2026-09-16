@@ -2867,7 +2867,9 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "def emit_battery_preferences():",
             "battery_namespace=",
+            "battery_kind=strap",
             "battery_level=",
+            "phone_battery_level=",
             "battery_charge_status=",
             "battery_charge_age_s=",
             "battery_is_charging=",
