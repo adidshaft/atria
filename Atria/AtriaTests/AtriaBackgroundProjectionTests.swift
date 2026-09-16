@@ -630,7 +630,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             ),
             "idle retention is only for an overdue 7/30/90-day window"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             SessionStore.shouldAdmitAutomaticArchiveCompaction(
                 reason: "overdue_idle",
                 applicationIsBackground: false,
@@ -642,7 +642,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                 recoveredCycleEngaged: false,
                 compactionOverdue: true
             ),
-            "a 20 KB sitting retire must not wait for thermal serious to clear"
+            "sitting JSONL at thermal serious jetsammed the live BLE process"
         )
         XCTAssertFalse(
             SessionStore.shouldAdmitAutomaticArchiveCompaction(
@@ -1017,7 +1017,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                     isLowPowerModeEnabled: false,
                     allowsSeriousThermal: true
                 ),
-            "sitting idle must keep working while the phone is at thermal serious"
+            "token may allow serious heat; sitting idle must not request it"
         )
         XCTAssertFalse(
             SessionStore.ArchiveCompactionCancellationToken()
@@ -3414,8 +3414,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "allowsForeground: reason == \"overdue_idle\""
         ), "sitting Today leases must survive an active application state")
         XCTAssertTrue(sessions.contains(
-            "allowsSeriousThermal: reason == \"overdue_idle\""
-        ), "cabled BLE at thermal serious must still retire one sitting chunk")
+            "allowsSeriousThermal: false"
+        ), "sitting JSONL at thermal serious jetsammed the live BLE process")
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
