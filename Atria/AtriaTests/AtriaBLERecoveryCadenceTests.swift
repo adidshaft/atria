@@ -9851,6 +9851,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         XCTAssertLessThan(leaseCall.lowerBound, observedLog.lowerBound)
         XCTAssertTrue(body.contains("refreshProtectedBoundedRawCaptureIfNeeded("))
+        XCTAssertTrue(body.contains("stream5CountsAsNotifying"),
+                      "confirmed stream-5 callbacks must still allow 6A/51 if isNotifying is false")
         XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"),
                        "silent IMU recovery must not write 0x3F on a live HR link")
         XCTAssertFalse(body.contains("cancelPeripheralConnection"))
