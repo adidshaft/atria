@@ -569,6 +569,30 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
             ),
             18
         )
+        let currentSegment = UUID()
+        let journalSession = UUID()
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerUnhandedRebindSource(
+                currentSessionID: currentSegment,
+                nextSessionID: journalSession,
+                hasPersistedLedger: true
+            ),
+            currentSegment
+        )
+        XCTAssertNil(
+            AtriaBLEManager.strapStepLedgerUnhandedRebindSource(
+                currentSessionID: currentSegment,
+                nextSessionID: currentSegment,
+                hasPersistedLedger: true
+            )
+        )
+        XCTAssertNil(
+            AtriaBLEManager.strapStepLedgerUnhandedRebindSource(
+                currentSessionID: currentSegment,
+                nextSessionID: journalSession,
+                hasPersistedLedger: false
+            )
+        )
         XCTAssertEqual(AtriaBLEManager.strapStepLedgerCheckpointDelay(
             lastSavedAt: nil,
             now: now,
@@ -630,6 +654,21 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         let implementation = source[start.lowerBound..<end.lowerBound]
         XCTAssertTrue(implementation.contains(
             "persistStrapStepLedgerIfNeeded(reason: reason, force: true)"
+        ))
+    }
+
+    func testJournalRestoreRebindsUnhandedLedgerSegment() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func applyPreparedLiveActiveSessionRestore"))
+        let end = try XCTUnwrap(source.range(of: "private func persistActiveSessionJournalIfNeeded",
+                                             range: start.upperBound..<source.endIndex))
+        let implementation = source[start.lowerBound..<end.lowerBound]
+        XCTAssertTrue(implementation.contains("strapStepLedgerUnhandedRebindSource"))
+        XCTAssertTrue(implementation.contains(
+            "persistStrapStepLedgerIfNeeded(reason: \"journal_restore_rebind\", force: true)"
         ))
     }
 
