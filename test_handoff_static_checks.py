@@ -2876,6 +2876,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "imu_recovery_hr_stayed_up=",
             "live_hr_sample_age_s=",
             "live_imu_frame_age_s=",
+            "compact_imu_assembled_age_s=",
             "battery_charge_status=",
             "battery_charge_age_s=",
             "battery_is_charging=",

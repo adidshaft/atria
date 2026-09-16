@@ -334,6 +334,27 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         )
         XCTAssertEqual(defaults.integer(forKey: AtriaCompactIMULiveDiagnostics.skippedSittingCountKey), 1)
         XCTAssertEqual(defaults.integer(forKey: AtriaCompactIMULiveDiagnostics.scoredSecondsCountKey), 1)
+        XCTAssertEqual(
+            AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt()?.timeIntervalSince1970,
+            now.addingTimeInterval(1).timeIntervalSince1970
+        )
+    }
+
+    func testNativePacketRotationDoesNotCountAsAssembledSecond() {
+        AtriaCompactIMULiveDiagnostics.resetDiagnosticsForTests()
+        AtriaCompactIMULiveDiagnostics.note(
+            rotationRate: [AtriaR10MotionFrame.Vector3(x: 18, y: 0, z: 0)],
+            now: Date(timeIntervalSince1970: 1_800_000_000),
+            force: true
+        )
+        XCTAssertNil(
+            AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            "native 0x33 rotation must not keep the assembled-second clock fresh"
+        )
+        XCTAssertGreaterThan(
+            UserDefaults.standard.double(forKey: AtriaCompactIMULiveDiagnostics.atKey),
+            0
+        )
     }
 
     func testFreshSittingUsesRecentLowRotation() {

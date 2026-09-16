@@ -30095,6 +30095,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Compact IMU arrives about once a second. Four seconds of silence is a
     /// real drop; eight used to wait through a MainActor-stale live stream.
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 4
+    /// Assembled compact seconds (Today gyro) can stall while native 0x33
+    /// still trickles. Twelve seconds matches the 6A/51 activation lease.
+    nonisolated static let r10LivenessCompactStaleInterval: TimeInterval = 12
     /// Faster than stale so a drop is seen within one stale window, not two.
     nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 2
     nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
@@ -30159,6 +30162,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         transportExpected: Bool
     ) -> Bool {
         stream5Confirmed && (sessionRealtimeArmed || transportExpected)
+    }
+
+    /// Raw 0x33 can trickle while assembled compact seconds stall. Once
+    /// that second clock is older than 12s, use it as the motion evidence
+    /// so 6A/51 rearms on a live HR epoch instead of `frame_fresh`.
+    nonisolated static func r10LivenessEvidenceAt(
+        rawFrameAt: Date?,
+        compactSecondAt: Date?,
+        now: Date,
+        compactStaleInterval: TimeInterval = r10LivenessCompactStaleInterval
+    ) -> Date? {
+        if let compactSecondAt,
+           now.timeIntervalSince(compactSecondAt) >= compactStaleInterval {
+            return compactSecondAt
+        }
+        return rawFrameAt
     }
 
     /// Pure policy used by the persistent R10 watchdog. Heart-rate continuity
@@ -30981,7 +31000,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let hrAge = (lastAcceptedHRAt ?? lastRawHRNotificationAt).map {
             now.timeIntervalSince($0)
         }
-        let imuAge = currentR10MotionFrameAt().map { now.timeIntervalSince($0) }
+        let imuAge = currentR10LivenessEvidenceAt(now: now).map {
+            now.timeIntervalSince($0)
+        }
         Self.persistLastIMURecovery(
             command: command,
             action: action,
@@ -31095,7 +31116,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: peripheral?.state == .connected,
             stream5Notifying: stream5Live,
             heartRateNotifying: hrLive,
-            lastFrameAge: currentR10MotionFrameAt().map { now.timeIntervalSince($0) },
+            lastFrameAge: currentR10LivenessEvidenceAt(now: now).map {
+                now.timeIntervalSince($0)
+            },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
         ) {
             defaults.set(blocker, forKey: RadioDefaults.lastIMURecoverySkipReason)
@@ -31445,7 +31468,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 sessionRealtimeArmed: realtimeArmed,
                 transportExpected: eligible
             ),
-            lastFrameAt: currentR10MotionFrameAt(),
+            lastFrameAt: currentR10LivenessEvidenceAt(now: now),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
             now: now
@@ -40071,6 +40094,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             return
         }
         defaults.set(next, forKey: RadioDefaults.passiveR10LastValidAt)
+    }
+
+    private func currentR10LivenessEvidenceAt(now: Date) -> Date? {
+        Self.r10LivenessEvidenceAt(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            now: now
+        )
     }
 
     private func currentR10MotionFrameAt() -> Date? {

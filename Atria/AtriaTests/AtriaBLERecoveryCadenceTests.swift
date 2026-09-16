@@ -6453,6 +6453,82 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testR10LivenessEvidenceTreatsCompactSecondStallAsIMUDrop() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let rawFresh = now.addingTimeInterval(-2)
+        let compactStale = now.addingTimeInterval(-42)
+        let compactHealthy = now.addingTimeInterval(-6)
+        let compactJustStale = now.addingTimeInterval(-12)
+        let compactAlmostStale = now.addingTimeInterval(-11.9)
+
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactStale,
+                now: now
+            ),
+            compactStale
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactHealthy,
+                now: now
+            ),
+            rawFresh
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactJustStale,
+                now: now
+            ),
+            compactJustStale
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactAlmostStale,
+                now: now
+            ),
+            rawFresh
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: nil,
+                now: now
+            ),
+            rawFresh
+        )
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactStale,
+                now: now
+            ),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .rearm, "a 42s compact stall must 6A/51 while 0x33 still trickles")
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: rawFresh,
+                compactSecondAt: compactHealthy,
+                now: now
+            ),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .none, "healthy assembled seconds must not rearm on a 2s 0x33 trickle")
+    }
+
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let staleFrame = now.addingTimeInterval(-61)
@@ -11867,6 +11943,17 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             refresh(stream5: false),
             "IMU 6A/51 must not wait on stream-5 isNotifying while 2A37 is live"
         )
+        let now = Date()
+        let compactStallAge = AtriaBLEManager.r10LivenessEvidenceAt(
+            rawFrameAt: now.addingTimeInterval(-2),
+            compactSecondAt: now.addingTimeInterval(-42),
+            now: now
+        ).map { now.timeIntervalSince($0) }
+        XCTAssertEqual(compactStallAge ?? -1, 42, accuracy: 0.01)
+        XCTAssertTrue(
+            refresh(frameAge: compactStallAge),
+            "a compact-second stall with trickling 0x33 must same-link 6A/51"
+        )
         XCTAssertFalse(refresh(hr: false))
         XCTAssertTrue(
             AtriaBLEManager.heartRateEpochAllowsIMURefresh(
@@ -11991,6 +12078,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
         XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(refreshBody.contains("6a51"))
+        XCTAssertTrue(refreshBody.contains("currentR10LivenessEvidenceAt"),
+                      "silent 6A/51 must use compact-second evidence, not only raw 0x33")
         XCTAssertTrue(refreshBody.contains("heartRateEpochAllowsIMURefresh"),
                       "IMU 6A/51 must treat a fresh HR sample as a live epoch")
 
@@ -12036,6 +12125,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
         XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
                       "full_protocol IMU recovery must not wait on protected-only eligibility")
+        XCTAssertTrue(liveBody.contains("currentR10LivenessEvidenceAt"),
+                      "6A/51 must see compact-second stalls, not only raw 0x33 age")
         XCTAssertTrue(liveBody.contains("unconfirmed_stream5"),
                       "an unconfirmed silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),

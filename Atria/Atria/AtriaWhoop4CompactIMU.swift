@@ -277,6 +277,7 @@ enum AtriaCompactIMULiveDiagnostics {
     static let maxKey = "atria.compactIMU.lastRotationMaxDps"
     static let peak60Key = "atria.compactIMU.lastRotationPeak60Dps"
     static let atKey = "atria.compactIMU.lastRotationAt"
+    static let lastAssembledSecondAtKey = "atria.compactIMU.lastAssembledSecondAt"
     static let samplesKey = "atria.compactIMU.lastRotationSamples"
     static let lastSecondSkippedKey = "atria.compactIMU.lastSecondSkippedSitting"
     static let lastScoredMeanKey = "atria.compactIMU.lastScoredMeanDps"
@@ -285,6 +286,7 @@ enum AtriaCompactIMULiveDiagnostics {
 
     private static let lock = NSLock()
     private static var lastWriteAt: Date?
+    private static var lastAssembledSecondAtMemory: Date?
     private static var lastMean = 0.0
     private static var lastMax = 0.0
     private static var rotationPeaks: [(at: Date, peak: Double)] = []
@@ -348,8 +350,12 @@ enum AtriaCompactIMULiveDiagnostics {
         meanDps: Double,
         now: Date = Date()
     ) {
+        lock.lock()
+        lastAssembledSecondAtMemory = now
+        lock.unlock()
         let defaults = UserDefaults.standard
         defaults.set(skippedSitting, forKey: lastSecondSkippedKey)
+        defaults.set(now.timeIntervalSince1970, forKey: lastAssembledSecondAtKey)
         defaults.set(now.timeIntervalSince1970, forKey: atKey)
         if skippedSitting {
             defaults.set(
@@ -371,6 +377,7 @@ enum AtriaCompactIMULiveDiagnostics {
     static func resetDiagnosticsForTests() {
         lock.lock()
         lastWriteAt = nil
+        lastAssembledSecondAtMemory = nil
         lastMean = 0
         lastMax = 0
         rotationPeaks.removeAll()
@@ -380,6 +387,7 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.removeObject(forKey: maxKey)
         defaults.removeObject(forKey: peak60Key)
         defaults.removeObject(forKey: atKey)
+        defaults.removeObject(forKey: lastAssembledSecondAtKey)
         defaults.removeObject(forKey: samplesKey)
         defaults.removeObject(forKey: lastSecondSkippedKey)
         defaults.removeObject(forKey: lastScoredMeanKey)
@@ -408,6 +416,15 @@ enum AtriaCompactIMULiveDiagnostics {
         }
         return defaults.double(forKey: meanKey) < meanCeiling
             && defaults.double(forKey: maxKey) < maxCeiling
+    }
+
+    /// In-process assembled-second clock only. UserDefaults is for pull;
+    /// a previous process's timestamp must not 6A/51 a healthy new stream.
+    static func lastAssembledSecondAt() -> Date? {
+        lock.lock()
+        let memory = lastAssembledSecondAtMemory
+        lock.unlock()
+        return memory
     }
 
     static func lastFreshMeanDps(
