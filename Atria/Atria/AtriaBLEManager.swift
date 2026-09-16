@@ -31112,25 +31112,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
-            let r10Sequence = self.cmdSeq
+            let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
-                encodeFrame([Packet.command, r10Sequence, Cmd.sendR10R11Realtime, 0x01]),
-                for: txCharacteristic,
-                type: .withoutResponse
+            self.writeProprietaryWithoutResponse(
+                encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
+                reason: "short_burst_6a"
             )
             try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
             guard !Task.isCancelled, peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
-            let imuSequence = self.cmdSeq
+            let rawSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
-                encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
-                for: txCharacteristic,
-                type: .withoutResponse
+            self.writeProprietaryWithoutResponse(
+                encodeFrame(
+                    [Packet.command, rawSequence, Cmd.startRawData]
+                        + Cmd.rawCaptureDurationPayload()
+                ),
+                reason: "short_burst_51"
             )
-            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d action=one_pair_same_connection_no_cccd_no_reconnect",
+            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d cmds=6a01,51_duration_le action=paced_pair_same_link_no_3f_no_reconnect",
                           reason,
                           self.protectedR10FramesAfterActivation)
         }
