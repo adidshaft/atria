@@ -30180,6 +30180,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return rawFrameAt
     }
 
+    /// Never-seen IMU on a new connection is not yet a drop. Clock silence
+    /// from `connectedAt` so 6A/51 waits the same 4s stale window instead of
+    /// firing at the first HR sample with `imuAge` under 4s.
+    nonisolated static func r10LivenessLastMotionAt(
+        evidenceAt: Date?,
+        connectedAt: Date?
+    ) -> Date? {
+        evidenceAt ?? connectedAt
+    }
+
     /// Pure policy used by the persistent R10 watchdog. Heart-rate continuity
     /// is deliberately absent: 2A37 can remain healthy while proprietary motion
     /// is frozen, which is the failure this policy must detect independently.
@@ -31147,7 +31157,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: peripheral?.state == .connected,
             stream5Notifying: stream5Live,
             heartRateNotifying: hrLive,
-            lastFrameAge: currentR10LivenessEvidenceAt(now: now).map {
+            lastFrameAge: currentR10LivenessLastMotionAt(now: now).map {
                 now.timeIntervalSince($0)
             },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
@@ -31515,7 +31525,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 sessionRealtimeArmed: realtimeArmed,
                 transportExpected: eligible
             ),
-            lastFrameAt: currentR10LivenessEvidenceAt(now: now),
+            lastFrameAt: currentR10LivenessLastMotionAt(now: now),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
             now: now
@@ -40148,6 +40158,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             rawFrameAt: currentR10MotionFrameAt(),
             compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
             now: now
+        )
+    }
+
+    private func currentR10LivenessLastMotionAt(now: Date) -> Date? {
+        Self.r10LivenessLastMotionAt(
+            evidenceAt: currentR10LivenessEvidenceAt(now: now),
+            connectedAt: connectedAt
         )
     }
 
