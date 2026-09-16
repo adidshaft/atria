@@ -670,6 +670,12 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertTrue(implementation.contains(
             "persistStrapStepLedgerIfNeeded(reason: \"journal_restore_rebind\", force: true)"
         ))
+        let persistStart = try XCTUnwrap(source.range(of: "private func persistStrapStepLedgerIfNeeded"))
+        let persistEnd = try XCTUnwrap(source.range(of: "private func finishStrapStepLedgerSave",
+                                                    range: persistStart.upperBound..<source.endIndex))
+        let persistBody = source[persistStart.lowerBound..<persistEnd.lowerBound]
+        XCTAssertTrue(persistBody.contains("lastStrapStepLedgerSegmentID ?? liveSessionID"))
+        XCTAssertTrue(persistBody.contains("nextSessionID: liveSessionID"))
     }
 
     private func checkpoint(segment: UUID,
