@@ -2796,6 +2796,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protocolPacketCount = 0
     private var protocolPacketsThisConnection = 0
     private var protocolNotifyCallbacksThisConnection = 0
+    private var currentConnectionProprietaryTraffic: Int {
+        Self.proprietaryTrafficThisConnection(
+            protocolPackets: protocolPacketsThisConnection,
+            notifyCallbacks: protocolNotifyCallbacksThisConnection
+        )
+    }
     private var protocolIMUFrameCount = 0
     private var decodedIMUSampleCount = 0
     private var imuGravityValidatedFrameCount = 0
@@ -8738,7 +8744,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if Self.shouldRefreshZombieProprietaryCCCD(
                 connected: true,
                 heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
-                packetsThisConnection: protocolPacketsThisConnection,
+                packetsThisConnection: Self.proprietaryTrafficThisConnection(
+                    protocolPackets: protocolPacketsThisConnection,
+                    notifyCallbacks: protocolNotifyCallbacksThisConnection
+                ),
                 connectedAge: connectedAge,
                 lastRefreshAge: lastRefreshAge
             ) {
@@ -8785,7 +8794,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard Self.shouldToggleZombieProprietaryCCCD(
             connected: true,
             heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
-            packetsThisConnection: protocolPacketsThisConnection,
+            packetsThisConnection: Self.proprietaryTrafficThisConnection(
+                protocolPackets: protocolPacketsThisConnection,
+                notifyCallbacks: protocolNotifyCallbacksThisConnection
+            ),
             connectedAge: connectedAge,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil
         ) else { return }
@@ -8807,7 +8819,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             try? await Task.sleep(for: .milliseconds(400))
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
-                  self.protocolPacketsThisConnection == 0,
+                  self.currentConnectionProprietaryTraffic == 0,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
             guard let stream5 = peripheral.services?
                 .first(where: { $0.uuid == Self.UUIDs.strapService })?
@@ -8827,7 +8839,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled, peripheral.state == .connected,
-                  self.protocolPacketsThisConnection == 0,
+                  self.currentConnectionProprietaryTraffic == 0,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
             _ = self.refreshProtectedBoundedRawCaptureIfNeeded(
                 now: Date(),
@@ -8846,7 +8858,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard Self.shouldRediscoverZombieProprietaryTransport(
             connected: peripheral.state == .connected,
             heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
-            packetsThisConnection: protocolPacketsThisConnection,
+            packetsThisConnection: currentConnectionProprietaryTraffic,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil
         ) else { return }
@@ -30206,6 +30218,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Compact 0x33 is counted as a stream-5 notify callback, not a decoded
+    /// protocol packet. Zombie CCCD repair must not treat that as silence.
+    nonisolated static func proprietaryTrafficThisConnection(
+        protocolPackets: Int,
+        notifyCallbacks: Int
+    ) -> Int {
+        max(protocolPackets, notifyCallbacks, 0)
+    }
+
     /// `setNotify(true)` on an already-notifying zombie CCCD produced no
     /// packets (device 2026-09-14 23:54). One stream-5 off/on per epoch, never
     /// 2A37, never 0x3F, never a standing reconnect.
@@ -31070,7 +31091,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let zombie = Self.shouldRefreshZombieProprietaryCCCD(
                 connected: true,
                 heartRateNotifying: self.heartRateCharacteristic?.isNotifying == true,
-                packetsThisConnection: self.protocolPacketsThisConnection,
+                packetsThisConnection: self.currentConnectionProprietaryTraffic,
                 connectedAge: connectedAge,
                 lastRefreshAge: lastRefreshAge
             )
@@ -31131,9 +31152,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             confirmed: strapStream5NotifyConfirmed,
             characteristicNotifying: stream5.isNotifying
         )
-        guard stream5Live else {
+        let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        if !stream5Live {
             reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
-            return
+            // After the once-per-epoch toggle, waiting for a notify-state
+            // callback stranded 6A/51. A live 2A37 epoch is enough to write
+            // same-link IMU recovery onto this characteristic.
+            guard lastR10ZombieCCCDToggleAt != nil || hrEpochLive else { return }
         }
 
         // Same-link 6A/51 first, in every radio mode. Full-protocol used to
@@ -36312,7 +36341,6 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 if !Self.r10FrameProvesCurrentArm(lastFrameAt: self.lastR10MotionFrameAt,
                                                   evidenceEpoch: r10EvidenceEpoch) {
                     let recoveryAt = Date()
-                    self.lastR10RecoveryRearmAt = recoveryAt
                     AtriaDebugLog("ATRIADBG r10_stream status=unavailable action=request_single_leased_activation")
                     self.requestBoundedR10ActivationForSilentStream(
                         now: recoveryAt,
@@ -40017,6 +40045,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     /// after the BLE-queue stamp.
     private func noteLiveIMULiveness(receivedAt: Date) {
         stampLiveIMULiveness(receivedAt: receivedAt)
+        // Compact 0x33 arrives while CoreBluetooth still reports
+        // stream-5 `isNotifying=false`. That used to leave
+        // `strapStream5NotifyConfirmed` false, so 6A/51 never armed.
+        strapStream5NotifyConfirmed = true
+        if r10TransportIsExpected {
+            ensureR10LivenessWatchdog(reason: "live_imu_frame")
+        }
         if let previous = lastR10MotionFrameAt, receivedAt < previous { return }
         lastR10MotionFrameAt = receivedAt
         assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
