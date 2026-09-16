@@ -16608,13 +16608,14 @@ final class SessionStore: ObservableObject {
         isLowPowerModeEnabled: Bool,
         batteryState: UIDevice.BatteryState,
         batteryLevel: Float,
-        allowsSeriousThermal: Bool = false
+        allowsSeriousThermal: Bool = false,
+        minimumBatteryLevel: Float = 0.5
     ) -> Bool {
         guard thermalState != .critical else { return false }
         guard allowsSeriousThermal || thermalState != .serious else { return false }
         guard !isLowPowerModeEnabled else { return false }
         let charging = AtriaBLEManager.phoneStateIsCharging(batteryState)
-        guard charging || batteryLevel < 0 || batteryLevel >= 0.5 else { return false }
+        guard charging || batteryLevel < 0 || batteryLevel >= minimumBatteryLevel else { return false }
         return true
     }
 
@@ -27201,7 +27202,8 @@ final class SessionStore: ObservableObject {
                 isLowPowerModeEnabled: isLowPowerModeEnabled,
                 batteryState: batteryState,
                 batteryLevel: batteryLevel,
-                allowsSeriousThermal: false
+                allowsSeriousThermal: false,
+                minimumBatteryLevel: isOverdueIdle ? 0.25 : 0.5
             )
     }
 
