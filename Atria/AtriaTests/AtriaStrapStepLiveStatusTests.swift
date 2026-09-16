@@ -152,4 +152,41 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
 
         XCTAssertEqual(AtriaStrapStepLiveStatus.persistedMotionDate(defaults: defaults), now)
     }
+
+    func testStaleMotionDoesNotClaimLiveOnGlanceOrLiveStrip() {
+        let live = AtriaStrapStepLiveStatus.make(
+            count: 962,
+            validationState: "r10_live_validated",
+            capturedAt: now.addingTimeInterval(-12),
+            now: now
+        )
+        let stale = AtriaStrapStepLiveStatus.make(
+            count: 962,
+            validationState: "r10_live_validated",
+            capturedAt: now.addingTimeInterval(-77),
+            now: now
+        )
+
+        XCTAssertEqual(live.glanceDetail(liveFallback: "Today so far · live"),
+                       "Today so far · live")
+        XCTAssertEqual(live.liveStripTitle(zoneLabel: "Z3 Aerobic", hasPulse: true),
+                       "Live · Z3 Aerobic")
+        XCTAssertEqual(live.liveStripStepSuffix(valueText: "962", hasCount: true),
+                       " · 962")
+        XCTAssertNil(live.wearerGuidance)
+
+        XCTAssertEqual(stale.glanceDetail(liveFallback: "Today so far · live"),
+                       "Last count · motion 1m ago")
+        XCTAssertEqual(stale.liveStripTitle(zoneLabel: "Z3 Aerobic", hasPulse: true),
+                       "HR live · Z3 Aerobic")
+        XCTAssertEqual(stale.liveStripTitle(zoneLabel: nil, hasPulse: true),
+                       "HR live")
+        XCTAssertEqual(stale.liveStripStepSuffix(valueText: "962", hasCount: true),
+                       " · 962 held")
+        XCTAssertEqual(stale.wearerGuidance,
+                       AtriaStrapStepLiveStatus.delayedMotionGuidance)
+        XCTAssertTrue(stale.liveStripStepAccessibility(count: 962).contains("held"))
+        XCTAssertTrue(stale.wearerGuidance?.contains("do not need to keep it open") ?? false)
+        XCTAssertTrue(stale.wearerGuidance?.contains("Close the official WHOOP app") ?? false)
+    }
 }
