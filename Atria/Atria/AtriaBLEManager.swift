@@ -4734,7 +4734,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Mode is deliberately not gated: full-protocol silent recovery used to
     /// send `0x3F` on a live HR link and physically drop both streams
     /// (device 2026-09-14). Same-link 6A/51 is the IMU recovery for every
-    /// qualified owner.
+    /// qualified owner. Stream-5 `isNotifying` is not required: CoreBluetooth
+    /// can report false while 0x33 still trickles, which is the IMU-drop case.
+    nonisolated static func protectedBoundedRawCaptureRefreshBlocker(
+        standardHROnlyMode: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        proofActive: Bool,
+        historyOwnsTransport: Bool,
+        connected: Bool,
+        stream5Notifying: Bool,
+        heartRateNotifying: Bool,
+        lastFrameAge: TimeInterval?,
+        lastActivationAge: TimeInterval?,
+        staleInterval: TimeInterval = r10LivenessStaleInterval,
+        minimumActivationInterval: TimeInterval = 12
+    ) -> String? {
+        _ = standardHROnlyMode
+        _ = stream5Notifying
+        if streamSuppressed { return "stream_suppressed" }
+        if proofActive { return "proof_active" }
+        if historyOwnsTransport { return "history_owns_transport" }
+        if owner != .protectedV9 { return "owner_\(owner.rawValue)" }
+        if state != .qualified { return "state_\(state.rawValue)" }
+        if !connected { return "not_connected" }
+        if !heartRateNotifying { return "hr_epoch_down" }
+        let frameStale = lastFrameAge.map { $0 > staleInterval } ?? true
+        if !frameStale { return "frame_fresh" }
+        if let lastActivationAge, lastActivationAge >= 0,
+           lastActivationAge < minimumActivationInterval {
+            return "activation_lease"
+        }
+        return nil
+    }
+
     nonisolated static func shouldRefreshProtectedBoundedRawCapture(
         standardHROnlyMode: Bool,
         streamSuppressed: Bool,
@@ -4750,22 +4784,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         staleInterval: TimeInterval = r10LivenessStaleInterval,
         minimumActivationInterval: TimeInterval = 12
     ) -> Bool {
-        _ = standardHROnlyMode
-        guard !streamSuppressed,
-              !proofActive,
-              !historyOwnsTransport,
-              owner == .protectedV9,
-              state == .qualified,
-              connected,
-              stream5Notifying,
-              heartRateNotifying else { return false }
-        let frameStale = lastFrameAge.map { $0 > staleInterval } ?? true
-        guard frameStale else { return false }
-        if let lastActivationAge, lastActivationAge >= 0,
-           lastActivationAge < minimumActivationInterval {
-            return false
-        }
-        return true
+        protectedBoundedRawCaptureRefreshBlocker(
+            standardHROnlyMode: standardHROnlyMode,
+            streamSuppressed: streamSuppressed,
+            owner: owner,
+            state: state,
+            proofActive: proofActive,
+            historyOwnsTransport: historyOwnsTransport,
+            connected: connected,
+            stream5Notifying: stream5Notifying,
+            heartRateNotifying: heartRateNotifying,
+            lastFrameAge: lastFrameAge,
+            lastActivationAge: lastActivationAge,
+            staleInterval: staleInterval,
+            minimumActivationInterval: minimumActivationInterval
+        ) == nil
     }
 
     /// CoreBluetooth `isNotifying` can be false while 2A37 samples still
@@ -30995,6 +31028,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let imuAt = currentR10MotionFrameAt() {
             defaults.set(imuAt.timeIntervalSince1970, forKey: RadioDefaults.liveIMUFrameAt)
         }
+        defaults.set(r10TransportIsExpected, forKey: RadioDefaults.liveR10Eligible)
+        defaults.set(strapStream5NotifyConfirmed, forKey: RadioDefaults.liveStream5Confirmed)
+        defaults.set(realtimeArmed, forKey: RadioDefaults.liveRealtimeArmed)
     }
 
     /// Enable only inactive companion notifications on this already-connected
@@ -31036,7 +31072,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let lastActivationAt = (defaults.object(
             forKey: Self.protectedR10ActivationSentAtKey
         ) as? Double).map(Date.init(timeIntervalSince1970:))
-        guard Self.shouldRefreshProtectedBoundedRawCapture(
+        let stream5Live = Self.stream5CountsAsNotifying(
+            confirmed: strapStream5NotifyConfirmed,
+            characteristicNotifying: peripheral?.services?
+                .first(where: { $0.uuid == Self.UUIDs.strapService })?
+                .characteristics?
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 })?
+                .isNotifying == true
+        )
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        if let blocker = Self.protectedBoundedRawCaptureRefreshBlocker(
             standardHROnlyMode: standardHROnlyMode,
             streamSuppressed: protectedR10StreamSuppressed,
             owner: protectedR10CleanOwner,
@@ -31044,27 +31093,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             proofActive: protectedR10ResponseEventDataProofIsActive,
             historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
             connected: peripheral?.state == .connected,
-            stream5Notifying: Self.stream5CountsAsNotifying(
-                confirmed: strapStream5NotifyConfirmed,
-                characteristicNotifying: peripheral?.services?
-                    .first(where: { $0.uuid == Self.UUIDs.strapService })?
-                    .characteristics?
-                    .first(where: { $0.uuid == Self.UUIDs.strapStream5 })?
-                    .isNotifying == true
-            ),
-            heartRateNotifying: Self.heartRateEpochAllowsIMURefresh(
-                characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
-                lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
-                    .map { now.timeIntervalSince($0) }
-            ),
+            stream5Notifying: stream5Live,
+            heartRateNotifying: hrLive,
             lastFrameAge: currentR10MotionFrameAt().map { now.timeIntervalSince($0) },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
-        ), let peripheral,
+        ) {
+            defaults.set(blocker, forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
+        guard let peripheral,
            peripheral.state == .connected,
            let txCharacteristic,
            txCharacteristic.properties.contains(.writeWithoutResponse),
            protectedR10CommandSequenceTask == nil,
-           workoutMotionCommandTask == nil else { return false }
+           workoutMotionCommandTask == nil else {
+            defaults.set("tx_or_command_task", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
 
         defaults.set(now.timeIntervalSince1970,
                      forKey: Self.protectedR10ActivationSentAtKey)
@@ -31381,16 +31428,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if eligible, connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
             kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
-            // After the once-per-epoch toggle, waiting for a notify-state
-            // callback stranded 6A/51 (device 2026-09-15 00:38: activationSentAt
-            // cleared, packetsThis=0, HR live). Keep same-link IMU writes.
-            guard lastR10ZombieCCCDToggleAt == nil else {
-                requestBoundedR10ActivationForSilentStream(
-                    now: now,
-                    reason: "\(reason)_after_unconfirmed_toggle"
-                )
-                return
-            }
+            // Waiting for a notify-state callback or a zombie toggle stranded
+            // 6A/51 while 0x33 still arrived and HR stayed up.
+            requestBoundedR10ActivationForSilentStream(
+                now: now,
+                reason: "\(reason)_unconfirmed_stream5"
+            )
+            UserDefaults.standard.set("unconfirmed_stream5", forKey: RadioDefaults.liveR10LivenessAction)
             return
         }
         let action = Self.r10LivenessAction(
@@ -31405,6 +31449,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
             now: now
+        )
+        UserDefaults.standard.set(
+            "\(action)",
+            forKey: RadioDefaults.liveR10LivenessAction
         )
         switch action {
         case .none:

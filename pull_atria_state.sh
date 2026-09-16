@@ -1009,6 +1009,14 @@ def emit_offline_sync_preferences():
     imu_hr_age_n = float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1.0
     imu_imu_age_n = float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1.0
     print(f"imu_recovery_hr_stayed_up={bool_int(imu_imu_age_n > 4 and 0 <= imu_hr_age_n <= 15)}")
+    print(f"imu_recovery_skip_reason={pref(prefs, 'radio.lastIMURecoverySkipReason', 'none') or 'none'}")
+    imu_skip_at = pref(prefs, "radio.lastIMURecoverySkipAt")
+    imu_skip_age = max(0.0, now - float(imu_skip_at)) if isinstance(imu_skip_at, (int, float)) and imu_skip_at > 0 else -1.0
+    print(f"imu_recovery_skip_age_s={imu_skip_age:.1f}")
+    print(f"live_r10_eligible={bool_int(pref(prefs, 'radio.liveR10Eligible'))}")
+    print(f"live_stream5_confirmed={bool_int(pref(prefs, 'radio.liveStream5Confirmed'))}")
+    print(f"live_realtime_armed={bool_int(pref(prefs, 'radio.liveRealtimeArmed'))}")
+    print(f"live_r10_liveness_action={pref(prefs, 'radio.liveR10LivenessAction', 'none') or 'none'}")
     live_hr_at = pref(prefs, "radio.liveHRSampleAt")
     live_imu_at = pref(prefs, "radio.liveIMUFrameAt")
     live_hr_age = max(0.0, now - float(live_hr_at)) if isinstance(live_hr_at, (int, float)) and live_hr_at > 0 else -1.0

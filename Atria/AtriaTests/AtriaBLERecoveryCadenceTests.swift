@@ -11863,7 +11863,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refresh(suppressed: true))
         XCTAssertFalse(refresh(proof: true))
         XCTAssertFalse(refresh(history: true))
-        XCTAssertFalse(refresh(stream5: false))
+        XCTAssertTrue(
+            refresh(stream5: false),
+            "IMU 6A/51 must not wait on stream-5 isNotifying while 2A37 is live"
+        )
         XCTAssertFalse(refresh(hr: false))
         XCTAssertTrue(
             AtriaBLEManager.heartRateEpochAllowsIMURefresh(
@@ -12033,8 +12036,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
         XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
                       "full_protocol IMU recovery must not wait on protected-only eligibility")
-        XCTAssertTrue(liveBody.contains("after_unconfirmed_toggle"),
-                      "an already-toggled silent stream-5 must still send 6A/51")
+        XCTAssertTrue(liveBody.contains("unconfirmed_stream5"),
+                      "an unconfirmed silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),
                        "do not stamp rearm before 6A/51 actually queues")
         XCTAssertFalse(source.contains("self.lastR10RecoveryRearmAt = recoveryAt"),
