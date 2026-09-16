@@ -4762,6 +4762,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// CoreBluetooth `isNotifying` can be false while 2A37 samples still
+    /// arrive. A fresh HR sample is enough proof the HR epoch is up, so IMU
+    /// 6A/51 recovery must not wait on the CCCD flag.
+    nonisolated static func heartRateEpochAllowsIMURefresh(
+        characteristicNotifying: Bool,
+        lastAcceptedHRAge: TimeInterval?,
+        freshnessWindow: TimeInterval = 15
+    ) -> Bool {
+        if characteristicNotifying { return true }
+        guard let lastAcceptedHRAge, lastAcceptedHRAge >= 0 else { return false }
+        return lastAcceptedHRAge <= freshnessWindow
+    }
+
     /// The only in-process escalation allowed from a pure-HR fallback owner.
     /// It is intentionally more restrictive than normal launch preparation:
     /// a user must have a durable, active manual workout and a previous dense
@@ -30900,11 +30913,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date = Date(),
         defaults: UserDefaults = .standard
     ) {
+        let hrAge = (lastAcceptedHRAt ?? lastRawHRNotificationAt).map {
+            now.timeIntervalSince($0)
+        }
+        let imuAge = currentR10MotionFrameAt().map { now.timeIntervalSince($0) }
         Self.persistLastIMURecovery(
             command: command,
             action: action,
             now: now,
-            defaults: defaults
+            defaults: defaults,
+            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            heartRateAge: hrAge,
+            imuAge: imuAge
         )
     }
 
@@ -30912,11 +30932,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         command: String,
         action: String,
         now: Date,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        heartRateNotifying: Bool? = nil,
+        heartRateAge: TimeInterval? = nil,
+        imuAge: TimeInterval? = nil
     ) {
         defaults.set(command, forKey: RadioDefaults.lastIMURecoveryCommand)
         defaults.set(action, forKey: RadioDefaults.lastIMURecoveryAction)
         defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoveryAt)
+        if let heartRateNotifying {
+            defaults.set(heartRateNotifying, forKey: RadioDefaults.lastIMURecoveryHRNotifying)
+        }
+        if let heartRateAge {
+            defaults.set(heartRateAge, forKey: RadioDefaults.lastIMURecoveryHRAge)
+        }
+        if let imuAge {
+            defaults.set(imuAge, forKey: RadioDefaults.lastIMURecoveryIMUAge)
+        }
+    }
+
+    private func persistLiveMotionEpoch(now: Date) {
+        let defaults = UserDefaults.standard
+        defaults.set(
+            heartRateCharacteristic?.isNotifying == true,
+            forKey: RadioDefaults.liveHRNotifying
+        )
+        if let hrAt = lastAcceptedHRAt ?? lastRawHRNotificationAt {
+            defaults.set(hrAt.timeIntervalSince1970, forKey: RadioDefaults.liveHRSampleAt)
+        }
+        if let imuAt = currentR10MotionFrameAt() {
+            defaults.set(imuAt.timeIntervalSince1970, forKey: RadioDefaults.liveIMUFrameAt)
+        }
     }
 
     /// Enable only inactive companion notifications on this already-connected
@@ -30974,7 +31020,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     .first(where: { $0.uuid == Self.UUIDs.strapStream5 })?
                     .isNotifying == true
             ),
-            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            heartRateNotifying: Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                    .map { now.timeIntervalSince($0) }
+            ),
             lastFrameAge: currentR10MotionFrameAt().map { now.timeIntervalSince($0) },
             lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
         ), let peripheral,
@@ -31232,6 +31282,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
+        persistLiveMotionEpoch(now: now)
         flushPendingProprietaryWWRIfNeeded(reason: "\(reason)_wwr_leftover")
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
@@ -31310,7 +31361,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .none:
             break
         case .rearm:
-            lastR10RecoveryRearmAt = now
+            // Stamp rearm only if 6A/51 actually queues. Stamping here made a
+            // blocked refresh wait 45s before the next try.
             requestBoundedR10ActivationForSilentStream(now: now, reason: reason)
         case .rediscover:
             lastR10RecoveryRediscoveryAt = now

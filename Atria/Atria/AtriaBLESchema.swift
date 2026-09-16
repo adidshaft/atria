@@ -253,6 +253,12 @@ extension AtriaBLEManager {
         static let lastIMURecoveryCommand = "atria.radio.lastIMURecoveryCommand"
         static let lastIMURecoveryAction = "atria.radio.lastIMURecoveryAction"
         static let lastIMURecoveryAt = "atria.radio.lastIMURecoveryAt"
+        static let lastIMURecoveryHRNotifying = "atria.radio.lastIMURecoveryHRNotifying"
+        static let lastIMURecoveryHRAge = "atria.radio.lastIMURecoveryHRAge"
+        static let lastIMURecoveryIMUAge = "atria.radio.lastIMURecoveryIMUAge"
+        static let liveHRNotifying = "atria.radio.liveHRNotifying"
+        static let liveHRSampleAt = "atria.radio.liveHRSampleAt"
+        static let liveIMUFrameAt = "atria.radio.liveIMUFrameAt"
     }
 
     enum WorkoutMotionDefaults {

@@ -11821,6 +11821,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refresh(stream5: false))
         XCTAssertFalse(refresh(hr: false))
         XCTAssertTrue(
+            AtriaBLEManager.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: true,
+                lastAcceptedHRAge: 40
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: false,
+                lastAcceptedHRAge: 8
+            ),
+            "fresh 2A37 samples keep the HR epoch live even if isNotifying is false"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: false,
+                lastAcceptedHRAge: 40
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: false,
+                lastAcceptedHRAge: nil
+            )
+        )
+        XCTAssertTrue(
             AtriaBLEManager.shouldRefreshProtectedBoundedRawCapture(
                 standardHROnlyMode: false,
                 streamSuppressed: false,
@@ -11913,6 +11938,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
         XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(refreshBody.contains("6a51"))
+        XCTAssertTrue(refreshBody.contains("heartRateEpochAllowsIMURefresh"),
+                      "IMU 6A/51 must treat a fresh HR sample as a live epoch")
 
         let toggleStart = try XCTUnwrap(source.range(
             of: "private func kickZombieProprietaryStreamIfNeeded"
@@ -11953,8 +11980,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let liveBody = String(source[liveStart.lowerBound..<liveEnd.lowerBound])
         XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
                       "a leftover queued 6A/51 must flush on the liveness tick")
+        XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
         XCTAssertTrue(liveBody.contains("after_unconfirmed_toggle"),
                       "an already-toggled silent stream-5 must still send 6A/51")
+        XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),
+                       "do not stamp rearm before 6A/51 actually queues")
         XCTAssertFalse(liveBody.contains("Cmd.sendR10R11Realtime"))
     }
 
