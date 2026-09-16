@@ -1033,6 +1033,9 @@ def emit_offline_sync_preferences():
     print(f"compact_imu_rotation_peak60_dps={float(pref(prefs, 'compactIMU.lastRotationPeak60Dps', -1) or -1):.3f}")
     print(f"compact_imu_rotation_samples={int(pref(prefs, 'compactIMU.lastRotationSamples', 0) or 0)}")
     print(f"compact_imu_rotation_age_s={compact_rot_age:.1f}")
+    compact_assembled_at = pref(prefs, "compactIMU.lastAssembledSecondAt")
+    compact_assembled_age = max(0.0, now - float(compact_assembled_at)) if isinstance(compact_assembled_at, (int, float)) and compact_assembled_at > 0 else -1.0
+    print(f"compact_imu_assembled_age_s={compact_assembled_age:.1f}")
     print(f"compact_imu_last_second_skipped_sitting={bool_int(pref(prefs, 'compactIMU.lastSecondSkippedSitting'))}")
     print(f"compact_imu_last_scored_mean_dps={float(pref(prefs, 'compactIMU.lastScoredMeanDps', -1) or -1):.3f}")
     print(f"compact_imu_skipped_sitting_seconds={int(pref(prefs, 'compactIMU.skippedSittingSeconds', 0) or 0)}")
