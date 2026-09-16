@@ -2329,6 +2329,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("Cmd.toggleIMUMode"))
         XCTAssertTrue(body.contains("Cmd.startRawData"))
         XCTAssertTrue(body.contains("paced_pair_same_link_no_3f_no_reconnect"))
+        XCTAssertTrue(body.contains("persistLastIMURecovery"))
+        XCTAssertTrue(body.contains("6a51"))
     }
 
     func testInterruptedV9ProofSelectsFreshPureHRV10WithoutReplayingCommands() throws {
@@ -11891,6 +11893,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(coverBody.contains("Cmd.sendR10R11Realtime"),
                        "cover-live IMU recovery must not write 0x3F")
         XCTAssertTrue(coverBody.contains("cmds=6a01,51_duration_le"))
+        XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
 
         let refreshStart = try XCTUnwrap(source.range(
             of: "private func refreshProtectedBoundedRawCaptureIfNeeded"
@@ -11908,6 +11911,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refreshBody.contains("Cmd.sendR10R11Realtime"),
                        "silent IMU refresh must not write 0x3F")
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
+        XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
+        XCTAssertTrue(refreshBody.contains("6a51"))
 
         let toggleStart = try XCTUnwrap(source.range(
             of: "private func kickZombieProprietaryStreamIfNeeded"

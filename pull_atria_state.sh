@@ -996,6 +996,11 @@ def emit_offline_sync_preferences():
     print(f"radio_wwr_pending={int(pref(prefs, 'radio.wwrPendingCount', 0) or 0)}")
     print(f"r10_zombie_cccd_toggle_at={pref(prefs, 'r10.zombieCCCDToggleAt', 'none')}")
     print(f"r10_zombie_tx_rediscover_at={pref(prefs, 'r10.zombieTxRediscoverAt', 'none')}")
+    imu_recovery_at = pref(prefs, "radio.lastIMURecoveryAt")
+    imu_recovery_age = max(0.0, now - float(imu_recovery_at)) if isinstance(imu_recovery_at, (int, float)) and imu_recovery_at > 0 else -1.0
+    print(f"imu_recovery_command={pref(prefs, 'radio.lastIMURecoveryCommand', 'none') or 'none'}")
+    print(f"imu_recovery_action={pref(prefs, 'radio.lastIMURecoveryAction', 'none') or 'none'}")
+    print(f"imu_recovery_age_s={imu_recovery_age:.1f}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
     print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
     compact_rot_at = pref(prefs, "compactIMU.lastRotationAt")
