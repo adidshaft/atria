@@ -228,6 +228,59 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertNotEqual(migrated.cumulativeSteps, 17 + 512)
     }
 
+    func testGyroWalkCheckpointsOntoLeftoverAccelerometerSegmentSteps() throws {
+        let segment = UUID()
+        let leftover = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-3_600),
+            segmentSteps: 6_420,
+            segmentRawSteps: 12_714,
+            deviceTimestamp: 9_000,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 18,
+            now: now,
+            at: target
+        )
+        XCTAssertEqual(leftover.segmentGyroCadenceResearchSteps, 18)
+        XCTAssertEqual(leftover.cumulativeGyroCadenceResearchSteps, 18)
+
+        let liveGyro = 214
+        XCTAssertThrowsError(try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-3_600),
+            segmentSteps: liveGyro,
+            segmentRawSteps: 12_714,
+            deviceTimestamp: 9_001,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: liveGyro,
+            now: now.addingTimeInterval(1),
+            at: target
+        )) {
+            XCTAssertEqual($0 as? AtriaStrapStepLedger.SaveError, .regressedCount)
+        }
+
+        let segmentSteps = AtriaBLEManager.strapStepLedgerSegmentStepsForCheckpoint(
+            liveGyroSteps: liveGyro,
+            persistedSegmentSteps: leftover.segmentSteps
+        )
+        XCTAssertEqual(segmentSteps, 6_420)
+        let saved = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-3_600),
+            segmentSteps: segmentSteps,
+            segmentRawSteps: 12_714,
+            deviceTimestamp: 9_001,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: liveGyro,
+            now: now.addingTimeInterval(1),
+            at: target
+        )
+        XCTAssertEqual(saved.segmentSteps, 6_420)
+        XCTAssertEqual(saved.segmentGyroCadenceResearchSteps, 214)
+        XCTAssertEqual(saved.cumulativeGyroCadenceResearchSteps, 214)
+        XCTAssertEqual(saved.cumulativeSteps, 6_420)
+    }
+
     func testUnhandedBoundaryResegmentsPrefixAndFutureCheckpointAdvances() throws {
         let first = UUID()
         let second = UUID()
@@ -459,6 +512,44 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
             currentRawSteps: 100,
             persistedRawSteps: 100
         ))
+        XCTAssertTrue(AtriaBLEManager.strapStepLedgerHasUnsavedResearchSteps(
+            currentRawSteps: 12_714,
+            persistedRawSteps: 12_714,
+            currentGyroSteps: 214,
+            persistedGyroSteps: 18
+        ))
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerSegmentStepsForCheckpoint(
+                liveGyroSteps: 214,
+                persistedSegmentSteps: 6_420
+            ),
+            6_420
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerSegmentStepsForCheckpoint(
+                liveGyroSteps: 7_000,
+                persistedSegmentSteps: 6_420
+            ),
+            7_000
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerGyroFloorForRestore(
+                ledgerGyro: 18,
+                liveGyroToday: 214,
+                liveGyroCapturedAt: now,
+                now: now
+            ),
+            214
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapStepLedgerGyroFloorForRestore(
+                ledgerGyro: 18,
+                liveGyroToday: 214,
+                liveGyroCapturedAt: now.addingTimeInterval(-86_400),
+                now: now
+            ),
+            18
+        )
         XCTAssertEqual(AtriaBLEManager.strapStepLedgerCheckpointDelay(
             lastSavedAt: nil,
             now: now,

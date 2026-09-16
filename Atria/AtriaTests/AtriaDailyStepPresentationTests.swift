@@ -883,6 +883,47 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 12), 12)
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 48, incomingGyro: 50), 50)
         XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 50, incomingGyro: 48), 50)
+        XCTAssertEqual(
+            AtriaBLEManager.gyroOnlySessionSteps(current: 214, incomingGyro: 18),
+            214,
+            "a real gyro walk must survive a smaller reconnect snapshot"
+        )
+    }
+
+    func testLiveGyroTodayPersistsMonotonicallyOnTheSameDay() {
+        let suiteName = "AtriaLiveGyroToday.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let captured = day.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 214,
+            capturedAt: captured,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 18,
+            capturedAt: captured.addingTimeInterval(30),
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: captured.addingTimeInterval(60),
+                defaults: suite
+            )?.count,
+            214
+        )
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 250,
+            capturedAt: captured.addingTimeInterval(90),
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            250
+        )
     }
 
     func testAttributedStrapStepsUseGyroCadenceNotAccelerometerPeaks() {

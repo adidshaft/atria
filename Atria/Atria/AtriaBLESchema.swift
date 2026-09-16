@@ -250,6 +250,9 @@ extension AtriaBLEManager {
         static let lastWWRFlushCount = "atria.radio.lastWWRFlushCount"
         static let wwrPendingCount = "atria.radio.wwrPendingCount"
         static let zombieTxRediscoverAt = "atria.r10.zombieTxRediscoverAt"
+        static let lastIMURecoveryCommand = "atria.radio.lastIMURecoveryCommand"
+        static let lastIMURecoveryAction = "atria.radio.lastIMURecoveryAction"
+        static let lastIMURecoveryAt = "atria.radio.lastIMURecoveryAt"
     }
 
     enum WorkoutMotionDefaults {

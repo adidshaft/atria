@@ -882,9 +882,33 @@ enum AtriaHeldDailyStepFloor {
 
     static func persistLiveGyroToday(count: Int,
                                      capturedAt: Date,
-                                     defaults: UserDefaults = .standard) {
-        defaults.set(max(0, count), forKey: liveGyroTodayCountKey)
+                                     defaults: UserDefaults = .standard,
+                                     calendar: Calendar = .current) {
+        let incoming = max(0, count)
+        if let existing = loadLiveGyroToday(
+            now: capturedAt,
+            defaults: defaults,
+            calendar: calendar
+        ), incoming < existing.count {
+            return
+        }
+        defaults.set(incoming, forKey: liveGyroTodayCountKey)
         defaults.set(capturedAt.timeIntervalSince1970, forKey: liveGyroTodayCapturedKey)
+    }
+
+    static func loadLiveGyroToday(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard,
+        calendar: Calendar = .current
+    ) -> (count: Int, capturedAt: Date)? {
+        let count = defaults.integer(forKey: liveGyroTodayCountKey)
+        guard count > 0,
+              let captured = (defaults.object(forKey: liveGyroTodayCapturedKey) as? Double)
+                .map(Date.init(timeIntervalSince1970:)),
+              calendar.isDate(captured, inSameDayAs: now) else {
+            return nil
+        }
+        return (count, captured)
     }
 
     static func stepIncrementIsPlausible(from startCount: Int,

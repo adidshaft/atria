@@ -2856,6 +2856,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// authority and cannot rebind a segment that has since advanced again.
     private var strapStepLedgerUnhandedRestoreRebindSourceSegmentID: UUID?
     private var lastStrapStepLedgerSavedRawSteps = 0
+    private var lastStrapStepLedgerSavedSegmentSteps = 0
     private var lastStrapStepLedgerSavedGyroCadenceResearchSteps = 0
     /// Cumulative gyro total before the active ledger segment. Combined with
     /// the queue-owned segment value this is today's strap-only coordinate:
@@ -30874,8 +30875,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_51_sent reason=%@ cmds=6a01,51_duration_le duration_ms=%u action=same_link_no_disconnect_no_proof_no_3f",
                           reason,
                           Cmd.workoutRawCaptureDurationMilliseconds)
+            self.persistLastIMURecovery(
+                command: "6a51",
+                action: "same_link_no_disconnect_no_proof_no_3f"
+            )
         }
         return true
+    }
+
+    private func persistLastIMURecovery(
+        command: String,
+        action: String,
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) {
+        Self.persistLastIMURecovery(
+            command: command,
+            action: action,
+            now: now,
+            defaults: defaults
+        )
+    }
+
+    nonisolated static func persistLastIMURecovery(
+        command: String,
+        action: String,
+        now: Date,
+        defaults: UserDefaults
+    ) {
+        defaults.set(command, forKey: RadioDefaults.lastIMURecoveryCommand)
+        defaults.set(action, forKey: RadioDefaults.lastIMURecoveryAction)
+        defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoveryAt)
     }
 
     /// Enable only inactive companion notifications on this already-connected
@@ -30998,6 +31028,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason,
                           Cmd.workoutRawCaptureDurationMilliseconds,
                           companions)
+            self.persistLastIMURecovery(
+                command: "6a51",
+                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect"
+            )
         }
         return true
     }
@@ -31134,6 +31168,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d cmds=6a01,51_duration_le action=paced_pair_same_link_no_3f_no_reconnect",
                           reason,
                           self.protectedR10FramesAfterActivation)
+            self.persistLastIMURecovery(
+                command: "6a51",
+                action: "paced_pair_same_link_no_3f_no_reconnect"
+            )
         }
         return true
     }
@@ -47411,10 +47449,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 return
             }
 
+            let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday()
+            let gyroFloor = Self.strapStepLedgerGyroFloorForRestore(
+                ledgerGyro: record.segmentGyroCadenceResearchSteps ?? 0,
+                liveGyroToday: liveGyroToday?.count ?? 0,
+                liveGyroCapturedAt: liveGyroToday?.capturedAt,
+                now: Date()
+            )
             let restored = await self.r10MotionPipeline.seed(
                 committedRawSteps: record.segmentRawSteps,
                 lastAcceptedDeviceTimestamp: record.deviceTimestamp,
-                committedGyroCadenceResearchSteps: record.segmentGyroCadenceResearchSteps
+                committedGyroCadenceResearchSteps: gyroFloor
             )
             // A normal launch can receive fresh R10/HR while the tiny file is
             // decoded. Adopt the durable segment identity only if no other
@@ -47432,7 +47477,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             // gyro evidence fails closed instead of silently changing history.
             self.strapStepResearchCount = max(
                 self.strapStepResearchCount,
-                record.segmentGyroCadenceResearchSteps ?? 0
+                gyroFloor
             )
             self.strapStepResearchPeakCount = max(self.strapStepResearchPeakCount, restored.rawSteps)
             self.strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
@@ -47440,6 +47485,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 incoming: self.strapStepResearchDeviceTimestamp
             )
             self.lastStrapStepLedgerSavedRawSteps = record.segmentRawSteps
+            self.lastStrapStepLedgerSavedSegmentSteps = record.segmentSteps
             self.lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 record.segmentGyroCadenceResearchSteps ?? 0
             self.strapStepLedgerGyroCumulativePrefix = max(
@@ -47515,6 +47561,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             return
         }
         let gyroCadenceResearchSteps = currentGyroCadenceResearchSessionSteps()
+        let segmentSteps = Self.strapStepLedgerSegmentStepsForCheckpoint(
+            liveGyroSteps: strapStepResearchCount,
+            persistedSegmentSteps: lastStrapStepLedgerSavedSegmentSteps
+        )
         guard Self.strapStepLedgerHasUnsavedResearchSteps(
             currentRawSteps: strapStepResearchPeakCount,
             persistedRawSteps: lastStrapStepLedgerSavedRawSteps,
@@ -47537,7 +47587,6 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         strapStepLedgerSaveInFlight = true
         let segmentID = liveSessionID
         let segmentStartedAt = sessionStart
-        let segmentSteps = strapStepResearchCount
         let segmentRawSteps = strapStepResearchPeakCount
         let deviceTimestamp = strapStepResearchDeviceTimestamp
         let state = strapStepResearchState
@@ -47601,6 +47650,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 }
                 lastStrapStepLedgerSavedRawSteps = max(lastStrapStepLedgerSavedRawSteps,
                                                        record.segmentRawSteps)
+                lastStrapStepLedgerSavedSegmentSteps = max(
+                    lastStrapStepLedgerSavedSegmentSteps,
+                    record.segmentSteps
+                )
                 lastStrapStepLedgerSavedGyroCadenceResearchSteps = max(
                     lastStrapStepLedgerSavedGyroCadenceResearchSteps,
                     record.segmentGyroCadenceResearchSteps ?? 0
@@ -47694,6 +47747,35 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             || currentGyroSteps > max(0, persistedGyroSteps)
     }
 
+    /// Live gyro is often smaller than a leftover accelerometer `segmentSteps`
+    /// (desk peaks). Feeding gyro in as `segmentSteps` throws `regressedCount`
+    /// and never writes the walk.
+    nonisolated static func strapStepLedgerSegmentStepsForCheckpoint(
+        liveGyroSteps: Int,
+        persistedSegmentSteps: Int
+    ) -> Int {
+        max(0, liveGyroSteps, persistedSegmentSteps)
+    }
+
+    /// Same-day UserDefaults gyro is the walk that failed to checkpoint when
+    /// leftover accel `segmentSteps` threw. Restore must seed that floor so
+    /// reconnect does not publish 18 over 214.
+    nonisolated static func strapStepLedgerGyroFloorForRestore(
+        ledgerGyro: Int,
+        liveGyroToday: Int,
+        liveGyroCapturedAt: Date?,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        let ledger = max(0, ledgerGyro)
+        guard liveGyroToday > ledger,
+              let captured = liveGyroCapturedAt,
+              calendar.isDate(captured, inSameDayAs: now) else {
+            return ledger
+        }
+        return liveGyroToday
+    }
+
     nonisolated static func strapStepLedgerCheckpointDelay(
         lastSavedAt: Date?,
         now: Date,
@@ -47777,6 +47859,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 now: now
             )
             lastStrapStepLedgerSavedRawSteps = rotated.segmentRawSteps
+            lastStrapStepLedgerSavedSegmentSteps = rotated.segmentSteps
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 rotated.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
@@ -47846,6 +47929,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 now: now
             )
             lastStrapStepLedgerSavedRawSteps = resegmented.segmentRawSteps
+            lastStrapStepLedgerSavedSegmentSteps = resegmented.segmentSteps
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 resegmented.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
@@ -48130,7 +48214,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     ) -> Int {
         let incoming = max(0, incomingGyro)
         let current = max(0, current)
-        if current > incoming + max(0, contaminationSlack) { return incoming }
+        // Desk leftover accel peaks are thousands. A real gyro walk (214 vs a
+        // reconnect snapshot of 18) is not contamination.
+        if current > incoming + max(0, contaminationSlack),
+           current >= 1_000 {
+            return incoming
+        }
         return max(current, incoming)
     }
 
