@@ -644,6 +644,34 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             ),
             "sitting JSONL at thermal serious jetsammed the live BLE process"
         )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.43,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "one-chunk sitting drain must keep moving on a 43% unplugged phone"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.20,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "sitting idle still refuses a critically low unplugged battery"
+        )
         XCTAssertFalse(
             SessionStore.shouldAdmitAutomaticArchiveCompaction(
                 reason: "overdue_idle",
@@ -3414,8 +3442,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "allowsForeground: reason == \"overdue_idle\""
         ), "sitting Today leases must survive an active application state")
         XCTAssertTrue(sessions.contains(
-            "allowsSeriousThermal: false"
-        ), "sitting JSONL at thermal serious jetsammed the live BLE process")
+            "minimumBatteryLevel: isOverdueIdle ? 0.25 : 0.5"
+        ), "sitting one-chunk drain must not stall on a 43% unplugged phone")
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
