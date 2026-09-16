@@ -291,6 +291,10 @@ enum AtriaCompactIMULiveDiagnostics {
     /// Desk typing is ~10–40 dps mean with occasional flicks. A walk that
     /// should not compete with archive I/O is sustained ~80+ dps.
     static let archiveIOMeanCeilingDps = 80.0
+    /// Compact 1 g-still accel plus this gyro mean is phone-in-hand at a
+    /// desk. A slower walk can sit in the 40–80 band with gravity-looking
+    /// accel, so still-accel must not skip those seconds.
+    static let deskHoldGyroSkipMeanCeilingDps = 40.0
     /// Isolated ≤8 MB JSONL can retire during typing. Isolated 24–48 MB
     /// files also may, once those small shards are gone:
     /// `shouldIncludeLargeIdleChunk` keeps a 33 MB parse off the queue while

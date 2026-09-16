@@ -772,6 +772,8 @@ enum AtriaHeldDailyStepFloor {
     static let countKey = "atria.steps.heldDailyCount"
     static let cycleKey = "atria.steps.heldDailyCycleStart"
     static let capturedKey = "atria.steps.heldDailyCapturedAt"
+    static let liveGyroTodayCountKey = "atria.steps.liveGyroTodayCount"
+    static let liveGyroTodayCapturedKey = "atria.steps.liveGyroTodayCapturedAt"
 
     static func persist(count: Int,
                         cycleStart: Date,
@@ -876,6 +878,13 @@ enum AtriaHeldDailyStepFloor {
             // An unkeyed live coordinate must not keep yesterday's wake key.
             defaults.removeObject(forKey: cycleKey)
         }
+    }
+
+    static func persistLiveGyroToday(count: Int,
+                                     capturedAt: Date,
+                                     defaults: UserDefaults = .standard) {
+        defaults.set(max(0, count), forKey: liveGyroTodayCountKey)
+        defaults.set(capturedAt.timeIntervalSince1970, forKey: liveGyroTodayCapturedKey)
     }
 
     static func stepIncrementIsPlausible(from startCount: Int,

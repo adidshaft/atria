@@ -1244,6 +1244,27 @@ def emit_duty_cycle_and_compaction_preferences():
     idle_skip_age = max(0.0, now - float(idle_skip_at)) if isinstance(idle_skip_at, (int, float)) and idle_skip_at > 0 else -1.0
     print(f"archive_compaction_idle_skip_reason={pref(prefs, 'archiveCompaction.lastIdleSkipReason', 'none') or 'none'}")
     print(f"archive_compaction_idle_skip_age_s={idle_skip_age:.1f}")
+    print(f"today_held_step_count={int(pref(prefs, 'steps.heldDailyCount', 0) or 0)}")
+    held_at = pref(prefs, "steps.heldDailyCapturedAt")
+    held_age = max(0.0, now - float(held_at)) if isinstance(held_at, (int, float)) and held_at > 0 else -1.0
+    print(f"today_held_step_age_s={held_age:.1f}")
+    print(f"today_live_gyro_count={int(pref(prefs, 'steps.liveGyroTodayCount', 0) or 0)}")
+    live_gyro_at = pref(prefs, "steps.liveGyroTodayCapturedAt")
+    live_gyro_age = max(0.0, now - float(live_gyro_at)) if isinstance(live_gyro_at, (int, float)) and live_gyro_at > 0 else -1.0
+    print(f"today_live_gyro_age_s={live_gyro_age:.1f}")
+    ledger_path = evidence / "authoritative-runtime-state" / "atria-strap-step-ledger.json"
+    gyro_cum = -1
+    gyro_seg = -1
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text())
+            if isinstance(ledger, dict):
+                gyro_cum = int(ledger.get("cumulativeGyroCadenceResearchSteps") or -1)
+                gyro_seg = int(ledger.get("segmentGyroCadenceResearchSteps") or -1)
+        except Exception:
+            pass
+    print(f"today_gyro_cumulative_steps={gyro_cum}")
+    print(f"today_gyro_segment_steps={gyro_seg}")
 
 def emit_watchdog_preferences():
     prefs_path = evidence / "preferences.plist"

@@ -1143,10 +1143,10 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     /// Desk-level compact IMU must not pad a 4 s gyro-cadence window.
     /// Sitting packets are ~1 dps. Holding the phone is ~20 dps with near-1 g
     /// stillness, which still cleared the 12 dps looking-at-phone walk gate.
-    /// Skip the current second when strap accel is still, when rotation is
-    /// sitting, or when recent diagnostics say sitting and this second is
-    /// still below that walk gate. A walk has gait bounce in accel, so it
-    /// is admitted even if wrist gyro looks like phone-in-hand sitting.
+    /// Compact gravity can also look still during a real arm swing (~80+ dps);
+    /// those seconds must score. Skip only when strap accel is still *and*
+    /// rotation is below a walk, when rotation is sitting, or when recent
+    /// diagnostics say sitting and this second is still below the walk gate.
     nonisolated static func shouldSkipSittingCompactGyroCadence(
         deviceClock: AtriaR10MotionFrame.DeviceClock,
         rotationMagnitudes: [Double],
@@ -1156,11 +1156,12 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         guard deviceClock == .compactAssembled, !rotationMagnitudes.isEmpty else {
             return false
         }
-        if isCompactStrapAccelStill(accelerationMagnitudes) {
-            return true
-        }
         let mean = rotationMagnitudes.reduce(0, +) / Double(rotationMagnitudes.count)
         let peak = rotationMagnitudes.max() ?? 0
+        if isCompactStrapAccelStill(accelerationMagnitudes),
+           mean < AtriaCompactIMULiveDiagnostics.deskHoldGyroSkipMeanCeilingDps {
+            return true
+        }
         if mean < AtriaCompactIMULiveDiagnostics.sittingMeanCeilingDps,
            peak < AtriaCompactIMULiveDiagnostics.sittingMaxCeilingDps {
             return true
