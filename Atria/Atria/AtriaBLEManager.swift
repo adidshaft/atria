@@ -30105,6 +30105,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case rediscover
     }
 
+    /// Full-protocol IMU recovery used to require `realtimeArmed`, which is
+    /// cleared on every reconnect. Protected mode used `protectedR10MotionIsEligible`
+    /// instead. Confirmed stream-5 plus expected transport is enough to 6A/51.
+    nonisolated static func r10LivenessRealtimeArmed(
+        stream5Confirmed: Bool,
+        sessionRealtimeArmed: Bool,
+        transportExpected: Bool
+    ) -> Bool {
+        stream5Confirmed && (sessionRealtimeArmed || transportExpected)
+    }
+
     /// Pure policy used by the persistent R10 watchdog. Heart-rate continuity
     /// is deliberately absent: 2A37 can remain healthy while proprietary motion
     /// is frozen, which is the failure this policy must detect independently.
@@ -31356,8 +31367,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let action = Self.r10LivenessAction(
             eligible: eligible,
             connected: connected,
-            realtimeArmed: strapStream5NotifyConfirmed
-                && (realtimeArmed || protectedR10MotionIsEligible),
+            realtimeArmed: Self.r10LivenessRealtimeArmed(
+                stream5Confirmed: strapStream5NotifyConfirmed,
+                sessionRealtimeArmed: realtimeArmed,
+                transportExpected: eligible
+            ),
             lastFrameAt: currentR10MotionFrameAt(),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,

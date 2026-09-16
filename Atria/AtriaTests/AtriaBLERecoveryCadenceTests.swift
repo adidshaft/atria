@@ -6408,6 +6408,28 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastRediscoveryAt: nil,
             now: now
         ), .rearm, "4s of IMU silence must rearm 6A/51 on the live HR link")
+        XCTAssertTrue(
+            AtriaBLEManager.r10LivenessRealtimeArmed(
+                stream5Confirmed: true,
+                sessionRealtimeArmed: false,
+                transportExpected: true
+            ),
+            "full_protocol must recover IMU after reconnect clears realtimeArmed"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.r10LivenessRealtimeArmed(
+                stream5Confirmed: false,
+                sessionRealtimeArmed: false,
+                transportExpected: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.r10LivenessRealtimeArmed(
+                stream5Confirmed: true,
+                sessionRealtimeArmed: false,
+                transportExpected: false
+            )
+        )
     }
 
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
@@ -11983,6 +12005,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
                       "a leftover queued 6A/51 must flush on the liveness tick")
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
+        XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
+                      "full_protocol IMU recovery must not wait on protected-only eligibility")
         XCTAssertTrue(liveBody.contains("after_unconfirmed_toggle"),
                       "an already-toggled silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),
