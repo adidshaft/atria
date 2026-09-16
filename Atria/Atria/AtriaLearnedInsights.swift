@@ -378,7 +378,7 @@ enum AtriaLearnedInsights {
                         id: "sleep-debt",
                         kind: .sleepDebt,
                         headline: "Last night was \(hourText(deltaHours)) under your \(reference.kind)",
-                        detail: "You slept \(sleptText) \(versus). That gap is tonight's first recovery lever.",
+                        detail: "You slept \(sleptText) \(versus). That gap is still on this record.",
                         isPositive: false,
                         asOf: now
                     )
@@ -398,7 +398,7 @@ enum AtriaLearnedInsights {
             id: "sleep-short",
             kind: .sleepDebt,
             headline: "Last night was only \(sleptText)",
-            detail: "That's a short night even without a stored sleep-need. Protect this evening if you can.",
+            detail: "That's a short night even without a stored sleep-need.",
             isPositive: false,
             asOf: now
         )
@@ -529,8 +529,8 @@ enum AtriaLearnedInsights {
             return AtriaLearnedInsight(
                 id: "readiness-recover",
                 kind: .readiness,
-                headline: "Today: recover",
-                detail: "Signals say back off — \(parts.joined(separator: ", ")). Keep the day's load lighter than usual.",
+                headline: "Recovery signals are low this morning",
+                detail: "This morning shows \(parts.joined(separator: ", ")).",
                 isPositive: false,
                 asOf: now
             )
@@ -539,8 +539,8 @@ enum AtriaLearnedInsights {
             return AtriaLearnedInsight(
                 id: "readiness-push",
                 kind: .readiness,
-                headline: "Today: you can push",
-                detail: "Recovery and last night both cleared the bar. Keep the work inside a day you can still finish well.",
+                headline: "Recovery and last night both look strong",
+                detail: "Recovery and last night both cleared their usual bars on this record.",
                 isPositive: true,
                 asOf: now
             )
@@ -548,8 +548,8 @@ enum AtriaLearnedInsights {
         return AtriaLearnedInsight(
             id: "readiness-maintain",
             kind: .readiness,
-            headline: "Today: maintain",
-            detail: "Nothing is loudly off, and nothing is loudly green. Keep the usual load; do not stack a surprise peak.",
+            headline: "Today sits in the middle",
+            detail: "Nothing is loudly off, and nothing is loudly green.",
             isPositive: true,
             asOf: now
         )
@@ -563,11 +563,9 @@ enum AtriaLearnedInsights {
             return AtriaLearnedInsight(
                 id: "recovery-today",
                 kind: .recoveryDrift,
-                headline: latest <= 49
-                    ? "Recovery is \(latest)% — take it easy"
-                    : "Recovery is \(latest)% this morning",
+                headline: "Recovery is \(latest)% this morning",
                 detail: latest <= 49
-                    ? "That is a yellow morning. Keep strain light until this number climbs."
+                    ? "That is a yellow morning on this record."
                     : "A few more mornings will show whether this is your usual or a one-day swing.",
                 isPositive: latest >= 67,
                 asOf: now
@@ -670,7 +668,7 @@ enum AtriaLearnedInsights {
             id: "bedtime-spread",
             kind: .bedtimeSpread,
             headline: "Bedtime is swinging by \(Int(stdevMinutes.rounded())) minutes",
-            detail: "Across \(times.count) nights the clock is not settling. A tighter window is one of the fastest recovery levers you still control.",
+            detail: "Across \(times.count) nights the clock is not settling.",
             isPositive: false,
             asOf: now
         )
@@ -708,16 +706,16 @@ enum AtriaLearnedInsights {
         if prior.count >= 3 {
             let mean = prior.reduce(0, +) / Double(prior.count)
             if strain >= mean + 3 {
-                comparison = String(format: "That sits %.1f above your recent days. Recover today before stacking another peak.",
+                comparison = String(format: "That sits %.1f above your recent days.",
                                     strain - mean)
             } else if strain + 3 <= mean {
-                comparison = String(format: "That is lighter than your recent %.1f average — room to train if recovery agrees.",
+                comparison = String(format: "That is lighter than your recent %.1f average.",
                                     mean)
             } else {
-                comparison = "In line with your recent days. Do not treat it as a free pass or a warning on its own."
+                comparison = "In line with your recent days."
             }
         } else {
-            comparison = "Today's first job is to clear it, not to match it."
+            comparison = "Yesterday's strain is still on this record."
         }
         return AtriaLearnedInsight(
             id: "yesterday-strain",

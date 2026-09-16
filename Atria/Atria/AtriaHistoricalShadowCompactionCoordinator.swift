@@ -171,6 +171,27 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         candidates.filter { !skippedIDs.contains($0.id) }
     }
 
+    /// Lock and sitting share this filter: never parse a shard that overlaps
+    /// 72/134 MB legacy JSONL, and never retry a permanently skipped file.
+    static func isolatedFinishableIdleCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        catalog: AtriaHistoricalArchiveCatalog,
+        maximumByteCount: UInt64,
+        oversizedByteCount: UInt64 = 64 * 1024 * 1024,
+        skippedIDs: Set<String>
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let finishable = sceneBackgroundRetirementCandidates(
+            candidates,
+            maximumByteCount: maximumByteCount
+        )
+        let isolated = skippingOversizedTimeOverlaps(
+            finishable,
+            catalog: catalog,
+            oversizedByteCount: oversizedByteCount
+        )
+        return skippingIdleCutoverSkips(isolated, skippedIDs: skippedIDs)
+    }
+
     static func isPermanentIdleCutoverSkip(_ error: Error) -> Bool {
         if let shard = error as? AtriaHistoricalReplayIdentityShard.ShardError {
             switch shard {
@@ -181,7 +202,23 @@ struct AtriaHistoricalShadowCompactionCoordinator {
                 return false
             }
         }
-        return String(describing: error).contains("duplicateIdentity")
+        return isPermanentIdleCutoverSkipMessage(String(describing: error))
+    }
+
+    static func isPermanentIdleCutoverSkipMessage(_ message: String) -> Bool {
+        ["duplicateIdentity", "tornTrailingRow", "missingExactIdentity",
+         "rowCountMismatch", "invalidArtifact", "retainedArtifactTooLarge"]
+            .contains { message.contains($0) }
+    }
+
+    static func recordPermanentIdleCutoverSkips(
+        _ failures: [Failure],
+        defaults: UserDefaults = .standard
+    ) {
+        for failure in failures
+            where isPermanentIdleCutoverSkipMessage(failure.message) {
+            recordIdleCutoverSkip(chunkID: failure.chunkID, defaults: defaults)
+        }
     }
 
     static func orderedIdleRetirementCandidates(
@@ -298,7 +335,7 @@ struct AtriaHistoricalShadowCompactionCoordinator {
                                   precedingFailures: failures)
             } catch {
                 failures.append(.init(chunkID: chunk.id,
-                                      message: error.localizedDescription))
+                                      message: String(describing: error)))
             }
         }
         return .allFailed(failures)

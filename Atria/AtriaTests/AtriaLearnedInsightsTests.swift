@@ -22,8 +22,8 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         let insights = AtriaLearnedInsights.insights(rollups: [rollup], now: now)
         XCTAssertFalse(insights.isEmpty, "rollups must produce readable insights without journal tags")
         XCTAssertTrue(insights.contains { $0.headline.contains("under your need")
-            || $0.headline.contains("take it easy")
-            || $0.headline.contains("Today: recover") })
+            || $0.headline.contains("yellow morning")
+            || $0.headline.contains("Recovery signals are low") })
         XCTAssertTrue(insights.allSatisfy { !$0.headline.isEmpty && $0.detail.count > 20 })
     }
 
@@ -517,5 +517,10 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertFalse(source.contains("Keep today's load easy"))
         XCTAssertFalse(source.contains("You can train"))
         XCTAssertFalse(source.contains("Easy movement only"))
+        XCTAssertFalse(source.contains("Today: you can push"))
+        XCTAssertFalse(source.contains("room to train"))
+        XCTAssertFalse(source.contains("Keep the day's load"))
+        XCTAssertFalse(source.contains("Keep strain light"))
+        XCTAssertFalse(source.contains("Keep the work inside"))
     }
 }

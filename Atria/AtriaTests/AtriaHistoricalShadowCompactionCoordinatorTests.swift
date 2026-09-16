@@ -219,6 +219,78 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         XCTAssertEqual(selected.map(\.id), [isolated.id])
     }
 
+    func testLockAndSittingSkipShardsThatOverlapLegacyMonoliths() {
+        let start = Date(timeIntervalSince1970: 1_783_000_000)
+        var monolith = boundedChunk(
+            id: "legacy-134",
+            first: start,
+            last: start.addingTimeInterval(26 * 86_400),
+            bytes: 134_218_092
+        )
+        monolith.state = .sealed
+        let overlapping = boundedChunk(
+            id: "july-overlap",
+            first: start.addingTimeInterval(18 * 86_400),
+            last: start.addingTimeInterval(18 * 86_400 + 90),
+            bytes: 125_934
+        )
+        let isolated = boundedChunk(
+            id: "july-29-isolated",
+            first: start.addingTimeInterval(43 * 86_400),
+            last: start.addingTimeInterval(43 * 86_400 + 90),
+            bytes: 130_052
+        )
+        let active = activeChunk(id: "active", createdAt: now)
+        let catalog = AtriaHistoricalArchiveCatalog(
+            version: AtriaHistoricalArchiveCatalog.currentVersion,
+            generation: 1,
+            activeChunkID: active.id,
+            chunks: [monolith, overlapping, isolated, active]
+        )
+        let selected = AtriaHistoricalShadowCompactionCoordinator
+            .isolatedFinishableIdleCandidates(
+                [overlapping, isolated],
+                catalog: catalog,
+                maximumByteCount: 8 * 1024 * 1024,
+                skippedIDs: []
+            )
+        XCTAssertEqual(selected.map(\.id), [isolated.id])
+    }
+
+    func testPermanentIdleFailuresAreRememberedSoLaterShardsCanDrain() {
+        let suite = "atria.idle-skip.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let failures = [
+            AtriaHistoricalShadowCompactionCoordinator.Failure(
+                chunkID: "dup",
+                message: "duplicateIdentity"
+            ),
+            AtriaHistoricalShadowCompactionCoordinator.Failure(
+                chunkID: "transient",
+                message: "sourceMissing"
+            )
+        ]
+        AtriaHistoricalShadowCompactionCoordinator.recordPermanentIdleCutoverSkips(
+            failures,
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaHistoricalShadowCompactionCoordinator.idleCutoverSkipChunkIDs(
+                defaults: defaults
+            ),
+            Set(["dup"])
+        )
+        XCTAssertTrue(
+            AtriaHistoricalShadowCompactionCoordinator
+                .isPermanentIdleCutoverSkipMessage("duplicateIdentity")
+        )
+        XCTAssertFalse(
+            AtriaHistoricalShadowCompactionCoordinator
+                .isPermanentIdleCutoverSkipMessage("sourceMissing")
+        )
+    }
+
     func testIdleRetirementSkipsDuplicateIdentityCutoverPoison() {
         let poison = chunk(id: "dup-identity", createdAt: now.addingTimeInterval(-200))
         let valid = chunk(id: "valid-4mb", createdAt: now.addingTimeInterval(-100))

@@ -27114,6 +27114,7 @@ final class SessionStore: ObservableObject {
         switch lastStatus {
         case "deferred_catalog_warming",
              "deferred_idle_cutover_skipped",
+             "deferred_idle_no_isolated_small",
              "ok_verified_consumer_cutover_raw_retired",
              "yielded_retention_progress":
             requiredAge = 12

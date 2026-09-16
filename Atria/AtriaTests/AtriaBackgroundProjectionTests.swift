@@ -3544,8 +3544,14 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "sitting idle must not stall on the policy queue's 134 MB row")
         XCTAssertTrue(body.contains("64 * 1024 * 1024"),
                       "only 72/134 MB legacy JSONL should isolate overlapping shards")
-        XCTAssertTrue(body.contains("Array(finishable.prefix(1))"),
-                      "lock still attempts one finishable JSONL")
+        XCTAssertTrue(body.contains("isolatedFinishableIdleCandidates("),
+                      "lock must skip 72/134 MB overlaps before spending 25s")
+        XCTAssertTrue(body.contains("Array(isolated.prefix(1))"),
+                      "lock still attempts one isolated finishable JSONL")
+        XCTAssertTrue(body.contains("deferred_idle_no_isolated_small"),
+                      "empty lock candidates must not look like the 512 MB cap is satisfied")
+        XCTAssertTrue(body.contains("recordPermanentIdleCutoverSkips("),
+                      "a poisoned shard must not be retried on every sitting pass")
         XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),
                       "sitting idle still skips duplicate-identity shards then takes isolated JSONL")
         XCTAssertTrue(body.contains("preferLarge: true"),
