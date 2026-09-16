@@ -3653,6 +3653,9 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "lock still attempts one isolated finishable JSONL")
         XCTAssertTrue(body.contains("deferred_idle_no_isolated_small"),
                       "empty lock candidates must not look like the 512 MB cap is satisfied")
+        XCTAssertTrue(body.contains(
+            "if retention.plan.hardCapSatisfied"
+        ), "sitting idle must stop once sealed raw is under the 512 MB cap")
         XCTAssertTrue(body.contains("recordPermanentIdleCutoverSkips("),
                       "a poisoned shard must not be retried on every sitting pass")
         XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),

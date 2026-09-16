@@ -1266,6 +1266,61 @@ def emit_duty_cycle_and_compaction_preferences():
     print(f"today_gyro_cumulative_steps={gyro_cum}")
     print(f"today_gyro_segment_steps={gyro_seg}")
 
+
+def emit_catalog_v2_summary():
+    catalog_path = evidence / "historical-archive.catalog-v2.json"
+    if not catalog_path.is_file():
+        print("catalog_v2_summary_status=missing")
+        return
+    try:
+        catalog = json.loads(catalog_path.read_text())
+    except Exception as exc:
+        print(f"catalog_v2_summary_error={type(exc).__name__}:{exc}")
+        return
+    chunks = catalog.get("chunks") if isinstance(catalog, dict) else None
+    if not isinstance(chunks, list):
+        print("catalog_v2_summary_status=invalid")
+        return
+    states = {}
+    bytes_by = {}
+    isolated_20_48 = 0
+    isolated_20_48_bytes = 0
+    oversized = 0
+    oversized_bytes = 0
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        state = str(chunk.get("state") or "unknown")
+        byte_count = int(chunk.get("byteCount") or 0)
+        states[state] = states.get(state, 0) + 1
+        bytes_by[state] = bytes_by.get(state, 0) + byte_count
+        if state == "sealed" and 20 * 1024 * 1024 <= byte_count <= 48 * 1024 * 1024:
+            isolated_20_48 += 1
+            isolated_20_48_bytes += byte_count
+        if state == "sealed" and byte_count >= 64 * 1024 * 1024:
+            oversized += 1
+            oversized_bytes += byte_count
+    sealed_bytes = int(bytes_by.get("sealed") or 0)
+    active_bytes = int(bytes_by.get("active") or 0)
+    cap = 512 * 1024 * 1024
+    print("catalog_v2_summary_status=ok")
+    print(f"catalog_v2_generation={int(catalog.get('generation') or 0)}")
+    print(f"catalog_v2_chunks={len(chunks)}")
+    print(f"catalog_v2_sealed={int(states.get('sealed') or 0)}")
+    print(f"catalog_v2_retired={int(states.get('retired') or 0)}")
+    print(f"catalog_v2_active={int(states.get('active') or 0)}")
+    print(f"catalog_v2_sealed_bytes={sealed_bytes}")
+    print(f"catalog_v2_active_bytes={active_bytes}")
+    print(f"catalog_v2_retired_bytes={int(bytes_by.get('retired') or 0)}")
+    print(f"catalog_v2_sealed_plus_active_bytes={sealed_bytes + active_bytes}")
+    print(f"catalog_v2_cap_bytes={cap}")
+    print(f"catalog_v2_sealed_under_512mib={1 if sealed_bytes <= cap else 0}")
+    print(f"catalog_v2_sealed_plus_active_under_512mib={1 if sealed_bytes + active_bytes <= cap else 0}")
+    print(f"catalog_v2_isolated_20_48_count={isolated_20_48}")
+    print(f"catalog_v2_isolated_20_48_bytes={isolated_20_48_bytes}")
+    print(f"catalog_v2_oversized_count={oversized}")
+    print(f"catalog_v2_oversized_bytes={oversized_bytes}")
+
 def emit_watchdog_preferences():
     prefs_path = evidence / "preferences.plist"
     if not prefs_path.exists():
@@ -1668,6 +1723,7 @@ emit_motion_context_preferences()
 emit_hr_broadcast_preferences()
 emit_ble_link_preferences()
 emit_duty_cycle_and_compaction_preferences()
+emit_catalog_v2_summary()
 emit_watchdog_preferences()
 emit_sample_preferences()
 emit_keepalive_preferences()
