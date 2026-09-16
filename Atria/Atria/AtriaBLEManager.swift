@@ -9425,6 +9425,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Keep the R10 liveness clock running through a pure-HR fallback so
         // all-day passive requalify can fire without waiting for a relaunch.
         ensureR10LivenessWatchdog(reason: "keepalive_tick")
+        evaluateR10Liveness(now: now, reason: "keepalive_tick")
         if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
             defaults: defaults, now: now
         ) {
@@ -25648,7 +25649,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         realtimeRetry?.cancel()
         realtimeRestartTask?.cancel()
         r10ArmRetryTask?.cancel()
-        r10LivenessTask?.cancel()
+        stopR10LivenessWatchdog(reason: "canonical_restore_failure")
         proprietaryNotifyFallbackTask?.cancel()
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillMaintenanceTickerTask?.cancel()
@@ -30886,7 +30887,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func ensureR10LivenessWatchdog(reason: String) {
-        guard r10LivenessTask == nil else { return }
+        if let r10LivenessTask, !r10LivenessTask.isCancelled {
+            return
+        }
+        r10LivenessTask = nil
         r10LivenessTask = Task { @MainActor [weak self] in
             guard let self else { return }
             AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ poll_s=%.0f stale_s=%.0f",

@@ -10062,6 +10062,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: tickStart.upperBound..<source.endIndex))
         let tickBody = String(source[tickStart.lowerBound..<tickEnd.lowerBound])
         XCTAssertTrue(tickBody.contains("ensureR10LivenessWatchdog(reason: \"keepalive_tick\")"))
+        XCTAssertTrue(tickBody.contains("evaluateR10Liveness(now: now, reason: \"keepalive_tick\")"),
+                      "keepalive must evaluate IMU silence even if the watchdog task is a cancelled husk")
         XCTAssertTrue(tickBody.contains("keepalive_all_day_passive_requalify"))
     }
 
@@ -12182,6 +12184,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "IMU silence must be evaluated on arm, not after the first poll sleep")
         XCTAssertTrue(armBody.contains("r10LivenessWatchdogInterval"),
                       "the watchdog must poll faster than the 8s stale gate")
+        XCTAssertTrue(armBody.contains("isCancelled"),
+                      "a cancelled liveness task must not block 6A/51 forever")
         XCTAssertFalse(armBody.contains("Task.sleep(for: .seconds(Self.r10LivenessStaleInterval))"))
 
         let liveStart = try XCTUnwrap(source.range(
