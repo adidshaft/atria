@@ -44,7 +44,7 @@ final class AtriaAppReviewDemoTests: XCTestCase {
     }
 
     func testEvidenceCatalogCitesEachComputedMetric() {
-        for metricID in ["hrv", "recovery", "restingHeartRate", "respiration", "sleep", "vo2max", "strain"] {
+        for metricID in ["hrv", "recovery", "restingHeartRate", "respiration", "sleep", "vo2max", "strain", "stress", "sleepNeed", "fitnessAge", "skinTemperature", "bloodOxygen"] {
             XCTAssertFalse(
                 AtriaEvidenceCatalog.sources(for: metricID).isEmpty,
                 "missing sources for \(metricID)"
@@ -55,14 +55,18 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         XCTAssertFalse(AtriaEvidenceCatalog.sources(for: "calories").isEmpty)
     }
 
-    func testCompatibleHardwareScreenStatesWhoop4Only() {
-        let screen = AtriaCompatibleHardwareScreen()
-        XCTAssertEqual(String(describing: type(of: screen)), "AtriaCompatibleHardwareScreen")
-        let copy = AtriaCompatibleHardwareScreen.self
-        _ = copy
-        XCTAssertTrue(
-            AtriaEvidenceCatalog.sources.contains { $0.year >= 1971 }
+    func testCompatibleHardwareScreenStatesWhoop4Only() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaCompatibleHardwareScreen.swift"),
+            encoding: .utf8
         )
+        XCTAssertTrue(source.contains("WHOOP 4.0"))
+        XCTAssertTrue(source.contains("manufactured and sold by WHOOP, Inc."))
+        XCTAssertTrue(source.contains("Atria does not manufacture, sell, or service WHOOP hardware."))
+        XCTAssertFalse(source.contains("WHOOP 5"))
     }
 
     func testCoachCopyWithholdsUncitedPrescriptions() {
@@ -128,5 +132,22 @@ final class AtriaAppReviewDemoGateTests: XCTestCase {
         )
         XCTAssertEqual(presentation.count, AtriaAppReviewDemo.stepCount(on: now, now: now, calendar: calendar))
         XCTAssertEqual(presentation.source, .verifiedCanonical)
+    }
+
+    func testAsyncRawExportGuardsDemoMode() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "func exportRawDataPackageAsync() async -> URL? {"))
+        let slice = source[start.lowerBound...]
+        let header = String(slice.prefix(280))
+        XCTAssertTrue(
+            header.contains("guard !AtriaAppReviewDemo.isActive else { return nil }"),
+            "async export must refuse demo-mode sample packages"
+        )
     }
 }

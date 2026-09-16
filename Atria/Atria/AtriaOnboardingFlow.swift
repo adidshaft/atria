@@ -1006,6 +1006,7 @@ struct AtriaOnboardingFlow: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Take the strap off, wait for its green sensor lights to stop, then tap the top repeatedly until the side light pulses blue. Close WHOOP first. Atria securely asks iPhone to pair — accept the system prompt, put the strap back on snugly, and keep it nearby. The strap stops its blue light when pairing finishes — Atria does not force the light off.")
                         .accessibilityLabel("Pairing instructions")
+                    Text("If this strap was already paired with WHOOP or another phone: open iPhone Settings → Bluetooth, forget the WHOOP device, and force-quit the official WHOOP app. Then pulse blue as above. Atria cannot factory-reset WHOOP flash.")
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)

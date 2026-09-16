@@ -127,6 +127,12 @@ final class AtriaCivilDayStepAuthority {
         fallback.merging(exact) { _, exactValue in exactValue }
     }
 
+    /// After compact IMU shards rotate (four UTC days), `sourceFingerprint`
+    /// is nil. A closed day's cached total is still the last exact count.
+    static func shouldKeepCompleteDayAfterShardsRotate(_ record: DayRecord) -> Bool {
+        record.dayWasComplete
+    }
+
     // MARK: - The read
 
     /// Per-day totals for `days`, exact where shards can answer, `fallback`
@@ -165,21 +171,30 @@ final class AtriaCivilDayStepAuthority {
             let readEnd = min(dayEnd, now)
             guard readEnd > day else { continue }
             // Fingerprint the WHOLE day's buckets even while the day is open,
-            // so a row landing later today changes it.
-            guard let fingerprint = store.sourceFingerprint(
+            // so a row landing later today changes it. A nil fingerprint means
+            // those shards have rotated out of the four-day window — a finished
+            // day's cached total is still the last exact answer.
+            let fingerprint = store.sourceFingerprint(
                 start: day, end: dayEnd, strapIdentifier: strapIdentifier
-            ) else { continue }
+            )
             let exclusionPrint = Self.exclusionFingerprint(
                 nonGaitExclusions, dayStart: day, dayEnd: dayEnd
             )
-            if let record = loaded[day.timeIntervalSince1970],
-               Self.isServable(record: record,
-                               sourceFingerprint: fingerprint,
-                               exclusionFingerprint: exclusionPrint,
-                               now: now) {
-                exact[day] = record.steps
-                continue
+            if let record = loaded[day.timeIntervalSince1970] {
+                if let fingerprint,
+                   Self.isServable(record: record,
+                                   sourceFingerprint: fingerprint,
+                                   exclusionFingerprint: exclusionPrint,
+                                   now: now) {
+                    exact[day] = record.steps
+                    continue
+                }
+                if fingerprint == nil, Self.shouldKeepCompleteDayAfterShardsRotate(record) {
+                    exact[day] = record.steps
+                    continue
+                }
             }
+            guard let fingerprint else { continue }
             let dayComplete = now >= dayEnd
             let read = store.motionTickDayEvidenceRead(
                 start: day,

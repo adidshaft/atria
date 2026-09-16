@@ -22,6 +22,10 @@ struct AtriaCompatibleHardwareScreen: View {
                     ]
                 )
 
+                Text("WHOOP 4.0 is manufactured and sold by WHOOP, Inc. Atria does not manufacture, sell, or service WHOOP hardware.")
+                    .font(.footnote.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+
                 disclosureCard(
                     title: "Read from the strap",
                     rows: [
@@ -73,6 +77,7 @@ struct AtriaCompatibleHardwareScreen: View {
         }
         .navigationTitle("Hardware & signals")
         .navigationBarTitleDisplayMode(.inline)
+        .atriaDemoSampleBadge()
         .accessibilityIdentifier("atria.hardware.signals")
     }
 

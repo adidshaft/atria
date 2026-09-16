@@ -205,4 +205,13 @@ final class AtriaCivilDayStepAuthorityTests: XCTestCase {
                        "unchanged fingerprints must serve the cache, not decode "
                            + "90k rows again")
     }
+
+    func testCompleteCachedDaysSurviveShardRotation() {
+        XCTAssertTrue(AtriaCivilDayStepAuthority.shouldKeepCompleteDayAfterShardsRotate(
+            record(computedAt: 1, complete: true)
+        ))
+        XCTAssertFalse(AtriaCivilDayStepAuthority.shouldKeepCompleteDayAfterShardsRotate(
+            record(computedAt: 1, complete: false)
+        ))
+    }
 }

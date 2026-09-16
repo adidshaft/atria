@@ -80,7 +80,11 @@ struct AtriaStrapScreen: View {
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
             }
 
-            rawExportRow
+                    if !AtriaAppReviewDemo.isActive {
+                        rawExportRow
+                    } else {
+                        AtriaSampleDataBadge(compact: true)
+                    }
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),

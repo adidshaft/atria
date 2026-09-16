@@ -77,6 +77,8 @@ struct AtriaLearnedInsightsBoard: View {
     var style: Style = .full
     /// Three-ring hero for Sleep / Recovery / Strain. Sheet-only.
     var showsRingHero: Bool = false
+    /// Day / Week / Month ledger window. Compact Today bar ignores this.
+    var lookback: AtriaInsightLookback = .week
 
     var body: some View {
         Group {
@@ -144,6 +146,7 @@ struct AtriaLearnedInsightsBoard: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(compactBarAccessibilityLabel)
+        .accessibilityIdentifier("atria.today.read")
         .accessibilityHint("Opens the full insights detail.")
         .accessibilityAddTraits(.isButton)
     }
@@ -156,8 +159,12 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private var earlierReads: [AtriaLearnedInsight] {
-        let todayIDs = Set(insights.map(\.id))
-        return ledger.filter { !todayIDs.contains($0.id) }
+        AtriaLearnedInsights.ledgerRows(
+            ledger: ledger,
+            lookback: lookback,
+            now: Date(),
+            calendar: .current
+        )
     }
 
     private var heroInsights: [AtriaLearnedInsight] {
@@ -185,7 +192,7 @@ struct AtriaLearnedInsightsBoard: View {
                     nakedRow(insight)
                 }
                 if !earlierReads.isEmpty {
-                    Text("Earlier reads")
+                    Text(lookback == .day ? "Captured read" : "\(lookback.title) reads")
                         .font(.headline)
                         .padding(.top, 8)
                         .accessibilityAddTraits(.isHeader)
@@ -224,23 +231,19 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private func nakedRow(_ insight: AtriaLearnedInsight, compact: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            AtriaInsightPictureRing(insight: insight, size: compact ? 36 : 52)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(insight.headline)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-                Text(insight.detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(insight.headline)
+                .font(compact ? .subheadline.weight(.semibold) : .headline)
+                .foregroundStyle(.primary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(insight.detail)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, compact ? 6 : 10)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(insight.headline). \(insight.detail)")
     }
@@ -254,17 +257,29 @@ struct AtriaLearnedInsightsSheet: View {
     var tagged: [AtriaInsight] = []
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var lookback: AtriaInsightLookback = .day
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
+                    if AtriaAppReviewDemo.isActive {
+                        AtriaSampleDataBadge(compact: true)
+                    }
+                    Picker("Range", selection: $lookback) {
+                        ForEach(AtriaInsightLookback.allCases) { range in
+                            Text(range.title).tag(range)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("atria.insights.lookback")
                     AtriaLearnedInsightsBoard(
-                        insights: insights,
+                        insights: lookback == .day ? insights : [],
                         ledger: ledger,
                         showsHeader: false,
                         usesOwnCard: false,
-                        showsRingHero: true
+                        showsRingHero: lookback == .day,
+                        lookback: lookback
                     )
                     if !tagged.isEmpty {
                         Divider()
@@ -322,5 +337,6 @@ struct AtriaLearnedInsightsSheet: View {
                 }
             }
         }
+        .atriaDemoSampleBadge()
     }
 }

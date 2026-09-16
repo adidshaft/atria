@@ -39,8 +39,12 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                       "The current wake cycle should start from the resident prepared session image")
         XCTAssertTrue(source.contains("store.sessionsIncludingFreshActiveJournal()"),
                       "device 2026-09-11: Activity HR must include the open journal")
+        XCTAssertTrue(source.contains("start: snapshot.interval.start"),
+                      "The current wake cycle should use the exact-window reader")
+        XCTAssertTrue(source.contains("end: snapshot.interval.end"),
+                      "The current wake cycle must bound the exact-window reader")
         XCTAssertTrue(source.contains("since: snapshot.interval.start"),
-                      "The current wake cycle should use the bounded recent reader")
+                      "An incomplete exact-window scan may fall back to the bounded recent reader")
         XCTAssertTrue(source.contains("maximumPoints: 100_000"),
                       "Completed historical days must keep the exact-window reader")
         XCTAssertTrue(source.contains("withTaskCancellationHandler"))

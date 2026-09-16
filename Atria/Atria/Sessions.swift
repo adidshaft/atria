@@ -2749,6 +2749,43 @@ struct WorkoutReadiness {
     let rrDisagreement: Bool
     let ready: Bool
 
+    static func failedRead(duration: TimeInterval, rest: Int) -> WorkoutReadiness {
+        WorkoutReadiness(
+            duration: duration,
+            observedDuration: 0,
+            avgHR: rest,
+            peakHR: rest,
+            p90HR: rest,
+            p95HR: rest,
+            p99HR: rest,
+            thresholdHR: rest,
+            thresholdGapBPM: 0,
+            samplesAboveThreshold: 0,
+            samplesAboveBorderline: 0,
+            elevatedSeconds: 0,
+            elevatedFraction: 0,
+            longestElevatedBout: 0,
+            borderlineThresholdHR: rest,
+            borderlineElevatedSeconds: 0,
+            borderlineLongestBout: 0,
+            borderlineElevatedFraction: 0,
+            requiredElevatedSeconds: 0,
+            requiredElevatedBout: 0,
+            droppedGapSeconds: 0,
+            maxSampleGap: 0,
+            gapCount: 0,
+            streamCoveragePercent: 0,
+            primaryBlocker: "read_failed",
+            avgOverRest: 0,
+            peakOverRest: 0,
+            contactQualifiedElevatedSeconds: 0,
+            contactQualifiedLongestBout: 0,
+            contactCompromised: false,
+            rrDisagreement: false,
+            ready: false
+        )
+    }
+
     var status: String {
         ready ? "ready" : "learning"
     }
@@ -7115,16 +7152,22 @@ extension SavedSession {
                           contactCompromisedOverride: Bool? = nil,
                           rrDisagreementOverride: Bool? = nil,
                           rrSampleCountOverride: Int? = nil) -> WorkoutReadiness {
-        try! workoutReadinessCore(
-            rest: rest,
-            maxHR: maxHR,
-            thresholdFraction: thresholdFraction,
-            contactCompromisedOverride: contactCompromisedOverride,
-            rrDisagreementOverride: rrDisagreementOverride,
-            rrSampleCountOverride: rrSampleCountOverride,
-            preparedBPMStats: nil,
-            cooperativeDeadline: nil
-        )
+        do {
+            return try workoutReadinessCore(
+                rest: rest,
+                maxHR: maxHR,
+                thresholdFraction: thresholdFraction,
+                contactCompromisedOverride: contactCompromisedOverride,
+                rrDisagreementOverride: rrDisagreementOverride,
+                rrSampleCountOverride: rrSampleCountOverride,
+                preparedBPMStats: nil,
+                cooperativeDeadline: nil
+            )
+        } catch {
+            AtriaDebugLog("ATRIADBG workout_readiness status=failed error=%@",
+                          String(describing: error))
+            return WorkoutReadiness.failedRead(duration: duration, rest: rest)
+        }
     }
 
     func workoutReadiness(
@@ -7675,10 +7718,10 @@ extension SavedSession {
                                                        droppedGapSeconds: TimeInterval,
                                                        maxGap: TimeInterval,
                                                        gapCount: Int) {
-        try! sustainedEvidenceCore(
+        (try? sustainedEvidenceCore(
             minimumHR: minimumHR,
             cooperativeDeadline: nil
-        )
+        )) ?? (0, 0, 0, 0, 0, 0)
     }
 
     private func sustainedEvidenceCore(
@@ -9846,7 +9889,7 @@ final class SessionStore: ObservableObject {
     /// board empty).
     @Published private(set) var learnedInsights: [AtriaLearnedInsight] = AtriaDurableInsightStore.load()
     /// Day-by-day captured reads. Distinct from the current seven so a later
-    /// refresh cannot erase the previous 21 days.
+    /// refresh cannot erase the previous 30 days.
     @Published private(set) var learnedInsightLedger: [AtriaLearnedInsight] = AtriaDurableInsightStore.loadLedger()
 
     func refreshLearnedInsights(now: Date = Date()) {
@@ -20832,11 +20875,11 @@ final class SessionStore: ObservableObject {
         }
         let sleepByDay = Dictionary(grouping: sources.flatMap(\.sleep.candidates)) {
             calendar.startOfDay(for: $0.end)
-        }.mapValues { values in
+        }.compactMapValues { values in
             values.sorted {
                 if $0.confidence != $1.confidence { return $0.confidence == .high }
                 return $0.end.timeIntervalSince($0.start) > $1.end.timeIntervalSince($1.start)
-            }.first!
+            }.first
         }
         var metricsByDay: [Date: AtriaHistoricalDailyConsumerProjection.DailyMetric] = [:]
         for metric in sources.flatMap(\.dailyMetrics.days) {
@@ -54721,6 +54764,7 @@ final class SessionStore: ObservableObject {
     }
 
     func exportRawDataPackageAsync() async -> URL? {
+        guard !AtriaAppReviewDemo.isActive else { return nil }
         let exportDir = url.deletingLastPathComponent().appendingPathComponent("atria-raw-exports")
         let exportURL = Self.rawExportURL(in: exportDir)
         let sessions = self.sessions
