@@ -6552,6 +6552,51 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testR10LivenessWaitsFourSecondsOnANewConnectionBeforeRearm() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let connectedFresh = now.addingTimeInterval(-2)
+        let connectedStale = now.addingTimeInterval(-5)
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessLastMotionAt(
+                evidenceAt: nil,
+                connectedAt: connectedFresh
+            ),
+            connectedFresh
+        )
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: AtriaBLEManager.r10LivenessLastMotionAt(
+                evidenceAt: nil,
+                connectedAt: connectedFresh
+            ),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .none, "IMU has 4s to start after connect before 6A/51")
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: AtriaBLEManager.r10LivenessLastMotionAt(
+                evidenceAt: nil,
+                connectedAt: connectedStale
+            ),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now
+        ), .rearm, "4s of IMU silence on a live HR epoch must 6A/51")
+        let rawFresh = now.addingTimeInterval(-1)
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessLastMotionAt(
+                evidenceAt: rawFresh,
+                connectedAt: connectedStale
+            ),
+            rawFresh
+        )
+    }
+
     func testR10LivenessEscalatesAfterGraceAndHonorsRediscoveryCooldown() {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let staleFrame = now.addingTimeInterval(-61)
@@ -12101,8 +12146,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
         XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(refreshBody.contains("6a51"))
-        XCTAssertTrue(refreshBody.contains("currentR10LivenessEvidenceAt"),
-                      "silent 6A/51 must use compact-second evidence, not only raw 0x33")
+        XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
+                      "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
         XCTAssertTrue(refreshBody.contains("imuRecoveryTriggerSnapshot"),
                       "6A/51 must stamp trigger IMU silence, not post-write freshness")
         XCTAssertTrue(refreshBody.contains("imuAge: recoveryAges.imuAge"),
@@ -12152,8 +12197,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
         XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
                       "full_protocol IMU recovery must not wait on protected-only eligibility")
-        XCTAssertTrue(liveBody.contains("currentR10LivenessEvidenceAt"),
-                      "6A/51 must see compact-second stalls, not only raw 0x33 age")
+        XCTAssertTrue(liveBody.contains("currentR10LivenessLastMotionAt"),
+                      "6A/51 must see compact-second stalls and wait 4s after connect")
         XCTAssertTrue(liveBody.contains("unconfirmed_stream5"),
                       "an unconfirmed silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),
