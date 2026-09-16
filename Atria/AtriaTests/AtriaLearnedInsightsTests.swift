@@ -180,14 +180,15 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("What moved you"))
         XCTAssertTrue(source.contains("nakedRow"))
-        XCTAssertTrue(source.contains("Earlier reads"))
+        XCTAssertTrue(source.contains("Captured read"))
+        XCTAssertTrue(source.contains("AtriaInsightLookback"))
         XCTAssertTrue(source.contains("case compactBar"))
         XCTAssertTrue(source.contains("private var compactBar"))
         XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet"))
         XCTAssertTrue(source.contains(".buttonStyle(.glass)"))
         XCTAssertTrue(source.contains("AtriaInsightPictureRing"))
         XCTAssertTrue(source.contains("ringHero("))
-        XCTAssertTrue(source.contains("showsRingHero: true"))
+        XCTAssertTrue(source.contains("showsRingHero: lookback == .day"))
         XCTAssertFalse(source.contains("isPositive ? Metrics.electricGreen"))
         XCTAssertFalse(source.contains("featuredCard"))
         XCTAssertFalse(source.contains("railColor(for:"))
@@ -465,5 +466,56 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("Self.overlayFrozenSleepNeed("))
         XCTAssertTrue(source.contains("refreshLearnedInsights()"))
         XCTAssertTrue(source.contains("didSet {\n            backupCanonicalRevision &+= 1\n            refreshLearnedInsights()"))
+    }
+
+    func testLedgerRowsFillMissingWeekDaysAndKeepToday() {
+        let today = calendar.startOfDay(for: now)
+        let captured = AtriaLearnedInsight(
+            id: "day-read-today",
+            kind: .daySnapshot,
+            headline: "Today · recovery 70%",
+            detail: "recovery 70%.",
+            isPositive: true,
+            asOf: today
+        )
+        let week = AtriaLearnedInsights.ledgerRows(
+            ledger: [captured],
+            lookback: .week,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(week.count, 7)
+        XCTAssertEqual(week.first?.id, captured.id)
+        XCTAssertEqual(week.filter { $0.detail.contains("No captured read") }.count, 6)
+
+        let month = AtriaLearnedInsights.ledgerRows(
+            ledger: [captured],
+            lookback: .month,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(month.count, 30)
+
+        let day = AtriaLearnedInsights.ledgerRows(
+            ledger: [captured],
+            lookback: .day,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(day.map(\.id), [captured.id])
+    }
+
+    func testLearnedInsightsWithholdUncitedPrescriptions() throws {
+        let source = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaLearnedInsights.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertFalse(source.contains("Keep today's load easy"))
+        XCTAssertFalse(source.contains("You can train"))
+        XCTAssertFalse(source.contains("Easy movement only"))
     }
 }

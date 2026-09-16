@@ -2822,6 +2822,7 @@ struct AtriaStrapStepsDetailSheet: View {
             .navigationTitle("Strap steps")
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("atria.metric.detail.steps")
+            .atriaDemoSampleBadge()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
@@ -4322,6 +4323,7 @@ struct AtriaMetricDetailSheet: View {
             .padding(.vertical, 18)
         }
         .accessibilityIdentifier("atria.metric.detail.\(metric.rawValue)")
+        .atriaDemoSampleBadge()
         .task(id: preparationInput) {
             await refreshPreparedHistory()
         }
@@ -6589,8 +6591,14 @@ struct AtriaMetricDetailSheet: View {
                                              calendar: input.calendar)
             )
         }
-        guard !showMinMaxBand else { return base }
-        return base.map { AtriaDetailChartPoint(day: $0.day, value: $0.value, tint: $0.tint) }
+        let resolved: [AtriaDetailChartPoint]
+        if range == .day, base.isEmpty, let last = raw.last ?? auto.last {
+            resolved = [last]
+        } else {
+            resolved = base
+        }
+        guard !showMinMaxBand else { return resolved }
+        return resolved.map { AtriaDetailChartPoint(day: $0.day, value: $0.value, tint: $0.tint) }
     }
 
     /// Double-tap route: resolve the scrubbed date to its history-day model
@@ -8257,6 +8265,9 @@ private struct AtriaMetricMeaningSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
+                    if AtriaAppReviewDemo.isActive {
+                        AtriaSampleDataBadge(compact: true)
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         Text(headline)
                             .font(.title3.weight(.bold))
@@ -8275,6 +8286,7 @@ private struct AtriaMetricMeaningSheet: View {
                     detailBlock(title: "What to do",
                                 body: AtriaMetricMeaningCopy.coaching(metric: metric,
                                                                       guidance: guidance))
+                    AtriaSourcesLink(metricID: metric.rawValue)
                 }
                 .padding(18)
             }
@@ -9877,7 +9889,8 @@ struct AtriaInsightsCard: View, Equatable {
                         insights: Array(learned.prefix(5)),
                         ledger: ledger,
                         showsHeader: false,
-                        usesOwnCard: false
+                        usesOwnCard: false,
+                        lookback: .month
                     )
                 }
                 ForEach(insights.prefix(3)) { insight in

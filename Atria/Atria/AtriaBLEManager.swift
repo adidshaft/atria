@@ -25496,6 +25496,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     func exitAppReviewDemoMode() {
         appReviewDemoMode = false
         appReviewDemoFlag.withLock { $0 = false }
+        startLiveBluetoothTransportIfNeeded()
         recomputeConnectionStatus(reason: "app_review_demo_exit")
     }
 

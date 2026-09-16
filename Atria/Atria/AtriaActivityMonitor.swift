@@ -1190,7 +1190,7 @@ enum AtriaActivityTimelineSignalProjection {
     static func stress(
         samples: [AtriaActivityTimelineStressSample],
         interval: DateInterval,
-        targetPointCount: Int = 180
+        targetPointCount: Int = 288
     ) -> AtriaActivityTimelineStressProjection {
         guard interval.end > interval.start else { return .empty }
         let measured = samples
@@ -2251,18 +2251,24 @@ struct AtriaActivityMonitorTab: View {
                         return .init(t: date, bpm: point.bpm)
                     }
                 }
-            // The resident session image plus a small recent archive tail fill
-            // live/offline rows that reached the archive but not the next settled
-            // SessionStore publication. Observed history is the third source: it
-            // holds the exact minute-sampled HR behind successful facts even when
-            // a stable BPM keeps the change-triggered live tail from appending.
-            let recent = HistoricalArchive.metricHeartRatePoints(
-                since: snapshot.interval.start,
-                limit: 12_000
+            // Same exact-window reader Vitals uses. The newest-N tail used to
+            // spend its 12k budget on dense morning samples and drop overnight
+            // rows, so Activity Heart rate looked empty while Vitals did not.
+            // A nil window is an incomplete scan, not an empty night — only
+            // then fall back to the bounded recent reader.
+            let window = HistoricalArchive.metricHeartRatePoints(
+                start: snapshot.interval.start,
+                end: snapshot.interval.end,
+                maximumPoints: 100_000
             )
+            let archive = window?.points
+                ?? HistoricalArchive.metricHeartRatePoints(
+                    since: snapshot.interval.start,
+                    limit: 12_000
+                )
             let merged = AtriaExactWindowHeartRate.union(
                 canonical: canonical,
-                archive: recent,
+                archive: archive,
                 observed: snapshot.observedHeartRate,
                 interval: snapshot.interval
             )

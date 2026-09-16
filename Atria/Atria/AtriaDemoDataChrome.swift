@@ -18,6 +18,22 @@ struct AtriaSampleDataBadge: View {
     }
 }
 
+extension View {
+    /// Sample-data mark that stays visible when a sheet covers the top banner.
+    @ViewBuilder
+    func atriaDemoSampleBadge() -> some View {
+        if AtriaAppReviewDemo.isActive {
+            self.safeAreaInset(edge: .top, spacing: 0) {
+                AtriaSampleDataBadge(compact: true)
+                    .padding(.top, 6)
+                    .frame(maxWidth: .infinity)
+            }
+        } else {
+            self
+        }
+    }
+}
+
 struct AtriaDemoDataBanner: View {
     var onErase: () -> Void
 

@@ -34,9 +34,10 @@ enum AtriaEvidenceCatalog {
             supports: [
                 "HRV is the variation in time between consecutive heartbeats.",
                 "RMSSD is an accepted time-domain measure of short-term HRV.",
-                "Overnight recordings are a standard context for short-term HRV."
+                "Overnight recordings are a standard context for short-term HRV.",
+                "Atria Stress is a 0–3 display mapping of cardiac autonomic load from heart-rate evidence (Calm 0–1, Moderate 1–2, High 2–3), not a cortisol test or a psychological diagnosis."
             ],
-            metricIDs: ["hrv", "recovery"]
+            metricIDs: ["hrv", "recovery", "stress"]
         ),
         AtriaEvidenceSource(
             id: "uth-sorensen-2004",
@@ -47,7 +48,8 @@ enum AtriaEvidenceCatalog {
             lastReviewed: lastReviewed,
             supports: [
                 "VO₂max can be estimated as about 15.3 × HRmax / HRrest.",
-                "This is a fitness estimate, not a laboratory measurement."
+                "This is a fitness estimate, not a laboratory measurement.",
+                "Fitness age in Atria is a display mapping of that VO₂max estimate against chronological age, not a clinical biological age."
             ],
             metricIDs: ["vo2max", "fitnessAge"]
         ),
@@ -128,6 +130,32 @@ enum AtriaEvidenceCatalog {
                 "Calorie values in Atria are derived estimates, not a strap-reported quantity."
             ],
             metricIDs: ["calories", "activeEnergy"]
+        ),
+        AtriaEvidenceSource(
+            id: "hirshkowitz-nsf-2015",
+            title: "National Sleep Foundation's sleep time duration recommendations: methodology and results summary",
+            authorsPublisher: "Hirshkowitz M et al. Sleep Health",
+            year: 2015,
+            locator: "https://doi.org/10.1016/j.sleh.2014.12.010",
+            lastReviewed: lastReviewed,
+            supports: [
+                "Adults typically need 7–9 hours of sleep per night.",
+                "Atria sleep-need is a personal duration target from overnight wear, not a clinical sleep prescription."
+            ],
+            metricIDs: ["sleep", "sleepNeed", "sleepPerformance"]
+        ),
+        AtriaEvidenceSource(
+            id: "atria-unverified-optical-signals-2026",
+            title: "Unverified WHOOP 4 accessory optical signals in this Atria build",
+            authorsPublisher: "Atria",
+            year: 2026,
+            locator: "https://www.whoop.com",
+            lastReviewed: lastReviewed,
+            supports: [
+                "WHOOP 4 hardware includes skin-temperature and blood-oxygen sensors.",
+                "Atria has not verified those Bluetooth decoders, so it does not publish a temperature deviation or an SpO₂ percentage."
+            ],
+            metricIDs: ["skinTemperature", "bloodOxygen"]
         )
     ]
 
@@ -148,25 +176,23 @@ struct AtriaSourcesLink: View {
     @State private var showCatalog = false
 
     var body: some View {
-        let matched = AtriaEvidenceCatalog.sources(for: metricID)
-        if !matched.isEmpty {
-            Button {
-                showCatalog = true
-            } label: {
-                Label("Sources", systemImage: "doc.text.magnifyingglass")
-                    .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
-            }
-            .accessibilityIdentifier("atria.sources.\(metricID)")
-            .accessibilityHint("Opens the cited sources for this claim")
-            .sheet(isPresented: $showCatalog) {
-                NavigationStack {
-                    AtriaEvidenceCatalogScreen(focusedMetricID: metricID)
-                        .toolbar {
-                            ToolbarItem(placement: .topBarTrailing) {
-                                Button("Done") { showCatalog = false }
-                            }
+        Button {
+            showCatalog = true
+        } label: {
+            Label("Sources", systemImage: "doc.text.magnifyingglass")
+                .font(compact ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
+        }
+        .accessibilityIdentifier("atria.sources.\(metricID)")
+        .accessibilityHint("Opens the cited sources for this claim")
+        .sheet(isPresented: $showCatalog) {
+            NavigationStack {
+                AtriaEvidenceCatalogScreen(focusedMetricID: metricID)
+                    .atriaDemoSampleBadge()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showCatalog = false }
                         }
-                }
+                    }
             }
         }
     }

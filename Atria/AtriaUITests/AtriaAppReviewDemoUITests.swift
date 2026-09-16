@@ -22,15 +22,15 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         today.tap()
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Today")
 
-        openMetricIfPresent(in: app, identifier: "atria.today.ring.sleep", detail: "atria.metric.detail.sleep")
+        openMetric(in: app, identifier: "atria.today.ring.sleep", detail: "atria.metric.detail.sleep")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Sleep detail")
         dismissOpenSheet(in: app)
 
-        openMetricIfPresent(in: app, identifier: "atria.today.ring.recovery", detail: "atria.metric.detail.recovery")
+        openMetric(in: app, identifier: "atria.today.ring.recovery", detail: "atria.metric.detail.recovery")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Recovery detail")
         dismissOpenSheet(in: app)
 
-        openMetricIfPresent(in: app, identifier: "atria.today.ring.strain", detail: "atria.metric.detail.strain")
+        openMetric(in: app, identifier: "atria.today.ring.strain", detail: "atria.metric.detail.strain")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Strain detail")
         dismissOpenSheet(in: app)
 
@@ -40,8 +40,18 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             dismissOpenSheet(in: app)
         }
 
-        openMetricIfPresent(in: app, identifier: "atria.today.metric.steps", detail: "atria.metric.detail.steps")
+        openMetric(in: app, identifier: "atria.today.metric.steps", detail: "atria.metric.detail.steps")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Steps detail")
+        dismissOpenSheet(in: app)
+
+        let todayRead = app.descendants(matching: .any)["atria.today.read"]
+        XCTAssertTrue(todayRead.waitForExistence(timeout: 8), "Missing Today's read")
+        todayRead.tap()
+        XCTAssertTrue(
+            app.descendants(matching: .any)["atria.insights.lookback"].waitForExistence(timeout: 6),
+            "Today's read must expose Day/Week/Month"
+        )
+        assertDemoSurfaceAlive(in: app, badge: badge, name: "Today's read")
         dismissOpenSheet(in: app)
 
         for tab in ["Vitals", "Journal", "Activity", "Assistant", "Strap"] {
@@ -52,13 +62,13 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         }
 
         app.tabBars.buttons["Vitals"].tap()
-        openMetricIfPresent(in: app, identifier: "atria.vitals.hrv", detail: "atria.metric.detail.hrv")
+        openMetric(in: app, identifier: "atria.vitals.hrv", detail: "atria.metric.detail.hrv")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "HRV detail")
         dismissOpenSheet(in: app)
-        openMetricIfPresent(in: app, identifier: "atria.vitals.resting-hr", detail: "atria.metric.detail.restingHeartRate")
+        openMetric(in: app, identifier: "atria.vitals.resting-hr", detail: "atria.metric.detail.restingHeartRate")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Resting HR detail")
         dismissOpenSheet(in: app)
-        openMetricIfPresent(in: app, identifier: "atria.vitals.resp-rate", detail: "atria.metric.detail.respiratoryRate")
+        openMetric(in: app, identifier: "atria.vitals.resp-rate", detail: "atria.metric.detail.respiratoryRate")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Respiratory detail")
         dismissOpenSheet(in: app)
 
@@ -89,11 +99,14 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         }
     }
 
-    private func openMetricIfPresent(in app: XCUIApplication, identifier: String, detail: String) {
+    private func openMetric(in app: XCUIApplication, identifier: String, detail: String) {
         let control = app.descendants(matching: .any)[identifier]
-        guard control.waitForExistence(timeout: 4) else { return }
+        XCTAssertTrue(control.waitForExistence(timeout: 8), "Missing control \(identifier)")
         control.tap()
-        _ = app.descendants(matching: .any)[detail].waitForExistence(timeout: 6)
+        XCTAssertTrue(
+            app.descendants(matching: .any)[detail].waitForExistence(timeout: 8),
+            "Missing detail \(detail)"
+        )
     }
 
     private func dismissOpenSheet(in app: XCUIApplication) {

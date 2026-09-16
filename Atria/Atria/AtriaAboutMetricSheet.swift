@@ -446,6 +446,9 @@ struct AtriaAboutMetricSheet: View {
     var sheetContent: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
             glyphTile
+            if AtriaAppReviewDemo.isActive {
+                AtriaSampleDataBadge(compact: true)
+            }
             Text(metric.title)
                 .font(.system(size: 24, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)

@@ -547,6 +547,9 @@ struct AtriaStressDetailView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
+                    if AtriaAppReviewDemo.isActive {
+                        AtriaSampleDataBadge(compact: true)
+                    }
                     header
                     hero
                     timelineCard
@@ -558,6 +561,7 @@ struct AtriaStressDetailView: View {
                         loggedContextCard
                     }
                     interventionCard
+                    AtriaSourcesLink(metricID: "stress")
                 }
                 // 12pt gutter (2026-08-05 width audit): match the app-wide
                 // screen gutter so the timeline and trend charts gain 12pt.

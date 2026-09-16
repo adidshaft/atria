@@ -133,13 +133,13 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
 
 /// Compact ledger written beside rollups. Raw historical chunks may be retired
 /// after 7 days; this file is never a retention candidate. Schema 1 stored
-/// only the current read; schema 2 keeps a 21-day day-by-day ledger so a
+/// only the current read; schema 2 keeps a 30-day day-by-day ledger so a
 /// later refresh cannot erase earlier captures.
 enum AtriaDurableInsightStore {
     static let filename = "learned-insights-v1.json"
     static let schema = 2
     static let supportedSchemas: Set<Int> = [1, 2]
-    static let ledgerHorizonDays = 21
+    static let ledgerHorizonDays = 30
 
     struct Payload: Codable, Equatable {
         var schema: Int
@@ -194,7 +194,8 @@ enum AtriaDurableInsightStore {
 
     /// Keep one snapshot per civil day. Incoming rollup reads win for that
     /// day; days the current rollup set no longer has still stay until they
-    /// fall outside the 21-day horizon.
+    /// fall outside the 30-day horizon. Only day-snapshot rows occupy a day
+    /// slot, so a current-state card cannot overwrite yesterday's captured read.
     static func mergeLedger(existing: [AtriaLearnedInsight],
                             incoming: [AtriaLearnedInsight],
                             now: Date,
@@ -203,6 +204,7 @@ enum AtriaDurableInsightStore {
         let cutoff = calendar.date(byAdding: .day, value: -ledgerHorizonDays, to: today) ?? today
         var byDay: [TimeInterval: AtriaLearnedInsight] = [:]
         for insight in existing + incoming {
+            guard insight.kind == .daySnapshot else { continue }
             let day = calendar.startOfDay(for: insight.asOf)
             guard day >= cutoff else { continue }
             byDay[day.timeIntervalSince1970] = insight
@@ -228,6 +230,30 @@ enum AtriaDurableInsightStore {
             return true
         } catch {
             return false
+        }
+    }
+}
+
+enum AtriaInsightLookback: String, CaseIterable, Identifiable, Sendable {
+    case day
+    case week
+    case month
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .day: return "Day"
+        case .week: return "Week"
+        case .month: return "Month"
+        }
+    }
+
+    var dayCount: Int {
+        switch self {
+        case .day: return 1
+        case .week: return 7
+        case .month: return 30
         }
     }
 }
@@ -436,7 +462,7 @@ enum AtriaLearnedInsights {
                 id: "load-mismatch",
                 kind: .loadMismatch,
                 headline: "Yesterday's strain has not cleared",
-                detail: String(format: "Strain was %.1f and recovery is %d%%. Keep today's load easy until recovery climbs.",
+                detail: String(format: "Strain was %.1f and recovery is %d%%. Today's recovery is still below 50%% after that load.",
                                strain, recovery),
                 isPositive: false,
                 asOf: now
@@ -447,7 +473,7 @@ enum AtriaLearnedInsights {
                 id: "load-cleared",
                 kind: .loadMismatch,
                 headline: "You absorbed yesterday's load",
-                detail: String(format: "Strain was %.1f and recovery is still %d%%. You can train if the rest of the day stays honest.",
+                detail: String(format: "Strain was %.1f and recovery is still %d%%.",
                                strain, recovery),
                 isPositive: true,
                 asOf: now
@@ -722,13 +748,13 @@ enum AtriaLearnedInsights {
             id: "stacked-recovery",
             kind: .stackedRecovery,
             headline: "Low recovery is stacked on short sleep",
-            detail: "Recovery is \(recovery)% and last night was \(hourText(deltaHours)) under a full night. Easy movement only until both move.",
+            detail: "Recovery is \(recovery)% and last night was \(hourText(deltaHours)) under a full night.",
             isPositive: false,
             asOf: now
         )
     }
 
-    /// One captured read per civil day for the last 21 nights. Today's
+    /// One captured read per civil day for the last 30 nights. Today's
     /// current-state cards stay in `insights(rollups:)`; this is the ledger
     /// that must survive a later refresh overwriting those seven.
     static func dailyReads(rollups: [DailyRollupStoreEntry],
@@ -783,5 +809,46 @@ enum AtriaLearnedInsights {
             isPositive: (entry.recovery ?? 50) >= 50,
             asOf: day
         )
+    }
+
+    /// Civil-day slots for Day / Week / Month. Missing days stay visible as
+    /// an honest empty read instead of disappearing and making the window
+    /// look shorter than it is.
+    static func ledgerRows(
+        ledger: [AtriaLearnedInsight],
+        lookback: AtriaInsightLookback,
+        now: Date,
+        calendar: Calendar
+    ) -> [AtriaLearnedInsight] {
+        let today = calendar.startOfDay(for: now)
+        var byDay: [TimeInterval: AtriaLearnedInsight] = [:]
+        for insight in ledger {
+            let day = calendar.startOfDay(for: insight.asOf)
+            let key = day.timeIntervalSince1970
+            if insight.kind == .daySnapshot || byDay[key] == nil {
+                byDay[key] = insight
+            }
+        }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "EEE d MMM"
+        return (0..<lookback.dayCount).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: today) else {
+                return nil
+            }
+            if let existing = byDay[day.timeIntervalSince1970] {
+                return existing
+            }
+            guard lookback != .day else { return nil }
+            return AtriaLearnedInsight(
+                id: "day-gap-\(Int(day.timeIntervalSince1970))",
+                kind: .daySnapshot,
+                headline: formatter.string(from: day),
+                detail: "No captured read for this day.",
+                isPositive: true,
+                asOf: day
+            )
+        }
     }
 }
