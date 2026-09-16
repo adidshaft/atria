@@ -205,6 +205,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 alreadyToggledThisConnection: false
             )
         )
+        XCTAssertEqual(
+            AtriaBLEManager.proprietaryTrafficThisConnection(
+                protocolPackets: 0,
+                notifyCallbacks: 710
+            ),
+            710,
+            "compact 0x33 notify callbacks are live proprietary traffic"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: AtriaBLEManager.proprietaryTrafficThisConnection(
+                    protocolPackets: 0,
+                    notifyCallbacks: 710
+                ),
+                connectedAge: 30,
+                alreadyToggledThisConnection: false
+            ),
+            "must not toggle stream-5 off while 0x33 callbacks are flowing"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -11915,6 +11936,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(body.contains("recordValidR10MotionEvidence(receivedAt: Date())"),
                       "compact 0x33 must refresh lastR10MotionFrameAt or 6A/51 fires on a live stream")
         XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"))
+
+        let liveStart = try XCTUnwrap(source.range(of: "private func noteLiveIMULiveness(receivedAt: Date)"))
+        let liveBody = String(source[liveStart.lowerBound...].prefix(700))
+        XCTAssertTrue(liveBody.contains("strapStream5NotifyConfirmed = true"),
+                      "a live 0x33 frame is stream-5 proof even when isNotifying is false")
     }
 
     func testHRContinuityWatchdogRunsInFullProtocolAndCoverLiveOmitsRealtime() throws {
@@ -12011,6 +12037,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "an already-toggled silent stream-5 must still send 6A/51")
         XCTAssertFalse(liveBody.contains("lastR10RecoveryRearmAt = now"),
                        "do not stamp rearm before 6A/51 actually queues")
+        XCTAssertFalse(source.contains("self.lastR10RecoveryRearmAt = recoveryAt"),
+                       "initial full-protocol arm must not stamp rearm before 6A/51 queues")
         XCTAssertFalse(liveBody.contains("Cmd.sendR10R11Realtime"))
     }
 
