@@ -658,6 +658,20 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             ),
             "one-chunk sitting drain must keep moving on a 43% unplugged phone"
         )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationIsBackground: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.43,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "lock one-chunk drain must also keep moving at 43%"
+        )
         XCTAssertFalse(
             SessionStore.shouldAdmitAutomaticArchiveCompaction(
                 reason: "overdue_idle",
@@ -665,7 +679,7 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                 thermalState: .nominal,
                 isLowPowerModeEnabled: false,
                 batteryState: .unplugged,
-                batteryLevel: 0.20,
+                batteryLevel: 0.10,
                 exactRecoveryOwnsPriority: false,
                 recoveredCycleEngaged: false,
                 compactionOverdue: true
@@ -3442,8 +3456,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "allowsForeground: reason == \"overdue_idle\""
         ), "sitting Today leases must survive an active application state")
         XCTAssertTrue(sessions.contains(
-            "minimumBatteryLevel: isOverdueIdle ? 0.25 : 0.5"
-        ), "sitting one-chunk drain must not stall on a 43% unplugged phone")
+            "minimumBatteryLevel: (isOverdueIdle || isOverdueSceneBackground) ? 0.15 : 0.5"
+        ), "one-chunk sitting/lock drain must not stall around 40% battery")
         XCTAssertTrue(sessions.contains(
             "case \"overdue_idle\":"
         ), "sitting idle needs more than the 25s lock window once BLE is up")
