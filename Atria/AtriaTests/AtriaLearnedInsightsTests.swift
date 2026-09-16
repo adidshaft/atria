@@ -330,6 +330,27 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             5,
             "this week's rollups must yield at least five distinct insight kinds"
         )
+        let easyLoad = insights.first { $0.kind == .easyLoadSleepDebt }
+        XCTAssertEqual(easyLoad?.headline, "Sleep debt is from nights, not load")
+        XCTAssertTrue(easyLoad?.detail.contains("Easy days are not paying that down") == true)
+    }
+
+    func testEasyLoadSleepDebtFiresWhenStrainIsQuietAndNightsAreShort() {
+        let today = calendar.startOfDay(for: now)
+        let rollups = (0..<5).map { offset -> DailyRollupStoreEntry in
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -offset, to: today)!,
+                sleepSeconds: 5 * 3_600,
+                sleepNeedSeconds: 8 * 3_600,
+                strain: 0.3,
+                calendar: calendar
+            )
+        }
+        let insights = AtriaLearnedInsights.insights(rollups: rollups, now: now)
+        let easyLoad = insights.first { $0.kind == .easyLoadSleepDebt }
+        XCTAssertNotNil(easyLoad)
+        XCTAssertTrue(easyLoad?.detail.contains("0.3") == true)
+        XCTAssertTrue(easyLoad?.headline.contains("nights, not load") == true)
     }
 
     func testFrozenSleepNeedFallbackSurfacesWeeklyDebtWhenRollupsOmitNeed() {
