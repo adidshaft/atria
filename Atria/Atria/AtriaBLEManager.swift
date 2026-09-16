@@ -31107,14 +31107,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                              reason: String) {
         guard !readOnlyHistoryCaptureRequested else { return }
         guard r10TransportIsExpected,
-              strapStream5NotifyConfirmed,
               let peripheral,
               peripheral.state == .connected,
               let stream5 = peripheral.services?
                 .first(where: { $0.uuid == Self.UUIDs.strapService })?
                 .characteristics?
-                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
-              stream5.isNotifying else {
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else {
+            reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
+            return
+        }
+        let stream5Live = Self.stream5CountsAsNotifying(
+            confirmed: strapStream5NotifyConfirmed,
+            characteristicNotifying: stream5.isNotifying
+        )
+        guard stream5Live else {
             reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
             return
         }
