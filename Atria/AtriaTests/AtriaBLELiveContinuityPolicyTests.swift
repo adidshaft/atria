@@ -240,15 +240,69 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 strapBacklogPending: false
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
                 queuedPullIntent: true
             ),
-            "queued catch-up must keep 2A37 subscribed"
+            "queued gym fill must pause 2A37 on the same connection so 0x22 can write-confirm"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
                 queuedPullIntent: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "post_workout_hr_backfill"
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "history_write_22_timeout_retry"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "home_status_connected"
+            )
+        )
+        let queuedAt = Date(timeIntervalSince1970: 1_789_660_000)
+        XCTAssertFalse(
+            AtriaBLEManager.queuedRawCatchUpIntentIsExpired(
+                reason: "post_workout_hr_backfill",
+                requestedAt: queuedAt,
+                now: queuedAt.addingTimeInterval(11 * 60),
+                defaultLifetime: 10 * 60
+            ),
+            "gym pull must outlive the 10-minute UI intent"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentIsExpired(
+                reason: "home_status_connected",
+                requestedAt: queuedAt,
+                now: queuedAt.addingTimeInterval(11 * 60),
+                defaultLifetime: 10 * 60
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: true,
+                idleWindowAdmitted: true,
+                idleWindowPreparing: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: true,
+                idleWindowAdmitted: false,
+                idleWindowPreparing: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: false,
+                idleWindowAdmitted: true,
+                idleWindowPreparing: true
             )
         )
         XCTAssertFalse(connectedRawCatchUpAdmission(verified: false))
@@ -420,6 +474,15 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 bankArmedAt: armedAt,
                 now: armedAt.addingTimeInterval(120)
             )
+        )
+        XCTAssertNil(
+            AtriaBLEManager.connectedRawPresentBankRetryNotBefore(
+                bankArmedForCurrentConnection: true,
+                bankArmedAt: armedAt,
+                now: armedAt.addingTimeInterval(6),
+                queuedPullIntent: true
+            ),
+            "queued gym pull must not wait out present-bank capture"
         )
 
         let source = try managerSource()
@@ -4051,6 +4114,23 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             .none,
             "a healthy live epoch on the Home screen must never be selected for drain"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: false,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                queuedPullIntent: true
+            ),
+            .appBackgroundIdle,
+            "queued gym fill may pause 2A37 on a healthy Home epoch without disconnecting"
         )
         XCTAssertEqual(
             AtriaBLEManager.selectedIdleWindowHistoryDrain(

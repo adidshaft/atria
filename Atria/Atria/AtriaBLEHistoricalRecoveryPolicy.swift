@@ -793,13 +793,15 @@ extension AtriaBLEManager {
         explicitMotionOwnershipActive: Bool,
         thermalParked: Bool,
         consumeToNow: Bool = false,
-        lastPendingRecords: UInt32? = nil
+        lastPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
         let consumeLiveTail = shouldTreatConsumeLiveTailAsBacklog(
             consumeToNow: consumeToNow,
             lastPendingRecords: lastPendingRecords
         )
-        guard launchFlagEnabled, strapBacklogPending || consumeLiveTail else {
+        guard launchFlagEnabled,
+              strapBacklogPending || consumeLiveTail || queuedPullIntent else {
             return .none
         }
         guard !explicitMotionOwnershipActive, !thermalParked else { return .none }
@@ -809,9 +811,10 @@ extension AtriaBLEManager {
         if strapIsCharging { return .strapCharging }
         if strapOffWrist && !healthyLiveEpochActive { return .strapOffWrist }
         // Consented ACK-consume-to-now may re-pause 2A37 after the resume
-        // interval so later slices keep walking. Unconsented builds still
-        // never seize a healthy attended epoch.
-        if consumeToNow {
+        // interval so later slices keep walking. An explicit queued gym pull
+        // is the same class of intent: 0x22 never write-confirms while 2A37
+        // stays subscribed on a healthy Home epoch (2026-09-17 17:16Z).
+        if consumeToNow || queuedPullIntent {
             return healthyLiveEpochActive ? .appBackgroundIdle : .naturalGapPreHR
         }
         // Build-5 contract: never cancel a healthy attended epoch.
@@ -1714,13 +1717,49 @@ extension AtriaBLEManager {
         strapBacklogPending || queuedPullIntent
     }
 
-    /// Idle-window drain unsubscribes 2A37. A queued live-preserving catch-up
-    /// must keep that notify on so overnight HR does not fall back to
-    /// Reconnecting while flash is read.
+    /// Idle-window drain unsubscribes 2A37 on the same connected link. A queued
+    /// gym pull must take that path: keeping notify on made every live 0x22
+    /// time out (2026-09-17 17:16Z) so Strength 21:05–21:37 IST never filled.
+    /// The connection stays up; Home stays Connected rather than Reconnecting.
     nonisolated static func shouldDeferRawCatchUpForIdleWindowDrain(
         queuedPullIntent: Bool
     ) -> Bool {
-        !queuedPullIntent
+        _ = queuedPullIntent
+        return true
+    }
+
+    /// Post-workout and 0x22-timeout retries must outlive the ordinary 10-minute
+    /// UI pull. Device 123 queued on restore, then expired before mint because
+    /// present-bank capture held the radio for the same 10 minutes.
+    nonisolated static func queuedRawCatchUpIntentSurvivesLifetime(
+        reason: String
+    ) -> Bool {
+        reason == "post_workout_hr_backfill"
+            || reason == "history_write_22_timeout_retry"
+    }
+
+    nonisolated static func queuedRawCatchUpIntentIsExpired(
+        reason: String,
+        requestedAt: Date,
+        now: Date,
+        defaultLifetime: TimeInterval,
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        let lifetime = queuedRawCatchUpIntentSurvivesLifetime(reason: reason)
+            ? durableLifetime
+            : defaultLifetime
+        return now.timeIntervalSince(requestedAt) > lifetime
+    }
+
+    /// A queued gym pull that already selected an idle window must not mint a
+    /// keep-2A37 0x22 on the same callback. Device 123 timed out every live
+    /// range write while notify stayed on.
+    nonisolated static func shouldHoldQueuedCatchUpForIdleWindowDrain(
+        queuedPullIntent: Bool,
+        idleWindowAdmitted: Bool,
+        idleWindowPreparing: Bool
+    ) -> Bool {
+        queuedPullIntent && (idleWindowAdmitted || idleWindowPreparing)
     }
 
     /// Gives a verified same-link raw backlog one finite first turn before a
@@ -1825,9 +1864,11 @@ extension AtriaBLEManager {
         bankArmedForCurrentConnection: Bool,
         bankArmedAt: Date?,
         now: Date,
-        minimumPresentCaptureInterval: TimeInterval = 120
+        minimumPresentCaptureInterval: TimeInterval = 120,
+        queuedPullIntent: Bool = false
     ) -> Date? {
-        guard bankArmedForCurrentConnection,
+        guard !queuedPullIntent,
+              bankArmedForCurrentConnection,
               let bankArmedAt,
               minimumPresentCaptureInterval.isFinite,
               minimumPresentCaptureInterval >= 0 else { return nil }

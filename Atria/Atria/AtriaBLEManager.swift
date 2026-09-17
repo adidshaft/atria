@@ -11350,7 +11350,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 thermalState: ProcessInfo.processInfo.thermalState
             ),
             consumeToNow: idleWindowConsumeToNowConsent,
-            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
         )
         if idleFlag { return window }
         return window == .naturalGapPreHR ? window : .none
@@ -16995,6 +16996,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             range.pendingRecords
         )
         idleWindowConsumeToNowConsent = false
+        queuedConnectedRawHistoryCatchUpIntent = nil
         AtriaDebugLog(
             "ATRIADBG historyRange status=consume_consent_cleared generation=%llu action=persist_before_ack_go_forward",
             generation
@@ -20129,7 +20131,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason: reason,
             requestedAt: now
         )
-        if let deferral = connectedRawNoRadioCaptureDeferral {
+        if Self.queuedRawCatchUpIntentSurvivesLifetime(reason: reason) {
+            connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        } else if let deferral = connectedRawNoRadioCaptureDeferral {
             connectedRawHistoryCatchUpEvaluationNotBefore =
                 deferral.retryNotBefore
         } else {
@@ -20151,15 +20155,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date,
         trigger: String
     ) -> Bool {
+        var queuedIntent = queuedConnectedRawHistoryCatchUpIntent
+        if let existingQueuedIntent = queuedIntent,
+           Self.queuedRawCatchUpIntentIsExpired(
+                reason: existingQueuedIntent.reason,
+                requestedAt: existingQueuedIntent.requestedAt,
+                now: now,
+                defaultLifetime: connectedRawHistoryCatchUpIntentLifetime
+           ) {
+            self.queuedConnectedRawHistoryCatchUpIntent = nil
+            queuedIntent = nil
+        }
+        let queuedPullIntent = queuedIntent != nil
         if Self.shouldDeferRawCatchUpForIdleWindowDrain(
-            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
-        ),
-           evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
-            AtriaDebugLog(
-                "ATRIADBG idle_window_drain status=preferred_over_raw_catch_up trigger=%@ action=stop_realtime_same_epoch_no_cancel",
-                trigger
-            )
-            return true
+            queuedPullIntent: queuedPullIntent
+        ) {
+            if evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=preferred_over_raw_catch_up trigger=%@ action=stop_realtime_same_epoch_no_cancel",
+                    trigger
+                )
+                return true
+            }
+            if Self.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: queuedPullIntent,
+                idleWindowAdmitted: currentIdleWindowHistoryDrainWindow() != .none,
+                idleWindowPreparing: idleWindowDrainArchiveWarmRetry
+                    || idleWindowDrainArmFence.isInFlight()
+            ) {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=queued_gym_pull_waiting_pipe trigger=%@ action=no_keep_2a37_22",
+                    trigger
+                )
+                return false
+            }
         }
         if let yield = connectedRawHistoryCatchUpPublicationYield {
             let publicationNow = Date()
@@ -20192,13 +20221,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard connectedRawHistoryCatchUpEvaluationNotBefore.map({ now >= $0 })
                 ?? true else { return false }
 
-        var queuedIntent = queuedConnectedRawHistoryCatchUpIntent
-        if let existingQueuedIntent = queuedIntent,
-           now.timeIntervalSince(existingQueuedIntent.requestedAt)
-                > connectedRawHistoryCatchUpIntentLifetime {
-            self.queuedConnectedRawHistoryCatchUpIntent = nil
-            queuedIntent = nil
-        }
         let persistedSliceCooldownUntil = UserDefaults.standard.double(
             forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
         )
@@ -20297,7 +20319,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 : nil,
             now: now,
             minimumPresentCaptureInterval:
-                connectedRawHistoryCatchUpZeroProgressRetryInterval
+                connectedRawHistoryCatchUpZeroProgressRetryInterval,
+            queuedPullIntent: queuedIntent != nil
         ) {
             connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
             return false

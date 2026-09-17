@@ -2297,14 +2297,22 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let catchUp = try XCTUnwrap(manager.range(
             of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded("
         ))
-        let catchUpBody = String(manager[catchUp.lowerBound...].prefix(12_000))
+        let catchUpBody = String(manager[catchUp.lowerBound...].prefix(16_000))
         XCTAssertTrue(
             catchUpBody.contains("queuedPullIntent: queuedIntent != nil"),
             "queued post-workout catch-up must not drop on a suppressed backlog detector"
         )
         XCTAssertTrue(
+            catchUpBody.contains("shouldHoldQueuedCatchUpForIdleWindowDrain("),
+            "queued gym fill must not mint a keep-2A37 0x22 while idle drain is warming"
+        )
+        XCTAssertTrue(
+            catchUpBody.contains("queuedRawCatchUpIntentIsExpired("),
+            "post-workout catch-up must outlive the 10-minute UI pull"
+        )
+        XCTAssertTrue(
             catchUpBody.contains("preserveConnectedRealtimeOwner: true"),
-            "post-workout catch-up must keep the live 2A37 owner"
+            "fallback raw catch-up still keeps the live 2A37 owner"
         )
         let observers = try durabilitySource("AtriaHomeShellSupport.swift")
         let observerStart = try XCTUnwrap(observers.range(
