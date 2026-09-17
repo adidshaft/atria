@@ -58,6 +58,59 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(snapshot.discrepancies.contains("imu_stale_while_connected"))
         XCTAssertTrue(snapshot.discrepancies.contains("status_reading"))
         XCTAssertTrue(snapshot.discrepancies.contains("workout_no_hr_user_confirmed_no_hr"))
+
+        let twoWorkouts = AtriaDiagnosisReport.make(
+            now: now,
+            build: "94",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 72,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 78,
+            todayRecovery: 78,
+            lastWorkout: .init(
+                activityType: "Walking",
+                start: now.addingTimeInterval(-1_800),
+                end: now.addingTimeInterval(-600),
+                samples: 0,
+                peakHR: nil,
+                reason: "no_strap_hr_samples"
+            ),
+            recentNoHeartRateWorkouts: [
+                .init(
+                    activityType: "Strength",
+                    start: now.addingTimeInterval(-3_600),
+                    end: now.addingTimeInterval(-1_800),
+                    samples: 0,
+                    peakHR: nil,
+                    reason: "no_strap_hr_samples"
+                ),
+                .init(
+                    activityType: "Walking",
+                    start: now.addingTimeInterval(-1_800),
+                    end: now.addingTimeInterval(-600),
+                    samples: 0,
+                    peakHR: nil,
+                    reason: "no_strap_hr_samples"
+                )
+            ],
+            liveHeartRate: 97,
+            liveZone: "Z2",
+            widgetHeartRate: 97
+        )
+        XCTAssertTrue(twoWorkouts.discrepancies.contains("workout_no_hr_no_strap_hr_samples"))
+        XCTAssertTrue(twoWorkouts.discrepancies.contains("workout_no_hr_count_2"))
+        XCTAssertEqual(twoWorkouts.recentNoHeartRateWorkouts?.map(\.activityType), ["Strength", "Walking"])
     }
 
     func testPublishWritesPullableJSONAndCoalescesUnchangedHeartbeats() throws {

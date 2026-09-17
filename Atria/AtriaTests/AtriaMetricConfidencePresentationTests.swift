@@ -366,7 +366,7 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
     func testBuildersWithholdStatusColourFromUngradedMetrics() throws {
         let today = try source("Atria/AtriaTodayScreen.swift")
 
-        XCTAssertTrue(today.contains("displayHero.recoveryEstimate.percent == nil"),
+        XCTAssertTrue(today.contains("displayRecovery.percent == nil"),
                       "recovery must withhold its zone while there is no score")
         XCTAssertTrue(today.contains("|| isPendingHeroValue(displayHero.strainValue))"),
                       "strain must withhold its zone while incomplete or pending")

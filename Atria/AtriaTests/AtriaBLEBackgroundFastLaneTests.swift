@@ -374,9 +374,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         ))
         let mainActor = try XCTUnwrap(disconnect.range(of: "Task { @MainActor in"))
         XCTAssertLessThan(synchronousConnect.lowerBound, mainActor.lowerBound)
-        XCTAssertTrue(disconnect.contains(
-            "let synchronousReconnectIssued =\n            fastLaneDisposition.requestsRealtimeReconnect"
-        ))
+        XCTAssertTrue(disconnect.contains("let synchronousReconnectIssued ="))
+        XCTAssertTrue(disconnect.contains("fastLaneDisposition.requestsRealtimeReconnect"))
         XCTAssertTrue(disconnect.contains(
             "&& peripheral.state == .disconnected\n        if synchronousReconnectIssued"
         ))

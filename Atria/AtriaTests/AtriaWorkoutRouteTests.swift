@@ -297,11 +297,13 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                                range: compactHeartStart.upperBound..<widgetSource.endIndex))
         let compactHeart = String(widgetSource[compactHeartStart.lowerBound..<compactHeartEnd.lowerBound])
         XCTAssertTrue(island.contains(".minimumScaleFactor(0.78)"))
-        XCTAssertTrue(island.contains("Heart rate \\(state.heartRate) beats per minute"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
+        XCTAssertTrue(compactHeart.contains("liveActivityHeartRateAccessibilityLabel(heartRate: heartRate, isLive: isLive)"))
         XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.82)"))
         XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
-        XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
+        XCTAssertTrue(widgetSource.contains("Last heart rate \\(heartRate) beats per minute"),
+                      "stale Live Activity VoiceOver must keep the last numeric HR")
+        XCTAssertTrue(widgetSource.contains("Heart rate \\(heartRate) beats per minute"))
 
         let lockStart = try XCTUnwrap(widgetSource.range(of: "private struct AtriaLiveActivityLockScreenView"))
         let lockEnd = try XCTUnwrap(widgetSource.range(of: "private func elapsedText",

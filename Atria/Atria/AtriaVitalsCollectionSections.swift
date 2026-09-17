@@ -3754,27 +3754,12 @@ struct AtriaHeartRateChartSeries: Equatable {
             accumulators[index].append(point.bpm)
         }
         var out: [AtriaHeartRateBucket] = []
-        var runSegment = segment
-        var broken = false
         for index in accumulators.indices {
             if let bucket = accumulators[index].bucket(
                 centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width),
-                segment: runSegment
+                segment: segment
             ) {
-                if broken {
-                    runSegment += 1
-                    broken = false
-                    out.append(AtriaHeartRateBucket(id: bucket.id,
-                                                    t: bucket.t,
-                                                    average: bucket.average,
-                                                    minBPM: bucket.minBPM,
-                                                    maxBPM: bucket.maxBPM,
-                                                    segment: runSegment))
-                } else {
-                    out.append(bucket)
-                }
-            } else if !out.isEmpty {
-                broken = true
+                out.append(bucket)
             }
         }
         return out
