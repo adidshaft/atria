@@ -38,6 +38,7 @@ Pulled files, when present:
   - daily-rollups.json
   - learned-insights-v1.json
   - atria-diagnosis-v1.json
+  - atria-pending-deeplink-v1.txt
   - historical-archive.catalog-v2.json
   - atria-active-session.json
   - atria-active-session.segments/
@@ -356,6 +357,7 @@ deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
 copy_from_container "Documents/learned-insights-v1.json" "$evidence_dir/learned-insights-v1.json" "learned_insights" || true
 copy_from_container "Documents/atria-diagnosis-v1.json" "$evidence_dir/atria-diagnosis-v1.json" "diagnosis" || true
+copy_from_container "Documents/atria-pending-deeplink-v1.txt" "$evidence_dir/atria-pending-deeplink-v1.txt" "pending_deeplink" || true
 copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
   "$evidence_dir/historical-archive.catalog-v2.json" \
   "historical_archive_catalog" || true
@@ -2925,6 +2927,21 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_overnight_recovery={metrics.get('overnightRecovery', 'missing')}")
             print(f"diagnosis_today_recovery={metrics.get('todayRecovery', 'missing')}")
             print(f"diagnosis_settled_hrv={metrics.get('settledHRV', 'missing')}")
+            windows = diagnosis.get("metricWindows") if isinstance(diagnosis.get("metricWindows"), dict) else {}
+            def _window_label(points):
+                if not isinstance(points, list) or not points:
+                    return "none"
+                labels = []
+                for item in points:
+                    if not isinstance(item, dict):
+                        continue
+                    labels.append(f"{item.get('day', '?')}:{item.get('value', '?')}")
+                return ",".join(labels) if labels else "none"
+            print(f"diagnosis_hrv_day={windows.get('hrvDay', 'missing')}")
+            print(f"diagnosis_hrv_week={_window_label(windows.get('hrvWeek'))}")
+            print(f"diagnosis_hrv_month={_window_label(windows.get('hrvMonth'))}")
+            print(f"diagnosis_recovery_week={_window_label(windows.get('recoveryWeek'))}")
+            print(f"diagnosis_rhr_week={_window_label(windows.get('rhrWeek'))}")
             workout = diagnosis.get("lastWorkout") if isinstance(diagnosis.get("lastWorkout"), dict) else {}
             print(f"diagnosis_last_workout_type={workout.get('activityType', 'missing')}")
             print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")

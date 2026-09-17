@@ -250,5 +250,33 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
 
         XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://tab/vitals")!))
         XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://sleep-review")!))
+
+        let weekRoute = AtriaMetricSheetRoute(metric: .hrv, range: .week)
+        XCTAssertEqual(weekRoute.id, "hrv-week")
+        XCTAssertNotEqual(weekRoute.id, AtriaMetricSheetRoute(metric: .hrv, range: .day).id)
+    }
+
+    func testPendingDeepLinkFileOpensTheSameURLAsOnOpenURL() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-pending-deeplink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        AtriaPendingDeepLinkFile.documentsDirectoryOverride = directory
+        defer {
+            AtriaPendingDeepLinkFile.documentsDirectoryOverride = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        XCTAssertNil(AtriaPendingDeepLinkFile.consume())
+        try "atria://metric/hrv?range=week".write(
+            to: AtriaPendingDeepLinkFile.fileURL(),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(
+            AtriaPendingDeepLinkFile.consume(),
+            URL(string: "atria://metric/hrv?range=week")
+        )
+        XCTAssertNil(AtriaPendingDeepLinkFile.consume())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: AtriaPendingDeepLinkFile.fileURL().path))
     }
 }

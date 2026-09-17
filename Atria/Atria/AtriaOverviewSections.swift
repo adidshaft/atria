@@ -3844,6 +3844,42 @@ struct AtriaMetricDeepLink: Equatable, Hashable, Sendable {
     }
 }
 
+/// Sheet identity includes the range. `sheet(item:)` keyed only on the metric
+/// coalesces Day → Week as a no-op, which is why `atria://metric/hrv?range=week`
+/// left the Day sheet on screen (device 2026-09-17 12:02).
+struct AtriaMetricSheetRoute: Identifiable, Hashable, Sendable {
+    let metric: AtriaMetricDetailKind
+    let range: AtriaTrendRange
+    var id: String { "\(metric.rawValue)-\(range.rawValue)" }
+}
+
+/// Drop `Documents/atria-pending-deeplink-v1.txt` with an `atria://` URL.
+/// `devicectl process launch --payload-url` only delivers during launch, so a
+/// running app with a sheet already open never sees the next window.
+enum AtriaPendingDeepLinkFile {
+    static let filename = "atria-pending-deeplink-v1.txt"
+    static var documentsDirectoryOverride: URL?
+
+    static func fileURL() -> URL {
+        let directory = documentsDirectoryOverride
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return directory.appendingPathComponent(filename)
+    }
+
+    static func consume() -> URL? {
+        let url = fileURL()
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let text = (try? String(contentsOf: url, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try? FileManager.default.removeItem(at: url)
+        guard let text, let deepLink = URL(string: text),
+              deepLink.scheme?.lowercased() == "atria" else {
+            return nil
+        }
+        return deepLink
+    }
+}
+
 struct AtriaStaleWhileRefreshState<Key: Equatable & Sendable, Value: Sendable>: Sendable {
     private(set) var requestedKey: Key?
     private(set) var valueKey: Key?
