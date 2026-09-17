@@ -17179,7 +17179,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastFrameAge: idleWindowDrainLastFrameAt.map {
                     now.timeIntervalSince($0)
                 },
-                stream5Received: historicalDrainTelemetry.stream5Received
+                stream5Received: historicalDrainTelemetry.stream5Received,
+                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
             )
         guard persistAckStalled || absoluteBudget || heartRatePause else {
             return false
@@ -45540,7 +45541,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 consumeToNow: idleWindowConsumeToNowConsent,
                 sliceStartPendingRecords: idleWindowRangeBeforeACK?.pendingRecords,
                 heartRatePauseElapsed: idleWindowDrainStartedAt
-                    .map { Date().timeIntervalSince($0) } ?? 0
+                    .map { Date().timeIntervalSince($0) } ?? 0,
+                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
            ) {
             if AtriaWhoop4HistoryRangePointerPolicy
                 .shouldIssueIdleWindowPostACKRangeProbe(

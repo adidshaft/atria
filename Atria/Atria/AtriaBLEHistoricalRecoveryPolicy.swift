@@ -927,12 +927,17 @@ extension AtriaBLEManager {
         attendedForeground: Bool = false,
         consumeToNow: Bool = false,
         sliceStartPendingRecords: UInt32? = nil,
-        heartRatePauseElapsed: TimeInterval = 0
+        heartRatePauseElapsed: TimeInterval = 0,
+        queuedPullIntent: Bool = false
     ) -> Bool {
         guard idleWindowDrainOwnsLink, acknowledgedPages >= 1 else {
             return false
         }
-        if consumeToNow {
+        // Consented consume-to-now and an explicit queued gym pull both have
+        // to walk more than one ACK: Home-attended 124 slices finished after
+        // the first page, live write kept pace, and Strength 21:05–21:37 IST
+        // never left `no_rows` (pending ~14520 for minutes).
+        if consumeToNow || queuedPullIntent {
             if let pending = sliceStartPendingRecords,
                pending <= idleWindowConsumeLiveTailPendingLimit {
                 if acknowledgedPages >= max(Int(pending), 1) {
@@ -968,9 +973,12 @@ extension AtriaBLEManager {
         acknowledgedPages: Int = 0,
         consumeIngressInFlight: Bool = false,
         lastFrameAge: TimeInterval? = nil,
-        stream5Received: Int = 0
+        stream5Received: Int = 0,
+        queuedPullIntent: Bool = false
     ) -> Bool {
-        guard idleWindowDrainOwnsLink, consumeToNow, let pausedAt else {
+        guard idleWindowDrainOwnsLink,
+              consumeToNow || queuedPullIntent,
+              let pausedAt else {
             return false
         }
         if chargingOrOffWrist { return false }
