@@ -5116,6 +5116,23 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
                 lastFinishedAt: Date(timeIntervalSince1970: 1_000),
                 now: Date(timeIntervalSince1970: 1_002),
+                lastPendingRecords: 14_520,
+                queuedPullIntent: true
+            ),
+            "queued gym leftover must re-arm in 2s so live write cannot keep pace"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010),
+                lastPendingRecords: 14_520
+            ),
+            "without a queued gym pull the worn 20s resume still protects live HR"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_002),
                 consumeToNow: true,
                 chargingOrOffWrist: true
             ),
