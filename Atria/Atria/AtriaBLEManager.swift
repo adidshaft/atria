@@ -18471,6 +18471,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults: defaults
         )
         let backlogPending = strapBacklogPendingForCatchUp(now: now)
+        let queuedPullIntent: Bool = {
+            if case .queuedPull = authority.request.intent { return true }
+            return queuedConnectedRawHistoryCatchUpIntent != nil
+        }()
         let thermalState = ProcessInfo.processInfo.thermalState
         let publicationYieldRunnable =
             UIApplication.shared.applicationState == .active
@@ -18508,7 +18512,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 presentCaptureShareAfterSlices:
                     connectedRawCatchUpPresentCaptureShareAfterSlices,
                 presentCaptureSharePause:
-                    connectedRawCatchUpPresentCaptureSharePauseSeconds
+                    connectedRawCatchUpPresentCaptureSharePauseSeconds,
+                queuedPullIntent: queuedPullIntent
             )
         let action: String
         switch disposition {
@@ -36735,6 +36740,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             generation: generation,
             reason: "history_write_\(commandLabel)_\(status)_preserve_realtime"
         ) {
+            // 122 minted the queued gym pull, then a 0x22 timeout completed
+            // the slice because Start-fresh still reported no backlog. Keep
+            // the live 2A37 owner and re-queue so the next accepted HR retries
+            // flash drain without another install or tap.
+            if command == Cmd.getDataRange,
+               result == .timedOut,
+               queuedConnectedRawHistoryCatchUpIntent == nil {
+                queueConnectedRawHistoryCatchUpIntent(
+                    reason: "history_write_22_timeout_retry"
+                )
+            }
             return
         }
         if let peripheral, peripheral.state == .connected {

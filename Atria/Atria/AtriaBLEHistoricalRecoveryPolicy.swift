@@ -2230,7 +2230,8 @@ extension AtriaBLEManager {
         presentCaptureSharePause: TimeInterval =
             connectedRawCatchUpPresentCaptureSharePauseSecondsDefault,
         constrainedPresentCaptureShareAfterSlices: Int =
-            connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault
+            connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault,
+        queuedPullIntent: Bool = false
     ) -> ConnectedRawHistoryCatchUpContinuationDisposition {
         // ITEM-4 2026-08-15: on a low-battery discharging strap the cadence
         // stretches (2s→30s between slices, long pause every 2 instead of
@@ -2242,7 +2243,15 @@ extension AtriaBLEManager {
             ? constrainedDutyPauseAfterSlices : dutyPauseAfterSlices
         let effectiveDutyPause = strapPowerConstrained
             ? constrainedDutyPause : dutyPause
-        guard !cursorCaughtUp, backlogPending else { return .complete }
+        // 122 could mint a queued post-workout pull while Start-fresh reported
+        // `.none`. Completing that slice on the same detector dropped the
+        // intent after a 0x22 timeout, so gym Strength 21:05–21:37 IST never
+        // retried while live 2A37 stayed up.
+        guard !cursorCaughtUp,
+              connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: queuedPullIntent,
+                strapBacklogPending: backlogPending
+              ) else { return .complete }
         let thermalDisposition = connectedRawHistoryCatchUpThermalDisposition(
             thermalState: thermalState
         )
