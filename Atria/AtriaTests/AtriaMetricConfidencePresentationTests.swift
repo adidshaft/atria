@@ -391,7 +391,7 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
     func testTodayPassesProvenanceIntoTheDetailSheet() throws {
         let today = try source("Atria/AtriaTodayScreen.swift")
 
-        XCTAssertTrue(today.contains("provenance: provenance(for: detail)"),
+        XCTAssertTrue(today.contains("provenance: provenance(for: route.metric)"),
                       "the detail sheet must still be handed provenance")
         XCTAssertTrue(today.contains("private func provenance(for detail: AtriaMetricDetailKind) -> AtriaMetricProvenance?"),
                       "the builder must still exist")

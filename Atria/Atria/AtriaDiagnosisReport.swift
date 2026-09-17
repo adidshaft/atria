@@ -34,6 +34,7 @@ enum AtriaDiagnosisReport {
         var daytimeRHR: Int?
         var overnightRecovery: Int?
         var todayRecovery: Int?
+        var todaySteps: Int?
     }
 
     struct Workout: Equatable, Codable {
@@ -58,6 +59,7 @@ enum AtriaDiagnosisReport {
         var heartRate: Int?
         var hrvCapturedAt: Date?
         var createdAt: Date?
+        var steps: Int?
     }
 
     struct WindowPoint: Equatable, Codable {
@@ -141,6 +143,8 @@ enum AtriaDiagnosisReport {
         widgetRecovery: Int? = nil,
         widgetHRVCapturedAt: Date? = nil,
         widgetCreatedAt: Date? = nil,
+        widgetSteps: Int? = nil,
+        todaySteps: Int? = nil,
         metricWindows: MetricWindows? = nil
     ) -> Snapshot {
         let metrics = Metrics(
@@ -149,7 +153,8 @@ enum AtriaDiagnosisReport {
             overnightRHR: overnightRHR,
             daytimeRHR: daytimeRHR,
             overnightRecovery: overnightRecovery,
-            todayRecovery: todayRecovery
+            todayRecovery: todayRecovery,
+            todaySteps: todaySteps
         )
         let connection = Connection(
             status: status.rawValue,
@@ -184,7 +189,8 @@ enum AtriaDiagnosisReport {
                 recovery: widgetRecovery ?? overnightRecovery ?? todayRecovery,
                 heartRate: widgetHeartRate,
                 hrvCapturedAt: widgetHRVCapturedAt,
-                createdAt: widgetCreatedAt
+                createdAt: widgetCreatedAt,
+                steps: widgetSteps
             ),
             metricWindows: metricWindows,
             discrepancies: discrepancies(
@@ -192,7 +198,8 @@ enum AtriaDiagnosisReport {
                 metrics: metrics,
                 lastWorkout: lastWorkout,
                 recentNoHeartRateWorkouts: recentNoHeartRateWorkouts,
-                metricWindows: metricWindows
+                metricWindows: metricWindows,
+                widgetSteps: widgetSteps
             ),
             events: []
         )
@@ -203,7 +210,8 @@ enum AtriaDiagnosisReport {
         metrics: Metrics,
         lastWorkout: Workout? = nil,
         recentNoHeartRateWorkouts: [Workout] = [],
-        metricWindows: MetricWindows? = nil
+        metricWindows: MetricWindows? = nil,
+        widgetSteps: Int? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -252,6 +260,11 @@ enum AtriaDiagnosisReport {
            let monthLast = metricWindows?.hrvMonth.last?.value,
            monthLast != settled {
             keys.append("hrv_month_last_\(monthLast)_settled_\(settled)")
+        }
+        if let widget = widgetSteps,
+           let today = metrics.todaySteps,
+           abs(widget - today) > AtriaHeldDailyStepFloor.contaminationSlack {
+            keys.append("widget_steps_\(widget)_today_\(today)")
         }
         return keys
     }

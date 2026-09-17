@@ -4848,6 +4848,7 @@ struct AtriaHomeView: View {
         NavigationStack {
             AtriaDashboardScrollSurface(showsCompactTodayHeader: title == "Today",
                                         prefersLiveActivityStatus: workoutSession != nil,
+                                        bottomContentMargin: scrollBottomClearance,
                                         refresh: handleConnectivityRefresh,
                                         taskID: debugDashboardAutoScrollTaskID(title: title)) { scrollProxy in
                 await runDebugDashboardAutoScrollIfNeeded(proxy: scrollProxy, title: title)
@@ -9716,6 +9717,7 @@ private struct AtriaWorkoutSummarySparkline: View {
 private struct AtriaDashboardScrollSurface<Content: View>: View {
     let showsCompactTodayHeader: Bool
     let prefersLiveActivityStatus: Bool
+    let bottomContentMargin: CGFloat
     let refresh: @MainActor () async -> Void
     let taskID: String
     let autoScroll: @MainActor (ScrollViewProxy) async -> Void
@@ -9726,12 +9728,14 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
 
     init(showsCompactTodayHeader: Bool,
          prefersLiveActivityStatus: Bool,
+         bottomContentMargin: CGFloat,
          refresh: @escaping @MainActor () async -> Void,
          taskID: String,
          autoScroll: @escaping @MainActor (ScrollViewProxy) async -> Void,
          @ViewBuilder content: @escaping () -> Content) {
         self.showsCompactTodayHeader = showsCompactTodayHeader
         self.prefersLiveActivityStatus = prefersLiveActivityStatus
+        self.bottomContentMargin = bottomContentMargin
         self.refresh = refresh
         self.taskID = taskID
         self.autoScroll = autoScroll
@@ -9751,7 +9755,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             // behind the bottom chrome (seen live 2026-08-05). Explicit
             // bottom margin keeps every card reachable; scroll-under still
             // shows content beneath the glass while scrolling.
-            .contentMargins(.bottom, 148, for: .scrollContent)
+            .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .refreshable { await refresh() }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -12192,6 +12196,8 @@ final class AtriaHomeModel {
                 widgetRecovery: publishedWidget?.recoveryPercent,
                 widgetHRVCapturedAt: publishedWidget?.hrvCapturedAt,
                 widgetCreatedAt: publishedWidget?.createdAt,
+                widgetSteps: publishedWidget?.steps,
+                todaySteps: core.dailyStepPresentation.count,
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now

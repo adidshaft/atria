@@ -818,7 +818,7 @@ enum WidgetSnapshotPublisher {
                 current.stepsReceiptSourceIdentifier
             )
             : nil
-        let shouldPreserveCurrent: Bool
+        var shouldPreserveCurrent: Bool
         if let candidateSource, let currentSource,
            candidateSource != currentSource {
             // A full publish resolves the currently persisted strap identity;
@@ -1014,6 +1014,19 @@ enum WidgetSnapshotPublisher {
                 }
             }
         }
+        // A later-written live estimate can keep a desk-sitting accel leftover
+        // (device 2026-09-17: widget 10946 vs Today gyro 1901) because this
+        // merge compared capture clocks. Home already replaces that floor;
+        // the widget must not freeze the contaminated number.
+        if shouldPreserveCurrent,
+           liveEstimateShouldReplacePreservedSteps(
+            currentSteps: current.steps,
+            currentSource: current.stepsSource,
+            candidateSteps: candidate.steps,
+            candidateSource: candidate.stepsSource
+           ) {
+            shouldPreserveCurrent = false
+        }
         guard shouldPreserveCurrent else { return candidate }
 
         var merged = candidate
@@ -1079,10 +1092,19 @@ enum WidgetSnapshotPublisher {
             current.stepsReceiptCapturedAt,
             current.stepsCapturedAt,
         ].compactMap { $0 }.max()
+        let replacesContaminatedLiveEstimate =
+            liveEstimateShouldReplacePreservedSteps(
+                currentSteps: current.steps,
+                currentSource: current.stepsSource,
+                candidateSteps: steps,
+                candidateSource: stepsSource ?? "live"
+            )
         // This lane may have captured its arguments before a durable receipt
         // landed. Keep the latest snapshot's step projection unless the live
-        // sample is at least as new as every delivered step/receipt clock.
-        let acceptsIncomingSteps = incomingStepEvidenceAt.map { incoming in
+        // sample is at least as new as every delivered step/receipt clock, or
+        // the incoming live gyro count is replacing a contaminated leftover.
+        let acceptsIncomingSteps = replacesContaminatedLiveEstimate
+            || (incomingStepEvidenceAt.map { incoming in
             let equalsRevisionedDurableReceipt =
                 current.stepsReceiptAuthorityVersion
                     == qualifiedStepAuthorityVersion
@@ -1094,7 +1116,7 @@ enum WidgetSnapshotPublisher {
                 && (currentStepEvidenceAt.map { incoming >= $0 } ?? true)
         } ?? (current.steps == nil
                 && current.stepsCapturedAt == nil
-                && current.stepsReceiptCapturedAt == nil)
+                && current.stepsReceiptCapturedAt == nil))
         let patchedSteps = acceptsIncomingSteps ? steps : current.steps
         let patchedStepsAreEstimated = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAreEstimated)
@@ -2190,6 +2212,28 @@ enum WidgetSnapshotPublisher {
     nonisolated static func strapStepsArePublishable(state: String) -> Bool {
         strapStepsAreValidated(state: state)
             || state == "r10_live_preliminary"
+    }
+
+    /// Live estimates compare capture clocks. A later-written accel leftover
+    /// must not outrank the flowing gyro today count Home already shows.
+    nonisolated static func liveEstimateShouldReplacePreservedSteps(
+        currentSteps: Int?,
+        currentSource: String?,
+        candidateSteps: Int?,
+        candidateSource: String?
+    ) -> Bool {
+        guard currentSource == "live",
+              candidateSource == "live",
+              let currentSteps,
+              let candidateSteps else {
+            return false
+        }
+        return AtriaHeldDailyStepFloor.shouldReplaceContaminatedHeld(
+            existing: currentSteps,
+            incoming: candidateSteps,
+            sameCycle: true,
+            trustedPrefix: 0
+        )
     }
 
     /// Live writes can arrive every five seconds. WidgetKit cannot sustainably

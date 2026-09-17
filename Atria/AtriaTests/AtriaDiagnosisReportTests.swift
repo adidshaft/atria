@@ -283,5 +283,40 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             home.contains("let publishedWidget = AtriaIntentSnapshotStore.loadLatestSnapshot()"),
             "diagnosis must print the stored overnight payload even if the today-fence would hide it"
         )
+        XCTAssertTrue(home.contains("widgetSteps: publishedWidget?.steps"))
+        XCTAssertTrue(home.contains("todaySteps: core.dailyStepPresentation.count"))
+    }
+
+    func testDiscrepanciesNameWidgetStepsVersusTodaySteps() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "106",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 74,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 76,
+            todayRecovery: 76,
+            lastWorkout: nil,
+            liveHeartRate: 80,
+            liveZone: "Z1",
+            widgetHeartRate: 80,
+            widgetSteps: 10_946,
+            todaySteps: 1_901
+        )
+        XCTAssertTrue(snapshot.discrepancies.contains("widget_steps_10946_today_1901"))
+        XCTAssertEqual(snapshot.widget.steps, 10_946)
+        XCTAssertEqual(snapshot.metrics.todaySteps, 1_901)
     }
 }
