@@ -3558,7 +3558,10 @@ struct AtriaHomeView: View {
             isPaused: liveWorkoutPauseStartedAt != nil,
             elapsedDuration: movingDuration
         ), forceActivityWrite: forceActivityWrite)
-        model.publishDiagnosisReport(reason: "live_activity")
+        model.publishDiagnosisReport(
+            reason: "live_activity",
+            liveActivity: liveActivityCoordinator.lastPublishedSnapshot
+        )
     }
 
     private func liveWorkoutHeartRateAvailability(now: Date) -> AtriaLiveSensorAvailability {
@@ -10183,6 +10186,7 @@ final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
     /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
     var liveWorkoutIsActive = false
+    private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
     /// Charging is a short explicit-evidence lease, not a percentage trend.
     /// The strap can keep reporting rising SOC after physical removal, so the
     /// top-left bolt disappears within 90 seconds unless another accepted
@@ -12161,7 +12165,14 @@ final class AtriaHomeModel {
         publishDiagnosisReport(reason: "core_live")
     }
 
-    func publishDiagnosisReport(reason: String) {
+    func publishDiagnosisReport(
+        reason: String,
+        liveActivity: AtriaLiveActivityCoordinator.Snapshot? = nil
+    ) {
+        if let liveActivity {
+            lastLiveActivityDiagnosis = liveActivity
+        }
+        let liveActivitySnapshot = liveActivity ?? lastLiveActivityDiagnosis
         let now = Date()
         let core = coreLiveStore.state
         let pulse = pulseLiveStore.state
@@ -12232,7 +12243,14 @@ final class AtriaHomeModel {
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now
-                )
+                ),
+                liveActivityName: liveActivitySnapshot?.activityName,
+                liveActivityAvailability: liveActivitySnapshot?
+                    .heartRateAvailability.rawValue,
+                liveActivityStrain: liveActivitySnapshot.map(\.workoutStrain),
+                liveActivitySteps: liveActivitySnapshot?.steps,
+                liveActivityElapsedSeconds: liveActivitySnapshot
+                    .map { Int($0.elapsedDuration.rounded()) }
             ),
             reason: reason
         )

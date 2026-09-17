@@ -52,6 +52,11 @@ enum AtriaDiagnosisReport {
         var recording: Bool
         var heartRate: Int
         var zone: String?
+        var activityName: String? = nil
+        var availability: String? = nil
+        var strain: Double? = nil
+        var steps: Int? = nil
+        var elapsedSeconds: Int? = nil
     }
 
     struct Widget: Equatable, Codable {
@@ -147,7 +152,12 @@ enum AtriaDiagnosisReport {
         widgetCreatedAt: Date? = nil,
         widgetSteps: Int? = nil,
         todaySteps: Int? = nil,
-        metricWindows: MetricWindows? = nil
+        metricWindows: MetricWindows? = nil,
+        liveActivityName: String? = nil,
+        liveActivityAvailability: String? = nil,
+        liveActivityStrain: Double? = nil,
+        liveActivitySteps: Int? = nil,
+        liveActivityElapsedSeconds: Int? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -183,7 +193,12 @@ enum AtriaDiagnosisReport {
             liveActivity: LiveActivity(
                 recording: workoutRecording,
                 heartRate: liveHeartRate,
-                zone: liveZone
+                zone: liveZone,
+                activityName: liveActivityName,
+                availability: liveActivityAvailability,
+                strain: liveActivityStrain,
+                steps: liveActivitySteps,
+                elapsedSeconds: liveActivityElapsedSeconds
             ),
             widget: Widget(
                 hrv: widgetHRV ?? settledHRV,
