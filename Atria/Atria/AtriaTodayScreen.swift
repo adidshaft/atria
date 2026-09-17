@@ -2068,7 +2068,7 @@ struct AtriaTodayScreen: View {
     }
 
     private var recentSavedWorkouts: [UserConfirmedWorkout] {
-        AtriaWorkoutMetricPresentation.recentSavedWorkouts(
+        AtriaWorkoutMetricPresentation.todayFirstScreenSavedWorkouts(
             sessionProjectionStore.state.confirmedWorkouts
         )
     }
