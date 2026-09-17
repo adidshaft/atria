@@ -3613,7 +3613,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     @State private var routeFileURL: URL?
     @State private var routeSharePreviewPoints: [AtriaWorkoutShareSnapshot.RoutePoint] = []
     @State private var sharePresentationGate = AtriaWorkoutSharePresentationGate()
-    @State private var showsHeartRateAndRecovery = false
     @State private var isRouteTransactionInFlight = false
 
     /// Common activity types offered in the type picker (real workout kinds, not
@@ -3738,7 +3737,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             AtriaSkeletonBlock(height: 150)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Preparing heart-rate trace")
-        } else if !points.isEmpty || hasWorkoutStressEvidence {
+        } else {
             VStack(alignment: .leading, spacing: 8) {
                 // Native-clean (design 2026-08-05): plain-text selector replaces
                 // the boxed segmented control, matching the app-wide style.
@@ -4025,7 +4024,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
 
+                    heartRateTraceCard
                     workoutZoneDistributionCard
+                    recoveryEffectCard
 
                     if workout.samples == 0 {
                         Label("Saved without strap metrics", systemImage: "heart.slash")
@@ -4047,18 +4048,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .accessibilityHint("Strain reflects only the recorded heart-rate portion and may under-read the full effort.")
                     }
-
-                    DisclosureGroup(isExpanded: $showsHeartRateAndRecovery) {
-                        VStack(spacing: 12) {
-                            heartRateTraceCard
-                            recoveryEffectCard
-                        }
-                        .padding(.top, 8)
-                    } label: {
-                        Label("Details", systemImage: "waveform.path.ecg")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .tint(.secondary)
                 }
                 .padding(16)
             }
@@ -4177,8 +4166,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             // The editor opens on the controls and route without touching the
             // potentially large saved-session archive. Prepare the trace only
             // when the user asks for the collapsed analysis section.
-            .task(id: showsHeartRateAndRecovery) {
-                guard showsHeartRateAndRecovery, !hasPreparedTrace else { return }
+            .task(id: workout.id) {
+                guard !hasPreparedTrace else { return }
                 let snapshot = HeartRateTraceSourceSnapshot(sessions: store.sessions,
                                                             workoutStart: workout.start,
                                                             workoutEnd: workout.end)

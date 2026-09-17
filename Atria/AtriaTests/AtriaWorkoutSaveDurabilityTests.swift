@@ -2288,6 +2288,9 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(body.contains("notBefore: finalIntent.startedAt"),
                       "The end checkpoint must carry the persisted exact workout start")
         XCTAssertTrue(body.contains("endWorkoutMotionLease(reason: \"workout_end\")"))
+        XCTAssertTrue(body.contains("requestPostWorkoutHistoryBackfill()"))
+        XCTAssertTrue(home.contains("queueConnectedRawHistoryCatchUpIntent(reason: \"post_workout_hr_backfill\")"))
+        XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {
