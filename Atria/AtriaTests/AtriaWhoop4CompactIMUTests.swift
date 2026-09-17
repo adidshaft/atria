@@ -27,13 +27,14 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
     func testTenPacketsAssembleOneHundredSampleR10Second() throws {
         let packet = try XCTUnwrap(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
         let assembler = AtriaWhoop4CompactIMUAssembler()
-        var assembled: AtriaR10MotionFrame?
         let receivedAt = Date()
-        for _ in 0..<9 {
-            XCTAssertTrue(assembler.push(packet, receivedAt: receivedAt).isEmpty)
-        }
-        assembled = assembler.push(packet, receivedAt: receivedAt).last
-        let frame = try XCTUnwrap(assembled)
+        let frames = assembler.push(packet, receivedAt: receivedAt)
+        XCTAssertEqual(
+            frames.count,
+            1,
+            "one 10 Hz compact packet is one 100 Hz R10 second"
+        )
+        let frame = try XCTUnwrap(frames.last)
         XCTAssertEqual(frame.acceleration.count, AtriaR10MotionDecoder.sampleCount)
         XCTAssertEqual(frame.rotationRate.count, AtriaR10MotionDecoder.sampleCount)
         XCTAssertEqual(frame.deviceClock, .compactAssembled)
@@ -48,15 +49,16 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         let assembler = AtriaWhoop4CompactIMUAssembler()
         var timestamps: [UInt32] = []
         let start = Date()
-        for i in 0..<20 {
+        for i in 0..<3 {
             let frames = assembler.push(
                 packet,
-                receivedAt: start.addingTimeInterval(Double(i) * 0.1)
+                receivedAt: start.addingTimeInterval(Double(i))
             )
             timestamps.append(contentsOf: frames.map(\.deviceTimestamp))
         }
-        XCTAssertEqual(timestamps.count, 2)
+        XCTAssertEqual(timestamps.count, 3)
         XCTAssertEqual(timestamps[1], timestamps[0] &+ 1)
+        XCTAssertEqual(timestamps[2], timestamps[1] &+ 1)
     }
 
     func testCoalescedBurstDoesNotEmitFasterThanRealtime() throws {
@@ -174,9 +176,14 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         )
         let start = Date(timeIntervalSince1970: 1_800_000_100)
         var ingested = 0
-        for index in 0..<(10 * 8) {
-            let packet = walkingCompactPacket(sampleIndex: index, level: 18, swing: 8)
-            let receivedAt = start.addingTimeInterval(Double(index) * 0.1)
+        for index in 0..<16 {
+            let packet = walkingCompactPacket(
+                sampleIndex: index,
+                level: 18,
+                swing: 8,
+                packetPeriod: 1.0
+            )
+            let receivedAt = start.addingTimeInterval(Double(index))
             for frame in assembler.push(packet, receivedAt: receivedAt) {
                 XCTAssertEqual(frame.deviceClock, .compactAssembled)
                 XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
@@ -195,18 +202,20 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         let packet = try XCTUnwrap(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
         let assembler = AtriaWhoop4CompactIMUAssembler()
         let start = Date()
-        XCTAssertTrue(
-            assembler.push(packet, receivedAt: start).isEmpty
-        )
-        XCTAssertTrue(
-            assembler.push(packet, receivedAt: start.addingTimeInterval(0.1)).isEmpty
+        let first = assembler.push(packet, receivedAt: start)
+        XCTAssertEqual(first.count, 1, "the first 10 Hz packet is already one R10 second")
+        XCTAssertEqual(
+            assembler.push(packet, receivedAt: start.addingTimeInterval(0.1)).count,
+            0,
+            "a 100 ms follow-up must not emit another gait second"
         )
         let afterGap = assembler.push(
             packet,
             receivedAt: start.addingTimeInterval(3.6)
         )
-        XCTAssertTrue(
-            afterGap.isEmpty,
+        XCTAssertEqual(
+            afterGap.count,
+            1,
             "a dropped IMU interval must not upsample one compact packet across the hole"
         )
     }
@@ -221,9 +230,9 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         )
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         var ingested = 0
-        for index in 0..<(10 * 8) {
-            let packet = walkingCompactPacket(sampleIndex: index)
-            let receivedAt = start.addingTimeInterval(Double(index) * 0.1)
+        for index in 0..<16 {
+            let packet = walkingCompactPacket(sampleIndex: index, packetPeriod: 1.0)
+            let receivedAt = start.addingTimeInterval(Double(index))
             for frame in assembler.push(packet, receivedAt: receivedAt) {
                 XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
                 ingested += 1
@@ -279,14 +288,15 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_800_000_600)
         var ingested = 0
         // 16 s of 1.23 Hz / ~72 dps matches the 2026-09-17 locked walk.
-        for index in 0..<(10 * 16) {
+        for index in 0..<16 {
             let packet = walkingCompactPacket(
                 sampleIndex: index,
                 level: 72,
                 swing: 40,
+                packetPeriod: 1.0,
                 cadenceHz: 1.23
             )
-            let receivedAt = start.addingTimeInterval(Double(index) * 0.1)
+            let receivedAt = start.addingTimeInterval(Double(index))
             for frame in assembler.push(packet, receivedAt: receivedAt) {
                 XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
                 ingested += 1
@@ -314,11 +324,12 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         var ingested = 0
         for second in 0..<16 {
             let receivedAt = start.addingTimeInterval(Double(second))
-            for packetIndex in 0..<10 {
+            for packetIndex in 0..<3 {
                 let packet = walkingCompactPacket(
-                    sampleIndex: second * 10 + packetIndex,
+                    sampleIndex: second * 3 + packetIndex,
                     level: 72,
                     swing: 40,
+                    packetPeriod: 1.0,
                     cadenceHz: 1.23
                 )
                 for frame in assembler.push(packet, receivedAt: receivedAt) {

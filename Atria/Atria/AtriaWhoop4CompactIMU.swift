@@ -103,18 +103,16 @@ enum AtriaWhoop4CompactIMUDecoder {
     }
 }
 
-/// Batches compact IMU packets onto a 100 Hz R10 second so gyro-cadence
-/// frequencies stay physically honest. Same-callback bursts keep the native
-/// 10-sample slices; paced live packets are interpolated across wall time.
-/// CoreBluetooth can coalesce tens of 10 Hz packets into one callback; without
-/// a wall-clock budget those bursts become many device-seconds of gait in a
-/// few milliseconds and Today steps climb far faster than a walk.
+/// Upsamples each compact 10 Hz packet onto a 100 Hz R10 second so gyro-cadence
+/// frequencies stay physically honest. CoreBluetooth can coalesce several of
+/// those seconds into one callback; without a wall-clock budget those bursts
+/// become many device-seconds of gait in a few milliseconds and Today steps
+/// climb far faster than a walk.
 final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
     private var outputGyro: [AtriaR10MotionFrame.Vector3] = []
     private var lastPacketAt: Date?
-    private var lastGridTime: Date?
     private var lastEmittedTimestamp: UInt32 = 0
     private var streamStartedAt: Date?
     private var admittedSampleCount = 0
@@ -130,7 +128,6 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
            receivedAt.timeIntervalSince(previousPacketAt) > 2.5 {
             outputAccel.removeAll(keepingCapacity: true)
             outputGyro.removeAll(keepingCapacity: true)
-            lastGridTime = nil
             lastPacketAt = nil
             streamStartedAt = nil
             admittedSampleCount = 0
@@ -139,39 +136,20 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             }
         }
 
-        let intervalStart = lastPacketAt
-            ?? receivedAt.addingTimeInterval(-Double(sampleCount) / 100.0)
-        let duration = max(1e-4, receivedAt.timeIntervalSince(intervalStart))
-        if duration < 0.015 {
-            admit(
-                packet.acceleration,
-                packet.rotationRate,
-                count: sampleCount,
-                receivedAt: receivedAt
-            )
-            let nativeEnd = (lastGridTime ?? receivedAt)
-                .addingTimeInterval(Double(sampleCount) / 100.0)
-            lastGridTime = max(nativeEnd, receivedAt)
-        } else {
-            var cursor = lastGridTime ?? intervalStart
-            if cursor < intervalStart { cursor = intervalStart }
-            var tick = cursor.addingTimeInterval(0.01)
-            while tick <= receivedAt.addingTimeInterval(1e-9) {
-                guard remainingSampleBudget(receivedAt: receivedAt) > 0 else { break }
-                let u = min(
-                    1,
-                    max(0, tick.timeIntervalSince(intervalStart) / duration)
-                )
-                admit(
-                    [Self.interpolated(packet.acceleration, u: u)],
-                    [Self.interpolated(packet.rotationRate, u: u)],
-                    count: 1,
-                    receivedAt: receivedAt
-                )
-                lastGridTime = tick
-                tick = tick.addingTimeInterval(0.01)
-            }
-        }
+        // Compact `0x33` is ten samples at ~10 Hz (one physical second).
+        // Lock-screen CoreBluetooth coalesces several of those seconds into
+        // one callback. Treating them as native 100 Hz 10-sample slices
+        // multiplied a 1.23 Hz stroll into ~12 Hz (device 2026-09-17, 79 s
+        // walk, 0 gyro steps on 116). Upsample each packet to 100 Hz, then
+        // keep the one-assembled-second-per-wall-second budget.
+        let upsampledAccel = Self.upsampleToHundredHz(packet.acceleration)
+        let upsampledGyro = Self.upsampleToHundredHz(packet.rotationRate)
+        admit(
+            upsampledAccel,
+            upsampledGyro,
+            count: upsampledAccel.count,
+            receivedAt: receivedAt
+        )
         lastPacketAt = receivedAt
 
         var frames: [AtriaR10MotionFrame] = []
@@ -194,14 +172,14 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         outputAccel.removeAll(keepingCapacity: true)
         outputGyro.removeAll(keepingCapacity: true)
         lastPacketAt = nil
-        lastGridTime = nil
         lastEmittedTimestamp = 0
         streamStartedAt = nil
         admittedSampleCount = 0
     }
 
-    /// One assembled R10 second per wall-clock second, plus a 1.05 s slack so
-    /// a single coalesced 10-packet burst can still complete the current second.
+    /// One assembled R10 second per wall-clock second, plus 1.05 s slack so a
+    /// slightly late packet can still complete the current second. Extra
+    /// same-callback packets are dropped instead of time-compressing gait.
     private func remainingSampleBudget(receivedAt: Date) -> Int {
         if streamStartedAt == nil {
             streamStartedAt = receivedAt
@@ -246,6 +224,18 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             rotationRate: rotationRate,
             deviceClock: .compactAssembled
         )
+    }
+
+    /// Expand one compact 10 Hz packet into a 100 Hz R10 second.
+    private static func upsampleToHundredHz(
+        _ samples: [AtriaR10MotionFrame.Vector3]
+    ) -> [AtriaR10MotionFrame.Vector3] {
+        let target = AtriaR10MotionDecoder.sampleCount
+        guard samples.count >= 2 else { return samples }
+        if samples.count == target { return samples }
+        return (0..<target).map { index in
+            interpolated(samples, u: Double(index) / Double(target - 1))
+        }
     }
 
     private static func interpolated(
