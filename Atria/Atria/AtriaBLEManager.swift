@@ -48637,10 +48637,19 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             dayBaseline: strapStepResearchDayBaseline
         )
         let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
+        let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
         AtriaHeldDailyStepFloor.persistLiveGyroToday(
             count: persistCount,
             capturedAt: now
         )
+        let publishedToday = Self.publishedLiveStrapStepTodayCount(
+            cycleOrDayCount: persistCount,
+            liveGyroToday: liveGyroToday
+        )
+        // Publish today before the session-count gate. A relaunch can keep
+        // strapStepResearchCount unchanged while today is still the
+        // post-baseline fragment (device 2026-09-17: 167 vs gyro-today 1944).
+        assignIfChanged(\.liveStrapStepResearchTodayCount, publishedToday)
         guard Self.shouldPublishLiveStrapStepResearch(
             currentCount: strapStepResearchCount,
             publishedCount: liveStrapStepResearchCount,
@@ -48652,11 +48661,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
         assignIfChanged(\.liveStrapStepResearchCount, strapStepResearchCount)
         assignIfChanged(\.liveStrapStepResearchCumulativeCount, cumulative)
-        assignIfChanged(\.liveStrapStepResearchTodayCount,
-                        strapStepResearchCycleStart == nil ? todayCount : cycleCount)
-        if persistCount > 0 {
+        if publishedToday > 0 {
             AtriaHeldDailyStepFloor.persistLiveCoordinate(
-                count: persistCount,
+                count: publishedToday,
                 capturedAt: liveStrapStepCountCapturedAt ?? now,
                 cycleStart: strapStepResearchCycleStart,
                 trustedPrefix: strapStepLedgerGyroCumulativePrefix
@@ -48671,15 +48678,47 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
         let cycleChanged = strapStepResearchCycleStart != nil
         strapStepResearchCycleStart = start
-        strapStepResearchCycleBaseline = strapStepResearchCount
         if cycleChanged {
             AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: start)
+            strapStepResearchCycleBaseline = strapStepResearchCount
+        } else {
+            // Cold start used to baseline at the current session total, so
+            // Today dropped to steps-since-launch (167) while gyro-today
+            // still held the walk (1944).
+            let restoredToday = max(
+                AtriaHeldDailyStepFloor.load(cycleStart: start)?.count ?? 0,
+                AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+            )
+            strapStepResearchCycleBaseline = Self.cycleBaselinePreservingRestoredToday(
+                sessionCount: strapStepResearchCount,
+                restoredToday: restoredToday
+            )
         }
         publishLiveStrapStepResearchIfNeeded(now: now, force: true)
     }
 
     nonisolated static func dayScopedStrapStepCount(sessionCount: Int, dayBaseline: Int) -> Int {
         max(0, sessionCount - min(max(0, dayBaseline), max(0, sessionCount)))
+    }
+
+    /// Same-day gyro-today outranks a post-relaunch cycle fragment.
+    /// Device 2026-09-17: cycle-local 167 vs gyro-today 1944.
+    nonisolated static func publishedLiveStrapStepTodayCount(
+        cycleOrDayCount: Int,
+        liveGyroToday: Int
+    ) -> Int {
+        max(0, cycleOrDayCount, liveGyroToday)
+    }
+
+    /// Cold-start baseline so today equals the restored walk, not 0.
+    nonisolated static func cycleBaselinePreservingRestoredToday(
+        sessionCount: Int,
+        restoredToday: Int
+    ) -> Int {
+        let session = max(0, sessionCount)
+        let restored = max(0, restoredToday)
+        guard restored > 0 else { return session }
+        return max(0, session - restored)
     }
 
     private func rollStrapStepResearchDayIfNeeded(now: Date,

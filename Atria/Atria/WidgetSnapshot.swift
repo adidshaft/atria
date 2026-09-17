@@ -1614,7 +1614,8 @@ enum WidgetSnapshotPublisher {
                 savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
                 liveActiveSession: ble.liveStrapStepResearchTodayCount
             ),
-            liveCumulative: ble.liveStrapStepResearchTodayCount
+            liveCumulative: ble.liveStrapStepResearchTodayCount,
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
         )
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
