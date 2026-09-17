@@ -117,4 +117,30 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
         XCTAssertTrue(source.contains("rememberDisplayHeartRate(rate, at: sampleTime)"))
         XCTAssertTrue(source.contains("rememberDisplayHeartRate(last.bpm, at: last.t)"))
     }
+
+    func testDiagnosisHeartRateAgeUsesSessionSampleWhenAcceptedClockIsNil() {
+        let sample = now.addingTimeInterval(-2)
+        XCTAssertEqual(
+            AtriaHomeModel.diagnosisHeartRateAgeSeconds(
+                lastAcceptedAt: nil,
+                latestSampleAt: sample,
+                now: now
+            ),
+            2
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.latestHeartRateCapturedAt(
+                lastAcceptedAt: now.addingTimeInterval(-8),
+                latestSampleAt: sample
+            ),
+            sample
+        )
+        XCTAssertNil(
+            AtriaHomeModel.diagnosisHeartRateAgeSeconds(
+                lastAcceptedAt: nil,
+                latestSampleAt: nil,
+                now: now
+            )
+        )
+    }
 }
