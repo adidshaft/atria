@@ -97,6 +97,38 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         XCTAssertEqual(shadow.openSpanSampleCountForTesting(), 0)
     }
 
+    func testSkippedSittingTimestampDoesNotCloseAWalkSpan() {
+        let shadow = AtriaGyroCadenceResearchShadow()
+        let walk = walkingMagnitudes(seconds: 12, cadenceHz: 1.14, level: 72, swing: 40)
+        var timestamp: UInt32 = 1_000
+        var index = 0
+        var skipped = false
+        while index < walk.count {
+            let end = min(index + 100, walk.count)
+            if !skipped, timestamp == 1_004 {
+                shadow.noteSkippedTimestamp(timestamp)
+                skipped = true
+                timestamp &+= 1
+                continue
+            }
+            shadow.ingest(
+                deviceTimestamp: timestamp,
+                rotationMagnitudes: Array(walk[index..<end]),
+                rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate,
+                stepBandLoHz: AtriaGyroCadenceResearchPedometer.compactAssembledStepBandLoHz
+            ) { _ in }
+            timestamp &+= 1
+            index = end
+        }
+        let snapshot = shadow.closeOpenSpanSynchronously()
+        XCTAssertGreaterThan(
+            snapshot.totalSteps,
+            6,
+            "a one-second sitting skip must not DFT-starve the surrounding walk"
+        )
+        XCTAssertEqual(snapshot.closedSpans, 1)
+    }
+
     func testDuplicateStaleAndZeroTimestampFramesNeverExtendASpan() {
         let shadow = AtriaGyroCadenceResearchShadow()
         shadow.ingest(deviceTimestamp: 1_000,

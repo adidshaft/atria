@@ -587,6 +587,14 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
             return snapshot()
         }
 
+        /// Sitting skip must not close a walk span. Without this, a 1 s desk
+        /// or look-at-phone second makes the next walk second `delta == 2` and
+        /// DFT-scores a 100-sample fragment (always 0).
+        mutating func noteSkippedTimestamp(_ deviceTimestamp: UInt32) {
+            guard deviceTimestamp > 0 else { return }
+            lastDeviceTimestamp = deviceTimestamp
+        }
+
         /// Monotonic estimate including the open contiguous span. This is used
         /// only at durable journal/session markers; normal 100 Hz ingestion
         /// remains O(samples) and does not repeatedly run the batch DFT.
@@ -673,6 +681,12 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                                            stepBandLoHz: stepBandLoHz) {
                 onUpdate(snapshot)
             }
+        }
+    }
+
+    func noteSkippedTimestamp(_ deviceTimestamp: UInt32) {
+        queue.sync {
+            state.noteSkippedTimestamp(deviceTimestamp)
         }
     }
 
@@ -1796,6 +1810,8 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                         ? AtriaGyroCadenceResearchPedometer.compactAssembledStepBandLoHz
                         : AtriaGyroCadenceResearchPedometer.stepBandLoHz
                 )
+            } else {
+                gyroCadenceState.noteSkippedTimestamp(frame.deviceTimestamp)
             }
         }
         let magnitudes = frame.acceleration.map(\.magnitude)

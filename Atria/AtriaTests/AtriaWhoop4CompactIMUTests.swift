@@ -68,10 +68,10 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         for _ in 0..<50 {
             frames.append(contentsOf: assembler.push(packet, receivedAt: receivedAt))
         }
-        XCTAssertEqual(
+        XCTAssertLessThanOrEqual(
             frames.count,
-            5,
-            "fifty native 0.1 s slices are five real IMU seconds, not one stretched second"
+            2,
+            "a same-callback 50-packet burst must not emit five compressed gait seconds"
         )
         let gyroSteps = frames.reduce(0.0) { partial, frame in
             partial + AtriaGyroCadenceResearchPedometer.steps(
@@ -338,6 +338,46 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             12,
             "BLE-coalesced lock-screen walking packets must still score steps"
         )
+    }
+
+    func testEightMillisecondPacketFloodKeepsLockScreenCadenceInBand() throws {
+        let assembler = AtriaWhoop4CompactIMUAssembler()
+        let pipeline = AtriaR10MotionPipeline(snapshotMinimumInterval: 0.01)
+        _ = pipeline.seedSynchronously(
+            committedRawSteps: 0,
+            lastAcceptedDeviceTimestamp: 32_075_883,
+            committedGyroCadenceResearchSteps: 0
+        )
+        let start = Date(timeIntervalSince1970: 1_800_001_200)
+        var ingested = 0
+        // Device 2026-09-17 118 locked 105-step walk: 8.5 ms interarrival.
+        let packets = Int((8.0 / 0.0085).rounded(.up))
+        for index in 0..<packets {
+            let packet = walkingCompactPacket(
+                sampleIndex: index,
+                level: 72,
+                swing: 40,
+                cadenceHz: 1.14
+            )
+            let receivedAt = start.addingTimeInterval(Double(index) * 0.0085)
+            for frame in assembler.push(packet, receivedAt: receivedAt) {
+                XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
+                ingested += 1
+            }
+        }
+        XCTAssertGreaterThanOrEqual(ingested, 6)
+        XCTAssertLessThan(
+            ingested,
+            20,
+            "an 8.5 ms packet flood must not emit ~12 gait seconds per wall second"
+        )
+        let steps = pipeline.gyroCadenceResearchStepsSynchronously()
+        XCTAssertGreaterThan(
+            steps,
+            4,
+            "a lock-screen 1.14 Hz stroll must stay in band when bursts are rate-limited"
+        )
+        XCTAssertLessThan(steps, 20)
     }
 
     private func walkingCompactPacket(sampleIndex: Int,
