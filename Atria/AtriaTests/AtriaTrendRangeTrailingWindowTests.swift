@@ -49,6 +49,53 @@ final class AtriaTrendRangeTrailingWindowTests: XCTestCase {
         XCTAssertEqual(month.currentIndices.count, 20, "every recorded day of a partial month shows")
     }
 
+    func testNewestOvernightHRVStaysInsideWeekAndMonth() {
+        let thursday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 10))!
+        let nights = [14, 15, 16].map { day in
+            calendar.startOfDay(for: calendar.date(from: DateComponents(year: 2026, month: 9, day: day))!)
+        }
+        let values = [42, 45, 77]
+        let week = AtriaMetricPeriodIndexProjection(
+            days: nights,
+            referenceDate: thursday,
+            range: .week,
+            calendar: calendar
+        )
+        let month = AtriaMetricPeriodIndexProjection(
+            days: nights,
+            referenceDate: thursday,
+            range: .month,
+            calendar: calendar
+        )
+        XCTAssertEqual(week.currentIndices.map { values[$0] }, values)
+        XCTAssertEqual(month.currentIndices.map { values[$0] }, values)
+        XCTAssertEqual(week.currentIndices.map { values[$0] }.last, 77)
+        XCTAssertEqual(month.currentIndices.map { values[$0] }.last, 77)
+    }
+
+    func testMonthKeepsNightsTheWeekWindowHasNotReachedYet() {
+        let thursday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 10))!
+        let nights = [1, 14, 15, 16].map { day in
+            calendar.startOfDay(for: calendar.date(from: DateComponents(year: 2026, month: 9, day: day))!)
+        }
+        let week = AtriaMetricPeriodIndexProjection(
+            days: nights,
+            referenceDate: thursday,
+            range: .week,
+            calendar: calendar
+        )
+        let month = AtriaMetricPeriodIndexProjection(
+            days: nights,
+            referenceDate: thursday,
+            range: .month,
+            calendar: calendar
+        )
+        XCTAssertEqual(week.currentIndices.count, 3)
+        XCTAssertEqual(month.currentIndices.count, 4)
+        XCTAssertFalse(week.currentIndices.contains(0))
+        XCTAssertTrue(month.currentIndices.contains(0))
+    }
+
     func testHistoryFixtureOpensTheRestingHRSheetOverFixtureRollups() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
