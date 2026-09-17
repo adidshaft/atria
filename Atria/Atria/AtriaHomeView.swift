@@ -9628,7 +9628,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             // behind the bottom chrome (seen live 2026-08-05). Explicit
             // bottom margin keeps every card reachable; scroll-under still
             // shows content beneath the glass while scrolling.
-            .contentMargins(.bottom, 72, for: .scrollContent)
+            .contentMargins(.bottom, 148, for: .scrollContent)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .refreshable { await refresh() }
             .onScrollGeometryChange(for: Bool.self) { geometry in

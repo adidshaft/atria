@@ -3242,16 +3242,11 @@ private enum AtriaLiveActivityPreviewFixture {
 
     static var unavailable: AtriaLiveActivityAttributes.ContentState {
         var state = live
-        state.heartRate = 0
         state.heartRateAvailability = .unavailable
-        state.heartRateCapturedAt = nil
+        state.heartRateCapturedAt = Date().addingTimeInterval(-8 * 60)
         state.sensorHasContact = false
-        state.steps = nil
         state.stepsAvailability = .unavailable
-        state.stepsCapturedAt = nil
-        state.workoutStrain = nil
         state.workoutStrainAvailability = .unavailable
-        state.workoutStrainCapturedAt = nil
         return state
     }
 

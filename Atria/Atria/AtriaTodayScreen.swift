@@ -399,6 +399,23 @@ struct AtriaTodayScreen: View {
                                          pulseStore: pulseStore)
             }
 
+            // Keep yesterday's saved sessions on the first screen. Below the
+            // compact read they sat under the glass tab capsule and never
+            // read as workouts (device 2026-09-17 11:35).
+            if !recentSavedWorkouts.isEmpty {
+                VStack(spacing: 8) {
+                    ForEach(recentSavedWorkouts) { workout in
+                        Button {
+                            openedSavedWorkout = workout
+                        } label: {
+                            todaySavedWorkoutRow(workout)
+                        }
+                        .buttonStyle(AtriaPressableCardStyle())
+                        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+                    }
+                }
+            }
+
             if layoutConfig.showHighlights && !highlights.isEmpty {
                 AtriaTodayHighlightsStrip(highlights: highlights) { metric in
                     metricDetail = metric
@@ -418,20 +435,6 @@ struct AtriaTodayScreen: View {
                     )
                 }
                 .buttonStyle(.plain)
-            }
-
-            if !recentSavedWorkouts.isEmpty {
-                VStack(spacing: 8) {
-                    ForEach(recentSavedWorkouts) { workout in
-                        Button {
-                            openedSavedWorkout = workout
-                        } label: {
-                            todaySavedWorkoutRow(workout)
-                        }
-                        .buttonStyle(AtriaPressableCardStyle())
-                        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
-                    }
-                }
             }
 
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
