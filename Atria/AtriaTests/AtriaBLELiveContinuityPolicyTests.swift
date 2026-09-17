@@ -768,6 +768,50 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .complete,
+            "automatic catch-up still completes when Start-fresh reports no backlog"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                queuedPullIntent: true
+            ),
+            .retryAfter(120),
+            "a queued post-workout pull must retry after a dry 0x22 instead of completing on Start-fresh"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: true,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                queuedPullIntent: true
+            ),
+            .complete,
+            "a verified empty cursor still completes a queued pull"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
                 backlogPending: true,
                 cursorCaughtUp: false,
                 durableRows: 20,

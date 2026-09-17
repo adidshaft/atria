@@ -2315,6 +2315,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             observerBody.contains("onChange(of: statusStore.state.status, initial: true)"),
             "a restored already-connected link must re-queue post-workout catch-up"
         )
+        XCTAssertTrue(
+            manager.contains("queuedPullIntent: queuedPullIntent"),
+            "slice continuation must keep a queued gym pull alive when Start-fresh reports no backlog"
+        )
+        XCTAssertTrue(
+            manager.contains("reason: \"history_write_22_timeout_retry\""),
+            "a live-preserving 0x22 timeout must re-queue catch-up without disconnecting"
+        )
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {
