@@ -5120,6 +5120,20 @@ struct AtriaMetricDetailSheet: View {
             && !isPreparingSelectedPeriod
     }
 
+    private var newestSettledOvernightRecoveryPoint: AtriaDetailChartPoint? {
+        guard let entry = preparationBaseInput.rollups
+            .filter({ $0.recovery != nil && ($0.sleepSeconds ?? 0) > 0 })
+            .max(by: { $0.day < $1.day }),
+              let percent = entry.recovery else { return nil }
+        return AtriaDetailChartPoint(day: entry.day,
+                                     value: Double(percent),
+                                     tint: Metrics.recoveryColor(percent))
+    }
+
+    private var currentCycleRecoveryTrendValue: Double? {
+        nil
+    }
+
     private var currentCycleHRVTrendValue: Double? {
         nil
     }
@@ -5186,25 +5200,39 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var recoveryRawPointsForSelectedPeriod: [AtriaDetailChartPoint] {
-        replacingCurrentCyclePoint(
+        let points = replacingCurrentCyclePoint(
             in: preparedHistory.recoveryRaw[range] ?? [],
-            value: currentCycleAuthority?.recoveryPercent.map(Double.init),
+            value: currentCycleRecoveryTrendValue,
             tint: currentCycleAuthority?.recoveryPercent.map {
                 Metrics.recoveryColor($0)
-            } ?? .secondary
+            } ?? .secondary,
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        if range == .day, points.isEmpty, let last = newestSettledOvernightRecoveryPoint {
+            return [last]
+        }
+        return points
     }
 
     private var recoveryDisplayPointsForSelectedPeriod: [AtriaDetailChartPoint] {
         let auto = replacingCurrentCyclePoint(
             in: preparedHistory.recovery[range] ?? [],
-            value: currentCycleAuthority?.recoveryPercent.map(Double.init),
+            value: currentCycleRecoveryTrendValue,
             tint: currentCycleAuthority?.recoveryPercent.map {
                 Metrics.recoveryColor($0)
-            } ?? .secondary
+            } ?? .secondary,
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        let points: [AtriaDetailChartPoint]
+        if range == .day, auto.isEmpty, let last = newestSettledOvernightRecoveryPoint {
+            points = [last]
+        } else {
+            points = auto
+        }
         return displayedPoints(
-            auto: auto,
+            auto: points,
             raw: recoveryRawPointsForSelectedPeriod
         )
     }
@@ -6017,10 +6045,12 @@ struct AtriaMetricDetailSheet: View {
     private var recoveryComboWeekPoints: [AtriaDetailChartPoint] {
         replacingCurrentCyclePoint(
             in: preparedHistory.recovery[.week] ?? [],
-            value: currentCycleAuthority?.recoveryPercent.map(Double.init),
+            value: currentCycleRecoveryTrendValue,
             tint: currentCycleAuthority?.recoveryPercent.map {
                 Metrics.recoveryColor($0)
-            } ?? .secondary
+            } ?? .secondary,
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
     }
 
@@ -8827,10 +8857,12 @@ private struct AtriaPreparedMetricHistory: Sendable {
             let filtered = projection.currentIndices.map { chronologicalRollups[$0] }
             let priorFiltered = projection.priorIndices.map { chronologicalRollups[$0] }
             let recoveryPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
+                guard let recovery = item.recovery, (item.sleepSeconds ?? 0) > 0 else { return nil }
+                return AtriaDetailChartPoint(day: item.day, value: Double(recovery), tint: Metrics.recoveryColor(recovery))
             }
             let priorRecoveryPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                item.recovery.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.recoveryColor($0)) }
+                guard let recovery = item.recovery, (item.sleepSeconds ?? 0) > 0 else { return nil }
+                return AtriaDetailChartPoint(day: item.day, value: Double(recovery), tint: Metrics.recoveryColor(recovery))
             }
             recoveryByRange[range] = Self.bucketedForDisplay(recoveryPoints, range: range, calendar: calendar, within: interval)
             recoveryRawByRange[range] = recoveryPoints

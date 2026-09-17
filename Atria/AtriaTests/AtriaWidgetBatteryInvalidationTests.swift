@@ -2860,6 +2860,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                        "the widget must not resurrect Recovery-only HRV")
         XCTAssertTrue(producer.contains("newestSettledHRVRollup("),
                        "widget HRV is the newest overnight rollup, never a live RMSSD")
+        XCTAssertTrue(producer.contains("newestSettledRecoveryRollup("),
+                       "widget recovery is last night's sleep-backed score, never today's RHR-only partial")
 
         let homeURL = producerURL.deletingLastPathComponent()
             .appendingPathComponent("AtriaHomeView.swift")

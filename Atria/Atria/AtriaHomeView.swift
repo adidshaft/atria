@@ -3428,6 +3428,7 @@ struct AtriaHomeView: View {
             isPaused: liveWorkoutPauseStartedAt != nil,
             elapsedDuration: movingDuration
         ), forceActivityWrite: forceActivityWrite)
+        model.publishDiagnosisReport(reason: "live_activity")
     }
 
     private func liveWorkoutHeartRateAvailability(now: Date) -> AtriaLiveSensorAvailability {
@@ -11992,8 +11993,61 @@ final class AtriaHomeModel {
         )
         recoveryPresentationHold = held.state
         next.historicalRecoveryPresentation = held.value
-        guard next != coreLiveStore.state else { return }
-        coreLiveStore.state = next
+        if next != coreLiveStore.state {
+            coreLiveStore.state = next
+        }
+        publishDiagnosisReport(reason: "core_live")
+    }
+
+    func publishDiagnosisReport(reason: String) {
+        let now = Date()
+        let core = coreLiveStore.state
+        let pulse = pulseLiveStore.state
+        let rollups = store.dailyRollupHistory
+        let today = Calendar.current.startOfDay(for: now)
+        let todayRollup = rollups.first { Calendar.current.isDate($0.day, inSameDayAs: today) }
+        let lastWorkout = store.confirmedWorkouts.max { $0.end < $1.end }
+        let lastKnownHR = pulse.heartRate > 0
+            ? pulse.heartRate
+            : (ble.session.last?.bpm ?? 0)
+        let zone = pulse.heartRateZone?.name
+        AtriaDiagnosisReport.publish(
+            AtriaDiagnosisReport.make(
+                now: now,
+                build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+                status: core.status,
+                recovering: core.isInRecentLiveRecovery(now: now),
+                reconnectAgeSeconds: core.pendingKnownReconnectAge(now: now),
+                reconnectReason: core.pendingKnownReconnectReason,
+                hrAgeSeconds: ble.lastAcceptedHeartRateAt.map { now.timeIntervalSince($0) },
+                imuAgeSeconds: (ble.lastAcceptedMotionFrameAt ?? ble.liveStrapMotionCapturedAt)
+                    .map { now.timeIntervalSince($0) },
+                stream5Confirmed: ble.liveStream5NotifyConfirmed,
+                batteryPercent: core.batteryLevel >= 0 ? core.batteryLevel : nil,
+                officialAppRisk: ble.officialAppCoexistenceRisk.rawValue,
+                workoutRecording: ble.isRecording,
+                settledHRV: AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
+                liveHRV: ble.hrv > 0 ? ble.hrv : nil,
+                overnightRHR: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
+                daytimeRHR: ((todayRollup?.sleepSeconds ?? 0) > 0) ? nil : todayRollup?.rhr,
+                overnightRecovery: AtriaHealthMetricEvidencePresentation.newestSettledRecovery(from: rollups),
+                todayRecovery: todayRollup?.recovery,
+                lastWorkout: lastWorkout.map {
+                    AtriaDiagnosisReport.Workout(
+                        activityType: $0.activityType ?? $0.label,
+                        start: $0.start,
+                        end: $0.end,
+                        samples: $0.samples,
+                        peakHR: $0.peakHR > 0 ? $0.peakHR : nil,
+                        reason: $0.reason
+                    )
+                },
+                liveHeartRate: lastKnownHR,
+                liveZone: zone,
+                widgetHeartRate: lastKnownHR > 0 ? lastKnownHR : nil
+            ),
+            reason: reason
+        )
     }
 
     /// Carry-over for the recovery-banner anti-flicker debounce above.

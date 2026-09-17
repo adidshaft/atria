@@ -2020,6 +2020,15 @@ struct AtriaTodayScreen: View {
     }
 
     private var displayRecovery: (value: String, detail: String, percent: Int?) {
+        if let entry = AtriaHealthMetricEvidencePresentation.newestSettledRecoveryRollup(
+            from: Array(dayDescendingRollups)
+        ), let percent = entry.recovery {
+            return (
+                "\(percent)%",
+                AtriaHealthMetricEvidencePresentation.settledRecoveryDetail(rollup: entry),
+                percent
+            )
+        }
         let estimate = displayHero.recoveryEstimate
         if let percent = estimate.percent {
             return ("\(percent)%", displayHero.recoveryDetail, percent)
@@ -2120,11 +2129,12 @@ struct AtriaTodayScreen: View {
         switch detail {
         case .recovery:
             let presentation = AtriaCompactMetricPresentation.recovery(
-                percent: displayHero.recoveryEstimate.percent,
+                percent: displayRecovery.percent,
                 confidence: displayHero.recoveryEstimate.confidence,
                 usesHRV: displayHero.recoveryEstimate.usesHRV,
                 isProvisional: displayHero.recoveryIsProvisional,
                 isFromPreviousSleep: displayHero.recoveryIsFromPreviousSleep
+                    || displayRecovery.detail != displayHero.recoveryDetail
             )
             return AtriaMetricProvenance(
                 displayValue: presentation.displayValue,
@@ -2143,7 +2153,7 @@ struct AtriaTodayScreen: View {
                 // Recovery's graded zone, from the user's own configured
                 // thresholds. Nil while there is no score, so the row stays
                 // neutral rather than asserting a standing.
-                valueStatusTint: displayHero.recoveryEstimate.percent == nil
+                valueStatusTint: displayRecovery.percent == nil
                     ? nil
                     : ringRecoveryZone?.tint
             )

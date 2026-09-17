@@ -177,6 +177,41 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertFalse(nightRead.detail.contains("HRV 4"), nightRead.detail)
     }
 
+    func testRecoveryInsightsIgnoreDaytimeWearWithoutSleep() {
+        let today = calendar.startOfDay(for: now)
+        let daytime = DailyRollupStoreEntry(
+            day: today,
+            recovery: 38,
+            rhr: 84,
+            strain: 0.2,
+            calendar: calendar
+        )
+        let nights = (1...4).map { offset -> DailyRollupStoreEntry in
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -offset, to: today)!,
+                recovery: offset == 1 ? 79 : 61,
+                rhr: offset == 1 ? 55 : 61,
+                sleepSeconds: 7 * 3_600,
+                calendar: calendar
+            )
+        }
+        let insights = AtriaLearnedInsights.insights(rollups: [daytime] + nights, now: now)
+        XCTAssertFalse(insights.contains { $0.detail.contains("38%") }, insights.map(\.detail).joined(separator: " | "))
+        XCTAssertFalse(insights.contains { $0.headline.contains("38%") })
+        let recovery = insights.first { $0.kind == .recoveryDrift }
+        XCTAssertEqual(recovery?.headline, "Recovery is 18 points above your week")
+        XCTAssertTrue(recovery?.detail.contains("79%") == true, recovery?.detail ?? "missing")
+        let reads = AtriaLearnedInsights.dailyReads(
+            rollups: [daytime] + nights,
+            now: now,
+            calendar: calendar
+        )
+        let todayRead = reads.first { calendar.isDate($0.asOf, inSameDayAs: today) }
+        XCTAssertFalse(todayRead?.detail.contains("recovery 38%") == true, todayRead?.detail ?? "missing")
+        let nightRead = reads.first { calendar.isDate($0.asOf, inSameDayAs: nights[0].day) }
+        XCTAssertTrue(nightRead?.detail.contains("recovery 79%") == true, nightRead?.detail ?? "missing")
+    }
+
     func testWeeklyStrainAndBedtimeSpreadAreSpecific() {
         let today = calendar.startOfDay(for: now)
         let rollups = (0..<14).map { offset -> DailyRollupStoreEntry in

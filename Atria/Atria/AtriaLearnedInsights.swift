@@ -310,7 +310,7 @@ enum AtriaLearnedInsights {
         if let bedtime = bedtimeSpread(ordered: ordered, now: now) {
             results.append(bedtime)
         }
-        if let plan = readiness(latest: latest, now: now) {
+        if let plan = readiness(latest: mostRecentSleepNight(ordered) ?? latest, now: now) {
             results.append(plan)
         }
         if results.isEmpty, let snapshot = daySnapshot(latest: latest, now: now) {
@@ -505,7 +505,8 @@ enum AtriaLearnedInsights {
         guard ordered.count >= 2 else { return nil }
         let today = ordered[0]
         let yesterday = ordered[1]
-        guard let recovery = today.recovery,
+        guard (today.sleepSeconds ?? 0) > 0,
+              let recovery = today.recovery,
               let strain = yesterday.strain, strain >= 8 else { return nil }
         if recovery <= 49 {
             return AtriaLearnedInsight(
@@ -608,8 +609,9 @@ enum AtriaLearnedInsights {
 
     private static func recoveryDrift(ordered: [DailyRollupStoreEntry],
                                       now: Date) -> AtriaLearnedInsight? {
-        guard let latest = ordered.first?.recovery else { return nil }
-        let prior = ordered.dropFirst().prefix(7).compactMap(\.recovery)
+        let nights = ordered.filter { ($0.sleepSeconds ?? 0) > 0 && $0.recovery != nil }
+        guard let latest = nights.first?.recovery else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.recovery)
         guard prior.count >= 3 else {
             return AtriaLearnedInsight(
                 id: "recovery-today",
@@ -787,9 +789,8 @@ enum AtriaLearnedInsights {
     private static func stackedRecovery(ordered: [DailyRollupStoreEntry],
                                         now: Date,
                                         sleepNeedFallbackSeconds: TimeInterval? = nil) -> AtriaLearnedInsight? {
-        guard let latest = ordered.first,
-              let recovery = latest.recovery, recovery <= 49,
-              let night = mostRecentSleepNight(ordered),
+        guard let night = mostRecentSleepNight(ordered),
+              let recovery = night.recovery, recovery <= 49,
               let slept = night.sleepSeconds, slept > 0 else { return nil }
         let referenceSeconds = sleepReferenceSeconds(
             for: night,
@@ -830,7 +831,9 @@ enum AtriaLearnedInsights {
     private static func dayRead(entry: DailyRollupStoreEntry,
                                 calendar: Calendar) -> AtriaLearnedInsight? {
         var parts: [String] = []
-        if let recovery = entry.recovery { parts.append("recovery \(recovery)%") }
+        if let recovery = entry.recovery, (entry.sleepSeconds ?? 0) > 0 {
+            parts.append("recovery \(recovery)%")
+        }
         if let strain = entry.strain {
             parts.append(String(format: "strain %.1f", strain))
         }
@@ -851,7 +854,7 @@ enum AtriaLearnedInsights {
         formatter.dateFormat = "EEE d MMM"
         let dayText = formatter.string(from: day)
         let headline: String
-        if let recovery = entry.recovery {
+        if let recovery = entry.recovery, (entry.sleepSeconds ?? 0) > 0 {
             headline = "\(dayText) · recovery \(recovery)%"
         } else if let slept = entry.sleepSeconds, slept > 0 {
             headline = "\(dayText) · slept \(hourText(hours(slept)))"
