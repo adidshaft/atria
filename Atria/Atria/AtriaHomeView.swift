@@ -5032,7 +5032,11 @@ struct AtriaHomeView: View {
     }
 
     private var scrollBottomClearance: CGFloat {
-        shouldShowLiveAccessory ? 300 : 228
+        // Device 2026-09-17 118: Resting HR 55 and "This week" still sat
+        // under the glass tab at 228/300. The Start workout shortcut is
+        // in-content, not the live accessory, so the idle path needs the
+        // larger inset too.
+        shouldShowLiveAccessory ? 400 : 320
     }
 
     private static let debugDashboardScrollTopID = "atria-dashboard-scroll-top"

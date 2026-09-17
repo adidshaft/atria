@@ -965,7 +965,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".safeAreaPadding(.bottom, bottomContentMargin)",
             ".padding(.bottom, scrollBottomClearance)",
             "private var scrollBottomClearance: CGFloat",
-            "shouldShowLiveAccessory ? 260 : 188",
+            "shouldShowLiveAccessory ? 400 : 320",
             ".scrollEdgeEffectStyle(.soft, for: .top)",
             "enum AtriaDesignTokens",
             "func atriaCard(",
