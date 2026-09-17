@@ -1681,7 +1681,10 @@ extension AtriaBLEManager {
         guard applicationIsBackground
                 || queuedPullIntent
                 || foregroundAutomaticBacklog,
-              strapBacklogPending,
+              connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: queuedPullIntent,
+                strapBacklogPending: strapBacklogPending
+              ),
               verifiedRawHistoryCapability,
               exactCallbackSourceAvailable,
               !syncInProgress,
@@ -1697,6 +1700,27 @@ extension AtriaBLEManager {
               acceptedAge >= 0,
               acceptedAge <= acceptedFreshnessWindow else { return false }
         return true
+    }
+
+    /// Automatic catch-up still keys on the whole-backlog detectors. An
+    /// explicit queued pull (workout End, missed-data Sync, pull-to-refresh)
+    /// may drain even when Start-fresh / cover-live suppression reports `.none`.
+    /// Gym 2026-09-17 Strength 21:05–21:37 IST saved 0 HR because catch-up was
+    /// queued, then dropped on `strapBacklogPending == false`.
+    nonisolated static func connectedRawHistoryCatchUpHasDrainableWork(
+        queuedPullIntent: Bool,
+        strapBacklogPending: Bool
+    ) -> Bool {
+        strapBacklogPending || queuedPullIntent
+    }
+
+    /// Idle-window drain unsubscribes 2A37. A queued live-preserving catch-up
+    /// must keep that notify on so overnight HR does not fall back to
+    /// Reconnecting while flash is read.
+    nonisolated static func shouldDeferRawCatchUpForIdleWindowDrain(
+        queuedPullIntent: Bool
+    ) -> Bool {
+        !queuedPullIntent
     }
 
     /// Gives a verified same-link raw backlog one finite first turn before a

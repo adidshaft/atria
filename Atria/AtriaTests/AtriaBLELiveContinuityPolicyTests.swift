@@ -220,6 +220,37 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         ))
         XCTAssertFalse(connectedRawCatchUpAdmission(background: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(backlog: false))
+        XCTAssertTrue(
+            connectedRawCatchUpAdmission(
+                background: false,
+                queuedPull: true,
+                backlog: false
+            ),
+            "an explicit queued pull may drain even when Start-fresh suppression reports no backlog"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: true,
+                strapBacklogPending: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: false,
+                strapBacklogPending: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
+                queuedPullIntent: true
+            ),
+            "queued catch-up must keep 2A37 subscribed"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
+                queuedPullIntent: false
+            )
+        )
         XCTAssertFalse(connectedRawCatchUpAdmission(verified: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(exactSource: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(syncing: true))
