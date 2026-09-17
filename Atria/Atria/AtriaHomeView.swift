@@ -3322,11 +3322,27 @@ struct AtriaHomeView: View {
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
         let pulse = model.pulseLiveStore.state
-        let heartRate = pulse.heartRate
-        // The pulse projection already resolved the best available resting-HR
-        // authority. Reusing it prevents a baseline-nil Live Activity from
-        // silently falling back to 60 bpm and disagreeing with Vitals.
-        let zone = pulse.heartRateZone
+        // Pulse zeros after the six-second live window. ActivityKit still
+        // needs the last real BPM/zone so the Lock Screen does not go `--`.
+        let lastKnownSample = ble.session.last
+        let heartRate: Int
+        let zone: Metrics.HeartRateZone?
+        if pulse.heartRate > 0 {
+            heartRate = pulse.heartRate
+            zone = pulse.heartRateZone
+        } else if let lastKnownSample, lastKnownSample.bpm > 0 {
+            heartRate = lastKnownSample.bpm
+            if let rest = store.baseline.restingInt {
+                zone = Metrics.heartRateZone(bpm: lastKnownSample.bpm,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+            } else {
+                zone = pulse.heartRateZone
+            }
+        } else {
+            heartRate = 0
+            zone = pulse.heartRateZone
+        }
         let session = workoutSession
         let activityType = session?.activityType ?? .other
         let loadExclusions = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(
@@ -3363,7 +3379,7 @@ struct AtriaHomeView: View {
         liveActivityCoordinator.update(AtriaLiveActivityCoordinator.Snapshot(
             isRecording: session != nil,
             heartRate: heartRate,
-            heartRateCapturedAt: ble.lastAcceptedHeartRateAt,
+            heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? lastKnownSample?.t,
             sensorHasContact: pulse.sensorHasContact,
             heartRateAvailability: heartRateAvailability,
             strain: model.heroStore.state.strain,
@@ -3567,19 +3583,31 @@ struct AtriaHomeView: View {
     ) {
         let core = model.coreLiveStore.state
         let pulse = model.pulseLiveStore.state
+        let lastKnownHeartRate = ble.session.last.flatMap { $0.bpm > 0 ? $0.bpm : nil }
         let liveHeartRate = pulse.sensorHasContact && pulse.heartRate > 0
             ? pulse.heartRate
-            : nil
+            : lastKnownHeartRate
+        let liveHeartRateCapturedAt = liveHeartRate == nil
+            ? nil
+            : (ble.lastAcceptedHeartRateAt ?? ble.session.last?.t)
+        let liveZone: Metrics.HeartRateZone?
+        if pulse.heartRate > 0 {
+            liveZone = pulse.heartRateZone
+        } else if let bpm = lastKnownHeartRate, let rest = store.baseline.restingInt {
+            liveZone = Metrics.heartRateZone(bpm: bpm,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+        } else {
+            liveZone = pulse.heartRateZone
+        }
         let dailySteps = core.dailyStepPresentation
         let steps = dailySteps.count
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
             heartRate: liveHeartRate,
-            heartRateCapturedAt: liveHeartRate == nil ? nil : ble.lastAcceptedHeartRateAt,
-            heartRateZoneIndex: liveHeartRate == nil
-                ? nil : pulse.heartRateZone?.index,
-            heartRateZoneName: liveHeartRate == nil
-                ? nil : pulse.heartRateZone?.name,
+            heartRateCapturedAt: liveHeartRateCapturedAt,
+            heartRateZoneIndex: liveHeartRate == nil ? nil : liveZone?.index,
+            heartRateZoneName: liveHeartRate == nil ? nil : liveZone?.name,
             steps: steps,
             stepsAreEstimated: steps != nil
                 && (!dailySteps.isValidated

@@ -125,6 +125,34 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(merged.count, 2)
     }
 
+    func testDailyReadsUseOvernightHRVMillisecondsAndIgnoreDaytimeRHR() throws {
+        let today = calendar.startOfDay(for: now)
+        let overnight = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: -1, to: today)!,
+            lnRMSSD: log(77),
+            rhr: 55,
+            sleepSeconds: 7 * 3_600,
+            calendar: calendar
+        )
+        let daytime = DailyRollupStoreEntry(
+            day: today,
+            rhr: 84,
+            strain: 0.2,
+            calendar: calendar
+        )
+        let reads = AtriaLearnedInsights.dailyReads(
+            rollups: [daytime, overnight],
+            now: now,
+            calendar: calendar
+        )
+        let todayRead = try XCTUnwrap(reads.first { calendar.isDate($0.asOf, inSameDayAs: today) })
+        XCTAssertFalse(todayRead.detail.contains("RHR 84"), todayRead.detail)
+        let nightRead = try XCTUnwrap(reads.first { calendar.isDate($0.asOf, inSameDayAs: overnight.day) })
+        XCTAssertTrue(nightRead.detail.contains("HRV 77"), nightRead.detail)
+        XCTAssertTrue(nightRead.detail.contains("RHR 55"), nightRead.detail)
+        XCTAssertFalse(nightRead.detail.contains("HRV 4"), nightRead.detail)
+    }
+
     func testWeeklyStrainAndBedtimeSpreadAreSpecific() {
         let today = calendar.startOfDay(for: now)
         let rollups = (0..<14).map { offset -> DailyRollupStoreEntry in

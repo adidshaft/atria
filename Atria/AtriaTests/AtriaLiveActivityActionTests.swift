@@ -212,7 +212,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(lockScreen.contains("ViewThatFits(in: .vertical)"))
         XCTAssertTrue(lockScreen.contains("compactLockScreenContent"),
                       "Accessibility sizes need a terminal two-row layout under ActivityKit's height cap")
-        XCTAssertTrue(lockScreen.contains("context.isStale ? .distantFuture : Date()"))
+        XCTAssertTrue(island.contains("liveActivityZoneBar(for: state"))
+        XCTAssertTrue(lockScreen.contains("liveActivityZoneBar(for: context.state"))
+        XCTAssertTrue(source.contains("atriaOvernightStatusText("))
         XCTAssertFalse(lockScreen.contains(".frame(width: 108)\n            }\n            .accessibilityElement(children: .ignore)"),
                        "the parent must not suppress the Pause and End buttons")
     }
@@ -242,11 +244,11 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "paused, ending, reconnecting, and stale truth must override the live metric")
         XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),
                        "minimal must spend its narrow slot on the legible three-digit value")
-        XCTAssertTrue(minimalHeartRate.contains("Text(\"\\(heartRate)\")"))
+        XCTAssertTrue(minimalHeartRate.contains("liveActivityDisplayedHeartRateText(heartRate)"))
         XCTAssertTrue(minimalHeartRate.contains("size: 14"))
         XCTAssertTrue(minimalHeartRate.contains(".minimumScaleFactor(0.85)"))
-        XCTAssertTrue(minimalHeartRate.contains("live heart rate \\(heartRate) beats per minute, \\(zoneLabel)"),
-                      "VoiceOver should identify the workout, current metric, and color-coded zone")
+        XCTAssertTrue(minimalHeartRate.contains("last heart rate \\(heartRate) beats per minute, \\(zoneLabel)"),
+                      "VoiceOver should keep the last numeric HR when the live window expires")
         XCTAssertTrue(island.contains("zoneLabel: liveActivityZoneLabel(for: context.state"))
         XCTAssertFalse(island.contains("NowPlaying"))
         XCTAssertFalse(island.contains("mediaController"))
@@ -1213,6 +1215,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
         let body = String(home[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("let pulse = model.pulseLiveStore.state"))
+        XCTAssertTrue(body.contains("let lastKnownSample = ble.session.last"))
         XCTAssertTrue(body.contains("heartRateZoneIndex: zone?.index"))
         XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
         XCTAssertFalse(body.contains("store.baseline.restingInt ?? 60"))

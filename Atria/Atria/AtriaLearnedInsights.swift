@@ -734,7 +734,12 @@ enum AtriaLearnedInsights {
         if let slept = latest.sleepSeconds, slept > 0 {
             parts.append("sleep \(hourText(hours(slept)))")
         }
-        if let rhr = latest.rhr, rhr > 0 { parts.append("RHR \(rhr)") }
+        if (latest.sleepSeconds ?? 0) > 0, let rhr = latest.rhr, rhr > 0 {
+            parts.append("RHR \(rhr)")
+        }
+        if let lnRMSSD = latest.lnRMSSD {
+            parts.append("HRV \(Int(exp(lnRMSSD).rounded()))")
+        }
         guard !parts.isEmpty else { return nil }
         return AtriaLearnedInsight(
             id: "day-snapshot",
@@ -830,9 +835,11 @@ enum AtriaLearnedInsights {
         if let slept = entry.sleepSeconds, slept > 0 {
             parts.append("sleep \(hourText(hours(slept)))")
         }
-        if let rhr = entry.rhr, rhr > 0 { parts.append("RHR \(rhr)") }
-        if let hrv = entry.lnRMSSD, hrv > 0 {
-            parts.append(String(format: "HRV %.0f", hrv))
+        if (entry.sleepSeconds ?? 0) > 0, let rhr = entry.rhr, rhr > 0 {
+            parts.append("RHR \(rhr)")
+        }
+        if let lnRMSSD = entry.lnRMSSD {
+            parts.append("HRV \(Int(exp(lnRMSSD).rounded()))")
         }
         guard !parts.isEmpty else { return nil }
         let day = calendar.startOfDay(for: entry.day)

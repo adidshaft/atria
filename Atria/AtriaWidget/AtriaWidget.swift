@@ -294,6 +294,21 @@ private func atriaCaptureTimeText(_ capturedAt: Date) -> String {
     atriaTimeOfDayFormatter.string(from: capturedAt)
 }
 
+/// Overnight HRV/RHR is a morning number. `hrvCapturedAt` is the start of
+/// that civil day, so a clock-time label would read "12:00 AM" at 4pm.
+private func atriaOvernightStatusText(_ capturedAt: Date,
+                                      now: Date = Date(),
+                                      calendar: Calendar = .current) -> String {
+    let savedDay = calendar.startOfDay(for: capturedAt)
+    let today = calendar.startOfDay(for: now)
+    if calendar.isDate(savedDay, inSameDayAs: today) {
+        return "This morning"
+    }
+    guard savedDay < today else { return "Overnight" }
+    let age = max(calendar.dateComponents([.day], from: savedDay, to: today).day ?? 0, 1)
+    return age == 1 ? "Yesterday morning" : "\(age)d ago"
+}
+
 /// 2026-08-14 (§13.6): decode-side mirror of the app target's
 /// WidgetWhiteboardRow. Strings only — the extension never recomputes bands.
 struct AtriaWidgetWhiteboardRow: Codable, Equatable {
@@ -1927,7 +1942,7 @@ private struct AtriaDynamicIslandMinimalHeartRate: View {
     let tint: Color
 
     var body: some View {
-        Text("\(heartRate)")
+        Text(liveActivityDisplayedHeartRateText(heartRate))
             .font(.system(size: 14, weight: .black, design: .rounded))
             .monospacedDigit()
             .atriaLiveActivityValueTransition(heartRate)
@@ -1936,7 +1951,9 @@ private struct AtriaDynamicIslandMinimalHeartRate: View {
         .minimumScaleFactor(0.85)
         .allowsTightening(true)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(activityName) workout, live heart rate \(heartRate) beats per minute, \(zoneLabel)")
+        .accessibilityLabel(heartRate > 0
+                            ? "\(activityName) workout, last heart rate \(heartRate) beats per minute, \(zoneLabel)"
+                            : "\(activityName) workout, heart rate unavailable")
     }
 }
 
@@ -2057,8 +2074,7 @@ struct AtriaLiveActivityWidget: Widget {
                         state: context.state,
                         startedAt: context.attributes.startedAt,
                         heartRateAvailability: heartAvailability,
-                        now: now,
-                        activityIsStale: activityIsStale
+                        now: now
                     )
                 }
             } compactLeading: {
@@ -2150,14 +2166,16 @@ private struct AtriaDynamicIslandExpandedBottom: View {
     let startedAt: Date
     let heartRateAvailability: AtriaLiveSensorAvailability
     let now: Date
-    let activityIsStale: Bool
 
     private var signalFresh: Bool { heartRateAvailability == .live }
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            expandedMetricRail(showsSupportingFacts: true)
-            expandedMetricRail(showsSupportingFacts: false)
+        VStack(alignment: .leading, spacing: 6) {
+            liveActivityZoneBar(for: state, availability: heartRateAvailability)
+            ViewThatFits(in: .horizontal) {
+                expandedMetricRail(showsSupportingFacts: true)
+                expandedMetricRail(showsSupportingFacts: false)
+            }
         }
     }
 
@@ -2238,8 +2256,9 @@ private struct AtriaDynamicIslandExpandedBottom: View {
     }
 
     private var strainValue: String {
-        guard let strain = liveActivityDisplayedWorkoutStrain(state, now: now),
-              !activityIsStale else { return "--" }
+        guard let strain = liveActivityDisplayedWorkoutStrain(state, now: now) else {
+            return "--"
+        }
         return String(format: "%.1f", strain)
     }
 
@@ -2451,9 +2470,9 @@ private func liveActivityZoneSegmentColor(zone: Int,
     return zone == active ? base.opacity(emphasis) : base.opacity(0.22)
 }
 
-/// Five-segment HR-zone bar for the Dynamic Island expanded region (design
-/// 2026-08-05): mirrors the in-app live-workout zone bar. Callers gate it on a
-/// live signal so it never grows the island in the waiting/stale state.
+/// Five-segment HR-zone bar for the Dynamic Island and Lock Screen. Last
+/// known zone stays visible when the six-second live window expires; only
+/// the fill is dimmed.
 @ViewBuilder
 private func liveActivityZoneBar(for state: AtriaLiveActivityAttributes.ContentState,
                                  availability: AtriaLiveSensorAvailability) -> some View {
@@ -2910,6 +2929,8 @@ private struct AtriaLiveActivityLockScreenView: View {
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(lockScreenHeroAccessibilityLabel)
+
+            liveActivityZoneBar(for: context.state, availability: heartRateAvailability)
 
             HStack(spacing: 8) {
                 HStack(spacing: 9) {
@@ -3569,11 +3590,11 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .hrv:
             guard snapshot.hrvRMSSD != nil else { return "Calibrating" }
             if let capturedAt = snapshot.hrvCapturedAt {
-                return "Measured \(atriaCaptureTimeText(capturedAt))"
+                return atriaOvernightStatusText(capturedAt, now: now)
             }
-            return "Current cycle"
+            return "This morning"
         case .rhr:
-            return snapshot.restingHR == nil ? "Awaiting current sleep" : "Current cycle"
+            return snapshot.restingHR == nil ? "Awaiting current sleep" : "This morning"
         }
     }
 
