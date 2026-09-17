@@ -60,11 +60,12 @@ enum AtriaHighlights {
     }
 
     private static func higherHRV(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        let nights = rollups.filter { $0.lnRMSSD != nil }
+        let nights = rollups.filter { $0.lnRMSSD != nil && ($0.sleepSeconds ?? 0) > 0 }
         guard let latestLn = nights.first?.lnRMSSD else { return nil }
-        let prior = nights.dropFirst().prefix(7).compactMap(\.lnRMSSD).map { exp($0) }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.lnRMSSD)
+            .map { Double(Int(exp($0).rounded())) }
         guard prior.count >= 3 else { return nil }
-        let latest = exp(latestLn)
+        let latest = Double(Int(exp(latestLn).rounded()))
         let average = prior.reduce(0, +) / Double(prior.count)
         // A tenth above the prior week's mean: HRV is noisier than RHR. The
         // hundredth of a millisecond absorbs log/exp round-trip noise.

@@ -788,6 +788,55 @@ enum AtriaHealthMetricEvidencePresentation {
                                        calendar: calendar)
     }
 
+    /// Hero, Health Live, and metric sheets must show the same overnight
+    /// recovery as Today. A daytime RHR-only partial is a different number
+    /// and cannot replace a sleep-backed morning score.
+    static func presentedRecoveryEstimate(
+        overnightRollup: DailyRollupStoreEntry?,
+        identityOverride: Metrics.RecoveryEstimate?,
+        cycleRecovery: Metrics.RecoveryEstimate,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Metrics.RecoveryEstimate {
+        if let overnight = overnightRollup,
+           (overnight.sleepSeconds ?? 0) > 0,
+           let percent = overnight.recovery {
+            let base = overnight.recoverySummary?.recoveryEstimate
+            return Metrics.RecoveryEstimate(
+                percent: percent,
+                confidence: base?.confidence ?? .personalBaseline,
+                usesHRV: base?.usesHRV ?? (overnight.lnRMSSD != nil),
+                detail: settledRecoveryDetail(rollup: overnight, now: now, calendar: calendar),
+                contributors: base?.contributors ?? []
+            )
+        }
+        return identityOverride ?? cycleRecovery
+    }
+
+    /// Live RMSSD and overnight milliseconds are different quantities. When a
+    /// sleep-backed morning HRV exists, every surface shows that number.
+    static func presentedHRVDisplayValue(
+        overnightMilliseconds: Int?,
+        liveDisplay: String
+    ) -> String {
+        if let overnightMilliseconds { return "\(overnightMilliseconds)" }
+        return liveDisplay
+    }
+
+    static func presentedHRVDetail(
+        overnightRollup: DailyRollupStoreEntry?,
+        liveDetail: String,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        if let overnightRollup,
+           overnightRollup.lnRMSSD != nil,
+           (overnightRollup.sleepSeconds ?? 0) > 0 {
+            return settledHRVDetail(rollup: overnightRollup, now: now, calendar: calendar)
+        }
+        return liveDetail
+    }
+
     /// Saved morning vitals may intentionally be carried until another
     /// qualified sleep produces a replacement. Calling every carried value
     /// "yesterday" hid its real age: after several nights without qualified RR,

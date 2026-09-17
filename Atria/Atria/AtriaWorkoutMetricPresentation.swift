@@ -126,6 +126,34 @@ enum AtriaWorkoutMetricPresentation {
         workouts.filter { !isAccidentalLiveFragment($0) }
     }
 
+    /// Today and the previous civil day. A workout saved after a strap drop
+    /// must still appear on Today the next morning, not only inside Activity.
+    static func recentSavedWorkouts(
+        _ workouts: [UserConfirmedWorkout],
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        lookbackDays: Int = 2
+    ) -> [UserConfirmedWorkout] {
+        let today = calendar.startOfDay(for: now)
+        guard lookbackDays > 0,
+              let windowStart = calendar.date(
+                byAdding: .day,
+                value: -(lookbackDays - 1),
+                to: today
+              ) else { return [] }
+        return presentableWorkouts(workouts)
+            .filter { $0.start >= windowStart }
+            .sorted { $0.start > $1.start }
+    }
+
+    static func durationText(_ duration: TimeInterval) -> String {
+        let totalMinutes = max(0, Int((duration / 60).rounded()))
+        if totalMinutes < 60 { return "\(max(totalMinutes, 1))m" }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+    }
+
     static func heartRateState(_ workout: UserConfirmedWorkout) -> HeartRatePresentationState {
         guard workout.samples > 0, workout.avgHR > 0 else { return .unavailable }
         guard workout.samples >= 2,

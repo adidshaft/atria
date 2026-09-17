@@ -2747,6 +2747,50 @@ final class AtriaAnalyticsTests: XCTestCase {
             ),
             79
         )
+        let daytimePartial = Metrics.RecoveryEstimate(
+            percent: 38,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "from resting HR only",
+            contributors: []
+        )
+        let overnightRecovery = DailyRollupStoreEntry(
+            day: sep16,
+            recovery: 79,
+            sleepSeconds: 7 * 3_600,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.presentedRecoveryEstimate(
+                overnightRollup: overnightRecovery,
+                identityOverride: daytimePartial,
+                cycleRecovery: daytimePartial,
+                now: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 11))!,
+                calendar: calendar
+            ).percent,
+            79
+        )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.presentedHRVDisplayValue(
+                overnightMilliseconds: 77,
+                liveDisplay: "120"
+            ),
+            "77"
+        )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.presentedHRVDetail(
+                overnightRollup: DailyRollupStoreEntry(
+                    day: sep16,
+                    lnRMSSD: log(77),
+                    sleepSeconds: 7 * 3_600,
+                    calendar: calendar
+                ),
+                liveDetail: "just now",
+                now: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 11))!,
+                calendar: calendar
+            ),
+            "yesterday"
+        )
     }
 
     func testHealthMetricEvidenceDoesNotCallOlderSavedMorningYesterday() {

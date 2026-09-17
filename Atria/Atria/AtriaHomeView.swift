@@ -13537,9 +13537,17 @@ final class AtriaHomeModel {
             },
             calendar: calendar
         )
-        let presentedRecovery = dayResolution.recoveryOverride ?? recovery
-        let presentedRecoveryIsProvisional = dayResolution.recoveryOverride != nil
-            || recoveryIsProvisional
+        let overnightRecoveryRollup = AtriaHealthMetricEvidencePresentation
+            .newestSettledRecoveryRollup(from: store.dailyRollupHistory)
+        let presentedRecovery = AtriaHealthMetricEvidencePresentation.presentedRecoveryEstimate(
+            overnightRollup: overnightRecoveryRollup,
+            identityOverride: dayResolution.recoveryOverride,
+            cycleRecovery: recovery,
+            now: now,
+            calendar: calendar
+        )
+        let presentedRecoveryIsProvisional = overnightRecoveryRollup == nil
+            && (dayResolution.recoveryOverride != nil || recoveryIsProvisional)
         // The primary never carries a prior cycle's value anymore; the dated
         // disclosure replaces the old heuristic marker.
         let recoveryIsFromPreviousSleep = false
@@ -13634,7 +13642,9 @@ final class AtriaHomeModel {
         }
         let whiteboardGuidance = AtriaWhiteboardCoachSentence.rewrite(
             kernel: kernelGuidance,
-            context: .init(hrvMS: Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
+            context: .init(hrvMS: AtriaHealthMetricEvidencePresentation
+                                .newestSettledHRVMilliseconds(from: store.dailyRollupHistory)
+                                ?? Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
                            restingHR: presentationRestingHeartRate,
                            baseline: AtriaBaselineTargetSnapshot(store.baseline),
                            yesterdayTRIMP: whiteboardYesterday?.trimp,
@@ -13673,9 +13683,23 @@ final class AtriaHomeModel {
                             strainConfidence: presentedStrainConfidence,
                             dayWearCoverageFraction: wearCoverage,
                             guidance: guidance,
-                            hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
-                            hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
-                            hrvNarrative: deferredDetails?.hrvNarrative ?? fallbackHrv.narrative,
+                            hrvValue: AtriaHealthMetricEvidencePresentation.presentedHRVDisplayValue(
+                                overnightMilliseconds: AtriaHealthMetricEvidencePresentation
+                                    .newestSettledHRVMilliseconds(from: store.dailyRollupHistory),
+                                liveDisplay: deferredDetails?.hrvValue ?? fallbackHrv.value
+                            ),
+                            hrvDetail: AtriaHealthMetricEvidencePresentation.presentedHRVDetail(
+                                overnightRollup: AtriaHealthMetricEvidencePresentation
+                                    .newestSettledHRVRollup(from: store.dailyRollupHistory),
+                                liveDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
+                                now: now,
+                                calendar: calendar
+                            ),
+                            hrvNarrative: AtriaHealthMetricEvidencePresentation
+                                .newestSettledHRVMilliseconds(from: store.dailyRollupHistory)
+                                .map { "Overnight HRV was \($0) ms." }
+                                ?? deferredDetails?.hrvNarrative
+                                ?? fallbackHrv.narrative,
                             stressLevel: stress.level,
                             stressValue: stress.value,
                             stressDetail: stress.detail,
@@ -14121,12 +14145,20 @@ final class AtriaHomeModel {
                                             recoveryIsLearning: Bool) -> DeferredDetails {
         let diagnostics = store.homeDashboardDiagnostics()
         let now = Date()
-        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
-            validated: store.latestReferenceValidatedHRVForDisplay,
-            live: ble.hrvSnapshot,
-            local: store.latestLocalRMSSDForDisplay,
-            now: now
+        let overnightHRV = AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(
+            from: store.dailyRollupHistory
         )
+        let overnightHRVRollup = AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(
+            from: store.dailyRollupHistory
+        )
+        let displayHRV = overnightHRV == nil
+            ? AtriaCurrentCycleHRVDisplayProjection.resolve(
+                validated: store.latestReferenceValidatedHRVForDisplay,
+                live: ble.hrvSnapshot,
+                local: store.latestLocalRMSSDForDisplay,
+                now: now
+            )
+            : nil
         let rrPackage = diagnostics.rrPackage
         let sleep = diagnostics.sleep
         let workout = diagnostics.workout
@@ -14134,15 +14166,19 @@ final class AtriaHomeModel {
         let backup = diagnostics.backup
         let trend90 = diagnostics.trend90
 
-        let hrvValue: String
-        if let displayHRV {
-            hrvValue = "\(displayHRV.value)"
-        } else {
-            hrvValue = "Learning"
-        }
+        let hrvValue = AtriaHealthMetricEvidencePresentation.presentedHRVDisplayValue(
+            overnightMilliseconds: overnightHRV,
+            liveDisplay: displayHRV.map { "\($0.value)" } ?? "Learning"
+        )
 
         let hrvDetail: String
-        if displayHRV?.source == .referenceValidated {
+        if overnightHRV != nil {
+            hrvDetail = AtriaHealthMetricEvidencePresentation.presentedHRVDetail(
+                overnightRollup: overnightHRVRollup,
+                liveDetail: "personal baseline",
+                now: now
+            )
+        } else if displayHRV?.source == .referenceValidated {
             hrvDetail = "validated"
         } else if displayHRV != nil {
             hrvDetail = "personal baseline"
@@ -14152,7 +14188,9 @@ final class AtriaHomeModel {
         }
 
         let hrvNarrative: String
-        if displayHRV?.source == .referenceValidated {
+        if let overnightHRV {
+            hrvNarrative = "Overnight HRV was \(overnightHRV) ms."
+        } else if displayHRV?.source == .referenceValidated {
             hrvNarrative = "Checked HRV is ready."
         } else if displayHRV != nil {
             hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."

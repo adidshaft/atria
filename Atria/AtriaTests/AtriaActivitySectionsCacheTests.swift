@@ -185,7 +185,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertTrue(timelineHost.contains("private var timelineSignalInspector"))
 
         let sheetHostStart = try XCTUnwrap(source.range(
-            of: "private struct AtriaActivityWorkoutDetailSheetHost: View"
+            of: "struct AtriaActivityWorkoutDetailSheetHost: View"
         ))
         let sheetStart = try XCTUnwrap(source.range(
             of: "private struct AtriaActivityWorkoutDetailSheet: View",
@@ -642,6 +642,25 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             AtriaWorkoutMetricPresentation.compactStatus(workout(samples: 0)),
             "Saved without strap HR"
         )
+    }
+
+    func testRecentSavedWorkoutsKeepYesterdaySessionsWithoutHeartRate() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 11))!
+        let yesterday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 16, minute: 31))!
+        let older = calendar.date(from: DateComponents(year: 2026, month: 9, day: 11, hour: 17))!
+        let kept = AtriaWorkoutMetricPresentation.recentSavedWorkouts(
+            [
+                workout(samples: 0, avgHR: 0, strain: nil, start: yesterday, duration: 66 * 60),
+                workout(samples: 0, avgHR: 0, strain: nil, start: older, duration: 40 * 60),
+            ],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(kept.map(\.start), [yesterday])
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(66 * 60), "1h 6m")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(28 * 60), "28m")
     }
 
     func testSparseHeartRateShowsMeasuredStrainValue() {
