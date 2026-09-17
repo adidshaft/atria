@@ -287,12 +287,15 @@ struct AtriaTodayScreen: View {
     /// the noisy dotted UserDefaults key directly.
     let onLayoutConfigChange: (AtriaHomeLayoutConfig) -> Void
     let onCustomizeToday: () -> Void
+    var pendingMetricDeepLink: AtriaMetricDeepLink? = nil
+    var onConsumeMetricDeepLink: () -> Void = {}
     /// The workout/sleep review items, built by AtriaHomeView (which owns
     /// their state) and rendered INSIDE the plan section — the user's strict
     /// rule (2026-07-07): one notifications block, max 3 items (workout,
     /// sleep, plan).
     var systemNotifications: AnyView? = nil
     @State private var metricDetail: AtriaMetricDetailKind?
+    @State private var metricSheetRange: AtriaTrendRange = .day
     @State private var draggingSection: AtriaTodaySection?
     // User-arranged order of the big sections below the ring (2026-07-07
     // user feedback: "let people drag drop and arrange entire big sections").
@@ -418,7 +421,7 @@ struct AtriaTodayScreen: View {
 
             if layoutConfig.showHighlights && !highlights.isEmpty {
                 AtriaTodayHighlightsStrip(highlights: highlights) { metric in
-                    metricDetail = metric
+                    openMetricDetail(metric)
                 }
             }
 
@@ -495,10 +498,20 @@ struct AtriaTodayScreen: View {
                                        // lockstep with dailyRollupHistory, whose
                                        // revision already invalidates this sheet.
                                        cycleStrainByDisplayDay:
-                                        store.physiologicalCycleStrainByDisplayDay)
+                                        store.physiologicalCycleStrainByDisplayDay,
+                                       initialRange: metricSheetRange)
+                    .id("\(detail.rawValue)-\(metricSheetRange.rawValue)")
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
+        }
+        .task(id: pendingMetricDeepLink) {
+            guard let link = pendingMetricDeepLink else { return }
+            metricDetail = nil
+            metricSheetRange = link.range
+            try? await Task.sleep(for: .milliseconds(50))
+            metricDetail = link.metric
+            onConsumeMetricDeepLink()
         }
         .sheet(isPresented: $showInsights) {
             AtriaLearnedInsightsSheet(
@@ -609,7 +622,7 @@ struct AtriaTodayScreen: View {
             #if DEBUG
             if metricDetail == nil,
                let debugDetail = Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) {
-                metricDetail = debugDetail
+                openMetricDetail(debugDetail)
             }
             if Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments) {
                 showWeeklyReport = true
@@ -711,7 +724,7 @@ struct AtriaTodayScreen: View {
             .accessibilityHint("Shows ranked local insights.")
         } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
             Button {
-                metricDetail = detail
+                openMetricDetail(detail)
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
@@ -1277,11 +1290,17 @@ struct AtriaTodayScreen: View {
     /// actually on screen tap through to the matching metric detail sheet;
     /// unused entries are simply never invoked.
     private var ringActions: [AtriaTriRingSlot: () -> Void] {
-        [.sleep: { metricDetail = .sleep },
-         .recovery: { metricDetail = .recovery },
-         .strain: { metricDetail = .strain },
-         .hrv: { metricDetail = .hrv },
-         .rhr: { metricDetail = .restingHeartRate }]
+        [.sleep: { openMetricDetail(.sleep) },
+         .recovery: { openMetricDetail(.recovery) },
+         .strain: { openMetricDetail(.strain) },
+         .hrv: { openMetricDetail(.hrv) },
+         .rhr: { openMetricDetail(.restingHeartRate) }]
+    }
+
+    private func openMetricDetail(_ metric: AtriaMetricDetailKind,
+                                  range: AtriaTrendRange = .day) {
+        metricSheetRange = range
+        metricDetail = metric
     }
 
     /// Compact "share as picture" icon button hosted top-right of the ring

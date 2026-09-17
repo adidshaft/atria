@@ -3721,6 +3721,18 @@ enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
 
     var id: String { rawValue }
 
+    init?(deepLinkToken: String) {
+        switch deepLinkToken.lowercased() {
+        case "recovery": self = .recovery
+        case "hrv": self = .hrv
+        case "rhr", "restingheartrate", "resting-heart-rate": self = .restingHeartRate
+        case "strain": self = .strain
+        case "sleep": self = .sleep
+        case "stress": self = .stress
+        default: return nil
+        }
+    }
+
     /// Metrics that resolve to ONE value per day and are drawn as bars: a bar
     /// states "this much, measured from zero", which is what a once-a-day score
     /// is. Continuous or intra-day metrics stay lines.
@@ -3805,6 +3817,30 @@ enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
         case .hrZones: return Metrics.electricStrain
         case .bloodOxygen: return .blue // distinct from RHR's sky-blue; the two can co-list
         }
+    }
+}
+
+/// Production route for the same metric sheet a Today/Vitals tap opens, so
+/// Day/Week/Month can be opened and verified without a debug fixture.
+struct AtriaMetricDeepLink: Equatable, Hashable, Sendable {
+    let metric: AtriaMetricDetailKind
+    let range: AtriaTrendRange
+
+    static func parse(_ url: URL) -> Self? {
+        guard url.scheme?.lowercased() == "atria" else { return nil }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        guard pieces.first == "metric",
+              pieces.count >= 2,
+              let metric = AtriaMetricDetailKind(deepLinkToken: pieces[1]) else {
+            return nil
+        }
+        let rangeToken = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?
+            .first(where: { $0.name.lowercased() == "range" })?
+            .value
+        let range = rangeToken.flatMap(AtriaTrendRange.init(deepLinkToken:)) ?? .day
+        return Self(metric: metric, range: range)
     }
 }
 
