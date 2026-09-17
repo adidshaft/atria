@@ -9,8 +9,10 @@ import Foundation
 ///   planar int16 LE accel (X block, Y block, Z block) |
 ///   planar int16 LE gyro (X, Y, Z)
 ///
-/// Ten samples at ~10 Hz reconstruct the same 100 Hz second the R10 pipeline
-/// already scores. This is not the heuristic `AtriaIMUDecoder` research path.
+/// Ten samples are one 100 Hz slice (0.1 s). Ten packets reconstruct the same
+/// 100 Hz second the R10 pipeline already scores. Stretching one packet across
+/// a whole second (device 2026-09-17 117) put a 1.23 Hz stroll at ~0.12 Hz.
+/// This is not the heuristic `AtriaIMUDecoder` research path.
 enum AtriaWhoop4CompactIMUDecoder {
     static let packetType: UInt8 = AtriaBLEManager.Packet.imu
     static let headerBytes = 24
@@ -103,19 +105,16 @@ enum AtriaWhoop4CompactIMUDecoder {
     }
 }
 
-/// Upsamples each compact 10 Hz packet onto a 100 Hz R10 second so gyro-cadence
-/// frequencies stay physically honest. CoreBluetooth can coalesce several of
-/// those seconds into one callback; without a wall-clock budget those bursts
-/// become many device-seconds of gait in a few milliseconds and Today steps
-/// climb far faster than a walk.
+/// Concatenates compact 100 Hz 10-sample slices into R10 seconds. Lock-screen
+/// CoreBluetooth often delivers ten of those slices in one callback; stretching
+/// the first slice across a whole second (117) or interpolating it across the
+/// inter-callback gap (116) moved a 1.23 Hz stroll out of the step band.
 final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
     private var outputGyro: [AtriaR10MotionFrame.Vector3] = []
     private var lastPacketAt: Date?
     private var lastEmittedTimestamp: UInt32 = 0
-    private var streamStartedAt: Date?
-    private var admittedSampleCount = 0
 
     func push(_ packet: AtriaWhoop4CompactIMUDecoder.Packet,
               receivedAt: Date) -> [AtriaR10MotionFrame] {
@@ -129,27 +128,13 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             outputAccel.removeAll(keepingCapacity: true)
             outputGyro.removeAll(keepingCapacity: true)
             lastPacketAt = nil
-            streamStartedAt = nil
-            admittedSampleCount = 0
             if lastEmittedTimestamp > 0 {
                 lastEmittedTimestamp &+= 2
             }
         }
 
-        // Compact `0x33` is ten samples at ~10 Hz (one physical second).
-        // Lock-screen CoreBluetooth coalesces several of those seconds into
-        // one callback. Treating them as native 100 Hz 10-sample slices
-        // multiplied a 1.23 Hz stroll into ~12 Hz (device 2026-09-17, 79 s
-        // walk, 0 gyro steps on 116). Upsample each packet to 100 Hz, then
-        // keep the one-assembled-second-per-wall-second budget.
-        let upsampledAccel = Self.upsampleToHundredHz(packet.acceleration)
-        let upsampledGyro = Self.upsampleToHundredHz(packet.rotationRate)
-        admit(
-            upsampledAccel,
-            upsampledGyro,
-            count: upsampledAccel.count,
-            receivedAt: receivedAt
-        )
+        outputAccel.append(contentsOf: packet.acceleration.prefix(sampleCount))
+        outputGyro.append(contentsOf: packet.rotationRate.prefix(sampleCount))
         lastPacketAt = receivedAt
 
         var frames: [AtriaR10MotionFrame] = []
@@ -173,36 +158,6 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         outputGyro.removeAll(keepingCapacity: true)
         lastPacketAt = nil
         lastEmittedTimestamp = 0
-        streamStartedAt = nil
-        admittedSampleCount = 0
-    }
-
-    /// One assembled R10 second per wall-clock second, plus 1.05 s slack so a
-    /// slightly late packet can still complete the current second. Extra
-    /// same-callback packets are dropped instead of time-compressing gait.
-    private func remainingSampleBudget(receivedAt: Date) -> Int {
-        if streamStartedAt == nil {
-            streamStartedAt = receivedAt
-        }
-        let elapsed = max(0, receivedAt.timeIntervalSince(streamStartedAt ?? receivedAt))
-        let budget = Int((elapsed + 1.05) * Double(AtriaR10MotionDecoder.sampleCount))
-        return max(0, budget - admittedSampleCount)
-    }
-
-    private func admit(_ acceleration: [AtriaR10MotionFrame.Vector3],
-                       _ rotationRate: [AtriaR10MotionFrame.Vector3],
-                       count: Int,
-                       receivedAt: Date) {
-        let take = min(
-            count,
-            acceleration.count,
-            rotationRate.count,
-            remainingSampleBudget(receivedAt: receivedAt)
-        )
-        guard take > 0 else { return }
-        outputAccel.append(contentsOf: acceleration.prefix(take))
-        outputGyro.append(contentsOf: rotationRate.prefix(take))
-        admittedSampleCount += take
     }
 
     private func makeFrame(
@@ -225,38 +180,6 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             deviceClock: .compactAssembled
         )
     }
-
-    /// Expand one compact 10 Hz packet into a 100 Hz R10 second.
-    private static func upsampleToHundredHz(
-        _ samples: [AtriaR10MotionFrame.Vector3]
-    ) -> [AtriaR10MotionFrame.Vector3] {
-        let target = AtriaR10MotionDecoder.sampleCount
-        guard samples.count >= 2 else { return samples }
-        if samples.count == target { return samples }
-        return (0..<target).map { index in
-            interpolated(samples, u: Double(index) / Double(target - 1))
-        }
-    }
-
-    private static func interpolated(
-        _ samples: [AtriaR10MotionFrame.Vector3],
-        u: Double
-    ) -> AtriaR10MotionFrame.Vector3 {
-        guard let first = samples.first else {
-            return AtriaR10MotionFrame.Vector3(x: 0, y: 0, z: 0)
-        }
-        guard samples.count >= 2 else { return first }
-        let scaled = min(1, max(0, u)) * Double(samples.count - 1)
-        let index = min(samples.count - 2, max(0, Int(scaled.rounded(.down))))
-        let fraction = min(1, max(0, scaled - Double(index)))
-        let a = samples[index]
-        let b = samples[index + 1]
-        return AtriaR10MotionFrame.Vector3(
-            x: a.x + (b.x - a.x) * fraction,
-            y: a.y + (b.y - a.y) * fraction,
-            z: a.z + (b.z - a.z) * fraction
-        )
-    }
 }
 
 /// Pull-visible wrist rotation from live compact `0x33` packets. Sitting is
@@ -273,10 +196,15 @@ enum AtriaCompactIMULiveDiagnostics {
     static let lastScoredMeanKey = "atria.compactIMU.lastScoredMeanDps"
     static let skippedSittingCountKey = "atria.compactIMU.skippedSittingSeconds"
     static let scoredSecondsCountKey = "atria.compactIMU.scoredSeconds"
+    static let lastGyroCsvKey = "atria.compactIMU.lastRotationCsv"
+    static let lastInterarrivalMsKey = "atria.compactIMU.lastInterarrivalMs"
+    static let lastDeviceTimestampKey = "atria.compactIMU.lastDeviceTimestamp"
+    static let lastEmitCountKey = "atria.compactIMU.lastEmitCount"
 
     private static let lock = NSLock()
     private static var lastWriteAt: Date?
     private static var lastAssembledSecondAtMemory: Date?
+    private static var lastPacketAtMemory: Date?
     private static var lastMean = 0.0
     private static var lastMax = 0.0
     private static var rotationPeaks: [(at: Date, peak: Double)] = []
@@ -333,6 +261,29 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.set(rotationRate.count, forKey: samplesKey)
     }
 
+    static func notePacket(deviceTimestamp: UInt32,
+                           emitCount: Int,
+                           rotationRate: [AtriaR10MotionFrame.Vector3],
+                           receivedAt: Date = Date()) {
+        lock.lock()
+        let previous = lastPacketAtMemory
+        lastPacketAtMemory = receivedAt
+        lock.unlock()
+        let defaults = UserDefaults.standard
+        defaults.set(Int(deviceTimestamp), forKey: lastDeviceTimestampKey)
+        defaults.set(emitCount, forKey: lastEmitCountKey)
+        defaults.set(
+            rotationRate.map { String(format: "%.1f", $0.magnitude) }.joined(separator: ","),
+            forKey: lastGyroCsvKey
+        )
+        if let previous {
+            defaults.set(
+                receivedAt.timeIntervalSince(previous) * 1000,
+                forKey: lastInterarrivalMsKey
+            )
+        }
+    }
+
     /// Assembled compact seconds, not native packets. A 175 dps flick in
     /// one packet must not look like a scored walk second.
     static func noteCompactGyroSecond(
@@ -368,6 +319,7 @@ enum AtriaCompactIMULiveDiagnostics {
         lock.lock()
         lastWriteAt = nil
         lastAssembledSecondAtMemory = nil
+        lastPacketAtMemory = nil
         lastMean = 0
         lastMax = 0
         rotationPeaks.removeAll()
@@ -383,6 +335,10 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.removeObject(forKey: lastScoredMeanKey)
         defaults.removeObject(forKey: skippedSittingCountKey)
         defaults.removeObject(forKey: scoredSecondsCountKey)
+        defaults.removeObject(forKey: lastGyroCsvKey)
+        defaults.removeObject(forKey: lastInterarrivalMsKey)
+        defaults.removeObject(forKey: lastDeviceTimestampKey)
+        defaults.removeObject(forKey: lastEmitCountKey)
     }
 
     static func isFreshSitting(

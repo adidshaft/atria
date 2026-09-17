@@ -48320,7 +48320,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             return []
         }
         AtriaCompactIMULiveDiagnostics.note(rotationRate: packet.rotationRate)
-        return compactIMUAssembler.push(packet, receivedAt: receivedAt)
+        let frames = compactIMUAssembler.push(packet, receivedAt: receivedAt)
+        AtriaCompactIMULiveDiagnostics.notePacket(
+            deviceTimestamp: packet.deviceTimestamp,
+            emitCount: frames.count,
+            rotationRate: packet.rotationRate,
+            receivedAt: receivedAt
+        )
+        return frames
     }
 
     private nonisolated func ingestLiveMotionFrame(
