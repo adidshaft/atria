@@ -113,6 +113,46 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(twoWorkouts.recentNoHeartRateWorkouts?.map(\.activityType), ["Strength", "Walking"])
     }
 
+    func testLastWorkoutDiagnosisKeepsMeasuredHeartRateAndStrain() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "112",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 71,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 74,
+            todayRecovery: 38,
+            lastWorkout: .init(
+                activityType: "Running",
+                start: now.addingTimeInterval(-240),
+                end: now,
+                samples: 242,
+                avgHR: 93,
+                peakHR: 102,
+                strain: 0.2,
+                reason: "duration_below_10m_and_hr_below_threshold"
+            ),
+            liveHeartRate: 87,
+            liveZone: "Z2",
+            widgetHeartRate: 87
+        )
+        XCTAssertEqual(snapshot.lastWorkout?.samples, 242)
+        XCTAssertEqual(snapshot.lastWorkout?.avgHR, 93)
+        XCTAssertEqual(snapshot.lastWorkout?.strain, 0.2)
+    }
+
     func testPublishWritesPullableJSONAndCoalescesUnchangedHeartbeats() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let first = AtriaDiagnosisReport.make(

@@ -42,7 +42,9 @@ enum AtriaDiagnosisReport {
         var start: Date
         var end: Date
         var samples: Int
-        var peakHR: Int?
+        var avgHR: Int? = nil
+        var peakHR: Int? = nil
+        var strain: Double? = nil
         var reason: String
     }
 

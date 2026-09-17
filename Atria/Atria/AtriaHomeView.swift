@@ -1845,6 +1845,7 @@ struct AtriaHomeView: View {
             return
         }
         if let metricLink = AtriaMetricDeepLink.parse(url) {
+            dismissPresentedWorkoutChrome()
             selectedTab = .overview
             pendingMetricDeepLink = metricLink
             hasUnlockedPrimaryContent = true
@@ -1879,6 +1880,9 @@ struct AtriaHomeView: View {
             return
         }
         if let workoutLink = AtriaWorkoutDeepLink.parse(url) {
+            if workoutLink.action != .end {
+                dismissPresentedWorkoutChrome()
+            }
             pendingWorkoutDeepLink = workoutLink
             hasUnlockedPrimaryContent = true
             AtriaDebugLog("ATRIADBG deeplink status=handled target=workout_%@ type=%@ url=%@",
@@ -1888,6 +1892,7 @@ struct AtriaHomeView: View {
             return
         }
         if Self.isWidgetOvernightBoardDeepLink(url) {
+            dismissPresentedWorkoutChrome()
             selectedTab = .overview
             hasUnlockedPrimaryContent = true
             pendingMetricDeepLink = nil
@@ -1905,6 +1910,7 @@ struct AtriaHomeView: View {
             return
         }
         if Self.isWidgetProofDeepLink(url) {
+            dismissPresentedWorkoutChrome()
             selectedTab = .overview
             hasUnlockedPrimaryContent = true
             widgetProofSnapshot = WidgetSnapshotPublisher.publish(store: store,
@@ -1945,10 +1951,17 @@ struct AtriaHomeView: View {
         handleDeepLink(url)
     }
 
+    private func dismissPresentedWorkoutChrome() {
+        workoutEndNotice = nil
+        workoutReviewDraft = nil
+        completedWorkoutShareReceipt = nil
+        showWorkoutStartSheet = false
+    }
+
     private func handleWorkoutDeepLink(_ command: AtriaWorkoutDeepLink) async {
         switch command.action {
         case .start:
-            workoutReviewDraft = nil
+            dismissPresentedWorkoutChrome()
             showWidgetOvernightBoard = false
             showWidgetProofSheet = false
             liveWorkoutLoggedSets = []
@@ -1959,6 +1972,8 @@ struct AtriaHomeView: View {
         case .end:
             guard let session = workoutSession else { return }
             _ = await endWorkoutSession(startedAt: session.start)
+        case .dismiss:
+            dismissPresentedWorkoutChrome()
         }
     }
 
@@ -12169,7 +12184,9 @@ final class AtriaHomeModel {
                 start: workout.start,
                 end: workout.end,
                 samples: workout.samples,
+                avgHR: workout.avgHR > 0 ? workout.avgHR : nil,
                 peakHR: workout.peakHR > 0 ? workout.peakHR : nil,
+                strain: workout.strain,
                 reason: workout.reason
             )
         }
