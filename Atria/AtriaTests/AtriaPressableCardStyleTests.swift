@@ -36,7 +36,7 @@ final class AtriaPressableCardStyleTests: XCTestCase {
         XCTAssertEqual(
             try source("AtriaTodayScreen.swift")
                 .components(separatedBy: "AtriaPressableCardStyle()").count - 1,
-            8, "the four glance-tile button variants, the unverified-movement "
+            9, "the four glance-tile button variants, saved-workout rows, the unverified-movement "
                 + "review banner, the quiet-notification upgrade card, the "
                 + "weekly-plan card and the journal fallback prompt — every "
                 + "whole-card button on Today presses (uniformity 2026-08-28)")

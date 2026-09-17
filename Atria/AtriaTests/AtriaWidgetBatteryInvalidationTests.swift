@@ -1573,6 +1573,60 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(merged.batteryLevel, candidate.batteryLevel)
     }
 
+    func testContaminatedLiveEstimateDoesNotFreezeWidgetAboveTodayGyro() {
+        let laterClock = Date(timeIntervalSince1970: 2_200)
+        let earlierGyroClock = Date(timeIntervalSince1970: 2_100)
+        var current = deliverySnapshot(
+            steps: 10_946,
+            stepsCapturedAt: laterClock,
+            heartRate: 82,
+            heartRateCapturedAt: laterClock
+        )
+        current.stepsSource = "live"
+        current.stepsAreEstimated = true
+        current.stepsCompleteness = "partial"
+
+        var candidate = deliverySnapshot(
+            steps: 1_901,
+            stepsCapturedAt: earlierGyroClock,
+            heartRate: 84,
+            heartRateCapturedAt: laterClock,
+            strain: 0.6
+        )
+        candidate.stepsSource = "live"
+        candidate.stepsAreEstimated = true
+        candidate.stepsCompleteness = "partial"
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: candidate,
+                current: current
+            )
+
+        XCTAssertEqual(merged.steps, 1_901)
+        XCTAssertEqual(merged.stepsCapturedAt, earlierGyroClock)
+        XCTAssertEqual(merged.heartRate, candidate.heartRate)
+        XCTAssertEqual(merged.strain, candidate.strain)
+
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: current,
+            createdAt: laterClock,
+            heartRate: 84,
+            heartRateCapturedAt: laterClock,
+            steps: 1_901,
+            stepsAreEstimated: true,
+            stepsCapturedAt: earlierGyroClock,
+            stepsSource: "live",
+            stepsCompleteness: "partial",
+            strain: current.strain,
+            batteryLevel: current.batteryLevel,
+            batteryChargeStatus: current.batteryChargeStatus ?? "levelOnly",
+            batteryChargeText: current.batteryChargeText ?? "Unavailable"
+        )
+        XCTAssertEqual(patched.steps, 1_901)
+        XCTAssertEqual(patched.stepsCapturedAt, earlierGyroClock)
+    }
+
     func testCorrectedSameClockReceiptSurvivesDelayedLivePatchWhileHRAdvances() {
         let source = UUID().uuidString
         let cycleStart = Date(timeIntervalSince1970: 1_000)
