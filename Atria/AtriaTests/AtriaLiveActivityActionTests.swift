@@ -55,7 +55,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains("expandedMetricRail(showsSupportingFacts: true)"))
         XCTAssertTrue(island.contains("expandedMetricRail(showsSupportingFacts: false)"),
                       "the action and BPM hero need a terminal narrow-width rail")
-        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(state.heartRate)\" : \"--\")"))
+        XCTAssertTrue(island.contains("liveActivityDisplayedHeartRateText(state.heartRate)"))
         XCTAssertTrue(island.contains("size: 27"))
         XCTAssertTrue(island.contains("Text(\"BPM\")"),
                       "the unit must stay attached to the dominant heart-rate value")
@@ -63,12 +63,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains(".minimumScaleFactor(0.82)"))
         XCTAssertTrue(island.contains(".allowsTightening(true)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
-        XCTAssertTrue(compactHeart.contains("Text(isLive ? \"\\(heartRate)\" : \"--\")"),
-                      "the compact island must show the live numeric HR without an overflowing suffix")
+        XCTAssertTrue(compactHeart.contains("liveActivityDisplayedHeartRateText(heartRate)"),
+                      "the compact island must keep the last numeric HR visible")
         XCTAssertTrue(compactHeart.contains("size: 15"))
         XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
         XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.82)"))
-        XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
+        XCTAssertTrue(compactHeart.contains("liveActivityHeartRateAccessibilityLabel("))
 
         XCTAssertTrue(lockScreen.contains("size: 29"),
                       "the Lock Screen heart-rate hero must fit a three-digit value inline with BPM")
@@ -104,8 +104,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("state.batteryLevel <= 20 ? .red : .secondary"))
         XCTAssertTrue(source.contains("liveActivitySourceFreshnessText("),
                       "the truth helper must retain exact last-seen sensor evidence for diagnostics")
-        XCTAssertTrue(source.contains("guard heartRateAvailability == .live else { return \"Heart rate zone unavailable\" }"),
-                      "nonnominal sensor states must not be repeated as a fake zone value")
+        XCTAssertTrue(source.contains("liveActivityZoneAccessibilityLabel("),
+                      "stale lock-screen copy must keep last zone instead of a blank unavailable hero")
         XCTAssertTrue(source.contains(".accessibilityLabel(\"\\(context.state.activityName ?? \"Workout\") workout\")"),
                       "compact and minimal island presentations need a meaningful activity label")
         XCTAssertTrue(source.contains(".accessibilityLabel(lockScreenStatusAccessibilityLabel(showsBattery: showsBattery))"),
@@ -135,7 +135,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "VoiceOver output must include human-readable hours, minutes, and seconds")
         XCTAssertTrue(source.contains("let duration = liveActivityDurationAccessibilityText("),
                       "the grouped Lock Screen hero must not hide the timer's elapsed value")
-        XCTAssertTrue(source.contains("return \"\\(heart). \\(zoneAccessibilityLabel). \\(duration).\""))
+        XCTAssertTrue(source.contains("return \"\\(heartRateAccessibilityLabel). \\(zoneAccessibilityLabel). \\(duration).\""),
+                      "the grouped Lock Screen hero must keep last HR, zone, and elapsed time together")
     }
 
     func testLiveActivityFullChargeStatusExpiresOnItsIndependentClock() throws {

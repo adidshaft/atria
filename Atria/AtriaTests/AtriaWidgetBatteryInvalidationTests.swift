@@ -2854,12 +2854,12 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .appendingPathComponent("Atria/WidgetSnapshot.swift")
         let producer = try String(contentsOf: producerURL, encoding: .utf8)
         XCTAssertTrue(producer.contains(
-            "AtriaCurrentCycleHRVDisplayProjection.resolve("
-        ))
+            "newestSettledHRVMilliseconds("
+        ), "widgets must publish the same overnight HRV Today shows")
         XCTAssertFalse(producer.contains("latestLocalRecoveryHRV(on:"),
                        "the widget must not resurrect Recovery-only HRV")
-        XCTAssertFalse(producer.contains("frozenTodayRollup?.lnRMSSD"),
-                       "a rollup HRV is not automatically a current display HRV")
+        XCTAssertTrue(producer.contains("newestSettledHRVRollup("),
+                       "widget HRV is the newest overnight rollup, never a live RMSSD")
 
         let homeURL = producerURL.deletingLastPathComponent()
             .appendingPathComponent("AtriaHomeView.swift")

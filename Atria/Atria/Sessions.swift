@@ -10773,7 +10773,7 @@ final class SessionStore: ObservableObject {
     nonisolated private static let workoutHRRehydrationAttemptKey =
         "atria.confirmedWorkoutHR.rehydrationAttempt.v1"
     nonisolated private static let workoutHRRehydrationAlgorithmVersion =
-        "confirmed-workout-hr-rehydration-v1"
+        "confirmed-workout-hr-rehydration-v2"
     /// Confirmed-workout steps now read only the fixed-width compact shards.
     /// Keep that bounded freshness path independent of every lifetime archive
     /// consumer so launch/scene/BLE callbacks can neither queue nor trigger a

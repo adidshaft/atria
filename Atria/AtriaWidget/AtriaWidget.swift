@@ -1899,17 +1899,24 @@ private struct AtriaDynamicIslandCompactHeartRate: View {
     let isLive: Bool
 
     var body: some View {
-        Text(isLive ? "\(heartRate)" : "--")
+        Text(displayedHeartRateText)
             .font(.system(size: 15, weight: .black, design: .rounded))
             .monospacedDigit()
-            .atriaLiveActivityValueTransition(isLive ? heartRate : -1)
+            .atriaLiveActivityValueTransition(heartRate)
+            .foregroundStyle(isLive ? .primary : .secondary)
         .lineLimit(1)
         .minimumScaleFactor(0.82)
         .allowsTightening(true)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(isLive
-                            ? "Heart rate \(heartRate) beats per minute"
-                            : "Heart rate unavailable")
+        .accessibilityLabel(heartRateAccessibilityLabel)
+    }
+
+    private var displayedHeartRateText: String {
+        liveActivityDisplayedHeartRateText(heartRate)
+    }
+
+    private var heartRateAccessibilityLabel: String {
+        liveActivityHeartRateAccessibilityLabel(heartRate: heartRate, isLive: isLive)
     }
 }
 
@@ -2159,7 +2166,7 @@ private struct AtriaDynamicIslandExpandedBottom: View {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Image(systemName: "heart.fill")
                     .font(.caption.weight(.black))
-                Text(signalFresh ? "\(state.heartRate)" : "--")
+                Text(liveActivityDisplayedHeartRateText(state.heartRate))
                     .font(.system(size: 27, weight: .black, design: .rounded))
                     .monospacedDigit()
                 Text("BPM")
@@ -2171,9 +2178,10 @@ private struct AtriaDynamicIslandExpandedBottom: View {
             .minimumScaleFactor(0.82)
             .layoutPriority(2)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(signalFresh
-                                ? "Heart rate \(state.heartRate) beats per minute"
-                                : "Heart rate unavailable")
+            .accessibilityLabel(liveActivityHeartRateAccessibilityLabel(
+                heartRate: state.heartRate,
+                isLive: signalFresh
+            ))
 
             if showsSupportingFacts {
                 VStack(alignment: .leading, spacing: 3) {
@@ -2217,22 +2225,20 @@ private struct AtriaDynamicIslandExpandedBottom: View {
     }
 
     private var zoneValue: String {
-        guard heartRateAvailability == .live else { return "--" }
-        guard let zone = state.heartRateZoneIndex, zone > 0 else { return "<Z1" }
-        return "Z\(zone)"
+        liveActivityDisplayedZoneText(zoneIndex: state.heartRateZoneIndex)
     }
 
     private var strainCaption: String { "strain" }
 
     private var zoneAccessibilityLabel: String {
-        guard heartRateAvailability == .live else { return "Heart rate zone unavailable" }
-        let current = liveActivityZoneLabel(for: state, availability: heartRateAvailability)
-        guard let target = liveActivityTargetZoneLabel(for: state) else { return current }
-        return "\(current). Target heart rate \(target)"
+        liveActivityZoneAccessibilityLabel(
+            state: state,
+            availability: heartRateAvailability
+        )
     }
 
     private var strainValue: String {
-        guard let strain = liveActivityFreshWorkoutStrain(state, now: now),
+        guard let strain = liveActivityDisplayedWorkoutStrain(state, now: now),
               !activityIsStale else { return "--" }
         return String(format: "%.1f", strain)
     }
@@ -2352,6 +2358,38 @@ private func liveActivityHeartRateAvailability(
     return .unavailable
 }
 
+private func liveActivityDisplayedHeartRateText(_ heartRate: Int) -> String {
+    heartRate > 0 ? "\(heartRate)" : "--"
+}
+
+private func liveActivityHeartRateAccessibilityLabel(heartRate: Int, isLive: Bool) -> String {
+    guard heartRate > 0 else { return "Heart rate unavailable" }
+    return isLive
+        ? "Heart rate \(heartRate) beats per minute"
+        : "Last heart rate \(heartRate) beats per minute"
+}
+
+private func liveActivityDisplayedZoneText(zoneIndex: Int?) -> String {
+    guard let zone = zoneIndex, zone > 0 else { return "<Z1" }
+    return "Z\(zone)"
+}
+
+private func liveActivityZoneAccessibilityLabel(
+    state: AtriaLiveActivityAttributes.ContentState,
+    availability: AtriaLiveSensorAvailability
+) -> String {
+    let current = liveActivityZoneLabel(for: state, availability: availability)
+    let target = liveActivityTargetZoneLabel(for: state)
+    if availability == .live {
+        return target.map { "\(current). Target heart rate \($0)" } ?? current
+    }
+    if let zone = state.heartRateZoneIndex, zone > 0 {
+        let last = "Last heart rate zone \(liveActivityDisplayedZoneText(zoneIndex: zone))"
+        return target.map { "\(last). Target heart rate \($0)" } ?? last
+    }
+    return "Heart rate zone unavailable"
+}
+
 private func liveActivityZoneLabel(for state: AtriaLiveActivityAttributes.ContentState,
                                    availability: AtriaLiveSensorAvailability) -> String {
     switch availability {
@@ -2406,10 +2444,11 @@ private func liveActivityZoneSegmentColor(zone: Int,
     case 4: base = .orange
     default: base = .red
     }
-    guard availability == .live, let active = state.heartRateZoneIndex, active >= 1 else {
+    guard let active = state.heartRateZoneIndex, active >= 1 else {
         return Color.secondary.opacity(0.22)
     }
-    return zone == active ? base : base.opacity(0.22)
+    let emphasis: Double = availability == .live ? 1 : 0.62
+    return zone == active ? base.opacity(emphasis) : base.opacity(0.22)
 }
 
 /// Five-segment HR-zone bar for the Dynamic Island expanded region (design
@@ -2631,6 +2670,19 @@ private func liveActivityFreshWorkoutStrain(
           now.timeIntervalSince(capturedAt) <= atriaActiveWorkoutStrainFreshness,
           let strain = state.workoutStrain else { return nil }
     return max(0, strain)
+}
+
+private func liveActivityDisplayedWorkoutStrain(
+    _ state: AtriaLiveActivityAttributes.ContentState,
+    now: Date = Date()
+) -> Double? {
+    if let fresh = liveActivityFreshWorkoutStrain(state, now: now) {
+        return fresh
+    }
+    guard let strain = state.workoutStrain, strain.isFinite, strain > 0 else {
+        return nil
+    }
+    return strain
 }
 
 private func liveActivityCaloriesText(for state: AtriaLiveActivityAttributes.ContentState) -> String {
@@ -2970,7 +3022,7 @@ private struct AtriaLiveActivityLockScreenView: View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             Image(systemName: "heart.fill")
                 .font(.caption.weight(.black))
-            Text(signalFresh ? "\(context.state.heartRate)" : "--")
+            Text(displayedHeartRateText)
                 .font(.system(size: 29, weight: .black, design: .rounded))
                 .monospacedDigit()
             Text("BPM")
@@ -2981,9 +3033,18 @@ private struct AtriaLiveActivityLockScreenView: View {
         .lineLimit(1)
         .minimumScaleFactor(0.8)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(signalFresh
-                            ? "Heart rate \(context.state.heartRate) beats per minute"
-                            : "Heart rate unavailable")
+        .accessibilityLabel(heartRateAccessibilityLabel)
+    }
+
+    private var displayedHeartRateText: String {
+        liveActivityDisplayedHeartRateText(context.state.heartRate)
+    }
+
+    private var heartRateAccessibilityLabel: String {
+        liveActivityHeartRateAccessibilityLabel(
+            heartRate: context.state.heartRate,
+            isLive: signalFresh
+        )
     }
 
     private var lockScreenZoneSummary: some View {
@@ -3005,20 +3066,15 @@ private struct AtriaLiveActivityLockScreenView: View {
     }
 
     private var lockScreenZoneValue: String {
-        guard signalFresh else { return "--" }
-        guard let zone = context.state.heartRateZoneIndex, zone > 0 else { return "<Z1" }
-        return "Z\(zone)"
+        liveActivityDisplayedZoneText(zoneIndex: context.state.heartRateZoneIndex)
     }
 
     private var lockScreenHeroAccessibilityLabel: String {
-        let heart = signalFresh
-            ? "Heart rate \(context.state.heartRate) beats per minute"
-            : "Heart rate unavailable"
         let duration = liveActivityDurationAccessibilityText(
             state: context.state,
             startedAt: context.attributes.startedAt
         )
-        return "\(heart). \(zoneAccessibilityLabel). \(duration)."
+        return "\(heartRateAccessibilityLabel). \(zoneAccessibilityLabel). \(duration)."
     }
 
     private func lockScreenCompactMetric(value: String,
@@ -3037,17 +3093,16 @@ private struct AtriaLiveActivityLockScreenView: View {
     }
 
     private var workoutStrainText: String {
-        guard let strain = liveActivityFreshWorkoutStrain(context.state,
-                                                          now: presentationNow) else { return "--" }
+        guard let strain = liveActivityDisplayedWorkoutStrain(context.state,
+                                                              now: presentationNow) else { return "--" }
         return String(format: "%.1f", strain)
     }
 
     private var zoneAccessibilityLabel: String {
-        guard heartRateAvailability == .live else { return "Heart rate zone unavailable" }
-        let current = liveActivityZoneLabel(for: context.state,
-                                            availability: heartRateAvailability)
-        guard let target = liveActivityTargetZoneLabel(for: context.state) else { return current }
-        return "\(current). Target heart rate \(target)"
+        liveActivityZoneAccessibilityLabel(
+            state: context.state,
+            availability: heartRateAvailability
+        )
     }
 
 }

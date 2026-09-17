@@ -2894,8 +2894,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 preservesConnectedRealtimeOwner: true,
                 linkConnected: true
             ),
-            .disconnectConnectedHistoryOwner,
-            "local owner release cannot prove an in-flight FIFO page stopped"
+            .pauseConnectedHistoryWithoutDisconnect,
+            "a connected live HR owner must stay up when a workout starts"
         )
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
@@ -2904,7 +2904,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 preservesConnectedRealtimeOwner: false,
                 linkConnected: true
             ),
-            .disconnectConnectedHistoryOwner
+            .pauseConnectedHistoryWithoutDisconnect,
+            "history can wait; do not drop a connected strap to chase FIFO"
         )
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
@@ -2947,6 +2948,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(method.contains(
             "preserveConnectedRealtimeOwner: preservesRealtimeOwner"
         ))
+        XCTAssertTrue(method.contains("pauseConnectedHistoryWithoutDisconnect"))
+        XCTAssertTrue(method.contains("explicit_workout_yield_keep_live_hr"))
 
         let beginStart = try XCTUnwrap(source.range(
             of: "func beginWorkoutMotionLease(startedAt: Date, reason: String) {"
@@ -5590,6 +5593,22 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 deferLiveRestoreForConsumeLiveTail: true,
                 explicitMotionOwnershipActive: false
             )
+        )
+    }
+
+    func testPendingKnownReconnectClockKeepsTheFirstDrop() {
+        let first = Date(timeIntervalSince1970: 1_779_055_800)
+        XCTAssertEqual(
+            AtriaBLEManager.pendingKnownReconnectStart(existing: nil, now: first),
+            first
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.pendingKnownReconnectStart(
+                existing: first,
+                now: first.addingTimeInterval(12)
+            ),
+            first,
+            "stall reconnects must not restart the Reading… grace"
         )
     }
 }

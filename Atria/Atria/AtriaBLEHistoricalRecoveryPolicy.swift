@@ -2512,14 +2512,18 @@ extension AtriaBLEManager {
 
     enum WorkoutHistoricalTransportPreemptionDisposition: Equatable {
         case noHistoryOwner
+        /// History is running on the same link that is already delivering
+        /// live 2A37. Pause the drain in-process; do not physically drop HR.
+        case pauseConnectedHistoryWithoutDisconnect
         case disconnectConnectedHistoryOwner
         case interruptOfflineHistoryOwner
     }
 
-    /// Starting a workout outranks history commands. A local owner release is
-    /// not proof that WHOOP stopped serving its current FIFO page, even when
-    /// standard HR shares the link. Every connected history owner therefore
-    /// crosses a physical disconnect fence before 69/01 can arm on a new epoch.
+    /// Starting a workout outranks history commands. A healthy live heart-rate
+    /// stream must stay up: the 2026-09-16 16:31 IST Strength start crossed a
+    /// disconnect fence, the chip stuck on Reading…, and the workout saved
+    /// `user_confirmed_no_hr` with zero samples. History can wait. Only drop
+    /// the link when there is no live HR owner to preserve.
     nonisolated static func workoutHistoricalTransportPreemptionDisposition(
         syncInProgress: Bool,
         historyProbeActive: Bool,
@@ -2529,10 +2533,16 @@ extension AtriaBLEManager {
         guard syncInProgress || historyProbeActive else {
             return .noHistoryOwner
         }
-        _ = preservesConnectedRealtimeOwner
-        return linkConnected
-            ? .disconnectConnectedHistoryOwner
-            : .interruptOfflineHistoryOwner
+        // A connected strap is already the live HR owner. Starting a workout
+        // must not physically drop 2A37 to chase history — that freeze is how
+        // the 2026-09-16 16:31 Strength session saved zero samples.
+        if linkConnected {
+            return .pauseConnectedHistoryWithoutDisconnect
+        }
+        if preservesConnectedRealtimeOwner {
+            return .interruptOfflineHistoryOwner
+        }
+        return .interruptOfflineHistoryOwner
     }
 
     /// Retry is a state marker, not a recursion trace. Normalize any legacy

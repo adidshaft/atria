@@ -1478,12 +1478,6 @@ enum WidgetSnapshotPublisher {
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
             on: now
         )
-        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
-            validated: store.latestReferenceValidatedHRVForDisplay,
-            live: ble.hrvSnapshot,
-            local: store.latestLocalRMSSDForDisplay,
-            now: now
-        )
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
             .flatMap { _ in store.currentPhysiologicalMainSleep(on: now) }
         let latestDisplaySleep = AtriaOverviewCurrentSleep.resolveDisplayEvidence(
@@ -1678,7 +1672,16 @@ enum WidgetSnapshotPublisher {
             ? currentCycleDisplayedReceiptContentRevision : nil
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
-        let hrvRMSSD = displayHRV?.value
+        let settledHRVRollup = AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(
+            from: store.dailyRollupHistory
+        )
+        let settledHRV = settledHRVRollup.flatMap { entry in
+            AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: [entry])
+        }
+        let hrvRMSSD = settledHRV
+        let settledRHR = AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(
+            from: store.dailyRollupHistory
+        )
         let hrvState: String
         if hrvRMSSD == nil {
             hrvState = "learning"
@@ -1782,7 +1785,7 @@ enum WidgetSnapshotPublisher {
                                       strainCapturedAt: strainIsCredible ? now : nil,
                                       strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil,
                                       strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil,
-                                      restingHR: presentationRestingHeartRate,
+                                      restingHR: settledRHR ?? presentationRestingHeartRate,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
@@ -1891,7 +1894,7 @@ enum WidgetSnapshotPublisher {
         }
         // Same display projection as Today/Vitals and the dedicated HRV widget.
         // Recovery-only or whole-session candidates cannot leak into this row.
-        let whiteboardHRVMS = displayHRV?.value
+        let whiteboardHRVMS = settledHRV
         let whiteboardModel = AtriaTodayMorningWhiteboardModel.make(
             hrvMS: whiteboardHRVMS,
             restingHR: presentationRestingHeartRate,
@@ -1930,7 +1933,9 @@ enum WidgetSnapshotPublisher {
                 forKey: "atria.target.recovery.yellowLower"
             ) as? Double) ?? 34
         )
-        snapshot.hrvCapturedAt = displayHRV?.measuredAt
+        snapshot.hrvCapturedAt = settledHRVRollup.map {
+            calendar.startOfDay(for: $0.day)
+        }
         snapshot.biomarkerExpiresAt = displayDayEnd
         // 2026-08-20 (widget-sync RC3): only the full stable publish may
         // advance the stable-evidence clock the extension's stale disclosure

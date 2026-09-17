@@ -4071,11 +4071,16 @@ enum AtriaMetricDetailCurrentCyclePointPolicy {
         displayAnchor: Date?,
         usesCurrentCycle: Bool,
         tint: Color,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        preserveExisting: Bool = false
     ) -> [AtriaDetailChartPoint] {
         guard usesCurrentCycle, let displayAnchor else { return points }
 
         let currentDay = calendar.startOfDay(for: displayAnchor)
+        if preserveExisting,
+           points.contains(where: { calendar.isDate($0.day, inSameDayAs: currentDay) }) {
+            return points.sorted { $0.day < $1.day }
+        }
         var result = points.filter {
             !calendar.isDate($0.day, inSameDayAs: currentDay)
         }
@@ -5090,7 +5095,8 @@ struct AtriaMetricDetailSheet: View {
         in points: [AtriaDetailChartPoint],
         value: Double?,
         tint: Color,
-        usesCurrentCycle: Bool? = nil
+        usesCurrentCycle: Bool? = nil,
+        preserveExisting: Bool = false
     ) -> [AtriaDetailChartPoint] {
         AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
             in: points,
@@ -5100,7 +5106,8 @@ struct AtriaMetricDetailSheet: View {
             usesCurrentCycle: usesCurrentCycle
                 ?? currentCycleDetailProjection.usesCurrentCycle,
             tint: tint,
-            calendar: preparationBaseInput.calendar
+            calendar: preparationBaseInput.calendar,
+            preserveExisting: preserveExisting
         )
     }
 
@@ -5114,13 +5121,32 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var currentCycleHRVTrendValue: Double? {
-        guard let value = currentCycleAuthority?.hrvMS, value > 0 else { return nil }
-        return Double(value)
+        nil
+    }
+
+    private var newestSettledOvernightHRVPoint: AtriaDetailChartPoint? {
+        guard let entry = preparationBaseInput.rollups
+            .filter({ $0.lnRMSSD != nil })
+            .max(by: { $0.day < $1.day }),
+              let lnRMSSD = entry.lnRMSSD else { return nil }
+        let value = Double(Int(exp(lnRMSSD).rounded()))
+        return AtriaDetailChartPoint(day: entry.day,
+                                     value: value,
+                                     tint: Metrics.electricHRV)
+    }
+
+    private var newestSettledOvernightRHRPoint: AtriaDetailChartPoint? {
+        guard let entry = preparationBaseInput.rollups
+            .filter({ $0.restingHeartRate != nil && ($0.sleepSeconds ?? 0) > 0 })
+            .max(by: { $0.day < $1.day }),
+              let value = entry.restingHeartRate else { return nil }
+        return AtriaDetailChartPoint(day: entry.day,
+                                     value: Double(value),
+                                     tint: Metrics.electricRHR)
     }
 
     private var currentCycleRestingHeartRateTrendValue: Double? {
-        guard let value = currentCycleAuthority?.restingHeartRate, value > 0 else { return nil }
-        return Double(value)
+        nil
     }
 
     private var hrvEvidenceComparisonText: String {
@@ -5128,7 +5154,7 @@ struct AtriaMetricDetailSheet: View {
             "typical \(Int($0.lower.rounded()))-\(Int($0.upper.rounded())) ms"
         } ?? "typical range building"
         guard usesCurrentCyclePrimaryRangePoint,
-              currentCycleHRVTrendValue != nil else { return fallback }
+              newestSettledOvernightHRVPoint != nil else { return fallback }
         return currentCycleEvidenceCopy(currentCycleAuthority?.hrvDetail,
                                         fallback: fallback)
     }
@@ -5138,7 +5164,7 @@ struct AtriaMetricDetailSheet: View {
             "typical \(Int($0.lower.rounded()))-\(Int($0.upper.rounded())) bpm"
         } ?? "typical range building"
         guard usesCurrentCyclePrimaryRangePoint,
-              currentCycleRestingHeartRateTrendValue != nil else { return fallback }
+              newestSettledOvernightRHRPoint != nil else { return fallback }
         return currentCycleEvidenceCopy(currentCycleAuthority?.restingHeartRateDetail,
                                         fallback: fallback)
     }
@@ -5205,21 +5231,31 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var hrvAutoPointsForSelectedPeriod: [AtriaDetailChartPoint] {
-        replacingCurrentCyclePoint(
+        let points = replacingCurrentCyclePoint(
             in: preparedHistory.hrv[range] ?? [],
             value: currentCycleHRVTrendValue,
             tint: Metrics.electricHRV,
-            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        if range == .day, points.isEmpty, let last = newestSettledOvernightHRVPoint {
+            return [last]
+        }
+        return points
     }
 
     private var hrvRawPointsForSelectedPeriod: [AtriaDetailChartPoint] {
-        replacingCurrentCyclePoint(
+        let points = replacingCurrentCyclePoint(
             in: preparedHistory.hrvRaw[range] ?? [],
             value: currentCycleHRVTrendValue,
             tint: Metrics.electricHRV,
-            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        if range == .day, points.isEmpty, let last = newestSettledOvernightHRVPoint {
+            return [last]
+        }
+        return points
     }
 
     private var hrvDisplayPointsForSelectedPeriod: [AtriaDetailChartPoint] {
@@ -5247,21 +5283,31 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var restingHeartRateAutoPointsForSelectedPeriod: [AtriaDetailChartPoint] {
-        replacingCurrentCyclePoint(
+        let points = replacingCurrentCyclePoint(
             in: preparedHistory.restingHeartRate[range] ?? [],
             value: currentCycleRestingHeartRateTrendValue,
             tint: Metrics.electricRHR,
-            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        if range == .day, points.isEmpty, let last = newestSettledOvernightRHRPoint {
+            return [last]
+        }
+        return points
     }
 
     private var restingHeartRateRawPointsForSelectedPeriod: [AtriaDetailChartPoint] {
-        replacingCurrentCyclePoint(
+        let points = replacingCurrentCyclePoint(
             in: preparedHistory.restingHeartRateRaw[range] ?? [],
             value: currentCycleRestingHeartRateTrendValue,
             tint: Metrics.electricRHR,
-            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint
+            usesCurrentCycle: usesCurrentCyclePrimaryRangePoint,
+            preserveExisting: true
         )
+        if range == .day, points.isEmpty, let last = newestSettledOvernightRHRPoint {
+            return [last]
+        }
+        return points
     }
 
     private var restingHeartRateDisplayPointsForSelectedPeriod: [AtriaDetailChartPoint] {
@@ -8813,13 +8859,15 @@ private struct AtriaPreparedMetricHistory: Sendable {
             hrvComparisonByRange[range] = AtriaDetailComparisonSummary(current: hrvPoints, prior: priorHRVPoints, unit: "ms")
 
             let restingPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                guard let value = item.restingHeartRate else { return nil }
+                guard let value = item.restingHeartRate,
+                      (item.sleepSeconds ?? 0) > 0 else { return nil }
                 return AtriaDetailChartPoint(day: item.day,
                                              value: Double(value),
                                              tint: Self.restingTint(value: value, baseline: baseline))
             }
             let priorRestingPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                guard let value = item.restingHeartRate else { return nil }
+                guard let value = item.restingHeartRate,
+                      (item.sleepSeconds ?? 0) > 0 else { return nil }
                 return AtriaDetailChartPoint(day: item.day,
                                              value: Double(value),
                                              tint: Self.restingTint(value: value, baseline: baseline))

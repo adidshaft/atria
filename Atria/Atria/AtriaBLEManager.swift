@@ -20792,8 +20792,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               peripheral?.name ?? deviceName)
     }
 
+    /// First drop wins. Refreshing this clock on every stall-reconnect kept
+    /// the header inside the 45s "Reading…" grace forever (1168 keepalive
+    /// stall reconnects on 2026-09-16 after the workout fence).
+    nonisolated static func pendingKnownReconnectStart(
+        existing: Date?,
+        now: Date
+    ) -> Date {
+        existing ?? now
+    }
+
     private func markPendingKnownReconnect(reason: String) {
-        pendingKnownReconnectStartedAt = Date()
+        pendingKnownReconnectStartedAt = Self.pendingKnownReconnectStart(
+            existing: pendingKnownReconnectStartedAt,
+            now: Date()
+        )
         pendingKnownReconnectReason = reason
     }
 
@@ -31933,6 +31946,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func yieldHistoricalTransportToExplicitWorkoutIfNeeded(reason: String) {
         let preservesRealtimeOwner =
             offlineHistoricalSyncPreservesConnectedRealtimeOwner
+        let now = Date()
+        let linkConnected = peripheral?.state == .connected
+        let freshLiveHeartRate = lastAcceptedHeartRateAt.map { capturedAt in
+            let age = now.timeIntervalSince(capturedAt)
+            return age >= 0 && age <= 8
+        } ?? false
+        let keepLiveHeartRate = linkConnected
+            || freshLiveHeartRate
+            || preservesRealtimeOwner
         let activeBankRequest =
             offlineHistoricalSyncExplicitPostWorkoutBankRequest
         let activeRawCatchUp = activeConnectedRawHistoryCatchUpAuthority(
@@ -31942,14 +31964,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .workoutHistoricalTransportPreemptionDisposition(
                 syncInProgress: offlineHistoricalSyncInProgress,
                 historyProbeActive: historyOnlyProbeMode,
-                // Releasing only the local owner cannot prove WHOOP stopped
-                // serving an in-flight FIFO page. A connected workout
-                // preemption always uses a physical disconnect fence; standard
-                // HR and 69/01 resume on the replacement callback epoch.
-                preservesConnectedRealtimeOwner: false,
-                linkConnected: peripheral?.state == .connected
+                preservesConnectedRealtimeOwner: keepLiveHeartRate,
+                linkConnected: linkConnected
             )
         guard disposition != .noHistoryOwner else { return }
+        if disposition == .pauseConnectedHistoryWithoutDisconnect {
+            AtriaDebugLog("ATRIADBG workout_motion status=history_owner_yielded_keep_live_hr reason=%@ generation=%llu action=interrupt_history_no_disconnect",
+                          reason,
+                          offlineHistoricalSyncGeneration)
+            interruptOfflineHistoricalSyncForTransportLoss(
+                reason: "explicit_workout_yield_keep_live_hr"
+            )
+            cancelHistoryOnlyProbe(reason: "explicit_workout_yield_keep_live_hr")
+            return
+        }
         if !activeRawCatchUp {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: "post_workout_resume_\(offlineHistoricalSyncReason)",

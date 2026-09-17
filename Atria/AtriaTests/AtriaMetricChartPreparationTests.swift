@@ -304,13 +304,42 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
             6,
             "HRV must stay current as a hero/chart value and as a sibling chart companion"
         )
-        XCTAssertTrue(source.contains("currentCycleEvidenceCopy(currentCycleAuthority?.hrvDetail"),
-                      "the measured/provisional authority copy must remain visible")
+        XCTAssertTrue(source.contains("preserveExisting: true"),
+                      "overnight HRV/RHR must not be replaced by a live current-cycle overlay")
+        XCTAssertTrue(source.contains("newestSettledOvernightHRVPoint"))
+        XCTAssertTrue(source.contains("newestSettledOvernightRHRPoint"))
         XCTAssertTrue(source.contains("comparison: latest?.displaySleepEfficiency == nil"))
         XCTAssertTrue(source.contains("direction: latest?.displaySleepEfficiency.map"))
         XCTAssertTrue(source.contains("compactMap(\\.displaySleepEfficiency)"),
                       "HR-only span coverage must not enter a displayed efficiency trend or sleep plan")
         XCTAssertFalse(source.contains("compactMap(\\.sleepEfficiency)"))
+    }
+
+    func testPreservingSameDayKeepsOvernightHRVInsteadOfLiveOverlay() {
+        let cycleStart = date(day: 16, hour: 16)
+        let overnight = [AtriaDetailChartPoint(day: calendar.startOfDay(for: cycleStart),
+                                               value: 77,
+                                               tint: Metrics.electricHRV)]
+        let preserved = AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
+            in: overnight,
+            value: 65,
+            displayAnchor: cycleStart,
+            usesCurrentCycle: true,
+            tint: Metrics.electricHRV,
+            calendar: calendar,
+            preserveExisting: true
+        )
+        XCTAssertEqual(preserved.map(\.value), [77])
+        let replaced = AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
+            in: overnight,
+            value: 65,
+            displayAnchor: cycleStart,
+            usesCurrentCycle: true,
+            tint: Metrics.electricHRV,
+            calendar: calendar,
+            preserveExisting: false
+        )
+        XCTAssertEqual(replaced.map(\.value), [65])
     }
 
     func testEmptyPreparationUsesStableFallbacks() {
