@@ -450,6 +450,10 @@ final class AtriaLearnedInsightsTests: XCTestCase {
 
         XCTAssertTrue(today.contains("style: .compactBar"))
         XCTAssertTrue(today.contains("recentSavedWorkouts"))
+        let recap = try XCTUnwrap(today.range(of: "if !recentSavedWorkouts.isEmpty"))
+        let compactRead = try XCTUnwrap(today.range(of: "style: .compactBar"))
+        XCTAssertLessThan(recap.lowerBound, compactRead.lowerBound,
+                          "Yesterday's saved workouts must sit above the compact read, not under the tab bar")
         XCTAssertTrue(today.contains("AtriaActivityWorkoutDetailSheetHost("))
         XCTAssertTrue(today.contains("showInsights = true"))
         XCTAssertTrue(today.contains("AtriaLearnedInsightsSheet("))
