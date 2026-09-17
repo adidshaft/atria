@@ -2700,6 +2700,37 @@ final class AtriaAnalyticsTests: XCTestCase {
         ), "yesterday")
     }
 
+    func testNewestSettledHRVUsesOvernightMillisecondsNotLiveRMSSD() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let sep16 = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16))!
+        let sep15 = calendar.date(from: DateComponents(year: 2026, month: 9, day: 15))!
+        let rollups = [
+            DailyRollupStoreEntry(day: sep15, lnRMSSD: log(45), calendar: calendar),
+            DailyRollupStoreEntry(day: sep16, lnRMSSD: log(77), calendar: calendar),
+        ]
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
+            77
+        )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(from: rollups)?.day,
+            calendar.startOfDay(for: sep16)
+        )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(
+                from: [
+                    DailyRollupStoreEntry(day: sep15, rhr: 54, sleepSeconds: 7 * 3_600, calendar: calendar),
+                    DailyRollupStoreEntry(day: sep16, rhr: 51, sleepSeconds: 7 * 3_600, calendar: calendar),
+                    DailyRollupStoreEntry(day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17))!,
+                                          rhr: 84,
+                                          calendar: calendar),
+                ]
+            ),
+            51
+        )
+    }
+
     func testHealthMetricEvidenceDoesNotCallOlderSavedMorningYesterday() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!

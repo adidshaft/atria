@@ -426,10 +426,11 @@ private struct AtriaHealthMonitorPreparedData {
 
     init(rollups newestFirstRollups: [DailyRollupStoreEntry], sleepHistory: SleepHistorySnapshot) {
         let restingHeartRates = Self.values(from: newestFirstRollups, limit: 28) { rollup in
-            rollup.rhr.map(Double.init)
+            guard (rollup.sleepSeconds ?? 0) > 0 else { return nil }
+            return rollup.rhr.map(Double.init)
         }
         let hrvs = Self.values(from: newestFirstRollups, limit: 28) { rollup in
-            rollup.lnRMSSD.map(exp)
+            rollup.lnRMSSD.map { Double(Int(exp($0).rounded())) }
         }
         let respiratoryRates = Self.values(from: newestFirstRollups, limit: 28) { rollup in
             rollup.respiratoryRate

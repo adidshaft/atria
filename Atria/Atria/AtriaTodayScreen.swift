@@ -455,7 +455,8 @@ struct AtriaTodayScreen: View {
                                        currentCycleAuthority:
                                         AtriaHealthMetricAuthority.currentCycleProjection(
                                             hero: displayHero,
-                                            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot
+                                            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
+                                            rollups: Array(dayDescendingRollups)
                                         ),
                                        sleepGoalHours: sleepGoalHours,
                                        sleepBaseNeedHours: sleepBaseNeedHours,
@@ -2043,13 +2044,14 @@ struct AtriaTodayScreen: View {
     /// "N of 14 nights" calibration progress while the value is still pending
     /// (2026-07-08: settle the morning-once tiles so they agree with their detail).
     private var displaySettledHRV: (value: String, detail: String) {
-        if let entry = dayDescendingRollups.first(where: { $0.lnRMSSD != nil }),
-           let lnRMSSD = entry.lnRMSSD {
-            let ms = Int(exp(lnRMSSD).rounded())
-            let label = AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+        if let entry = AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(
+            from: Array(dayDescendingRollups)
+        ), let ms = AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(
+            from: [entry]
+        ) {
+            return ("\(ms)", AtriaHealthMetricEvidencePresentation.settledHRVDetail(
                 rollup: entry
-            )
-            return ("\(ms)", label)
+            ))
         }
         let live = displayHero.hrvValue
         let detail = isPendingHeroValue(live)
@@ -2066,8 +2068,9 @@ struct AtriaTodayScreen: View {
     /// "this morning"/"yesterday". Falls back to the live value + "N of 14 days"
     /// progress only when no rollup carries an RHR yet.
     private var displaySettledRHR: (value: String, detail: String) {
-        if let entry = dayDescendingRollups.first(where: { $0.rhr != nil }),
-           let rhr = entry.rhr {
+        if let entry = AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRateRollup(
+            from: Array(dayDescendingRollups)
+        ), let rhr = entry.rhr {
             let label = AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
                 rollup: entry
             )
@@ -2638,9 +2641,14 @@ struct AtriaTodayScreen: View {
                 calendar: .current
             ).compactMap(\.strain).suffix(7))
         case .hrv:
-            return Array(history.compactMap(\.lnRMSSD).suffix(7))
+            return Array(history.compactMap { entry in
+                entry.lnRMSSD.map { Double(Int(exp($0).rounded())) }
+            }.suffix(7))
         case .rhr, .trend:
-            return Array(history.compactMap { $0.rhr.map(Double.init) }.suffix(7))
+            return Array(history.compactMap { entry in
+                guard (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return entry.rhr.map(Double.init)
+            }.suffix(7))
         case .sleepPerformance:
             return Array(history.compactMap { $0.sleepPerformance.map(Double.init) }.suffix(7))
         case .sleepEfficiency:

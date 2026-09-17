@@ -500,6 +500,7 @@ enum AtriaHealthMetricAuthority {
     static func currentCycleProjection(
         hero: AtriaHomeModel.HeroSnapshot,
         sleepHistory: SleepHistorySnapshot,
+        rollups: [DailyRollupStoreEntry] = [],
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Projection {
@@ -508,12 +509,21 @@ enum AtriaHealthMetricAuthority {
             sleepHistory: sleepHistory,
             calendar: calendar
         )
+        let settledHRV = AtriaHealthMetricEvidencePresentation
+            .newestSettledHRVMilliseconds(from: rollups)
+        let settledHRVRollup = AtriaHealthMetricEvidencePresentation
+            .newestSettledHRVRollup(from: rollups)
+        let settledRHR = AtriaHealthMetricEvidencePresentation
+            .newestSettledRestingHeartRate(from: rollups)
         return resolve(.currentCycle(.init(
             recoveryPercent: hero.recoveryEstimate.percent,
             recoveryDetail: hero.recoveryDetail,
-            restingHeartRateText: hero.restingHeartRateText,
-            hrvValue: hero.hrvValue,
-            hrvDetail: hero.hrvDetail,
+            restingHeartRateText: settledRHR.map(String.init)
+                ?? hero.restingHeartRateText,
+            hrvValue: settledHRV.map(String.init) ?? hero.hrvValue,
+            hrvDetail: settledHRVRollup.map {
+                AtriaHealthMetricEvidencePresentation.settledHRVDetail(rollup: $0)
+            } ?? hero.hrvDetail,
             strain: hero.strain,
             strainDetail: hero.strainConfidence,
             strainIsPartial:
@@ -715,6 +725,38 @@ enum AtriaHealthMetricEvidencePresentation {
         // refreshes after another confirmed sleep, so say so.
         guard age.hasSuffix("d ago") else { return age }
         return "\(age) · confirm a sleep to update"
+    }
+
+    /// One overnight HRV for Today, Day/Week/Month, and widgets. Live RMSSD
+    /// is a different number and must not replace this.
+    static func newestSettledHRVMilliseconds(
+        from rollups: [DailyRollupStoreEntry]
+    ) -> Int? {
+        guard let entry = newestSettledHRVRollup(from: rollups),
+              let lnRMSSD = entry.lnRMSSD else { return nil }
+        return Int(exp(lnRMSSD).rounded())
+    }
+
+    static func newestSettledHRVRollup(
+        from rollups: [DailyRollupStoreEntry]
+    ) -> DailyRollupStoreEntry? {
+        rollups
+            .filter { $0.lnRMSSD != nil }
+            .max { $0.day < $1.day }
+    }
+
+    static func newestSettledRestingHeartRate(
+        from rollups: [DailyRollupStoreEntry]
+    ) -> Int? {
+        newestSettledRestingHeartRateRollup(from: rollups)?.rhr
+    }
+
+    static func newestSettledRestingHeartRateRollup(
+        from rollups: [DailyRollupStoreEntry]
+    ) -> DailyRollupStoreEntry? {
+        rollups
+            .filter { $0.rhr != nil && ($0.sleepSeconds ?? 0) > 0 }
+            .max { $0.day < $1.day }
     }
 
     /// Saved morning vitals may intentionally be carried until another
@@ -991,7 +1033,8 @@ struct AtriaHealthScreen: View {
                                    currentCycleAuthority:
                                     AtriaHealthMetricAuthority.currentCycleProjection(
                                         hero: heroStore.state,
-                                        sleepHistory: vitals.sleepHistorySnapshot
+                                        sleepHistory: vitals.sleepHistorySnapshot,
+                                        rollups: vitals.dailyRollupHistory
                                     ),
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
@@ -1760,12 +1803,22 @@ struct AtriaHealthScreen: View {
     private func currentMetricProjection(
         live: AtriaHealthMonitorLiveProjection
     ) -> AtriaHealthMetricAuthority.Projection {
-        AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+        let rollups = vitalsStore.state.dailyRollupHistory
+        let settledHRV = AtriaHealthMetricEvidencePresentation
+            .newestSettledHRVMilliseconds(from: rollups)
+        let settledHRVRollup = AtriaHealthMetricEvidencePresentation
+            .newestSettledHRVRollup(from: rollups)
+        let settledRHR = AtriaHealthMetricEvidencePresentation
+            .newestSettledRestingHeartRate(from: rollups)
+        return AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
             recoveryPercent: live.recoveryPercent,
             recoveryDetail: live.recoveryDetail,
-            restingHeartRateText: live.restingHeartRateText,
-            hrvValue: live.hrvValue,
-            hrvDetail: live.hrvDetail
+            restingHeartRateText: settledRHR.map(String.init)
+                ?? live.restingHeartRateText,
+            hrvValue: settledHRV.map(String.init) ?? live.hrvValue,
+            hrvDetail: settledHRVRollup.map {
+                AtriaHealthMetricEvidencePresentation.settledHRVDetail(rollup: $0)
+            } ?? live.hrvDetail
         )))
     }
 
