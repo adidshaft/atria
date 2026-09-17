@@ -153,6 +153,49 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.lastWorkout?.strain, 0.2)
     }
 
+    func testLastWorkoutDiagnosisKeepsZeroGyroStepsAndFlagsThem() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "115",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 69,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 74,
+            todayRecovery: 38,
+            lastWorkout: .init(
+                activityType: "Walking",
+                start: now.addingTimeInterval(-81),
+                end: now,
+                samples: 84,
+                avgHR: 99,
+                peakHR: 112,
+                strain: 0.06,
+                steps: 0,
+                stepsAreEstimated: true,
+                reason: "duration_below_10m_and_hr_below_threshold"
+            ),
+            liveHeartRate: 103,
+            liveZone: "Z2",
+            widgetHeartRate: 103,
+            todaySteps: 2245
+        )
+        XCTAssertEqual(snapshot.lastWorkout?.steps, 0)
+        XCTAssertEqual(snapshot.lastWorkout?.stepsAreEstimated, true)
+        XCTAssertTrue(snapshot.discrepancies.contains("workout_zero_steps"))
+    }
+
     func testLiveActivityDiagnosisKeepsLockScreenFacts() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let snapshot = AtriaDiagnosisReport.make(

@@ -11758,6 +11758,10 @@ final class AtriaHomeModel {
         throttledCoreLiveChanges
             .sink { [weak self] (_: Void) in
                 self?.publishCoreLive()
+                // CoreLive presentation stays frozen while inactive. Diagnosis
+                // must still age HR/IMU from the live BLE clocks so a
+                // background install (device 2026-09-17 115) is pullable.
+                self?.publishDiagnosisReport(reason: "core_live")
             }
             .store(in: &cancellables)
 
@@ -12241,6 +12245,8 @@ final class AtriaHomeModel {
                 avgHR: workout.avgHR > 0 ? workout.avgHR : nil,
                 peakHR: workout.peakHR > 0 ? workout.peakHR : nil,
                 strain: workout.strain,
+                steps: workout.workoutSteps,
+                stepsAreEstimated: workout.workoutStepsAreEstimated,
                 reason: workout.reason
             )
         }
@@ -12280,7 +12286,8 @@ final class AtriaHomeModel {
                 widgetHRVCapturedAt: publishedWidget?.hrvCapturedAt,
                 widgetCreatedAt: publishedWidget?.createdAt,
                 widgetSteps: publishedWidget?.steps,
-                todaySteps: core.dailyStepPresentation.count,
+                todaySteps: core.dailyStepPresentation.count
+                    ?? AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count,
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now

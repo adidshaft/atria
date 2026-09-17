@@ -45,6 +45,8 @@ enum AtriaDiagnosisReport {
         var avgHR: Int? = nil
         var peakHR: Int? = nil
         var strain: Double? = nil
+        var steps: Int? = nil
+        var stepsAreEstimated: Bool? = nil
         var reason: String
     }
 
@@ -282,6 +284,9 @@ enum AtriaDiagnosisReport {
            let today = metrics.todaySteps,
            abs(widget - today) > AtriaHeldDailyStepFloor.contaminationSlack {
             keys.append("widget_steps_\(widget)_today_\(today)")
+        }
+        if let workout = lastWorkout, workout.samples > 0, workout.steps == 0 {
+            keys.append("workout_zero_steps")
         }
         return keys
     }

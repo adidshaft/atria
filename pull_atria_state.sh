@@ -2972,6 +2972,8 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")
             print(f"diagnosis_last_workout_avg_hr={workout.get('avgHR', 'missing')}")
             print(f"diagnosis_last_workout_strain={workout.get('strain', 'missing')}")
+            print(f"diagnosis_last_workout_steps={workout.get('steps', 'missing')}")
+            print(f"diagnosis_last_workout_steps_estimated={workout.get('stepsAreEstimated', 'missing')}")
             print(f"diagnosis_last_workout_reason={workout.get('reason', 'missing')}")
             recent_no_hr = diagnosis.get("recentNoHeartRateWorkouts")
             if isinstance(recent_no_hr, list) and recent_no_hr:

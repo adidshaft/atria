@@ -690,6 +690,8 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         )
         XCTAssertTrue(cadence.contains("ble.$sessionSampleCount"))
         XCTAssertTrue(cadence.contains("self?.publishCoreLive()"))
+        XCTAssertTrue(cadence.contains("self?.publishDiagnosisReport(reason: \"core_live\")"),
+                      "inactive CoreLive presentation must still refresh the pullable diagnosis file")
         XCTAssertFalse(mergedInputs.contains("ble.$historicalRecoveryPresentation"),
                        "history progress must not join unrelated BLE CoreLive churn")
         XCTAssertTrue(cadence.contains(
