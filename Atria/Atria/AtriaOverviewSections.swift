@@ -5597,22 +5597,17 @@ struct AtriaMetricDetailSheet: View {
 
     /// The recovery number behind the hero, per selected period, read from the
     /// SAME frozen daily-rollup series the chart below plots — never the live
-    /// `recoveryEstimate` recompute. Day = that settled daily score (today's
-    /// saved recovery, else the newest saved day carried forward, exactly like
-    /// the overview tile / health row / widget), so the headline can no longer
-    /// drift onto the live value or contradict them for the same day. Week/Month
-    /// = the window average, so the number finally tracks the Day/Week/Month
-    /// selector (2026-07-08: fixes recovery showing a fixed live % that both
-    /// ignored the period and disagreed with the day value shown everywhere else).
+    /// `recoveryEstimate` recompute. Day/Week/Month all use the newest
+    /// sleep-backed night in the window, so Today 76% is still 76% after a
+    /// Week tap (device 2026-09-17: Week averaged 54 and 76 into a different
+    /// headline). The chart footer still names the window average.
     private var recoveryHeroRawPercent: Double? {
-        if range == .day {
-            if currentCycleDetailProjection.usesCurrentCycle {
-                return currentCycleDetailProjection.recoveryPercent.map(Double.init)
-            }
-            return preparedHistory.recoverySummary[range]?.latestRaw
-                ?? preparedHistory.recoveryRaw[.all]?.last?.value
+        if range == .day,
+           currentCycleDetailProjection.usesCurrentCycle {
+            return currentCycleDetailProjection.recoveryPercent.map(Double.init)
         }
-        return recoverySummaryForSelectedPeriod?.averageRaw
+        return recoverySummaryForSelectedPeriod?.latestRaw
+            ?? preparedHistory.recoveryRaw[.all]?.last?.value
     }
 
     private var recoveryHeroValue: String {
@@ -6293,32 +6288,21 @@ struct AtriaMetricDetailSheet: View {
         return latestText(value: latest.value, unit: unit)
     }
 
-    /// The detail-hero headline for the selected period. Day = the latest reading
-    /// (unchanged); Week/Month/… = the window AVERAGE, read from the SAME per-range
-    /// summary the chart's Avg strip uses, so the headline tracks the selector and
-    /// agrees with the chart. Falls back to the latest reading when no summary yet.
-    /// (2026-07-08: the headline was the latest point for every range, identical
-    /// across Day/Week/Month, so the number looked frozen to the selector — the same
-    /// class of bug the user reported for recovery.)
-    /// A multi-day range plots an aggregate and `periodHeroText` puts that
-    /// aggregate in the hero — so the state word beside it must stop
-    /// describing a single day. Strain has always said "Period average" here;
-    /// every other metric kept its day word over a number that was already an
-    /// average, so Recovery read "59% Moderate" on a month whose latest day
-    /// was 38%, and Sleep read a 30-day mean under last night's "98% of need"
-    /// (2026-09-03 render). "Learning" survives: it describes calibration, not
-    /// the number.
+    /// Overnight scores (HRV, recovery, RHR, sleep) keep the latest night in
+    /// the window as the hero, matching Today. The chart footer still names
+    /// the window average. Strain keeps "Period average" because it is load.
+    /// "Learning" survives: it describes calibration, not the number.
     private func periodHeroState(_ dayState: @autoclosure () -> String) -> String {
         let state = dayState()
         guard range != .day, state != "Learning" else { return state }
-        return "Period average"
+        return "Latest night"
     }
 
     private func periodHeroText(summary: AtriaDetailPeriodSummary?,
                                 points: [AtriaDetailChartPoint],
                                 unit: String) -> String {
-        if range != .day, let summary {
-            return summary.averageText
+        if let summary {
+            return summary.latestText
         }
         return latestMetricText(points: points, unit: unit)
     }
