@@ -1756,6 +1756,10 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
     /// selector stays a segmented control, never a Menu, per the readability guard).
     static let primarySegments: [AtriaTrendRange] = [.day, .week, .month]
 
+    init?(deepLinkToken: String) {
+        self.init(rawValue: deepLinkToken.lowercased())
+    }
+
     /// The Trends card aggregates to one point per civil day, so `.day` can
     /// never form a line there (its chart requires ≥2 points). Day stays in
     /// `primarySegments` for the calendar-period metric-detail surfaces,

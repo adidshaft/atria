@@ -874,6 +874,7 @@ struct AtriaHomeView: View {
     @State private var selectedTab: HomeTab = Self.debugInitialHomeTab(
         arguments: ProcessInfo.processInfo.arguments
     )
+    @State private var pendingMetricDeepLink: AtriaMetricDeepLink?
     @State private var showRRImporter = false
     @State private var showHRImporter = false
     @State private var rrShareURL: URL?
@@ -1844,6 +1845,16 @@ struct AtriaHomeView: View {
                               night == nil ? 0 : 1,
                               url.absoluteString)
             }
+            return
+        }
+        if let metricLink = AtriaMetricDeepLink.parse(url) {
+            selectedTab = .overview
+            pendingMetricDeepLink = metricLink
+            hasUnlockedPrimaryContent = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=metric_%@ range=%@ url=%@",
+                          metricLink.metric.rawValue,
+                          metricLink.range.rawValue,
+                          url.absoluteString)
             return
         }
         guard let tab = HomeTab.deepLinkDestination(for: url) else { return }
@@ -5609,6 +5620,10 @@ struct AtriaHomeView: View {
                              },
                              onCustomizeToday: {
                                  showCustomizeSheet = true
+                             },
+                             pendingMetricDeepLink: pendingMetricDeepLink,
+                             onConsumeMetricDeepLink: {
+                                 pendingMetricDeepLink = nil
                              },
                              systemNotifications: todayNotifications)
 

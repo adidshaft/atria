@@ -234,4 +234,21 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertFalse(home.contains("AtriaSleepReviewSheetRoute(night: night)\n            AtriaDebugLog"),
                        "A cache miss must not immediately present a nil-night Add Sleep route")
     }
+
+    func testMetricDeepLinkOpensTheSameSheetAsATodayTap() throws {
+        let hrv = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/hrv")!))
+        XCTAssertEqual(hrv.metric, .hrv)
+        XCTAssertEqual(hrv.range, .day)
+
+        let week = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/hrv?range=week")!))
+        XCTAssertEqual(week.metric, .hrv)
+        XCTAssertEqual(week.range, .week)
+
+        let monthRHR = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/rhr?range=month")!))
+        XCTAssertEqual(monthRHR.metric, .restingHeartRate)
+        XCTAssertEqual(monthRHR.range, .month)
+
+        XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://tab/vitals")!))
+        XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://sleep-review")!))
+    }
 }
