@@ -1618,4 +1618,149 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         )
         XCTAssertEqual(previousMonth.end, month.start, "paging back shows the 30 days before")
     }
+
+    func testHistoricalSleepBackedRecoveryDoesNotRescoreWhenBaselineDrifts() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let nightDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 16)))
+        let now = nightDay.addingTimeInterval(36 * 3_600)
+        let start = nightDay.addingTimeInterval(-7.25 * 3_600)
+        let frozenEstimate = Metrics.RecoveryEstimate(
+            percent: 74,
+            confidence: .unverified,
+            usesHRV: true,
+            detail: "lnRMSSD z 0.1 · RHR z -0.5",
+            contributors: []
+        )
+        let frozen = SavedDailyMetric(
+            day: nightDay,
+            recoveryPercent: 74,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: 77,
+            restingHR: 55,
+            respiratoryRate: 14.2,
+            sleepDuration: 7.25 * 3_600,
+            sleepSpan: 8.25 * 3_600,
+            sleepStart: start,
+            sleepEnd: nightDay,
+            sleepSource: "overnight_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 80,
+            strain: 0.4,
+            recoverySummary: FrozenRecoverySummary(estimate: frozenEstimate, scoredDay: nightDay)
+        )
+        let driftedEstimate = Metrics.RecoveryEstimate(
+            percent: 76,
+            confidence: .unverified,
+            usesHRV: true,
+            detail: "lnRMSSD z 0.1 · RHR z -0.9",
+            contributors: []
+        )
+        let drifted = SavedDailyMetric(
+            day: nightDay,
+            recoveryPercent: 76,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: 77,
+            restingHR: 55,
+            respiratoryRate: 14.2,
+            sleepDuration: 7.25 * 3_600,
+            sleepSpan: 8.25 * 3_600,
+            sleepStart: start,
+            sleepEnd: nightDay,
+            sleepSource: "overnight_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 80,
+            strain: 0.6,
+            recoverySummary: FrozenRecoverySummary(estimate: driftedEstimate, scoredDay: nightDay)
+        )
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [drifted],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        )
+        let preserved = try XCTUnwrap(merged.first { calendar.isDate($0.day, inSameDayAs: nightDay) })
+        XCTAssertEqual(preserved.recoveryPercent, 74)
+        XCTAssertEqual(preserved.hrv, 77)
+        XCTAssertEqual(preserved.restingHR, 55)
+        XCTAssertEqual(preserved.strain, 0.6,
+                       "only cumulative strain may advance on a closed night")
+
+        let cancellable = try XCTUnwrap(SessionStore.mergeDailyMetricHistoryCancellable(
+            existing: [frozen],
+            computed: [drifted],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar,
+            shouldContinue: { true }
+        ))
+        let cancellablePreserved = try XCTUnwrap(
+            cancellable.first { calendar.isDate($0.day, inSameDayAs: nightDay) }
+        )
+        XCTAssertEqual(cancellablePreserved.recoveryPercent, 74)
+        XCTAssertEqual(cancellablePreserved.strain, 0.6)
+    }
+
+    func testHistoricalSleepEditStillRemintsOvernightRecovery() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let nightDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 9, day: 16)))
+        let now = nightDay.addingTimeInterval(36 * 3_600)
+        let originalStart = nightDay.addingTimeInterval(-7.25 * 3_600)
+        let editedStart = nightDay.addingTimeInterval(-8.5 * 3_600)
+        let frozen = SavedDailyMetric(
+            day: nightDay,
+            recoveryPercent: 74,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: 77,
+            restingHR: 55,
+            respiratoryRate: 14.2,
+            sleepDuration: 7.25 * 3_600,
+            sleepSpan: 8.25 * 3_600,
+            sleepStart: originalStart,
+            sleepEnd: nightDay,
+            sleepSource: "overnight_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 80,
+            strain: 0.4
+        )
+        let edited = SavedDailyMetric(
+            day: nightDay,
+            recoveryPercent: 81,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: 77,
+            restingHR: 55,
+            respiratoryRate: 14.2,
+            sleepDuration: 8.5 * 3_600,
+            sleepSpan: 9.5 * 3_600,
+            sleepStart: editedStart,
+            sleepEnd: nightDay,
+            sleepSource: "overnight_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 80,
+            strain: 0.4
+        )
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [edited],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            merged.first { calendar.isDate($0.day, inSameDayAs: nightDay) }?.recoveryPercent,
+            81
+        )
+    }
 }
