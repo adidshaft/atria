@@ -123,5 +123,9 @@ final class AtriaWorkoutEndResponsivenessTests: XCTestCase {
         XCTAssertLessThan(strapEvidence.lowerBound, selection.lowerBound)
         XCTAssertFalse(completion.contains("AtriaWorkoutPhonePedometer"))
         XCTAssertTrue(completion.contains("never promoted into a wrist-derived workout total"))
+        XCTAssertTrue(
+            completion.contains("sourceVersion: workoutSession?.stepSourceVersion"),
+            "foreground End must keep estimated gyro-cadence totals on walking workouts"
+        )
     }
 }

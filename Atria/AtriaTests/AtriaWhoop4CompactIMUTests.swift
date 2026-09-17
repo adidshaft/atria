@@ -268,11 +268,78 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         )
     }
 
+    func testLockScreenSlowCompactWalkScoresGyroCadenceSteps() throws {
+        let assembler = AtriaWhoop4CompactIMUAssembler()
+        let pipeline = AtriaR10MotionPipeline(snapshotMinimumInterval: 0.01)
+        _ = pipeline.seedSynchronously(
+            committedRawSteps: 0,
+            lastAcceptedDeviceTimestamp: 32_075_883,
+            committedGyroCadenceResearchSteps: 0
+        )
+        let start = Date(timeIntervalSince1970: 1_800_000_600)
+        var ingested = 0
+        // 16 s of 1.23 Hz / ~72 dps matches the 2026-09-17 locked walk.
+        for index in 0..<(10 * 16) {
+            let packet = walkingCompactPacket(
+                sampleIndex: index,
+                level: 72,
+                swing: 40,
+                cadenceHz: 1.23
+            )
+            let receivedAt = start.addingTimeInterval(Double(index) * 0.1)
+            for frame in assembler.push(packet, receivedAt: receivedAt) {
+                XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
+                ingested += 1
+            }
+        }
+        XCTAssertGreaterThanOrEqual(ingested, 12)
+        let steps = pipeline.gyroCadenceResearchStepsSynchronously()
+        XCTAssertGreaterThan(
+            steps,
+            12,
+            "a lock-screen stroll (~1.23 Hz, 72 dps) must attach gyro-cadence steps"
+        )
+        XCTAssertLessThan(steps, 30)
+    }
+
+    func testCoalescedLockScreenSlowWalkScoresGyroCadenceSteps() throws {
+        let assembler = AtriaWhoop4CompactIMUAssembler()
+        let pipeline = AtriaR10MotionPipeline(snapshotMinimumInterval: 0.01)
+        _ = pipeline.seedSynchronously(
+            committedRawSteps: 0,
+            lastAcceptedDeviceTimestamp: 32_075_883,
+            committedGyroCadenceResearchSteps: 0
+        )
+        let start = Date(timeIntervalSince1970: 1_800_000_900)
+        var ingested = 0
+        for second in 0..<16 {
+            let receivedAt = start.addingTimeInterval(Double(second))
+            for packetIndex in 0..<10 {
+                let packet = walkingCompactPacket(
+                    sampleIndex: second * 10 + packetIndex,
+                    level: 72,
+                    swing: 40,
+                    cadenceHz: 1.23
+                )
+                for frame in assembler.push(packet, receivedAt: receivedAt) {
+                    XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
+                    ingested += 1
+                }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(ingested, 1)
+        XCTAssertGreaterThan(
+            pipeline.gyroCadenceResearchStepsSynchronously(),
+            12,
+            "BLE-coalesced lock-screen walking packets must still score steps"
+        )
+    }
+
     private func walkingCompactPacket(sampleIndex: Int,
                                       level: Double = 90.0,
                                       swing: Double = 45.0,
-                                      packetPeriod: TimeInterval = 0.1) -> AtriaWhoop4CompactIMUDecoder.Packet {
-        let cadenceHz = 1.75
+                                      packetPeriod: TimeInterval = 0.1,
+                                      cadenceHz: Double = 1.75) -> AtriaWhoop4CompactIMUDecoder.Packet {
         var acceleration: [AtriaR10MotionFrame.Vector3] = []
         var rotation: [AtriaR10MotionFrame.Vector3] = []
         acceleration.reserveCapacity(10)

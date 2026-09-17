@@ -309,6 +309,8 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         let source = try productionSource("AtriaR10Motion.swift")
         XCTAssertTrue(source.contains("gyroCadenceState.ingest("),
                       "the shadow must consume accepted frames on the atomic R10 queue")
+        XCTAssertTrue(source.contains("compactAssembledStepBandLoHz"),
+                      "compact IMU walking must use the 1.1 Hz lock-screen stroll band")
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
             guard line.localizedCaseInsensitiveContains("gyroCadence") else { continue }
             for forbidden in ["dailySteps",
