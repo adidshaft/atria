@@ -2306,6 +2306,15 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             catchUpBody.contains("preserveConnectedRealtimeOwner: true"),
             "post-workout catch-up must keep the live 2A37 owner"
         )
+        let observers = try durabilitySource("AtriaHomeShellSupport.swift")
+        let observerStart = try XCTUnwrap(observers.range(
+            of: "struct AtriaHomeObservers: View {"
+        ))
+        let observerBody = String(observers[observerStart.lowerBound...].prefix(1_800))
+        XCTAssertTrue(
+            observerBody.contains("onChange(of: statusStore.state.status, initial: true)"),
+            "a restored already-connected link must re-queue post-workout catch-up"
+        )
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {
