@@ -1054,7 +1054,8 @@ extension AtriaBLEManager {
         minimumResumeInterval: TimeInterval = 20,
         consumeToNow: Bool = false,
         lastPendingRecords: UInt32? = nil,
-        chargingOrOffWrist: Bool = false
+        chargingOrOffWrist: Bool = false,
+        queuedPullIntent: Bool = false
     ) -> Bool {
         guard let lastFinishedAt else { return true }
         let interval: TimeInterval
@@ -1073,6 +1074,14 @@ extension AtriaBLEManager {
             // On the charger / off the wrist the firmware is not producing a
             // pulse to protect, so that beat is dead air on the one window
             // where the backlog can actually be cleared in bulk.
+            interval = idleWindowUnprotectedResumeInterval
+        } else if queuedPullIntent,
+                  lastPendingRecords.map({
+                      $0 > idleWindowConsumeLiveTailPendingLimit
+                  }) != false {
+            // Device 125: 18s walk + 20s resume let live write keep ~half
+            // the ACK'd records. Queued gym leftover must re-arm like the
+            // charging window so pending can fall overnight.
             interval = idleWindowUnprotectedResumeInterval
         } else {
             interval = minimumResumeInterval

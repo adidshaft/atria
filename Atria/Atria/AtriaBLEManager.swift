@@ -11792,7 +11792,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             now: Date(),
             consumeToNow: idleWindowConsumeToNowConsent,
             lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
-            chargingOrOffWrist: batteryIsCharging || !hasContact
+            chargingOrOffWrist: batteryIsCharging || !hasContact,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
         ) else { return false }
         let ingressReplayBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
             orphanReplayInFlight: orphanHistoricalIngressArchiveInFlight,
