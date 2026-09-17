@@ -500,10 +500,14 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertFalse(ble.contains("strapStepResearchCount = carriedMotionSnapshot.steps"))
         XCTAssertTrue(home.contains("presentedDailyStrapStepCount("))
         XCTAssertTrue(home.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(home.contains("liveGyroToday:"))
         XCTAssertTrue(home.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
         XCTAssertTrue(widget.contains("presentedDailyStrapStepCount("))
         XCTAssertTrue(widget.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(widget.contains("liveGyroToday:"))
         XCTAssertTrue(widget.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(ble.contains("publishedLiveStrapStepTodayCount("))
+        XCTAssertTrue(ble.contains("cycleBaselinePreservingRestoredToday("))
         XCTAssertTrue(home.contains("ble.$liveStrapStepResearchCumulativeCount"))
         XCTAssertTrue(home.contains("noteOpenPhysiologicalCycleStart"))
         XCTAssertTrue(ble.contains("AtriaHeldDailyStepFloor.resetForNewCycle"))
@@ -745,6 +749,27 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
                                                                   liveCumulative: 0),
                        0)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
+                                                                  liveCumulative: 167,
+                                                                  liveGyroToday: 1_944),
+                       1_944,
+                       "a post-relaunch cycle fragment must not replace same-day gyro today")
+        XCTAssertEqual(AtriaBLEManager.publishedLiveStrapStepTodayCount(
+            cycleOrDayCount: 167,
+            liveGyroToday: 1_944
+        ), 1_944)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 1_939,
+            restoredToday: 1_944
+        ), 0)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 6_420,
+            restoredToday: 1_944
+        ), 4_476)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 1_939,
+            restoredToday: 0
+        ), 1_939)
     }
 
     func testSavedAggregateIdentifiesActiveCheckpointSteps() {

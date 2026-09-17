@@ -888,6 +888,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             214,
             "a real gyro walk must survive a smaller reconnect snapshot"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.publishedLiveStrapStepTodayCount(
+                cycleOrDayCount: 167,
+                liveGyroToday: 1_944
+            ),
+            1_944,
+            "Today must keep gyro-today across a post-relaunch cycle fragment"
+        )
     }
 
     func testLiveGyroTodayPersistsMonotonicallyOnTheSameDay() {

@@ -13311,7 +13311,8 @@ final class AtriaHomeModel {
                 savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
                 liveActiveSession: ble.liveStrapStepResearchTodayCount
             ),
-            liveCumulative: ble.liveStrapStepResearchTodayCount
+            liveCumulative: ble.liveStrapStepResearchTodayCount,
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count ?? 0
         )
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -13434,9 +13435,12 @@ final class AtriaHomeModel {
     /// gyro-cadence coordinate only; accelerometer-peak leftovers stay on
     /// `strapStepResearchCount` and must not become Today's floor. IMU drop
     /// (`live == 0`) keeps the gyro saved floor so a reconnect does not flash "--".
+    /// `liveGyroToday` keeps a same-day walk when cycle-local count reset on
+    /// relaunch (device 2026-09-17: 167 vs 1944).
     nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
-                                                        liveCumulative: Int) -> Int {
-        let live = max(0, liveCumulative)
+                                                        liveCumulative: Int,
+                                                        liveGyroToday: Int = 0) -> Int {
+        let live = max(0, liveCumulative, liveGyroToday)
         if live > 0 { return live }
         return max(0, savedMerge)
     }
