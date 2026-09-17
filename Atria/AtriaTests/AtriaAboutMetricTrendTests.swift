@@ -47,7 +47,7 @@ final class AtriaAboutMetricTrendTests: XCTestCase {
     }
 
     func testHRVUsesTheSameTransformAsTheDetailChart() {
-        let rollups = (0..<5).map { rollup(daysAgo: $0, lnRMSSD: log(64.0)) }
+        let rollups = (0..<5).map { rollup(daysAgo: $0, lnRMSSD: log(64.0), sleepSeconds: 7 * 3_600) }
         let trend = AtriaAboutMetricTrend.make(for: .hrv,
                                                rollups: rollups,
                                                referenceDate: reference,

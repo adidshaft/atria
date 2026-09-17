@@ -2706,8 +2706,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         let sep16 = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16))!
         let sep15 = calendar.date(from: DateComponents(year: 2026, month: 9, day: 15))!
         let rollups = [
-            DailyRollupStoreEntry(day: sep15, lnRMSSD: log(45), calendar: calendar),
-            DailyRollupStoreEntry(day: sep16, lnRMSSD: log(77), calendar: calendar),
+            DailyRollupStoreEntry(day: sep15, lnRMSSD: log(45), sleepSeconds: 4 * 3_600, calendar: calendar),
+            DailyRollupStoreEntry(day: sep16, lnRMSSD: log(77), sleepSeconds: 7 * 3_600, calendar: calendar),
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17))!,
+                lnRMSSD: log(120),
+                calendar: calendar
+            ),
         ]
         XCTAssertEqual(
             AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
