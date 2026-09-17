@@ -300,6 +300,17 @@ enum AtriaWorkoutMovingDuration {
     }
 }
 
+enum AtriaWorkoutHeartRateHold {
+    /// Pulse zeros after six seconds, on contact loss, on disconnect, and
+    /// when a workout session-boundary reset clears `session`. Keep the last
+    /// accepted BPM on workout surfaces so Start cannot blank the HUD.
+    static func displayed(live: Int, lastKnown: Int, retained: Int = 0) -> Int {
+        if live > 0 { return live }
+        if lastKnown > 0 { return lastKnown }
+        return max(0, retained)
+    }
+}
+
 struct AtriaLiveWorkoutMetricProjection: Equatable {
     var strain: Double = 0
     var activeCalories: Double?
@@ -309,6 +320,7 @@ struct AtriaLiveWorkoutMetricProjection: Equatable {
     var sensorCapturedAt: Date?
     var hasSensorEvidence = false
     var loadIsComplete = true
+    var lastKnownHeartRate = 0
 
     static let empty = AtriaLiveWorkoutMetricProjection()
 
@@ -2627,6 +2639,7 @@ struct AtriaLiveWorkoutView: View {
     private var standardWorkoutContent: some View {
         ZStack {
             AtriaLiveWorkoutBackdrop(pulseStore: pulseStore,
+                                      metricStore: metricStore,
                                       maxHR: maxHR,
                                       restingHR: restingHR)
 
@@ -2636,6 +2649,7 @@ struct AtriaLiveWorkoutView: View {
                         header
                         AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
                         AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
+                                                   metricStore: metricStore,
                                                    coreLiveStore: coreLiveStore,
                                                    maxHR: maxHR,
                                                    restingHR: restingHR,
@@ -3484,12 +3498,17 @@ struct AtriaLiveWorkoutView: View {
 /// controls, sheets, and strength-log state at the screen root.
 private struct AtriaLiveWorkoutBackdrop: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
     let maxHR: Int
     let restingHR: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let zone = HRZone.zone(for: pulseStore.state.heartRate,
+        let heartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: pulseStore.state.heartRate,
+            lastKnown: metricStore.state.lastKnownHeartRate
+        )
+        let zone = HRZone.zone(for: heartRate,
                                maxHR: maxHR,
                                restingHR: restingHR)
         LinearGradient(colors: [zone.color.opacity(0.45), .black],
@@ -3574,7 +3593,12 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     let upperTargetZone: Int?
     let onEditTarget: () -> Void
 
-    private var heartRate: Int { pulseStore.state.heartRate }
+    private var heartRate: Int {
+        AtriaWorkoutHeartRateHold.displayed(
+            live: pulseStore.state.heartRate,
+            lastKnown: metricProjection.lastKnownHeartRate
+        )
+    }
     private var zone: HRZone {
         HRZone.zone(for: heartRate, maxHR: maxHR, restingHR: restingHR)
     }
@@ -3712,6 +3736,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
 
 private struct AtriaLiveWorkoutHeartBlock: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
     let restingHR: Int
@@ -3720,7 +3745,10 @@ private struct AtriaLiveWorkoutHeartBlock: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let heartRate = pulseStore.state.heartRate
+        let heartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: pulseStore.state.heartRate,
+            lastKnown: metricStore.state.lastKnownHeartRate
+        )
         let zone = HRZone.zone(for: heartRate, maxHR: maxHR, restingHR: restingHR)
         VStack(spacing: 12) {
             HStack(alignment: .center, spacing: 12) {

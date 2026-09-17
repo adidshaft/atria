@@ -279,4 +279,45 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertNil(AtriaPendingDeepLinkFile.consume())
         XCTAssertFalse(FileManager.default.fileExists(atPath: AtriaPendingDeepLinkFile.fileURL().path))
     }
+
+    func testSleepMetricDeepLinkIsNotSwallowedBySleepReview() throws {
+        let sleep = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/sleep?range=week")!))
+        XCTAssertEqual(sleep.metric, .sleep)
+        XCTAssertEqual(sleep.range, .week)
+
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("if pieces.first == \"metric\" { return false }"),
+                      "atria://metric/sleep must open the Sleep trend sheet")
+        XCTAssertTrue(home.contains("AtriaMetricDeepLink.parse(url)"))
+        let metricIndex = try XCTUnwrap(home.range(of: "if let metricLink = AtriaMetricDeepLink.parse(url)"))
+        let sleepReviewIndex = try XCTUnwrap(home.range(of: "if Self.isSleepReviewDeepLink(url)"))
+        XCTAssertTrue(metricIndex.lowerBound < sleepReviewIndex.lowerBound,
+                      "metric/sleep must be claimed before the sleep-review token matcher")
+    }
+
+    func testWorkoutDeepLinkStartsAndEndsARunningWorkout() throws {
+        let start = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/start")!))
+        XCTAssertEqual(start.action, .start)
+        XCTAssertEqual(start.activityType, .running)
+
+        let walking = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/start?type=walking")!))
+        XCTAssertEqual(walking.activityType, .walking)
+
+        let end = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/end")!))
+        XCTAssertEqual(end.action, .end)
+
+        XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://metric/hrv")!))
+        XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://overview")!))
+
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("pendingWorkoutDeepLink"))
+        XCTAssertTrue(home.contains("await handleWorkoutDeepLink(command)"))
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"))
+    }
 }
