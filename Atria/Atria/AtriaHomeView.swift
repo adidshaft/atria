@@ -716,29 +716,40 @@ struct AtriaHomeView: View {
                 return [Metric(title: "Duration",
                                value: Self.durationText(duration),
                                systemImage: "clock.fill")]
-            case .persisted(_, let snapshot, _):
+            case .persisted(let workout, let snapshot, _):
                 var result = [Metric(title: "Duration",
                                      value: snapshot.duration,
                                      systemImage: "clock.fill")]
-                if let distance = snapshot.distance {
-                    result.append(Metric(title: "Distance",
-                                         value: distance,
-                                         systemImage: "location.fill"))
-                }
-                if let steps = snapshot.steps, result.count < 3 {
-                    result.append(Metric(title: "Steps",
-                                         value: steps,
-                                         systemImage: "figure.walk"))
-                }
-                if let averageHeartRate = snapshot.averageHeartRate, result.count < 3 {
+                if let averageHeartRate = snapshot.averageHeartRate {
                     result.append(Metric(title: "Avg HR",
                                          value: averageHeartRate,
                                          systemImage: "heart.fill"))
+                }
+                let activity = AtriaWorkoutActivityType.resolved(
+                    activityType: workout.activityType,
+                    subtype: workout.activitySubtype,
+                    label: workout.label
+                )
+                if let steps = AtriaWorkoutSharePresentation.recapStepsText(
+                    count: workout.workoutSteps,
+                    isEstimated: workout.workoutStepsAreEstimated,
+                    capturedAt: workout.workoutStepsCapturedAt,
+                    workoutEndedAt: workout.end,
+                    activity: activity
+                ), result.count < 3 {
+                    result.append(Metric(title: "Steps",
+                                         value: steps,
+                                         systemImage: "figure.walk"))
                 }
                 if snapshot.strain != "--", result.count < 3 {
                     result.append(Metric(title: "Strain",
                                          value: snapshot.strain,
                                          systemImage: "flame.fill"))
+                }
+                if let distance = snapshot.distance, result.count < 3 {
+                    result.append(Metric(title: "Distance",
+                                         value: distance,
+                                         systemImage: "location.fill"))
                 }
                 if snapshot.peakHeartRate != "--", result.count < 3 {
                     result.append(Metric(title: "Peak HR",

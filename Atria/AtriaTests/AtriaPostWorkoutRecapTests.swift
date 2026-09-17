@@ -49,6 +49,13 @@ final class AtriaPostWorkoutRecapTests: XCTestCase {
         XCTAssertTrue(notice.contains("guard case .persisted(_, let snapshot, _) = outcome else { return nil }"))
         XCTAssertTrue(recap.contains("if let snapshot = notice.persistedShareSnapshot"))
         XCTAssertFalse(source.contains("retainedWorkoutShareSnapshot"))
+        XCTAssertTrue(recap.contains("case .persisted(let workout, let snapshot, _):"))
+        XCTAssertTrue(recap.contains("if let averageHeartRate = snapshot.averageHeartRate"))
+        XCTAssertTrue(recap.contains("AtriaWorkoutSharePresentation.recapStepsText("))
+        let avgHR = try XCTUnwrap(recap.range(of: "if let averageHeartRate = snapshot.averageHeartRate"))
+        let distance = try XCTUnwrap(recap.range(of: "if let distance = snapshot.distance, result.count < 3"))
+        XCTAssertLessThan(avgHR.lowerBound, distance.lowerBound,
+                          "Recap must prefer Avg HR and strain over GPS distance")
     }
 
     func testShareComposerWaitsForRecapDismissal() throws {

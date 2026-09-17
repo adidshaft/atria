@@ -243,6 +243,46 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
         ))
     }
 
+    func testRecapShowsEstimatedGyroWalkingStepsWhileShareOmitsThem() {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+        let capturedAt = end.addingTimeInterval(-1)
+        XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ), "105")
+        XCTAssertNil(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 0,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ))
+        XCTAssertNil(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .strength
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 842,
+            isEstimated: false,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ), "842")
+    }
+
     func testCompletedWorkoutShareOmitsStaleOrMissingStepProvenance() {
         let end = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
