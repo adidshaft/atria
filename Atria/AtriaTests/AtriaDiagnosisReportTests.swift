@@ -160,5 +160,97 @@ final class AtriaDiagnosisReportTests: XCTestCase {
                 .first { $0.category == "sessions_and_daily" }?
                 .paths.contains("atria-diagnosis-v1.json") == true
         )
+        XCTAssertTrue(
+            AtriaManagedStorageInventory.categoryPaths
+                .first { $0.category == "sessions_and_daily" }?
+                .paths.contains("atria-pending-deeplink-v1.txt") == true
+        )
+    }
+
+    func testOvernightMetricWindowsKeepOneHRVNumberAcrossDayWeekMonth() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let thursday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 12))!
+        let rollups = [
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 1))!,
+                lnRMSSD: log(40),
+                sleepSeconds: 25_000,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 10))!,
+                recovery: 78,
+                rhr: 61,
+                sleepSeconds: 20_000,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 15))!,
+                recovery: 54,
+                lnRMSSD: log(45),
+                rhr: 61,
+                sleepSeconds: 15_000,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 16))!,
+                recovery: 76,
+                lnRMSSD: log(77),
+                rhr: 55,
+                sleepSeconds: 26_100,
+                calendar: calendar
+            ),
+            DailyRollupStoreEntry(
+                day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17))!,
+                recovery: 38,
+                rhr: 75,
+                calendar: calendar
+            ),
+        ]
+        let windows = AtriaDiagnosisReport.overnightMetricWindows(
+            rollups: rollups,
+            now: thursday,
+            calendar: calendar
+        )
+        XCTAssertEqual(windows.hrvDay, 77)
+        XCTAssertEqual(windows.hrvWeek.map(\.value), [45, 77])
+        XCTAssertEqual(windows.hrvMonth.map(\.value), [40, 45, 77])
+        XCTAssertEqual(windows.hrvWeek.last?.value, windows.hrvDay)
+        XCTAssertEqual(windows.hrvMonth.last?.value, windows.hrvDay)
+        XCTAssertEqual(windows.recoveryDay, 76)
+        XCTAssertEqual(windows.recoveryWeek.map(\.value), [54, 76])
+        XCTAssertFalse(windows.recoveryWeek.map(\.value).contains(38))
+        XCTAssertEqual(windows.rhrDay, 55)
+        XCTAssertEqual(windows.rhrWeek.map(\.value), [61, 55])
+        XCTAssertFalse(windows.rhrWeek.map(\.value).contains(75))
+
+        let snapshot = AtriaDiagnosisReport.make(
+            now: thursday,
+            build: "99",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 78,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: 75,
+            overnightRecovery: 76,
+            todayRecovery: 38,
+            lastWorkout: nil,
+            liveHeartRate: 105,
+            liveZone: "Z1",
+            widgetHeartRate: 105,
+            metricWindows: windows
+        )
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_month_last_") })
     }
 }

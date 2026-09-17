@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Always-on, pullable snapshot of why live HR/IMU, recovery/HRV/RHR, widgets,
 /// Live Activity, and saved workouts currently disagree. Written to Documents
@@ -57,6 +58,23 @@ enum AtriaDiagnosisReport {
         var heartRate: Int?
     }
 
+    struct WindowPoint: Equatable, Codable {
+        var day: String
+        var value: Int
+    }
+
+    struct MetricWindows: Equatable, Codable {
+        var hrvDay: Int?
+        var hrvWeek: [WindowPoint]
+        var hrvMonth: [WindowPoint]
+        var recoveryDay: Int?
+        var recoveryWeek: [WindowPoint]
+        var recoveryMonth: [WindowPoint]
+        var rhrDay: Int?
+        var rhrWeek: [WindowPoint]
+        var rhrMonth: [WindowPoint]
+    }
+
     struct Event: Equatable, Codable {
         var at: Date
         var reason: String
@@ -73,6 +91,7 @@ enum AtriaDiagnosisReport {
         var recentNoHeartRateWorkouts: [Workout]?
         var liveActivity: LiveActivity
         var widget: Widget
+        var metricWindows: MetricWindows?
         var discrepancies: [String]
         var events: [Event]
     }
@@ -111,7 +130,8 @@ enum AtriaDiagnosisReport {
         recentNoHeartRateWorkouts: [Workout] = [],
         liveHeartRate: Int,
         liveZone: String?,
-        widgetHeartRate: Int?
+        widgetHeartRate: Int?,
+        metricWindows: MetricWindows? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -154,11 +174,13 @@ enum AtriaDiagnosisReport {
                 recovery: overnightRecovery ?? todayRecovery,
                 heartRate: widgetHeartRate
             ),
+            metricWindows: metricWindows,
             discrepancies: discrepancies(
                 connection: connection,
                 metrics: metrics,
                 lastWorkout: lastWorkout,
-                recentNoHeartRateWorkouts: recentNoHeartRateWorkouts
+                recentNoHeartRateWorkouts: recentNoHeartRateWorkouts,
+                metricWindows: metricWindows
             ),
             events: []
         )
@@ -168,7 +190,8 @@ enum AtriaDiagnosisReport {
         connection: Connection,
         metrics: Metrics,
         lastWorkout: Workout? = nil,
-        recentNoHeartRateWorkouts: [Workout] = []
+        recentNoHeartRateWorkouts: [Workout] = [],
+        metricWindows: MetricWindows? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -208,7 +231,70 @@ enum AtriaDiagnosisReport {
         if noHR.count > 1 {
             keys.append("workout_no_hr_count_\(noHR.count)")
         }
+        if let settled = metrics.settledHRV,
+           let weekLast = metricWindows?.hrvWeek.last?.value,
+           weekLast != settled {
+            keys.append("hrv_week_last_\(weekLast)_settled_\(settled)")
+        }
+        if let settled = metrics.settledHRV,
+           let monthLast = metricWindows?.hrvMonth.last?.value,
+           monthLast != settled {
+            keys.append("hrv_month_last_\(monthLast)_settled_\(settled)")
+        }
         return keys
+    }
+
+    /// Sleep-backed Day/Week/Month values for the same overnight numbers Today
+    /// shows. Week and Month skip nights without sleep, so they cannot invent
+    /// extra HRV points the Day sheet does not have.
+    static func overnightMetricWindows(
+        rollups: [DailyRollupStoreEntry],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> MetricWindows {
+        MetricWindows(
+            hrvDay: AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
+            hrvWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { entry in
+                guard let lnRMSSD = entry.lnRMSSD else { return nil }
+                return Int(exp(lnRMSSD).rounded())
+            },
+            hrvMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { entry in
+                guard let lnRMSSD = entry.lnRMSSD else { return nil }
+                return Int(exp(lnRMSSD).rounded())
+            },
+            recoveryDay: AtriaHealthMetricEvidencePresentation.newestSettledRecovery(from: rollups),
+            recoveryWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { $0.recovery },
+            recoveryMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.recovery },
+            rhrDay: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
+            rhrWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { $0.rhr },
+            rhrMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.rhr }
+        )
+    }
+
+    private static func windowPoints(
+        from rollups: [DailyRollupStoreEntry],
+        range: AtriaTrendRange,
+        now: Date,
+        calendar: Calendar,
+        value: (DailyRollupStoreEntry) -> Int?
+    ) -> [WindowPoint] {
+        let interval = range.periodInterval(containing: now, calendar: calendar)
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return rollups.compactMap { entry in
+            guard (entry.sleepSeconds ?? 0) > 0,
+                  entry.day >= interval.start,
+                  entry.day < interval.end,
+                  let value = value(entry) else { return nil }
+            return WindowPoint(
+                day: formatter.string(from: calendar.startOfDay(for: entry.day)),
+                value: value
+            )
+        }
+        .sorted { $0.day < $1.day }
     }
 
     static func publish(_ snapshot: Snapshot, reason: String, force: Bool = false) {

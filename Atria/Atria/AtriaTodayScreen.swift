@@ -294,8 +294,7 @@ struct AtriaTodayScreen: View {
     /// rule (2026-07-07): one notifications block, max 3 items (workout,
     /// sleep, plan).
     var systemNotifications: AnyView? = nil
-    @State private var metricDetail: AtriaMetricDetailKind?
-    @State private var metricSheetRange: AtriaTrendRange = .day
+    @State private var metricSheet: AtriaMetricSheetRoute?
     @State private var draggingSection: AtriaTodaySection?
     // User-arranged order of the big sections below the ring (2026-07-07
     // user feedback: "let people drag drop and arrange entire big sections").
@@ -460,9 +459,9 @@ struct AtriaTodayScreen: View {
 
             }
         }
-        .sheet(item: $metricDetail) { detail in
+        .sheet(item: $metricSheet) { route in
             AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
-                AtriaMetricDetailSheet(metric: detail,
+                AtriaMetricDetailSheet(metric: route.metric,
                                        rollups: highlightRollups,
                                        rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
                                        confirmedWorkouts: debugMetricDetailWorkouts ?? sessionProjectionStore.state.confirmedWorkouts,
@@ -486,10 +485,10 @@ struct AtriaTodayScreen: View {
                                        maxHeartRate: sessionProjectionStore.state.maxHeartRate,
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
-                                       provenance: provenance(for: detail),
+                                       provenance: provenance(for: route.metric),
                                        // Cached, not forced: the same value Home
                                        // hands Settings; refreshed on rollup/session.
-                                       maxHRSuggestion: detail == .strain
+                                       maxHRSuggestion: route.metric == .strain
                                            ? strainSheetMaxHRSuggestion
                                            : nil,
                                        onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) },
@@ -499,18 +498,15 @@ struct AtriaTodayScreen: View {
                                        // revision already invalidates this sheet.
                                        cycleStrainByDisplayDay:
                                         store.physiologicalCycleStrainByDisplayDay,
-                                       initialRange: metricSheetRange)
-                    .id("\(detail.rawValue)-\(metricSheetRange.rawValue)")
+                                       initialRange: route.range)
+                    .id(route.id)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }
         .task(id: pendingMetricDeepLink) {
             guard let link = pendingMetricDeepLink else { return }
-            metricDetail = nil
-            metricSheetRange = link.range
-            try? await Task.sleep(for: .milliseconds(50))
-            metricDetail = link.metric
+            metricSheet = AtriaMetricSheetRoute(metric: link.metric, range: link.range)
             onConsumeMetricDeepLink()
         }
         .sheet(isPresented: $showInsights) {
@@ -620,7 +616,7 @@ struct AtriaTodayScreen: View {
         }
         .onAppear {
             #if DEBUG
-            if metricDetail == nil,
+            if metricSheet == nil,
                let debugDetail = Self.debugInitialMetricDetail(arguments: ProcessInfo.processInfo.arguments) {
                 openMetricDetail(debugDetail)
             }
@@ -1299,8 +1295,7 @@ struct AtriaTodayScreen: View {
 
     private func openMetricDetail(_ metric: AtriaMetricDetailKind,
                                   range: AtriaTrendRange = .day) {
-        metricSheetRange = range
-        metricDetail = metric
+        metricSheet = AtriaMetricSheetRoute(metric: metric, range: range)
     }
 
     /// Compact "share as picture" icon button hosted top-right of the ring

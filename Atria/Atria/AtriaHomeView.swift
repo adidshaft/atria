@@ -1171,6 +1171,15 @@ struct AtriaHomeView: View {
     private var homePresentationModifiers: some View {
         homePublisherObservers
         .onOpenURL(perform: handleDeepLink)
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            drainPendingFileDeepLink()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, scenePhase == .active else { return }
+                drainPendingFileDeepLink()
+            }
+        }
         .sheet(item: $sameDayMainSleepRoute) { choice in
             AtriaSameDayMainSleepSheet(choice: choice) { primaryID in
                 store.resolveSameDayMainSleepChoice(choice, primaryID: primaryID)
@@ -1882,7 +1891,13 @@ struct AtriaHomeView: View {
                       url.absoluteString)
     }
 
+    private func drainPendingFileDeepLink() {
+        guard let url = AtriaPendingDeepLinkFile.consume() else { return }
+        handleDeepLink(url)
+    }
+
     private func drainPendingNotificationDeepLink() {
+        drainPendingFileDeepLink()
         guard let url = AtriaNotificationDeepLinkInbox.shared.consume(
             sceneIsActive: scenePhase == .active
         ) else { return }
@@ -12065,7 +12080,11 @@ final class AtriaHomeModel {
                 recentNoHeartRateWorkouts: recentNoHeartRateWorkouts.map(diagnosisWorkout),
                 liveHeartRate: lastKnownHR,
                 liveZone: zone,
-                widgetHeartRate: lastKnownHR > 0 ? lastKnownHR : nil
+                widgetHeartRate: lastKnownHR > 0 ? lastKnownHR : nil,
+                metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
+                    rollups: rollups,
+                    now: now
+                )
             ),
             reason: reason
         )
