@@ -14,6 +14,7 @@ final class AtriaRestingHRHighlightTests: XCTestCase {
                                               tzOffsetMinutes: 0,
                                               bedtimeMinutes: nil)
             entry.rhr = rhr
+            entry.sleepSeconds = 7 * 3_600
             return entry
         }
     }

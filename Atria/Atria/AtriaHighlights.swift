@@ -43,8 +43,9 @@ enum AtriaHighlights {
     }
 
     private static func higherRestingHeartRate(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        guard let latest = rollups.first?.rhr else { return nil }
-        let prior = rollups.dropFirst().prefix(7).compactMap(\.rhr)
+        let nights = rollups.filter { ($0.sleepSeconds ?? 0) > 0 && ($0.rhr ?? 0) > 0 }
+        guard let latest = nights.first?.rhr else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.rhr)
         guard prior.count >= 3 else { return nil }
         let average = Double(prior.reduce(0, +)) / Double(prior.count)
         guard Double(latest) >= average + 2 else { return nil }
@@ -59,8 +60,9 @@ enum AtriaHighlights {
     }
 
     private static func higherHRV(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        guard let latestLn = rollups.first?.lnRMSSD else { return nil }
-        let prior = rollups.dropFirst().prefix(7).compactMap(\.lnRMSSD).map { exp($0) }
+        let nights = rollups.filter { $0.lnRMSSD != nil }
+        guard let latestLn = nights.first?.lnRMSSD else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.lnRMSSD).map { exp($0) }
         guard prior.count >= 3 else { return nil }
         let latest = exp(latestLn)
         let average = prior.reduce(0, +) / Double(prior.count)
@@ -77,8 +79,9 @@ enum AtriaHighlights {
     }
 
     private static func lowerRestingHeartRate(rollups: [DailyRollupStoreEntry]) -> AtriaHighlight? {
-        guard let latest = rollups.first?.rhr else { return nil }
-        let prior = rollups.dropFirst().prefix(7).compactMap(\.rhr)
+        let nights = rollups.filter { ($0.sleepSeconds ?? 0) > 0 && ($0.rhr ?? 0) > 0 }
+        guard let latest = nights.first?.rhr else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.rhr)
         guard prior.count >= 3 else { return nil }
         let average = Double(prior.reduce(0, +)) / Double(prior.count)
         guard Double(latest) <= average - 2 else { return nil }

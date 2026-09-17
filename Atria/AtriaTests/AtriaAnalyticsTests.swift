@@ -5435,6 +5435,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         func rollup(daysAgo: Int, sleepPerformance: Int?, rhr: Int?) -> DailyRollupStoreEntry {
             DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -daysAgo, to: today)!,
                                   rhr: rhr,
+                                  sleepSeconds: 7 * 3_600,
                                   sleepPerformance: sleepPerformance,
                                   calendar: calendar)
         }
