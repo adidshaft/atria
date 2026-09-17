@@ -449,6 +449,8 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         )
 
         XCTAssertTrue(today.contains("style: .compactBar"))
+        XCTAssertTrue(today.contains("recentSavedWorkouts"))
+        XCTAssertTrue(today.contains("AtriaActivityWorkoutDetailSheetHost("))
         XCTAssertTrue(today.contains("showInsights = true"))
         XCTAssertTrue(today.contains("AtriaLearnedInsightsSheet("))
         XCTAssertTrue(today.contains("ledger: sessionProjectionStore.state.learnedInsightLedger"))

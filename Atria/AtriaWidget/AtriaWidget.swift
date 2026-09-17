@@ -2024,11 +2024,23 @@ private func liveActivityStatusPresentation(
                      tint: .orange,
                      accessibilityText: "Workout active, strap reconnecting")
     case .stale:
+        if state.heartRate > 0 {
+            return .init(text: "Last HR",
+                         systemImage: "heart.fill",
+                         tint: .secondary,
+                         accessibilityText: "Workout active, last heart rate \(state.heartRate)")
+        }
         return .init(text: "Signal stale",
                      systemImage: "exclamationmark.triangle.fill",
                      tint: .orange,
                      accessibilityText: "Workout active, heart rate signal stale")
     case .unavailable:
+        if state.heartRate > 0 {
+            return .init(text: "Last HR",
+                         systemImage: "heart.fill",
+                         tint: .secondary,
+                         accessibilityText: "Workout active, last heart rate \(state.heartRate)")
+        }
         return .init(text: "No signal",
                      systemImage: "exclamationmark.circle",
                      tint: .secondary,

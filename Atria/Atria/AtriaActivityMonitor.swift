@@ -3544,7 +3544,7 @@ enum AtriaActivityWorkoutStressProjection {
 /// Stress history is relevant only while a workout detail is presented. Retain
 /// the store without broad observation and subscribe to its two history tokens,
 /// so live pulse/state updates do not repeatedly filter the retained ring.
-private struct AtriaActivityWorkoutDetailSheetHost: View {
+struct AtriaActivityWorkoutDetailSheetHost: View {
     let store: SessionStore
     let workout: UserConfirmedWorkout
     let stressMonitorStore: AtriaStressMonitorStore

@@ -24947,6 +24947,11 @@ final class SessionStore: ObservableObject {
         on now: Date = Date(),
         calendar: Calendar = .current
     ) -> Int? {
+        if let settled = AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(
+            from: dailyRollupHistory
+        ) {
+            return settled
+        }
         let cycle = AtriaPhysiologicalCycle.current(now: now,
                                                     confirmedSleeps: cachedConfirmedSleeps,
                                                     calendar: calendar)
