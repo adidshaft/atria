@@ -319,6 +319,8 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("pendingWorkoutDeepLink"))
         XCTAssertTrue(home.contains("await handleWorkoutDeepLink(command)"))
         XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"))
+        XCTAssertTrue(home.contains("workoutReviewDraft = nil"),
+                      "a start deep link must dismiss the saved-workout sheet so the live HUD can present")
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {
