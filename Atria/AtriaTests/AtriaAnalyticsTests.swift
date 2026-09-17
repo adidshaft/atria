@@ -2729,6 +2729,19 @@ final class AtriaAnalyticsTests: XCTestCase {
             ),
             51
         )
+        XCTAssertEqual(
+            AtriaHealthMetricEvidencePresentation.newestSettledRecovery(
+                from: [
+                    DailyRollupStoreEntry(day: sep15, recovery: 61, sleepSeconds: 7 * 3_600, calendar: calendar),
+                    DailyRollupStoreEntry(day: sep16, recovery: 79, sleepSeconds: 7 * 3_600, calendar: calendar),
+                    DailyRollupStoreEntry(day: calendar.date(from: DateComponents(year: 2026, month: 9, day: 17))!,
+                                          recovery: 38,
+                                          rhr: 84,
+                                          calendar: calendar),
+                ]
+            ),
+            79
+        )
     }
 
     func testHealthMetricEvidenceDoesNotCallOlderSavedMorningYesterday() {

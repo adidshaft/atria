@@ -37,6 +37,7 @@ Pulled files, when present:
   - sessions.json
   - daily-rollups.json
   - learned-insights-v1.json
+  - atria-diagnosis-v1.json
   - historical-archive.catalog-v2.json
   - atria-active-session.json
   - atria-active-session.segments/
@@ -354,6 +355,7 @@ deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"
 deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
 copy_from_container "Documents/learned-insights-v1.json" "$evidence_dir/learned-insights-v1.json" "learned_insights" || true
+copy_from_container "Documents/atria-diagnosis-v1.json" "$evidence_dir/atria-diagnosis-v1.json" "diagnosis" || true
 copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
   "$evidence_dir/historical-archive.catalog-v2.json" \
   "historical_archive_catalog" || true
@@ -2895,6 +2897,40 @@ def emit_projection_artifact_revisions():
         print(f"widget_projection_target_present={bool_int(widget.get('widgetTargetPresent'))}")
     else:
         print("widget_projection_status=missing")
+
+    diagnosis_path = evidence / "atria-diagnosis-v1.json"
+    if diagnosis_path.exists():
+        try:
+            diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"diagnosis_status=error")
+            print(f"diagnosis_error={type(exc).__name__}:{exc}")
+        else:
+            print("diagnosis_status=ok")
+            print(f"diagnosis_schema={diagnosis.get('schema', 'missing')}")
+            print(f"diagnosis_recorded_at={diagnosis.get('recordedAt', 'missing')}")
+            print(f"diagnosis_build={diagnosis.get('build', 'missing')}")
+            discrepancies = diagnosis.get("discrepancies")
+            if isinstance(discrepancies, list) and discrepancies:
+                print(f"diagnosis_discrepancies={','.join(str(item) for item in discrepancies)}")
+            else:
+                print("diagnosis_discrepancies=none")
+            connection = diagnosis.get("connection") if isinstance(diagnosis.get("connection"), dict) else {}
+            print(f"diagnosis_connection_status={connection.get('status', 'missing')}")
+            print(f"diagnosis_recovering={connection.get('recovering', 'missing')}")
+            print(f"diagnosis_hr_age_s={connection.get('hrAgeSeconds', 'missing')}")
+            print(f"diagnosis_imu_age_s={connection.get('imuAgeSeconds', 'missing')}")
+            print(f"diagnosis_stream5={connection.get('stream5Confirmed', 'missing')}")
+            metrics = diagnosis.get("metrics") if isinstance(diagnosis.get("metrics"), dict) else {}
+            print(f"diagnosis_overnight_recovery={metrics.get('overnightRecovery', 'missing')}")
+            print(f"diagnosis_today_recovery={metrics.get('todayRecovery', 'missing')}")
+            print(f"diagnosis_settled_hrv={metrics.get('settledHRV', 'missing')}")
+            workout = diagnosis.get("lastWorkout") if isinstance(diagnosis.get("lastWorkout"), dict) else {}
+            print(f"diagnosis_last_workout_type={workout.get('activityType', 'missing')}")
+            print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")
+            print(f"diagnosis_last_workout_reason={workout.get('reason', 'missing')}")
+    else:
+        print("diagnosis_status=missing")
 
 emit_projection_artifact_revisions()
 PY

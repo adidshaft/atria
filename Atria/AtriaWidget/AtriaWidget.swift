@@ -992,6 +992,8 @@ struct AtriaWidgetEntryView: View {
         switch metric {
         case .recovery:
             guard snapshot.recoveryPercent != nil else { return "Learning" }
+            let detail = snapshot.recoveryDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !detail.isEmpty { return detail }
             return displayRecoveryEvidence(snapshot)
         case .strain:
             guard AtriaWidgetMetric.strain.value(snapshot, now: entry.date) != "--" else {
@@ -2104,20 +2106,14 @@ struct AtriaLiveActivityWidget: Widget {
                 AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate,
                                                     isLive: signalFresh)
             } minimal: {
-                if nominalState {
-                    AtriaDynamicIslandMinimalHeartRate(
-                        heartRate: context.state.heartRate,
-                        activityName: context.state.activityName ?? "Workout",
-                        zoneLabel: liveActivityZoneLabel(for: context.state,
-                                                        availability: heartAvailability),
-                        tint: liveActivityZoneColor(for: context.state,
-                                                    availability: heartAvailability)
-                    )
-                } else {
-                    Image(systemName: status.systemImage)
-                        .foregroundStyle(status.tint)
-                        .accessibilityLabel(status.accessibilityText)
-                }
+                AtriaDynamicIslandMinimalHeartRate(
+                    heartRate: context.state.heartRate,
+                    activityName: context.state.activityName ?? "Workout",
+                    zoneLabel: liveActivityZoneLabel(for: context.state,
+                                                    availability: heartAvailability),
+                    tint: liveActivityZoneColor(for: context.state,
+                                                availability: heartAvailability)
+                )
             }
             .widgetURL(atriaVitalsURL)
             .keylineTint(nominalState
@@ -3594,7 +3590,11 @@ enum AtriaWidgetMetric: String, Identifiable {
             }
             return "This morning"
         case .rhr:
-            return snapshot.restingHR == nil ? "Awaiting current sleep" : "This morning"
+            guard snapshot.restingHR != nil else { return "Awaiting current sleep" }
+            if let capturedAt = snapshot.hrvCapturedAt {
+                return atriaOvernightStatusText(capturedAt, now: now)
+            }
+            return "This morning"
         }
     }
 

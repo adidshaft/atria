@@ -239,9 +239,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "compact trailing should retain the current measured heart rate")
         XCTAssertTrue(island.contains("AtriaDynamicIslandMinimalHeartRate("),
                       "minimal coexistence should prefer updated workout information over a static glyph")
-        XCTAssertTrue(island.contains("if nominalState"))
+        XCTAssertTrue(island.contains("if !nominalState"),
+                      "compact leading still yields the target/glyph to paused, ending, and reconnecting truth")
         XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
-                      "paused, ending, reconnecting, and stale truth must override the live metric")
+                      "paused, ending, and reconnecting still mark compact leading")
+        XCTAssertFalse(island.contains("} minimal: {\n                if nominalState"),
+                       "the last numeric HR must stay in the minimal island after the live window expires")
         XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),
                        "minimal must spend its narrow slot on the legible three-digit value")
         XCTAssertTrue(minimalHeartRate.contains("liveActivityDisplayedHeartRateText(heartRate)"))

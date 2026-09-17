@@ -1682,6 +1682,10 @@ enum WidgetSnapshotPublisher {
         let settledRHR = AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(
             from: store.dailyRollupHistory
         )
+        let settledRecoveryRollup = AtriaHealthMetricEvidencePresentation.newestSettledRecoveryRollup(
+            from: store.dailyRollupHistory
+        )
+        let settledRecovery = settledRecoveryRollup?.recovery
         let hrvState: String
         if hrvRMSSD == nil {
             hrvState = "learning"
@@ -1743,6 +1747,12 @@ enum WidgetSnapshotPublisher {
             calendar: calendar
         )
         let presentedWidgetRecovery = widgetDayResolution.recoveryOverride ?? widgetRecovery
+        let overnightWidgetRecoveryPercent = settledRecovery ?? presentedWidgetRecovery.percent
+        let overnightWidgetRecoveryDetail = settledRecoveryRollup.map {
+            AtriaHealthMetricEvidencePresentation.settledRecoveryDetail(rollup: $0)
+        } ?? presentedWidgetRecovery.detail
+        let overnightWidgetRecoveryConfidence = settledRecoveryRollup?.recoverySummary?.confidence
+            ?? presentedWidgetRecovery.confidence.rawValue
         let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
         // Same cross-midnight hold as the app (field report item 4), so the
         // widget and the Today ring cannot disagree about whether last night's
@@ -1766,9 +1776,9 @@ enum WidgetSnapshotPublisher {
         // already-installed widget extensions continue decoding the payload.
         var snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
-                                      recoveryPercent: presentedWidgetRecovery.percent,
-                                      recoveryConfidence: presentedWidgetRecovery.confidence.rawValue,
-                                      recoveryDetail: presentedWidgetRecovery.detail,
+                                      recoveryPercent: overnightWidgetRecoveryPercent,
+                                      recoveryConfidence: overnightWidgetRecoveryConfidence,
+                                      recoveryDetail: overnightWidgetRecoveryDetail,
                                       strain: presentedWidgetStrain,
                                       strainDetail: widgetDayResolution.strainOverride != nil
                                         ? "Partial · current day"
@@ -1897,7 +1907,7 @@ enum WidgetSnapshotPublisher {
         let whiteboardHRVMS = settledHRV
         let whiteboardModel = AtriaTodayMorningWhiteboardModel.make(
             hrvMS: whiteboardHRVMS,
-            restingHR: presentationRestingHeartRate,
+            restingHR: settledRHR ?? presentationRestingHeartRate,
             baseline: AtriaBaselineTargetSnapshot(store.baseline),
             sleepDurationText: widgetSleepIsCurrentDay ? whiteboardNight?.durationText : nil,
             nightConfirmed: widgetSleepIsCurrentDay ? whiteboardNight?.confirmed : nil,
@@ -1933,9 +1943,16 @@ enum WidgetSnapshotPublisher {
                 forKey: "atria.target.recovery.yellowLower"
             ) as? Double) ?? 34
         )
-        snapshot.hrvCapturedAt = settledHRVRollup.map {
-            calendar.startOfDay(for: $0.day)
-        }
+        snapshot.hrvCapturedAt = [
+            settledHRVRollup?.day,
+            AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRateRollup(
+                from: store.dailyRollupHistory
+            )?.day,
+            settledRecoveryRollup?.day
+        ]
+        .compactMap { $0 }
+        .max()
+        .map { calendar.startOfDay(for: $0) }
         snapshot.biomarkerExpiresAt = displayDayEnd
         // 2026-08-20 (widget-sync RC3): only the full stable publish may
         // advance the stable-evidence clock the extension's stale disclosure

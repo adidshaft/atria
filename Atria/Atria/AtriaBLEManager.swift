@@ -1283,6 +1283,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingHRJump: (rate: Int, at: Date)?
     private var lastAcceptedHRAt: Date?
     var lastAcceptedHeartRateAt: Date? { lastAcceptedHRAt }
+    var lastAcceptedMotionFrameAt: Date? { lastR10MotionFrameAt }
+    var liveStream5NotifyConfirmed: Bool { strapStream5NotifyConfirmed }
 
     /// Onboarding and connection UI must never promote a cached heart rate from
     /// an earlier link. A link is Live only after this connection epoch accepts
