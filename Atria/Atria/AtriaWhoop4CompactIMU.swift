@@ -106,15 +106,19 @@ enum AtriaWhoop4CompactIMUDecoder {
 }
 
 /// Concatenates compact 100 Hz 10-sample slices into R10 seconds. Lock-screen
-/// CoreBluetooth often delivers ten of those slices in one callback; stretching
-/// the first slice across a whole second (117) or interpolating it across the
-/// inter-callback gap (116) moved a 1.23 Hz stroll out of the step band.
+/// CoreBluetooth often delivers those slices in a burst (device 2026-09-17:
+/// 8.5 ms interarrival on 118, 105 steps, 0 gyro). Emitting every slice as
+/// soon as 100 samples exist time-compresses a 1.14 Hz stroll out of band.
+/// Keep native slices, and admit only about one assembled second per wall
+/// second so cadence stays physical.
 final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
     private var outputGyro: [AtriaR10MotionFrame.Vector3] = []
     private var lastPacketAt: Date?
     private var lastEmittedTimestamp: UInt32 = 0
+    private var streamStartedAt: Date?
+    private var admittedSampleCount = 0
 
     func push(_ packet: AtriaWhoop4CompactIMUDecoder.Packet,
               receivedAt: Date) -> [AtriaR10MotionFrame] {
@@ -128,13 +132,19 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             outputAccel.removeAll(keepingCapacity: true)
             outputGyro.removeAll(keepingCapacity: true)
             lastPacketAt = nil
+            streamStartedAt = nil
+            admittedSampleCount = 0
             if lastEmittedTimestamp > 0 {
                 lastEmittedTimestamp &+= 2
             }
         }
 
-        outputAccel.append(contentsOf: packet.acceleration.prefix(sampleCount))
-        outputGyro.append(contentsOf: packet.rotationRate.prefix(sampleCount))
+        let take = min(sampleCount, remainingSampleBudget(receivedAt: receivedAt))
+        if take > 0 {
+            outputAccel.append(contentsOf: packet.acceleration.prefix(take))
+            outputGyro.append(contentsOf: packet.rotationRate.prefix(take))
+            admittedSampleCount += take
+        }
         lastPacketAt = receivedAt
 
         var frames: [AtriaR10MotionFrame] = []
@@ -158,6 +168,19 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         outputGyro.removeAll(keepingCapacity: true)
         lastPacketAt = nil
         lastEmittedTimestamp = 0
+        streamStartedAt = nil
+        admittedSampleCount = 0
+    }
+
+    /// One assembled R10 second per wall-clock second, plus 1.05 s slack so a
+    /// coalesced 10-packet burst can still complete the current second.
+    private func remainingSampleBudget(receivedAt: Date) -> Int {
+        if streamStartedAt == nil {
+            streamStartedAt = receivedAt
+        }
+        let elapsed = max(0, receivedAt.timeIntervalSince(streamStartedAt ?? receivedAt))
+        let budget = Int((elapsed + 1.05) * Double(AtriaR10MotionDecoder.sampleCount))
+        return max(0, budget - admittedSampleCount)
     }
 
     private func makeFrame(
