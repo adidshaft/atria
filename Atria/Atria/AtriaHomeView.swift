@@ -4049,7 +4049,10 @@ struct AtriaHomeView: View {
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         // A missing dense strap boundary stays unavailable; phone motion is
         // never promoted into a wrist-derived workout total.
-        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence)
+        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(
+            strap: strapEvidence,
+            sourceVersion: workoutSession?.stepSourceVersion ?? .strapAccelerometerV1
+        )
         // Stale-label seam (2026-08-30): the HUD's onStop closure passes the
         // activity type captured at its last render. Finalize reads the OWNING
         // session instead, so a switch racing the End tap can never save under

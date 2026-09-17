@@ -43,6 +43,20 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
 
         XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: preliminary))
         XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: unstamped))
+        XCTAssertEqual(
+            AtriaCompletedWorkoutStepEvidence.select(
+                strap: preliminary,
+                sourceVersion: .strapGyroCadenceAmbulatoryV1
+            ),
+            preliminary,
+            "a frozen walking/running/hiking source owns the gyro-cadence total even while estimated"
+        )
+        XCTAssertNil(
+            AtriaCompletedWorkoutStepEvidence.select(
+                strap: unstamped,
+                sourceVersion: .strapGyroCadenceAmbulatoryV1
+            )
+        )
     }
 
     func testHeadlessPausePersistsCanonicalPauseAndStepAnchor() throws {
@@ -624,6 +638,8 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
                        "The app-lifetime runtime is the only queue-consumption owner")
         XCTAssertTrue(runtime.contains("guard pendingActionReplayTask == nil else { return }"))
         XCTAssertTrue(runtime.contains("Task.detached(priority: .userInitiated"))
+        XCTAssertTrue(runtime.contains("sourceVersion: intent.stepSourceVersion"),
+                      "root recovery must keep estimated gyro-cadence totals on walking workouts")
     }
 
     func testHomeAppearanceYieldsBeforeRestorationAndPublisherSetup() throws {

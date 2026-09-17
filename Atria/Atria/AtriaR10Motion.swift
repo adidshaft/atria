@@ -377,6 +377,11 @@ enum AtriaGyroCadenceResearchPedometer {
     static let windowSeconds = 4.0
     static let hopSeconds = 0.5
     static let stepBandLoHz = 1.3
+    /// Compact `0x33` lock-screen walking sat at ~1.23 Hz (100 steps / 81 s).
+    /// Native 1.3 Hz excludes the 1.25 Hz DFT bin, so that bout scored as
+    /// sway and the saved walk stored 0 steps. 1.1 Hz still leaves 1.0 Hz
+    /// sitting/rocking in the sway band.
+    static let compactAssembledStepBandLoHz = 1.1
     static let stepBandHiHz = 3.0
     static let spectrumFloorHz = 0.3
     static let spectrumCeilingHz = 4.0
@@ -403,7 +408,8 @@ enum AtriaGyroCadenceResearchPedometer {
                       sampleRateHz: Int = sampleRateHz,
                       rotationLevelGate: Double = rotationLevelGate,
                       prominenceGate: Double = prominenceGate,
-                      turnWindowDiscount: Double = turnWindowDiscount) -> Double {
+                      turnWindowDiscount: Double = turnWindowDiscount,
+                      stepBandLoHz: Double = stepBandLoHz) -> Double {
         let win = Int(windowSeconds * Double(sampleRateHz))
         let hop = Int(hopSeconds * Double(sampleRateHz))
         guard samples.count >= win, win > 0, hop > 0 else { return 0 }
@@ -544,11 +550,14 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         private(set) var observedTotalSteps = 0.0
 
         private var scoringRotationLevelGate = AtriaGyroCadenceResearchPedometer.rotationLevelGate
+        private var scoringStepBandLoHz = AtriaGyroCadenceResearchPedometer.stepBandLoHz
 
         mutating func ingest(deviceTimestamp: UInt32,
                              rotationMagnitudes: [Double],
-                             rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate) -> Snapshot? {
+                             rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate,
+                             stepBandLoHz: Double = AtriaGyroCadenceResearchPedometer.stepBandLoHz) -> Snapshot? {
             scoringRotationLevelGate = rotationLevelGate
+            scoringStepBandLoHz = stepBandLoHz
             var scored = false
             switch AtriaGyroCadenceResearchShadow.spanContinuity(
                 previousDeviceTimestamp: lastDeviceTimestamp,
@@ -569,7 +578,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
             ) {
                 closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
                     contiguousRotationMagnitudes: Array(spanMagnitudes[..<prefix]),
-                    rotationLevelGate: scoringRotationLevelGate
+                    rotationLevelGate: scoringRotationLevelGate,
+                    stepBandLoHz: scoringStepBandLoHz
                 )
                 spanMagnitudes.removeFirst(prefix)
                 closedSpans += 1
@@ -586,7 +596,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
             let open = spanMagnitudes.isEmpty ? 0
                 : AtriaGyroCadenceResearchPedometer.steps(
                     contiguousRotationMagnitudes: spanMagnitudes,
-                    rotationLevelGate: scoringRotationLevelGate
+                    rotationLevelGate: scoringRotationLevelGate,
+                    stepBandLoHz: scoringStepBandLoHz
                 )
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps + open)
             return observedTotalSteps
@@ -596,7 +607,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
             guard !spanMagnitudes.isEmpty else { return }
             closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
                 contiguousRotationMagnitudes: spanMagnitudes,
-                rotationLevelGate: scoringRotationLevelGate
+                rotationLevelGate: scoringRotationLevelGate,
+                stepBandLoHz: scoringStepBandLoHz
             )
             spanMagnitudes.removeAll(keepingCapacity: false)
             closedSpans += 1
@@ -654,11 +666,13 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
     func ingest(deviceTimestamp: UInt32,
                 rotationMagnitudes: [Double],
                 rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate,
+                stepBandLoHz: Double = AtriaGyroCadenceResearchPedometer.stepBandLoHz,
                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         queue.async { [self] in
             if let snapshot = state.ingest(deviceTimestamp: deviceTimestamp,
                                            rotationMagnitudes: rotationMagnitudes,
-                                           rotationLevelGate: rotationLevelGate) {
+                                           rotationLevelGate: rotationLevelGate,
+                                           stepBandLoHz: stepBandLoHz) {
                 onUpdate(snapshot)
             }
         }
@@ -1779,7 +1793,10 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                     rotationMagnitudes: rotationMagnitudes,
                     rotationLevelGate: frame.deviceClock == .compactAssembled
                         ? AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
-                        : AtriaGyroCadenceResearchPedometer.rotationLevelGate
+                        : AtriaGyroCadenceResearchPedometer.rotationLevelGate,
+                    stepBandLoHz: frame.deviceClock == .compactAssembled
+                        ? AtriaGyroCadenceResearchPedometer.compactAssembledStepBandLoHz
+                        : AtriaGyroCadenceResearchPedometer.stepBandLoHz
                 )
             }
         }
