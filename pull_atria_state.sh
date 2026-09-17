@@ -2892,6 +2892,10 @@ def emit_projection_artifact_revisions():
     if isinstance(widget, dict):
         print("widget_projection_status=ok")
         print(f"widget_projection_created_at={widget.get('createdAt', 'missing')}")
+        print(f"widget_projection_recovery={widget.get('recoveryPercent', 'missing')}")
+        print(f"widget_projection_hrv={widget.get('hrvRMSSD', 'missing')}")
+        print(f"widget_projection_rhr={widget.get('restingHR', 'missing')}")
+        print(f"widget_projection_hrv_captured_at={widget.get('hrvCapturedAt', 'missing')}")
         print(f"widget_projection_strain={widget.get('strain', 'missing')}")
         print(f"widget_projection_sleep_hours={widget.get('sleepHours', 'missing')}")
         print(f"widget_projection_storage={widget.get('storage', 'missing')}")
@@ -2942,6 +2946,18 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_hrv_month={_window_label(windows.get('hrvMonth'))}")
             print(f"diagnosis_recovery_week={_window_label(windows.get('recoveryWeek'))}")
             print(f"diagnosis_rhr_week={_window_label(windows.get('rhrWeek'))}")
+            print(f"diagnosis_sleep_week={_window_label(windows.get('sleepWeek'))}")
+            print(f"diagnosis_sleep_month={_window_label(windows.get('sleepMonth'))}")
+            live_activity = diagnosis.get("liveActivity") if isinstance(diagnosis.get("liveActivity"), dict) else {}
+            print(f"diagnosis_live_activity_recording={live_activity.get('recording', 'missing')}")
+            print(f"diagnosis_live_activity_hr={live_activity.get('heartRate', 'missing')}")
+            widget_diag = diagnosis.get("widget") if isinstance(diagnosis.get("widget"), dict) else {}
+            print(f"diagnosis_widget_hrv={widget_diag.get('hrv', 'missing')}")
+            print(f"diagnosis_widget_rhr={widget_diag.get('rhr', 'missing')}")
+            print(f"diagnosis_widget_recovery={widget_diag.get('recovery', 'missing')}")
+            print(f"diagnosis_widget_live_hr={widget_diag.get('heartRate', 'missing')}")
+            print(f"diagnosis_widget_hrv_captured_at={widget_diag.get('hrvCapturedAt', 'missing')}")
+            print(f"diagnosis_widget_created_at={widget_diag.get('createdAt', 'missing')}")
             workout = diagnosis.get("lastWorkout") if isinstance(diagnosis.get("lastWorkout"), dict) else {}
             print(f"diagnosis_last_workout_type={workout.get('activityType', 'missing')}")
             print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")

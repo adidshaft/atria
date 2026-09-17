@@ -224,6 +224,9 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(windows.rhrDay, 55)
         XCTAssertEqual(windows.rhrWeek.map(\.value), [61, 55])
         XCTAssertFalse(windows.rhrWeek.map(\.value).contains(75))
+        XCTAssertEqual(windows.sleepDay, 435)
+        XCTAssertEqual(windows.sleepWeek.map(\.value), [250, 435])
+        XCTAssertEqual(windows.sleepMonth.last?.value, windows.sleepDay)
 
         let snapshot = AtriaDiagnosisReport.make(
             now: thursday,
@@ -252,5 +255,16 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         )
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_week_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_month_last_") })
+    }
+
+    func testOvernightClockNamesYesterdayMorningNotTheLivePatchTime() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 13, minute: 10))!
+        let captured = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 0))!
+        XCTAssertEqual(
+            AtriaOvernightClockText.status(captured, now: now, calendar: calendar),
+            "Yesterday morning"
+        )
     }
 }

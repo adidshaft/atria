@@ -911,6 +911,7 @@ struct AtriaHomeView: View {
     }
     @State private var showCustomizeSheet = false
     @State private var showWidgetProofSheet = false
+    @State private var showWidgetOvernightBoard = false
     @State private var widgetProofSnapshot: WidgetSnapshot?
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var workoutPersistenceRevision: UInt64 = 0
@@ -1243,6 +1244,7 @@ struct AtriaHomeView: View {
     }
 
     private func handleWorkoutSessionPresenceChange(_ ended: Bool) {
+        model.liveWorkoutIsActive = !ended
         if ended {
             workoutHeartRateBroadcastEnabled = false
             liveWorkoutTRIMPAccumulator.clear()
@@ -1573,6 +1575,9 @@ struct AtriaHomeView: View {
             AtriaWidgetProofSheet(snapshot: widgetProofSnapshot,
                                   layoutConfig: currentHomeLayoutConfig)
         }
+        .sheet(isPresented: $showWidgetOvernightBoard) {
+            AtriaWidgetOvernightBoard(snapshot: widgetProofSnapshot)
+        }
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
                 AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
@@ -1881,6 +1886,17 @@ struct AtriaHomeView: View {
                           url.absoluteString)
             return
         }
+        if Self.isWidgetOvernightBoardDeepLink(url) {
+            selectedTab = .overview
+            hasUnlockedPrimaryContent = true
+            widgetProofSnapshot = WidgetSnapshotPublisher.publish(store: store,
+                                                                  ble: ble,
+                                                                  reason: "deeplink_widget_board")
+            showWidgetOvernightBoard = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=widget_board url=%@",
+                          url.absoluteString)
+            return
+        }
         if Self.isWidgetProofDeepLink(url) {
             selectedTab = .overview
             hasUnlockedPrimaryContent = true
@@ -1992,7 +2008,14 @@ struct AtriaHomeView: View {
         guard url.scheme?.lowercased() == "atria" else { return false }
         let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
             .map { $0.lowercased() }
-        return pieces.first == "widget-proof" || pieces.first == "widget-board"
+        return pieces.first == "widget-proof"
+    }
+
+    private static func isWidgetOvernightBoardDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "widget-board"
     }
 
     private func postDebugNotificationDeepLinkIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -10118,6 +10141,8 @@ struct AtriaHomeLivePresentationAuthority: Equatable, Sendable {
 @MainActor
 final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
+    /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
+    var liveWorkoutIsActive = false
     /// Charging is a short explicit-evidence lease, not a percentage trend.
     /// The strap can keep reporting rising SOC after physical removal, so the
     /// top-left bolt disappears within 90 seconds unless another accepted
@@ -12108,10 +12133,13 @@ final class AtriaHomeModel {
             .filter { $0.samples <= 0 }
             .sorted { $0.end > $1.end }
             .prefix(5)
-        let lastKnownHR = pulse.heartRate > 0
-            ? pulse.heartRate
-            : (ble.session.last?.bpm ?? 0)
+        let lastKnownHR = AtriaWorkoutHeartRateHold.displayed(
+            live: pulse.heartRate,
+            lastKnown: ble.session.last?.bpm ?? 0,
+            retained: ble.lastKnownDisplayHeartRate
+        )
         let zone = pulse.heartRateZone?.name
+        let publishedWidget = AtriaIntentSnapshotStore.loadLatestSnapshot()
         func diagnosisWorkout(_ workout: UserConfirmedWorkout) -> AtriaDiagnosisReport.Workout {
             AtriaDiagnosisReport.Workout(
                 activityType: workout.activityType ?? workout.label,
@@ -12136,7 +12164,7 @@ final class AtriaHomeModel {
                 stream5Confirmed: ble.liveStream5NotifyConfirmed,
                 batteryPercent: core.batteryLevel >= 0 ? core.batteryLevel : nil,
                 officialAppRisk: ble.officialAppCoexistenceRisk.rawValue,
-                workoutRecording: ble.isRecording,
+                workoutRecording: liveWorkoutIsActive,
                 settledHRV: AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
                 liveHRV: ble.hrv > 0 ? ble.hrv : nil,
                 overnightRHR: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
@@ -12147,7 +12175,12 @@ final class AtriaHomeModel {
                 recentNoHeartRateWorkouts: recentNoHeartRateWorkouts.map(diagnosisWorkout),
                 liveHeartRate: lastKnownHR,
                 liveZone: zone,
-                widgetHeartRate: lastKnownHR > 0 ? lastKnownHR : nil,
+                widgetHeartRate: publishedWidget?.heartRate,
+                widgetHRV: publishedWidget?.hrvRMSSD,
+                widgetRHR: publishedWidget?.restingHR,
+                widgetRecovery: publishedWidget?.recoveryPercent,
+                widgetHRVCapturedAt: publishedWidget?.hrvCapturedAt,
+                widgetCreatedAt: publishedWidget?.createdAt,
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now
