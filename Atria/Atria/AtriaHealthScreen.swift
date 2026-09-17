@@ -779,6 +779,15 @@ enum AtriaHealthMetricEvidencePresentation {
             .max { $0.day < $1.day }
     }
 
+    static func newestSettledSleepSeconds(
+        from rollups: [DailyRollupStoreEntry]
+    ) -> TimeInterval? {
+        rollups
+            .filter { ($0.sleepSeconds ?? 0) > 0 }
+            .max { $0.day < $1.day }?
+            .sleepSeconds
+    }
+
     static func settledRecoveryDetail(rollup: DailyRollupStoreEntry,
                                       now: Date = Date(),
                                       calendar: Calendar = .current) -> String {

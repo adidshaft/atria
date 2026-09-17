@@ -56,6 +56,8 @@ enum AtriaDiagnosisReport {
         var rhr: Int?
         var recovery: Int?
         var heartRate: Int?
+        var hrvCapturedAt: Date?
+        var createdAt: Date?
     }
 
     struct WindowPoint: Equatable, Codable {
@@ -73,6 +75,9 @@ enum AtriaDiagnosisReport {
         var rhrDay: Int?
         var rhrWeek: [WindowPoint]
         var rhrMonth: [WindowPoint]
+        var sleepDay: Int?
+        var sleepWeek: [WindowPoint]
+        var sleepMonth: [WindowPoint]
     }
 
     struct Event: Equatable, Codable {
@@ -131,6 +136,11 @@ enum AtriaDiagnosisReport {
         liveHeartRate: Int,
         liveZone: String?,
         widgetHeartRate: Int?,
+        widgetHRV: Int? = nil,
+        widgetRHR: Int? = nil,
+        widgetRecovery: Int? = nil,
+        widgetHRVCapturedAt: Date? = nil,
+        widgetCreatedAt: Date? = nil,
         metricWindows: MetricWindows? = nil
     ) -> Snapshot {
         let metrics = Metrics(
@@ -169,10 +179,12 @@ enum AtriaDiagnosisReport {
                 zone: liveZone
             ),
             widget: Widget(
-                hrv: settledHRV,
-                rhr: overnightRHR,
-                recovery: overnightRecovery ?? todayRecovery,
-                heartRate: widgetHeartRate
+                hrv: widgetHRV ?? settledHRV,
+                rhr: widgetRHR ?? overnightRHR,
+                recovery: widgetRecovery ?? overnightRecovery ?? todayRecovery,
+                heartRate: widgetHeartRate,
+                hrvCapturedAt: widgetHRVCapturedAt,
+                createdAt: widgetCreatedAt
             ),
             metricWindows: metricWindows,
             discrepancies: discrepancies(
@@ -267,8 +279,20 @@ enum AtriaDiagnosisReport {
             recoveryMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.recovery },
             rhrDay: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
             rhrWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { $0.rhr },
-            rhrMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.rhr }
+            rhrMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.rhr },
+            sleepDay: sleepMinutes(AtriaHealthMetricEvidencePresentation.newestSettledSleepSeconds(from: rollups)),
+            sleepWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) {
+                sleepMinutes($0.sleepSeconds)
+            },
+            sleepMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) {
+                sleepMinutes($0.sleepSeconds)
+            }
         )
+    }
+
+    private static func sleepMinutes(_ seconds: TimeInterval?) -> Int? {
+        guard let seconds, seconds > 0 else { return nil }
+        return Int((seconds / 60).rounded())
     }
 
     private static func windowPoints(

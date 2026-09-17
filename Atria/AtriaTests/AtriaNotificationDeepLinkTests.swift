@@ -320,4 +320,16 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("await handleWorkoutDeepLink(command)"))
         XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"))
     }
+
+    func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("isWidgetOvernightBoardDeepLink"))
+        XCTAssertTrue(home.contains("showWidgetOvernightBoard = true"))
+        XCTAssertTrue(home.contains("pieces.first == \"widget-board\""))
+        XCTAssertTrue(home.contains("pieces.first == \"widget-proof\""))
+        XCTAssertFalse(home.contains("return pieces.first == \"widget-proof\" || pieces.first == \"widget-board\""))
+    }
 }
