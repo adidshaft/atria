@@ -236,6 +236,45 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.liveActivity.elapsedSeconds, 211)
     }
 
+    func testIdleDiagnosisDoesNotKeepAPhantomLiveActivityWorkout() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "116",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 0.4,
+            imuAgeSeconds: 0.2,
+            stream5Confirmed: true,
+            batteryPercent: 68,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 77,
+            liveHRV: nil,
+            overnightRHR: 55,
+            daytimeRHR: 75,
+            overnightRecovery: 74,
+            todayRecovery: 38,
+            lastWorkout: nil,
+            liveHeartRate: 85,
+            liveZone: "Z2",
+            widgetHeartRate: 85,
+            liveActivityName: "Workout",
+            liveActivityAvailability: "unavailable",
+            liveActivityStrain: 0,
+            liveActivitySteps: nil,
+            liveActivityElapsedSeconds: 0
+        )
+        XCTAssertEqual(snapshot.liveActivity.recording, false)
+        XCTAssertEqual(snapshot.liveActivity.heartRate, 0)
+        XCTAssertNil(snapshot.liveActivity.activityName)
+        XCTAssertEqual(snapshot.liveActivity.availability, "unavailable")
+        XCTAssertNil(snapshot.liveActivity.steps)
+        XCTAssertEqual(snapshot.widget.heartRate, 85)
+    }
+
     func testPublishWritesPullableJSONAndCoalescesUnchangedHeartbeats() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let first = AtriaDiagnosisReport.make(
