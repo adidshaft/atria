@@ -1948,6 +1948,9 @@ struct AtriaHomeView: View {
     private func handleWorkoutDeepLink(_ command: AtriaWorkoutDeepLink) async {
         switch command.action {
         case .start:
+            workoutReviewDraft = nil
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
             liveWorkoutLoggedSets = []
             liveWorkoutExcludedIntervals = []
             liveWorkoutPauseStartedAt = nil

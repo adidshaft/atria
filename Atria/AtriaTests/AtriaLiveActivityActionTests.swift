@@ -240,11 +240,13 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains("AtriaDynamicIslandMinimalHeartRate("),
                       "minimal coexistence should prefer updated workout information over a static glyph")
         XCTAssertTrue(island.contains("if !nominalState"),
-                      "compact leading still yields the target/glyph to paused, ending, and no-HR truth")
+                      "compact leading still yields the target/glyph to paused and ending")
         XCTAssertTrue(island.contains("liveActivityShowsWorkoutMetrics("),
                       "stale or reconnecting ActivityKit still keeps last-known HR, zone, and activity name visible")
+        XCTAssertTrue(island.contains("context.state.isPaused == true || context.state.isEnding == true"),
+                      "a missing live BPM must keep the run glyph and last BPM, not a lone status icon")
         XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
-                      "paused, ending, and no-HR still mark compact leading")
+                      "paused and ending still mark compact leading")
         XCTAssertFalse(island.contains("} minimal: {\n                if nominalState"),
                        "the last numeric HR must stay in the minimal island after the live window expires")
         XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),

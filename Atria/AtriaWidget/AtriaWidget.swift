@@ -2112,12 +2112,14 @@ struct AtriaLiveActivityWidget: Widget {
                     )
                 }
             } compactLeading: {
-                if !nominalState {
+                if !nominalState,
+                   (context.state.isPaused == true || context.state.isEnding == true) {
                     Image(systemName: status.systemImage)
                         .font(.caption.weight(.black))
                         .foregroundStyle(status.tint)
                         .accessibilityLabel(status.accessibilityText)
-                } else if let target = liveActivityTargetZoneLabel(for: context.state) {
+                } else if let target = liveActivityTargetZoneLabel(for: context.state),
+                          nominalState {
                     Text("T \(target)")
                         .font(.caption2.monospacedDigit().weight(.black))
                         .foregroundStyle(.cyan)
