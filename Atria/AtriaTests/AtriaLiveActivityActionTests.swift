@@ -1228,6 +1228,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(body.contains("heartRateZoneIndex: zone?.index"))
         XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
         XCTAssertFalse(body.contains("store.baseline.restingInt ?? 60"))
+        XCTAssertTrue(home.contains("AtriaHomeModel.latestHeartRateCapturedAt("))
+        XCTAssertTrue(home.contains("latestSampleAt: ble.session.last?.t"))
 
         let sample = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(

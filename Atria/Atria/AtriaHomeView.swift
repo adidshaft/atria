@@ -3547,9 +3547,16 @@ struct AtriaHomeView: View {
     private func liveWorkoutHeartRateAvailability(now: Date) -> AtriaLiveSensorAvailability {
         let pulse = model.pulseLiveStore.state
         let core = model.coreLiveStore.state
+        // lastAcceptedHeartRateAt can be nil across a session-boundary reset
+        // while session.last still has a fresh BPM (device 2026-09-17:
+        // diagnosis_hr_age missing, island empty at workout start).
+        let capturedAt = AtriaHomeModel.latestHeartRateCapturedAt(
+            lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+            latestSampleAt: ble.session.last?.t
+        )
         if pulse.hasPulseSignal,
            pulse.sensorHasContact,
-           let capturedAt = ble.lastAcceptedHeartRateAt,
+           let capturedAt,
            capturedAt <= now.addingTimeInterval(5),
            now.timeIntervalSince(capturedAt) <= AtriaHomeModel.liveHeartRateFreshnessInterval {
             return .live
@@ -3559,7 +3566,7 @@ struct AtriaHomeView: View {
             || core.isInRecentLiveRecovery(now: now) {
             return .reconnecting
         }
-        return ble.lastAcceptedHeartRateAt == nil ? .unavailable : .stale
+        return capturedAt == nil ? .unavailable : .stale
     }
 
     private func makeLiveWorkoutMetricProjection(
@@ -12174,7 +12181,11 @@ final class AtriaHomeModel {
                 recovering: core.isInRecentLiveRecovery(now: now),
                 reconnectAgeSeconds: core.pendingKnownReconnectAge(now: now),
                 reconnectReason: core.pendingKnownReconnectReason,
-                hrAgeSeconds: ble.lastAcceptedHeartRateAt.map { now.timeIntervalSince($0) },
+                hrAgeSeconds: Self.diagnosisHeartRateAgeSeconds(
+                    lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+                    latestSampleAt: ble.session.last?.t,
+                    now: now
+                ),
                 imuAgeSeconds: (ble.lastAcceptedMotionFrameAt ?? ble.liveStrapMotionCapturedAt)
                     .map { now.timeIntervalSince($0) },
                 stream5Confirmed: ble.liveStream5NotifyConfirmed,
@@ -13507,6 +13518,27 @@ final class AtriaHomeModel {
               sampleAge <= liveHeartRateFreshnessInterval else { return 0 }
         if heartRate > 0 { return heartRate }
         return latestSampleHeartRate
+    }
+
+    /// Diagnosis and Live Activity freshness must not ignore a live session
+    /// sample when `lastAcceptedHeartRateAt` is nil after a session boundary.
+    nonisolated static func latestHeartRateCapturedAt(
+        lastAcceptedAt: Date?,
+        latestSampleAt: Date?
+    ) -> Date? {
+        [lastAcceptedAt, latestSampleAt].compactMap { $0 }.max()
+    }
+
+    nonisolated static func diagnosisHeartRateAgeSeconds(
+        lastAcceptedAt: Date?,
+        latestSampleAt: Date?,
+        now: Date
+    ) -> Double? {
+        guard let captured = latestHeartRateCapturedAt(
+            lastAcceptedAt: lastAcceptedAt,
+            latestSampleAt: latestSampleAt
+        ), now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
     }
 
     private static func hasRecentHeartRateSample(ble: AtriaBLEManager, now: Date = Date()) -> Bool {
