@@ -240,11 +240,11 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains("AtriaDynamicIslandMinimalHeartRate("),
                       "minimal coexistence should prefer updated workout information over a static glyph")
         XCTAssertTrue(island.contains("if !nominalState"),
-                      "compact leading still yields the target/glyph to paused, ending, and reconnecting truth")
+                      "compact leading still yields the target/glyph to paused, ending, and no-HR truth")
         XCTAssertTrue(island.contains("liveActivityShowsWorkoutMetrics("),
-                      "stale ActivityKit still keeps last-known HR, zone, and activity name visible")
+                      "stale or reconnecting ActivityKit still keeps last-known HR, zone, and activity name visible")
         XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
-                      "paused, ending, and reconnecting still mark compact leading")
+                      "paused, ending, and no-HR still mark compact leading")
         XCTAssertFalse(island.contains("} minimal: {\n                if nominalState"),
                        "the last numeric HR must stay in the minimal island after the live window expires")
         XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),
@@ -1066,6 +1066,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("case .reconnecting: return \"Reconnecting\""))
         XCTAssertTrue(source.contains("case .stale: return \"HR stale\""))
         XCTAssertTrue(source.contains("case .unavailable: return \"Unavailable\""))
+        XCTAssertTrue(source.contains("if state.heartRate > 0"),
+                      "last-known zone stays on screen while a BPM is still held")
         XCTAssertTrue(source.contains("state.stepsAreEstimated != false"),
                       "missing workout-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("let capturedAt = state.stepsCapturedAt"))
@@ -1233,6 +1235,35 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateAvailability: .live,
             sensorHasContact: true
         ), sample.addingTimeInterval(6))
+    }
+
+    func testLiveActivityHoldsLastKnownHeartRateWhenTheSessionClears() {
+        let live = liveSnapshot(elapsed: 24 * 60, heartRate: 146)
+        var dropped = live
+        dropped.heartRate = 0
+        dropped.heartRateZoneIndex = nil
+        dropped.heartRateZoneName = nil
+        dropped.heartRateAvailability = .unavailable
+        dropped.workoutStrain = 0
+        dropped.workoutStrainAvailability = .unavailable
+        let held = AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+            dropped,
+            previous: live
+        )
+        XCTAssertEqual(held.heartRate, 146)
+        XCTAssertEqual(held.heartRateZoneIndex, 3)
+        XCTAssertEqual(held.heartRateZoneName, "Aerobic")
+        XCTAssertEqual(held.heartRateAvailability, .stale)
+        XCTAssertEqual(held.workoutStrain, 5.4)
+        XCTAssertEqual(held.workoutStrainAvailability, .stale)
+        XCTAssertEqual(
+            AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+                liveSnapshot(elapsed: 0, heartRate: 0),
+                previous: nil
+            ).heartRate,
+            0,
+            "the first beat of a workout must not invent a prior BPM"
+        )
     }
 
     func testBatteryClockParticipatesInLiveActivityStalenessWithoutRenewingHR() {

@@ -747,7 +747,7 @@ enum AtriaHealthMetricEvidencePresentation {
         from rollups: [DailyRollupStoreEntry]
     ) -> DailyRollupStoreEntry? {
         rollups
-            .filter { $0.lnRMSSD != nil }
+            .filter { $0.lnRMSSD != nil && ($0.sleepSeconds ?? 0) > 0 }
             .max { $0.day < $1.day }
     }
 

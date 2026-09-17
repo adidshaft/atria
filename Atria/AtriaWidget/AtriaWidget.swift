@@ -1563,6 +1563,13 @@ struct AtriaWidgetEntryView: View {
             let hours = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
             return "Widget stale \(hours)h · Open Atria"
         }
+        // Overnight Recovery/HRV/RHR is a morning number. A live-HR patch
+        // advancing `createdAt` at 10:47 must not make 76% look like a 10:47
+        // reading. Date the overnight sample instead.
+        if snapshot.recoveryPercent != nil || snapshot.hrvRMSSD != nil,
+           let capturedAt = snapshot.hrvCapturedAt {
+            return atriaOvernightStatusText(capturedAt, now: entry.date)
+        }
         // RC3: the footer dates the last FULL stable rebuild — a live/battery/
         // receipt patch advancing `createdAt` must not re-date recovery, sleep,
         // or HRV. `createdAt` remains the legacy-payload fallback.
@@ -2036,10 +2043,8 @@ private func liveActivityShowsWorkoutMetrics(
     guard state.isPaused != true, state.isEnding != true else { return false }
     guard state.heartRate > 0 else { return false }
     switch heartRateAvailability {
-    case .live, .stale:
+    case .live, .stale, .reconnecting, .unavailable:
         return true
-    case .reconnecting, .unavailable:
-        return false
     }
 }
 
@@ -2422,15 +2427,20 @@ private func liveActivityZoneAccessibilityLabel(
 
 private func liveActivityZoneLabel(for state: AtriaLiveActivityAttributes.ContentState,
                                    availability: AtriaLiveSensorAvailability) -> String {
+    let lastZone: String = {
+        let index = state.heartRateZoneIndex ?? 0
+        if index <= 0 { return "Below Z1" }
+        return "Z\(index) · \(state.heartRateZoneName ?? "Zone")"
+    }()
+    if state.heartRate > 0 {
+        return lastZone
+    }
     switch availability {
     case .reconnecting: return "Reconnecting"
     case .stale: return "HR stale"
     case .unavailable: return "Unavailable"
-    case .live: break
+    case .live: return lastZone
     }
-    let index = state.heartRateZoneIndex ?? 0
-    if index <= 0 { return "Below Z1" }
-    return "Z\(index) · \(state.heartRateZoneName ?? "Zone")"
 }
 
 /// A compact, stable target label. Invalid persisted values fail closed, while

@@ -284,6 +284,7 @@ final class AtriaLiveActivityCoordinator {
     private let minimumActivityUpdateInterval: TimeInterval = 5
 
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
+        let snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)
         let now = Date()
         if !hasReconciledExistingActivity {
             // A publisher can reach Home before its durable pending workout has
@@ -393,6 +394,45 @@ final class AtriaLiveActivityCoordinator {
                                                      workoutStartedAt: Date) -> Bool {
         abs(activityStartedAt.timeIntervalSince(workoutStartedAt))
             <= AtriaLiveWorkoutActionStore.sessionMatchTolerance
+    }
+
+    /// Pulse and the BLE session zero when the radio drops or an R10
+    /// boundary clears samples. ActivityKit still needs the last real BPM
+    /// and zone so a reconnecting workout does not go `--`.
+    static func holdingLastKnownWorkoutMetrics(
+        _ snapshot: Snapshot,
+        previous: Snapshot?
+    ) -> Snapshot {
+        guard snapshot.isRecording,
+              let previous,
+              previous.isRecording,
+              activityBelongsToWorkout(activityStartedAt: previous.startedAt,
+                                       workoutStartedAt: snapshot.startedAt)
+        else { return snapshot }
+        var held = snapshot
+        if snapshot.heartRate <= 0, previous.heartRate > 0 {
+            held.heartRate = previous.heartRate
+            held.heartRateCapturedAt = snapshot.heartRateCapturedAt
+                ?? previous.heartRateCapturedAt
+            if (snapshot.heartRateZoneIndex ?? 0) <= 0 {
+                held.heartRateZoneIndex = previous.heartRateZoneIndex
+                held.heartRateZoneName = previous.heartRateZoneName
+            }
+            if snapshot.heartRateAvailability == .unavailable {
+                held.heartRateAvailability = previous.heartRateAvailability == .live
+                    ? .stale
+                    : previous.heartRateAvailability
+            }
+        }
+        if snapshot.workoutStrain <= 0, previous.workoutStrain > 0 {
+            held.workoutStrain = previous.workoutStrain
+            held.workoutStrainCapturedAt = snapshot.workoutStrainCapturedAt
+                ?? previous.workoutStrainCapturedAt
+            if snapshot.workoutStrainAvailability == .unavailable {
+                held.workoutStrainAvailability = .stale
+            }
+        }
+        return held
     }
 
     nonisolated static func shouldDeferExistingActivityReconciliation(

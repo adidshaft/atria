@@ -244,7 +244,9 @@ struct AtriaAboutMetricTrend {
 
         func value(_ entry: DailyRollupStoreEntry) -> Double? {
             switch metric {
-            case .hrv: return entry.lnRMSSD.map { exp($0).rounded() }
+            case .hrv:
+                guard (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return entry.lnRMSSD.map { exp($0).rounded() }
             case .restingHeartRate: return entry.rhr.map(Double.init)
             case .recovery: return entry.recovery.map(Double.init)
             case .respiration: return entry.respiratoryRate

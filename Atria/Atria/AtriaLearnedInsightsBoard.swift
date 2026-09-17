@@ -136,6 +136,13 @@ struct AtriaLearnedInsightsBoard: View {
                     .layoutPriority(2)
                     .minimumScaleFactor(0.75)
                     .allowsTightening(true)
+                if let detail = featured?.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 8)
             Image(systemName: "chevron.right")
@@ -153,7 +160,10 @@ struct AtriaLearnedInsightsBoard: View {
 
     private var compactBarAccessibilityLabel: String {
         if let featured = insights.first {
-            return "\(title). \(featured.headline)"
+            let detail = featured.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return detail.isEmpty
+                ? "\(title). \(featured.headline)"
+                : "\(title). \(featured.headline). \(detail)"
         }
         return title
     }

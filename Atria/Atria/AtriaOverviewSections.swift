@@ -5140,7 +5140,7 @@ struct AtriaMetricDetailSheet: View {
 
     private var newestSettledOvernightHRVPoint: AtriaDetailChartPoint? {
         guard let entry = preparationBaseInput.rollups
-            .filter({ $0.lnRMSSD != nil })
+            .filter({ $0.lnRMSSD != nil && ($0.sleepSeconds ?? 0) > 0 })
             .max(by: { $0.day < $1.day }),
               let lnRMSSD = entry.lnRMSSD else { return nil }
         let value = Double(Int(exp(lnRMSSD).rounded()))
@@ -8871,14 +8871,14 @@ private struct AtriaPreparedMetricHistory: Sendable {
             recoveryComparisonByRange[range] = AtriaDetailComparisonSummary(current: recoveryPoints, prior: priorRecoveryPoints, unit: "%")
 
             let hrvPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                guard let lnRMSSD = item.lnRMSSD else { return nil }
+                guard let lnRMSSD = item.lnRMSSD, (item.sleepSeconds ?? 0) > 0 else { return nil }
                 let value = Int(exp(lnRMSSD).rounded())
                 return AtriaDetailChartPoint(day: item.day,
                                              value: Double(value),
                                              tint: Self.hrvTint(value: value, baseline: baseline))
             }
             let priorHRVPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                guard let lnRMSSD = item.lnRMSSD else { return nil }
+                guard let lnRMSSD = item.lnRMSSD, (item.sleepSeconds ?? 0) > 0 else { return nil }
                 let value = Int(exp(lnRMSSD).rounded())
                 return AtriaDetailChartPoint(day: item.day,
                                              value: Double(value),
