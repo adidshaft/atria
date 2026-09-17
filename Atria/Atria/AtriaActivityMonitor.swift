@@ -3207,7 +3207,7 @@ struct AtriaActivityMonitorTab: View {
     /// hundreds of samples. Only the recorded sample metadata may declare the
     /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
-        guard workout.samples > 0, workout.avgHR > 0 else { return "No HR data" }
+        guard workout.samples > 0, workout.avgHR > 0 else { return "Saved without strap HR" }
         // 2026-08-21: show the measured strain even on partial coverage rather
         // than replacing it with a bare coverage badge. It upgrades as history
         // drains and the workout re-scores. Fall back to coverage only when no

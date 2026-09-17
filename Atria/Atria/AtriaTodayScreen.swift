@@ -51,8 +51,7 @@ struct AtriaTodaySessionState: Equatable {
         learnedInsights = {
             let stored = store.learnedInsights
             if !stored.isEmpty { return stored }
-            return AtriaLearnedInsights.insights(
-                rollups: store.dailyRollupHistory,
+            return AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory,
                 now: now,
                 sleepNeedFallbackSeconds: store.confirmedSleeps
                     .compactMap { sleep -> (Date, TimeInterval)? in
@@ -61,7 +60,9 @@ struct AtriaTodaySessionState: Equatable {
                         return (sleep.end, need)
                     }
                     .max { $0.0 < $1.0 }?
-                    .1
+                    .1,
+                calendar: calendar,
+                workouts: store.confirmedWorkouts
             )
         }()
         learnedInsightLedger = store.learnedInsightLedger

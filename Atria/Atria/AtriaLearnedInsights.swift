@@ -17,6 +17,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case yesterdayStrain
         case stackedRecovery
         case easyLoadSleepDebt
+        case workoutWithoutHeartRate
     }
 
     let id: String
@@ -34,6 +35,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .recoveryDrift, .readiness, .stackedRecovery: return "figure.walk"
         case .hrvDrift: return "waveform.path.ecg"
         case .daySnapshot: return "calendar"
+        case .workoutWithoutHeartRate: return "heart.slash"
         }
     }
 
@@ -53,6 +55,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .loadMismatch, .weeklyStrain: return "bolt.heart.fill"
         case .yesterdayStrain: return "flame.fill"
         case .daySnapshot: return "sun.max.fill"
+        case .workoutWithoutHeartRate: return "heart.slash.fill"
         }
     }
 
@@ -77,7 +80,8 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .sleepDebt, .weeklySleepDebt, .bedtimeSpread, .easyLoadSleepDebt: return .sleep
         case .recoveryDrift, .readiness, .stackedRecovery, .hrvDrift, .restingHRDrift:
             return .recovery
-        case .loadMismatch, .weeklyStrain, .yesterdayStrain: return .strain
+        case .loadMismatch, .weeklyStrain, .yesterdayStrain, .workoutWithoutHeartRate:
+            return .strain
         case .daySnapshot: return .other
         }
     }
@@ -99,9 +103,10 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .weeklySleepDebt: return 1
         case .easyLoadSleepDebt: return 0
         case .bedtimeSpread: return 2
-        case .yesterdayStrain: return 0
-        case .loadMismatch: return 1
-        case .weeklyStrain: return 2
+        case .workoutWithoutHeartRate: return 0
+        case .yesterdayStrain: return 1
+        case .loadMismatch: return 2
+        case .weeklyStrain: return 3
         case .daySnapshot: return 9
         }
     }
@@ -131,6 +136,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .readiness: return isPositive ? "Go" : "Hold"
         case .yesterdayStrain: return "Yesterday"
         case .stackedRecovery: return "Stack"
+        case .workoutWithoutHeartRate: return "No HR"
         }
     }
 }
@@ -267,10 +273,15 @@ enum AtriaLearnedInsights {
 
     static func insights(rollups: [DailyRollupStoreEntry],
                          now: Date = Date(),
-                         sleepNeedFallbackSeconds: TimeInterval? = nil) -> [AtriaLearnedInsight] {
+                         sleepNeedFallbackSeconds: TimeInterval? = nil,
+                         calendar: Calendar = .current,
+                         workouts: [UserConfirmedWorkout] = []) -> [AtriaLearnedInsight] {
         let ordered = rollups.sorted { $0.day > $1.day }
-        guard let latest = ordered.first else { return [] }
         var results: [AtriaLearnedInsight] = []
+        if let missing = workoutsWithoutHeartRate(workouts: workouts, now: now, calendar: calendar) {
+            results.append(missing)
+        }
+        guard let latest = ordered.first else { return results }
         let fallbackNeed = sleepNeedFallbackSeconds.flatMap { $0 > 0 ? $0 : nil }
 
         if let stacked = stackedRecovery(ordered: ordered, now: now, sleepNeedFallbackSeconds: fallbackNeed) {
@@ -755,6 +766,108 @@ enum AtriaLearnedInsights {
         )
     }
 
+    private static func civilDay(
+        for workout: UserConfirmedWorkout,
+        calendar: Calendar
+    ) -> Date {
+        EventCivilTime.day(
+            containing: workout.start,
+            eventTimeZoneIdentifier: workout.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+    }
+
+    private static func missingHeartRateWorkouts(
+        _ workouts: [UserConfirmedWorkout],
+        day: Date,
+        calendar: Calendar
+    ) -> [UserConfirmedWorkout] {
+        let dayStart = calendar.startOfDay(for: day)
+        return workouts
+            .filter { workout in
+                workout.samples <= 0
+                    && civilDay(for: workout, calendar: calendar) == dayStart
+            }
+            .sorted { $0.start < $1.start }
+    }
+
+    private static func workoutDisplayName(_ workout: UserConfirmedWorkout) -> String {
+        let label = workout.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !label.isEmpty { return label }
+        let type = (workout.activityType ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return type.isEmpty ? "Workout" : type
+    }
+
+    private static func joinedWorkoutNames(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return names.dropLast().joined(separator: ", ") + ", and \(names.last!)"
+        }
+    }
+
+    private static func missingHeartRateWorkoutSummary(
+        workouts: [UserConfirmedWorkout],
+        day: Date,
+        calendar: Calendar,
+        includeDuration: Bool
+    ) -> String? {
+        let missing = missingHeartRateWorkouts(workouts, day: day, calendar: calendar)
+        guard !missing.isEmpty else { return nil }
+        let names = missing.map { workout -> String in
+            let name = workoutDisplayName(workout)
+            guard includeDuration else { return name }
+            return "\(name) (\(hourText(hours(workout.duration))))"
+        }
+        return "\(joinedWorkoutNames(names)) saved without strap HR"
+    }
+
+    /// Name saved workouts that recorded no strap HR in the last two civil days.
+    /// Do not reconstruct strain or invent samples.
+    private static func workoutsWithoutHeartRate(
+        workouts: [UserConfirmedWorkout],
+        now: Date,
+        calendar: Calendar
+    ) -> AtriaLearnedInsight? {
+        let today = calendar.startOfDay(for: now)
+        guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else {
+            return nil
+        }
+        let missing = [yesterday, today].flatMap { day in
+            missingHeartRateWorkouts(workouts, day: day, calendar: calendar)
+        }
+        guard !missing.isEmpty else { return nil }
+        let names = missing.map { workout in
+            "\(workoutDisplayName(workout)) (\(hourText(hours(workout.duration))))"
+        }
+        let allYesterday = missing.allSatisfy {
+            civilDay(for: $0, calendar: calendar) == yesterday
+        }
+        let allToday = missing.allSatisfy {
+            civilDay(for: $0, calendar: calendar) == today
+        }
+        let when: String
+        if allYesterday {
+            when = "Yesterday's"
+        } else if allToday {
+            when = "Today's"
+        } else {
+            when = "Recent"
+        }
+        let headline = missing.count == 1
+            ? "\(when) \(workoutDisplayName(missing[0])) has no heart rate"
+            : "\(when) workouts have no heart rate"
+        return AtriaLearnedInsight(
+            id: "workout-without-hr",
+            kind: .workoutWithoutHeartRate,
+            headline: headline,
+            detail: "\(joinedWorkoutNames(names)) were saved after the strap stopped streaming. Strain from those sessions is missing, not reconstructed.",
+            isPositive: false,
+            asOf: now
+        )
+    }
+
     private static func yesterdayStrain(ordered: [DailyRollupStoreEntry],
                                         now: Date) -> AtriaLearnedInsight? {
         guard ordered.count >= 2, let strain = ordered[1].strain, strain >= 6 else {
@@ -815,7 +928,8 @@ enum AtriaLearnedInsights {
     /// that must survive a later refresh overwriting those seven.
     static func dailyReads(rollups: [DailyRollupStoreEntry],
                            now: Date = Date(),
-                           calendar: Calendar = .current) -> [AtriaLearnedInsight] {
+                           calendar: Calendar = .current,
+                           workouts: [UserConfirmedWorkout] = []) -> [AtriaLearnedInsight] {
         let today = calendar.startOfDay(for: now)
         let cutoff = calendar.date(
             byAdding: .day,
@@ -825,11 +939,12 @@ enum AtriaLearnedInsights {
         return rollups
             .filter { $0.day >= cutoff }
             .sorted { $0.day > $1.day }
-            .compactMap { dayRead(entry: $0, calendar: calendar) }
+            .compactMap { dayRead(entry: $0, calendar: calendar, workouts: workouts) }
     }
 
     private static func dayRead(entry: DailyRollupStoreEntry,
-                                calendar: Calendar) -> AtriaLearnedInsight? {
+                                calendar: Calendar,
+                                workouts: [UserConfirmedWorkout] = []) -> AtriaLearnedInsight? {
         var parts: [String] = []
         if let recovery = entry.recovery, (entry.sleepSeconds ?? 0) > 0 {
             parts.append("recovery \(recovery)%")
@@ -845,6 +960,14 @@ enum AtriaLearnedInsights {
         }
         if let lnRMSSD = entry.lnRMSSD {
             parts.append("HRV \(Int(exp(lnRMSSD).rounded()))")
+        }
+        if let missing = missingHeartRateWorkoutSummary(
+            workouts: workouts,
+            day: entry.day,
+            calendar: calendar,
+            includeDuration: false
+        ) {
+            parts.append(missing)
         }
         guard !parts.isEmpty else { return nil }
         let day = calendar.startOfDay(for: entry.day)

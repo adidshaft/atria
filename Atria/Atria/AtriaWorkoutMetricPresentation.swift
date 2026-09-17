@@ -284,7 +284,7 @@ enum AtriaWorkoutMetricPresentation {
 
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
-        case .unavailable: return "No HR data"
+        case .unavailable: return "Saved without strap HR"
         case .incomplete, .complete: return "\(workout.streamCoveragePercent)% HR"
         }
     }

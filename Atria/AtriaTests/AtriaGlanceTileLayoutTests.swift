@@ -83,16 +83,19 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
         let source = try todayScreen()
         let start = try XCTUnwrap(source.range(of: "private func glanceTrend(for metric:"))
         let body = String(source[start.lowerBound...].prefix(1_400))
-        XCTAssertFalse(body.contains("?? 0"),
+        let plotted = body.replacingOccurrences(of: "sleepSeconds ?? 0", with: "sleepSeconds")
+        XCTAssertFalse(plotted.contains("?? 0"),
                        "a missing day must not become a zero reading")
         XCTAssertFalse(body.contains("map { $0 ?? "),
                        "and must not be filled from a neighbour")
         for series in ["$0.recovery.map(Double.init)",
                        "compactMap(\\.strain)",
-                       "compactMap(\\.lnRMSSD)",
-                       "$0.rhr.map(Double.init)"] {
+                       "lnRMSSD.map { Double(Int(exp($0).rounded())) }",
+                       "entry.rhr.map(Double.init)"] {
             XCTAssertTrue(body.contains(series), "missing series: \(series)")
         }
+        XCTAssertTrue(body.contains("(entry.sleepSeconds ?? 0) > 0"),
+                      "resting HR glance must skip daytime wear without sleep")
     }
 
     func testTheTrendFieldDefaultsToEmptySoExistingTilesDrawNoChart() throws {

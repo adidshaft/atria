@@ -287,7 +287,6 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             "AtriaShareCard.swift",
             "WidgetSnapshot.swift",
             "AtriaLiveActivityAttributes.swift",
-            "Sessions.swift",
             "DailyRollupStore.swift"
         ]
         for fileName in userFacingFiles {
@@ -295,6 +294,10 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             XCTAssertFalse(source.lowercased().contains("gyrocadence"),
                            "\(fileName) must never reference the gyro-cadence research shadow")
         }
+        let sessions = try productionSource("Sessions.swift")
+        XCTAssertTrue(sessions.contains("gyroCadenceResearchSteps"),
+                      "the named research field may persist on saved sessions")
+        XCTAssertFalse(sessions.contains("liveStrapStepResearchTodayCount = gyro"))
         let home = try productionSource("AtriaHomeView.swift")
         XCTAssertTrue(home.contains("strapGyroCadenceAmbulatoryV1"))
         XCTAssertFalse(home.contains("liveStrapStepResearchTodayCount = gyro"))

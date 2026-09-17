@@ -241,6 +241,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "minimal coexistence should prefer updated workout information over a static glyph")
         XCTAssertTrue(island.contains("if !nominalState"),
                       "compact leading still yields the target/glyph to paused, ending, and reconnecting truth")
+        XCTAssertTrue(island.contains("liveActivityShowsWorkoutMetrics("),
+                      "stale ActivityKit still keeps last-known HR, zone, and activity name visible")
         XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
                       "paused, ending, and reconnecting still mark compact leading")
         XCTAssertFalse(island.contains("} minimal: {\n                if nominalState"),

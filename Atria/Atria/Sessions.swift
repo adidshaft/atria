@@ -9919,9 +9919,14 @@ final class SessionStore: ObservableObject {
         let learned = AtriaLearnedInsights.insights(
             rollups: filledRollups,
             now: now,
-            sleepNeedFallbackSeconds: frozenNeed
+            sleepNeedFallbackSeconds: frozenNeed,
+            workouts: confirmedWorkouts
         )
-        let daily = AtriaLearnedInsights.dailyReads(rollups: filledRollups, now: now)
+        let daily = AtriaLearnedInsights.dailyReads(
+            rollups: filledRollups,
+            now: now,
+            workouts: confirmedWorkouts
+        )
         let stored = AtriaDurableInsightStore.loadPayload()
         let nextCurrent = learned.isEmpty ? stored.insights : learned
         let nextLedger = AtriaDurableInsightStore.mergeLedger(
@@ -11602,6 +11607,7 @@ final class SessionStore: ObservableObject {
         isBackgroundMaintenance
             && !exactRecoveryOwnsPriority
             && !recoveredCycleEngaged
+            && batteryState != .unknown
             && shouldStartBackgroundArchiveProjection(
                 thermalState: thermalState,
                 isLowPowerModeEnabled: isLowPowerModeEnabled,
@@ -23836,7 +23842,6 @@ final class SessionStore: ObservableObject {
         // records without a durable receipt remain unknown rather than being
         // assigned a retroactive target.
         let frozenSleepNeedSeconds = confirmedMainSleep?.frozenSleepNeed?.seconds
-            ?? confirmedMainSleep?.sleepNeedSeconds
         let strain = computedToday?.strain ?? wearStrain
         let strainDayEnd = min(
             now,

@@ -70,6 +70,7 @@ enum AtriaDiagnosisReport {
         var connection: Connection
         var metrics: Metrics
         var lastWorkout: Workout?
+        var recentNoHeartRateWorkouts: [Workout]?
         var liveActivity: LiveActivity
         var widget: Widget
         var discrepancies: [String]
@@ -107,6 +108,7 @@ enum AtriaDiagnosisReport {
         overnightRecovery: Int?,
         todayRecovery: Int?,
         lastWorkout: Workout?,
+        recentNoHeartRateWorkouts: [Workout] = [],
         liveHeartRate: Int,
         liveZone: String?,
         widgetHeartRate: Int?
@@ -138,6 +140,9 @@ enum AtriaDiagnosisReport {
             connection: connection,
             metrics: metrics,
             lastWorkout: lastWorkout,
+            recentNoHeartRateWorkouts: recentNoHeartRateWorkouts.isEmpty
+                ? nil
+                : recentNoHeartRateWorkouts,
             liveActivity: LiveActivity(
                 recording: workoutRecording,
                 heartRate: liveHeartRate,
@@ -152,7 +157,8 @@ enum AtriaDiagnosisReport {
             discrepancies: discrepancies(
                 connection: connection,
                 metrics: metrics,
-                lastWorkout: lastWorkout
+                lastWorkout: lastWorkout,
+                recentNoHeartRateWorkouts: recentNoHeartRateWorkouts
             ),
             events: []
         )
@@ -161,7 +167,8 @@ enum AtriaDiagnosisReport {
     static func discrepancies(
         connection: Connection,
         metrics: Metrics,
-        lastWorkout: Workout? = nil
+        lastWorkout: Workout? = nil,
+        recentNoHeartRateWorkouts: [Workout] = []
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -187,8 +194,19 @@ enum AtriaDiagnosisReport {
                     || connection.status == AtriaBLEManager.Status.scanning.rawValue {
             keys.append("status_unavailable")
         }
-        if let workout = lastWorkout, workout.samples <= 0 {
+        var seenNoHR = Set<String>()
+        var noHR: [Workout] = []
+        for workout in recentNoHeartRateWorkouts + [lastWorkout].compactMap({ $0 }) {
+            guard workout.samples <= 0 else { continue }
+            let identity = "\(workout.start.timeIntervalSince1970)-\(workout.activityType)"
+            guard seenNoHR.insert(identity).inserted else { continue }
+            noHR.append(workout)
+        }
+        if let workout = noHR.first {
             keys.append("workout_no_hr_\(workout.reason)")
+        }
+        if noHR.count > 1 {
+            keys.append("workout_no_hr_count_\(noHR.count)")
         }
         return keys
     }

@@ -2029,6 +2029,20 @@ private func liveActivityStatusPresentation(
     }
 }
 
+private func liveActivityShowsWorkoutMetrics(
+    for state: AtriaLiveActivityAttributes.ContentState,
+    heartRateAvailability: AtriaLiveSensorAvailability
+) -> Bool {
+    guard state.isPaused != true, state.isEnding != true else { return false }
+    guard state.heartRate > 0 else { return false }
+    switch heartRateAvailability {
+    case .live, .stale:
+        return true
+    case .reconnecting, .unavailable:
+        return false
+    }
+}
+
 struct AtriaLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: AtriaLiveActivityAttributes.self) { context in
@@ -2046,9 +2060,10 @@ struct AtriaLiveActivityWidget: Widget {
             let signalFresh = heartAvailability == .live
             let status = liveActivityStatusPresentation(for: context.state,
                                                         heartRateAvailability: heartAvailability)
-            let nominalState = heartAvailability == .live
-                && context.state.isPaused != true
-                && context.state.isEnding != true
+            let nominalState = liveActivityShowsWorkoutMetrics(
+                for: context.state,
+                heartRateAvailability: heartAvailability
+            )
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     AtriaDynamicIslandExpandedHeader(state: context.state,

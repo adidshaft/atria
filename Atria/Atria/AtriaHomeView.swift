@@ -12007,10 +12007,24 @@ final class AtriaHomeModel {
         let today = Calendar.current.startOfDay(for: now)
         let todayRollup = rollups.first { Calendar.current.isDate($0.day, inSameDayAs: today) }
         let lastWorkout = store.confirmedWorkouts.max { $0.end < $1.end }
+        let recentNoHeartRateWorkouts = store.confirmedWorkouts
+            .filter { $0.samples <= 0 }
+            .sorted { $0.end > $1.end }
+            .prefix(5)
         let lastKnownHR = pulse.heartRate > 0
             ? pulse.heartRate
             : (ble.session.last?.bpm ?? 0)
         let zone = pulse.heartRateZone?.name
+        func diagnosisWorkout(_ workout: UserConfirmedWorkout) -> AtriaDiagnosisReport.Workout {
+            AtriaDiagnosisReport.Workout(
+                activityType: workout.activityType ?? workout.label,
+                start: workout.start,
+                end: workout.end,
+                samples: workout.samples,
+                peakHR: workout.peakHR > 0 ? workout.peakHR : nil,
+                reason: workout.reason
+            )
+        }
         AtriaDiagnosisReport.publish(
             AtriaDiagnosisReport.make(
                 now: now,
@@ -12032,16 +12046,8 @@ final class AtriaHomeModel {
                 daytimeRHR: ((todayRollup?.sleepSeconds ?? 0) > 0) ? nil : todayRollup?.rhr,
                 overnightRecovery: AtriaHealthMetricEvidencePresentation.newestSettledRecovery(from: rollups),
                 todayRecovery: todayRollup?.recovery,
-                lastWorkout: lastWorkout.map {
-                    AtriaDiagnosisReport.Workout(
-                        activityType: $0.activityType ?? $0.label,
-                        start: $0.start,
-                        end: $0.end,
-                        samples: $0.samples,
-                        peakHR: $0.peakHR > 0 ? $0.peakHR : nil,
-                        reason: $0.reason
-                    )
-                },
+                lastWorkout: lastWorkout.map(diagnosisWorkout),
+                recentNoHeartRateWorkouts: recentNoHeartRateWorkouts.map(diagnosisWorkout),
                 liveHeartRate: lastKnownHR,
                 liveZone: zone,
                 widgetHeartRate: lastKnownHR > 0 ? lastKnownHR : nil

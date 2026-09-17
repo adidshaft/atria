@@ -212,6 +212,111 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(nightRead?.detail.contains("recovery 79%") == true, nightRead?.detail ?? "missing")
     }
 
+    func testZeroHeartRateWorkoutsBecomeAnInsightAndLedgerLine() {
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let strengthStart = yesterday.addingTimeInterval(16 * 3_600 + 31 * 60)
+        let walkingStart = yesterday.addingTimeInterval(17 * 3_600 + 37 * 60)
+        let rollup = DailyRollupStoreEntry(
+            day: yesterday,
+            recovery: 78,
+            lnRMSSD: log(77),
+            rhr: 55,
+            sleepSeconds: 7 * 3_600,
+            strain: 0.47,
+            calendar: calendar
+        )
+        let workouts = [
+            noHeartRateWorkout(id: "strength",
+                               label: "Strength",
+                               start: strengthStart,
+                               duration: 66 * 60),
+            noHeartRateWorkout(id: "walk",
+                               label: "Walking",
+                               start: walkingStart,
+                               duration: 28 * 60)
+        ]
+        let insights = AtriaLearnedInsights.insights(
+            rollups: [rollup],
+            now: now,
+            calendar: calendar,
+            workouts: workouts
+        )
+        let missing = insights.first { $0.kind == .workoutWithoutHeartRate }
+        XCTAssertEqual(missing?.headline, "Yesterday's workouts have no heart rate")
+        XCTAssertTrue(missing?.detail.contains("Strength (1h 6m)") == true, missing?.detail ?? "missing")
+        XCTAssertTrue(missing?.detail.contains("Walking (28m)") == true, missing?.detail ?? "missing")
+        XCTAssertTrue(missing?.detail.contains("missing, not reconstructed") == true, missing?.detail ?? "missing")
+        XCTAssertEqual(missing?.kind, .workoutWithoutHeartRate)
+        XCTAssertTrue(insights.first?.kind == .workoutWithoutHeartRate)
+
+        let reads = AtriaLearnedInsights.dailyReads(
+            rollups: [rollup],
+            now: now,
+            calendar: calendar,
+            workouts: workouts
+        )
+        let nightRead = reads.first { calendar.isDate($0.asOf, inSameDayAs: yesterday) }
+        XCTAssertTrue(nightRead?.detail.contains("recovery 78%") == true, nightRead?.detail ?? "missing")
+        XCTAssertTrue(nightRead?.detail.contains("HRV 77") == true, nightRead?.detail ?? "missing")
+        XCTAssertTrue(
+            nightRead?.detail.contains("Strength and Walking saved without strap HR") == true,
+            nightRead?.detail ?? "missing"
+        )
+    }
+
+    func testOlderZeroHeartRateWorkoutsDoNotStayOnTheCurrentBoard() {
+        let today = calendar.startOfDay(for: now)
+        let older = calendar.date(byAdding: .day, value: -3, to: today)!
+        let insights = AtriaLearnedInsights.insights(
+            rollups: [
+                DailyRollupStoreEntry(
+                    day: today,
+                    recovery: 70,
+                    sleepSeconds: 7 * 3_600,
+                    calendar: calendar
+                )
+            ],
+            now: now,
+            calendar: calendar,
+            workouts: [
+                noHeartRateWorkout(id: "old",
+                                   label: "Running",
+                                   start: older.addingTimeInterval(17 * 3_600),
+                                   duration: 40 * 60)
+            ]
+        )
+        XCTAssertFalse(insights.contains { $0.kind == .workoutWithoutHeartRate })
+    }
+
+    private func noHeartRateWorkout(
+        id: String,
+        label: String,
+        start: Date,
+        duration: TimeInterval
+    ) -> UserConfirmedWorkout {
+        UserConfirmedWorkout(
+            id: id,
+            createdAt: start,
+            start: start,
+            end: start.addingTimeInterval(duration),
+            label: label,
+            source: "live_workout_window",
+            confidence: "user_confirmed_no_hr",
+            sessions: 1,
+            samples: 0,
+            avgHR: 0,
+            peakHR: 0,
+            p95HR: 0,
+            p99HR: 0,
+            thresholdHR: 0,
+            streamCoveragePercent: 0,
+            observedDuration: duration,
+            reason: "no_strap_hr_samples",
+            activityType: label
+        )
+    }
+
     func testWeeklyStrainAndBedtimeSpreadAreSpecific() {
         let today = calendar.startOfDay(for: now)
         let rollups = (0..<14).map { offset -> DailyRollupStoreEntry in
@@ -576,6 +681,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("func refreshLearnedInsights(now: Date = Date())"))
         XCTAssertTrue(source.contains("Self.overlayFrozenSleepNeed("))
         XCTAssertTrue(source.contains("refreshLearnedInsights()"))
+        XCTAssertTrue(source.contains("workouts: confirmedWorkouts"))
         XCTAssertTrue(source.contains("didSet {\n            backupCanonicalRevision &+= 1\n            refreshLearnedInsights()"))
     }
 

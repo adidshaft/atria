@@ -1824,12 +1824,15 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
         XCTAssertLessThan(ownership.lowerBound, inProgress.lowerBound)
         XCTAssertLessThan(inProgress.lowerBound, suspension.lowerBound)
-        for guardedBody in [schedule, evaluate, activation] {
-            XCTAssertTrue(
-                guardedBody.contains("guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }"),
-                "every workout-motion entry point must yield to the history owner"
-            )
-        }
+        XCTAssertTrue(schedule.contains("guard !historyOnlyProbeMode else { return }"))
+        XCTAssertTrue(schedule.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded("),
+                      "a live workout must keep IMU bring-up instead of waiting behind history")
+        XCTAssertTrue(evaluate.contains("guard !historyOnlyProbeMode else { return }"))
+        XCTAssertTrue(evaluate.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded("))
+        XCTAssertTrue(
+            activation.contains("guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }"),
+            "the motion command pair still refuses to fire while history owns the radio"
+        )
         XCTAssertTrue(
             finalizer.contains("resumeWorkoutMotionLeaseAfterHistoricalSync("),
             "all history exits must re-arm through the common finalizer"

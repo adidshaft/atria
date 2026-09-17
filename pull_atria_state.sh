@@ -2929,6 +2929,18 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_last_workout_type={workout.get('activityType', 'missing')}")
             print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")
             print(f"diagnosis_last_workout_reason={workout.get('reason', 'missing')}")
+            recent_no_hr = diagnosis.get("recentNoHeartRateWorkouts")
+            if isinstance(recent_no_hr, list) and recent_no_hr:
+                labels = []
+                for item in recent_no_hr:
+                    if not isinstance(item, dict):
+                        continue
+                    labels.append(
+                        f"{item.get('activityType', '?')}:{item.get('samples', '?')}:{item.get('reason', '?')}"
+                    )
+                print(f"diagnosis_no_hr_workouts={','.join(labels)}")
+            else:
+                print("diagnosis_no_hr_workouts=none")
     else:
         print("diagnosis_status=missing")
 
