@@ -66,6 +66,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("scrollBottomSafeAreaInset"))
         XCTAssertFalse(source.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
                        "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
+        XCTAssertTrue(source.contains(".safeAreaPadding(.bottom, bottomContentMargin)"),
+                      "first-screen Today cards must rest above the glass tab, not only become reachable at the end of the scroll")
+        XCTAssertFalse(source.contains(".contentMargins(.bottom, bottomContentMargin, for: .scrollContent)"))
     }
 
     func testHomeTabBarUsesNativeScrollDrivenSingleButtonTreatment() throws {

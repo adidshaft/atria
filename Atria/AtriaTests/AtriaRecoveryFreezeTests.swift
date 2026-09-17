@@ -1707,6 +1707,42 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         )
         XCTAssertEqual(cancellablePreserved.recoveryPercent, 74)
         XCTAssertEqual(cancellablePreserved.strain, 0.6)
+
+        let invalidated = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [drifted],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [nightDay],
+            calendar: calendar
+        )
+        let invalidatedPreserved = try XCTUnwrap(
+            invalidated.first { calendar.isDate($0.day, inSameDayAs: nightDay) }
+        )
+        XCTAssertEqual(invalidatedPreserved.recoveryPercent, 74,
+                       "a recovered-data invalidation must not rescore a closed night")
+        XCTAssertEqual(invalidatedPreserved.strain, 0.6)
+
+        let invalidatedCancellable = try XCTUnwrap(SessionStore.mergeDailyMetricHistoryCancellable(
+            existing: [frozen],
+            computed: [drifted],
+            sessions: [],
+            sleep: .empty,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [nightDay],
+            calendar: calendar,
+            shouldContinue: { true }
+        ))
+        let invalidatedCancellablePreserved = try XCTUnwrap(
+            invalidatedCancellable.first { calendar.isDate($0.day, inSameDayAs: nightDay) }
+        )
+        XCTAssertEqual(invalidatedCancellablePreserved.recoveryPercent, 74)
+        XCTAssertEqual(invalidatedCancellablePreserved.strain, 0.6)
     }
 
     func testHistoricalSleepEditStillRemintsOvernightRecovery() throws {

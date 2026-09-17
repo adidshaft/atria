@@ -22905,17 +22905,23 @@ final class SessionStore: ObservableObject {
 
         for metric in existing {
             let day = calendar.startOfDay(for: metric.day)
-            guard !normalizedAuthoritativeDays.contains(day) else { continue }
             if calendar.isDate(day, inSameDayAs: today) {
-                if merged[day] == nil { merged[day] = metric }
+                if merged[day] == nil, !normalizedAuthoritativeDays.contains(day) {
+                    merged[day] = metric
+                }
                 continue
             }
             if let rebuilt = merged[day] {
+                // A recovered-data invalidation still has a rebuilt row. Do
+                // not skip the overnight freeze just because the day is
+                // marked authoritative (device 2026-09-17: last night 76
+                // became 74 after a 108 relaunch while sleep/HRV/RHR stayed
+                // 7h15m / 77 / 55). Deletion remains `computed` empty.
                 merged[day] = dailyMetricPreservingFrozenOvernightScore(
                     rebuilt: rebuilt,
                     existing: metric
                 )
-            } else {
+            } else if !normalizedAuthoritativeDays.contains(day) {
                 merged[day] = metric
             }
         }
@@ -23073,7 +23079,6 @@ final class SessionStore: ObservableObject {
                !normalizedAuthoritativeDays.contains(day) {
                 merged[day] = metric
             } else if let rebuilt = merged[day],
-                      !normalizedAuthoritativeDays.contains(day),
                       !calendar.isDate(day, inSameDayAs: today) {
                 // A rebuild that cannot OBSERVE a measured fact must not assert
                 // its absence.

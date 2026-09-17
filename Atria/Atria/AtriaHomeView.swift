@@ -9750,12 +9750,13 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             .scrollContentBackground(.hidden)
             // The tabViewBottomAccessory (Live pill) stacks ON TOP of the
             // glass tab capsule, and on this iOS beta its height is not
-            // added to the scroll safe area — the last card ("Start
-            // activity", the plan pill) ended up permanently clipped
-            // behind the bottom chrome (seen live 2026-08-05). Explicit
-            // bottom margin keeps every card reachable; scroll-under still
-            // shows content beneath the glass while scrolling.
-            .contentMargins(.bottom, bottomContentMargin, for: .scrollContent)
+            // added to the scroll safe area — first-screen cards (compact
+            // insight, saved workouts) and the last card ("Start workout",
+            // the plan pill) sat under the chrome (device 2026-08-05 and
+            // 2026-09-17). contentMargins only extended the scroll range;
+            // safeAreaPadding also insets the resting viewport. Do not use
+            // safeAreaInset(edge: .bottom) — that painted a black shelf.
+            .safeAreaPadding(.bottom, bottomContentMargin)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .refreshable { await refresh() }
             .onScrollGeometryChange(for: Bool.self) { geometry in

@@ -402,6 +402,23 @@ struct AtriaTodayScreen: View {
                                          pulseStore: pulseStore)
             }
 
+            // Compact read first: after saved workouts + highlights it sat in
+            // the glass tab's resting overlap (device 2026-09-17).
+            if !sessionProjectionStore.state.learnedInsights.isEmpty
+                || !sessionProjectionStore.state.learnedInsightLedger.isEmpty {
+                Button {
+                    showInsights = true
+                } label: {
+                    AtriaLearnedInsightsBoard(
+                        insights: sessionProjectionStore.state.learnedInsights,
+                        ledger: sessionProjectionStore.state.learnedInsightLedger,
+                        usesOwnCard: true,
+                        style: .compactBar
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+
             // Keep yesterday's saved sessions on the first screen. Below the
             // compact read they sat under the glass tab capsule and never
             // read as workouts (device 2026-09-17 11:35).
@@ -423,21 +440,6 @@ struct AtriaTodayScreen: View {
                 AtriaTodayHighlightsStrip(highlights: highlights) { metric in
                     openMetricDetail(metric)
                 }
-            }
-
-            if !sessionProjectionStore.state.learnedInsights.isEmpty
-                || !sessionProjectionStore.state.learnedInsightLedger.isEmpty {
-                Button {
-                    showInsights = true
-                } label: {
-                    AtriaLearnedInsightsBoard(
-                        insights: sessionProjectionStore.state.learnedInsights,
-                        ledger: sessionProjectionStore.state.learnedInsightLedger,
-                        usesOwnCard: true,
-                        style: .compactBar
-                    )
-                }
-                .buttonStyle(.plain)
             }
 
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
