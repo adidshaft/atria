@@ -1980,6 +1980,7 @@ struct AtriaHomeView: View {
         workoutReviewDraft = nil
         completedWorkoutShareReceipt = nil
         showWorkoutStartSheet = false
+        showLiveActivityLockPreview = false
     }
 
     private func handleWorkoutDeepLink(_ command: AtriaWorkoutDeepLink) async {
@@ -1995,6 +1996,7 @@ struct AtriaHomeView: View {
             showLiveActivityLockPreview = false
             _ = await beginWorkoutSession(configuration: .init(activityType: command.activityType))
         case .end:
+            showLiveActivityLockPreview = false
             guard let session = workoutSession else { return }
             _ = await endWorkoutSession(startedAt: session.start)
         case .dismiss:
@@ -5027,7 +5029,7 @@ struct AtriaHomeView: View {
     }
 
     private var scrollBottomClearance: CGFloat {
-        shouldShowLiveAccessory ? 260 : 188
+        shouldShowLiveAccessory ? 300 : 228
     }
 
     private static let debugDashboardScrollTopID = "atria-dashboard-scroll-top"
