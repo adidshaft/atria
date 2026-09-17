@@ -267,4 +267,21 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             "Yesterday morning"
         )
     }
+
+    func testDiagnosisReadsThePublishedWidgetPayloadWithoutDayFenceFailClosed() throws {
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let intents = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaAppIntents.swift"), encoding: .utf8)
+        XCTAssertTrue(intents.contains("static func loadPublishedPayload()"))
+        XCTAssertTrue(home.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
+        XCTAssertFalse(
+            home.contains("let publishedWidget = AtriaIntentSnapshotStore.loadLatestSnapshot()"),
+            "diagnosis must print the stored overnight payload even if the today-fence would hide it"
+        )
+    }
 }
