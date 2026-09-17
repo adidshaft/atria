@@ -4298,8 +4298,10 @@ struct AtriaHomeView: View {
 
     /// Keep live 2A37 up and drain the strap flash for any workout that saved
     /// without HR. Gym 2026-09-17 Strength 21:05–21:37 IST was metadata-only
-    /// because Start checkpointed the previous walk and the post-End path
-    /// never asked for the overlapping backlog.
+    /// because Start checkpointed the previous walk, cover-live suppression
+    /// reported no backlog, and the queued catch-up then no-op'd. The queued
+    /// intent is itself drainable work even when Start-fresh detectors say
+    /// `.none`.
     private func requestPostWorkoutHistoryBackfill() {
         ble.queueConnectedRawHistoryCatchUpIntent(reason: "post_workout_hr_backfill")
         store.upgradeMetadataOnlyWorkoutsFromHistoryInBackground()

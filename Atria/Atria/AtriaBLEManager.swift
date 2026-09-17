@@ -20146,7 +20146,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date,
         trigger: String
     ) -> Bool {
-        if evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
+        if Self.shouldDeferRawCatchUpForIdleWindowDrain(
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+        ),
+           evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
             AtriaDebugLog(
                 "ATRIADBG idle_window_drain status=preferred_over_raw_catch_up trigger=%@ action=stop_realtime_same_epoch_no_cancel",
                 trigger
@@ -20255,7 +20258,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         let backlogReason = Self.strapBacklogReason(now: now)
         let strapBacklogPending = backlogReason != .none
-        guard strapBacklogPending else {
+        guard Self.connectedRawHistoryCatchUpHasDrainableWork(
+            queuedPullIntent: queuedIntent != nil,
+            strapBacklogPending: strapBacklogPending
+        ) else {
             connectedRawHistoryCatchUpContinuationPending = false
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
             connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
@@ -20358,7 +20364,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let started = requestOfflineHistoricalSyncIfNeeded(
             reason: "connected_raw_catch_up_\(trigger)",
             force: false,
-            allowConnectedAutomaticHandoff: false
+            allowConnectedAutomaticHandoff: false,
+            preserveConnectedRealtimeOwner: true
         )
         guard started else {
             if let retryNotBefore = Self.connectedRawNoRadioRetryNotBefore(

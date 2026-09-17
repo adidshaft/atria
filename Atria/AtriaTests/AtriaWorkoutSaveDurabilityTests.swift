@@ -2291,6 +2291,21 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(body.contains("requestPostWorkoutHistoryBackfill()"))
         XCTAssertTrue(home.contains("queueConnectedRawHistoryCatchUpIntent(reason: \"post_workout_hr_backfill\")"))
         XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
+        let manager = try durabilitySource("AtriaBLEManager.swift")
+        XCTAssertTrue(manager.contains("connectedRawHistoryCatchUpHasDrainableWork("))
+        XCTAssertTrue(manager.contains("shouldDeferRawCatchUpForIdleWindowDrain("))
+        let catchUp = try XCTUnwrap(manager.range(
+            of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded("
+        ))
+        let catchUpBody = String(manager[catchUp.lowerBound...].prefix(12_000))
+        XCTAssertTrue(
+            catchUpBody.contains("queuedPullIntent: queuedIntent != nil"),
+            "queued post-workout catch-up must not drop on a suppressed backlog detector"
+        )
+        XCTAssertTrue(
+            catchUpBody.contains("preserveConnectedRealtimeOwner: true"),
+            "post-workout catch-up must keep the live 2A37 owner"
+        )
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {
