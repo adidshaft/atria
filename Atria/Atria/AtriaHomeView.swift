@@ -4133,6 +4133,7 @@ struct AtriaHomeView: View {
         // The workout stopped successfully: release the strap motion ownership
         // lease and cancel its bounded activation tasks.
         ble.endWorkoutMotionLease(reason: "workout_end")
+        requestPostWorkoutHistoryBackfill()
         let finalizedExcludedIntervals = finalIntent.finalizedExcludedIntervals()
         // Give the tap immediate visual acknowledgement. The durable pending
         // intent above remains the crash-recovery authority while the ordered
@@ -4293,6 +4294,15 @@ struct AtriaHomeView: View {
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         }
         return true
+    }
+
+    /// Keep live 2A37 up and drain the strap flash for any workout that saved
+    /// without HR. Gym 2026-09-17 Strength 21:05–21:37 IST was metadata-only
+    /// because Start checkpointed the previous walk and the post-End path
+    /// never asked for the overlapping backlog.
+    private func requestPostWorkoutHistoryBackfill() {
+        ble.queueConnectedRawHistoryCatchUpIntent(reason: "post_workout_hr_backfill")
+        store.upgradeMetadataOnlyWorkoutsFromHistoryInBackground()
     }
 
     private func workoutShareSnapshot(for workout: UserConfirmedWorkout,
@@ -6330,6 +6340,7 @@ struct AtriaHomeView: View {
             showConnectionGuide = false
             connectionGuidePresentationToken = UUID()
             logHomeTiming(event: "connected", status: status)
+            requestPostWorkoutHistoryBackfill()
             if selectedTab == .overview, !model.snapshotStore.diagnosticsReady {
                 scheduleOverviewDiagnosticsKickoff(reason: "connected_overview_idle",
                                                    delayNanoseconds: 6_800_000_000)
