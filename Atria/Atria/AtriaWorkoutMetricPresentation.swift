@@ -146,6 +146,25 @@ enum AtriaWorkoutMetricPresentation {
             .sorted { $0.start > $1.start }
     }
 
+    /// Today only shows the newest recap so a stack of yesterday's sessions
+    /// cannot rest under the glass tab (device 2026-09-17 16:37).
+    static func todayFirstScreenSavedWorkouts(
+        _ workouts: [UserConfirmedWorkout],
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        lookbackDays: Int = 2,
+        limit: Int = 1
+    ) -> [UserConfirmedWorkout] {
+        Array(
+            recentSavedWorkouts(
+                workouts,
+                now: now,
+                calendar: calendar,
+                lookbackDays: lookbackDays
+            ).prefix(max(0, limit))
+        )
+    }
+
     static func durationText(_ duration: TimeInterval) -> String {
         let totalMinutes = max(0, Int((duration / 60).rounded()))
         if totalMinutes < 60 { return "\(max(totalMinutes, 1))m" }

@@ -661,6 +661,16 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(kept.map(\.start), [yesterday])
         XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(66 * 60), "1h 6m")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(28 * 60), "28m")
+        let todayMorning = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 9, minute: 12))!
+        let firstScreen = AtriaWorkoutMetricPresentation.todayFirstScreenSavedWorkouts(
+            [
+                workout(samples: 158, avgHR: 80, strain: 0.4, start: todayMorning, duration: 3 * 60),
+                workout(samples: 1428, avgHR: 85, strain: 2.7, start: yesterday, duration: 23 * 60),
+            ],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(firstScreen.map(\.start), [todayMorning])
     }
 
     func testSparseHeartRateShowsMeasuredStrainValue() {
