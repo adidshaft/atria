@@ -22809,6 +22809,50 @@ final class SessionStore: ObservableObject {
         return preserved
     }
 
+    /// Sleep-backed overnight Recovery/HRV/RHR is a morning freeze. A later
+    /// daytime RHR sample that joins the personal baseline must not rescore
+    /// yesterday's 74 into 76 while the night itself did not change.
+    nonisolated static func dailyMetricPreservingFrozenOvernightScore(
+        rebuilt: SavedDailyMetric,
+        existing: SavedDailyMetric
+    ) -> SavedDailyMetric {
+        let rebuiltWithMeasuredRHR = dailyMetricPreservingMeasuredFacts(
+            rebuilt: rebuilt,
+            existing: existing
+        )
+        let existingSleepBacked = (existing.sleepDuration ?? 0) > 0
+            && existing.recoveryPercent != nil
+        guard existingSleepBacked else { return rebuiltWithMeasuredRHR }
+        let rebuiltStillHasTheNight = (rebuilt.sleepDuration ?? 0) > 0
+        if rebuiltStillHasTheNight,
+           dailyRecoveryInputsChanged(frozen: existing, fresh: rebuilt) {
+            return rebuiltWithMeasuredRHR
+        }
+        return SavedDailyMetric(
+            day: rebuilt.day,
+            recoveryPercent: existing.recoveryPercent,
+            recoveryConfidence: existing.recoveryConfidence,
+            hrv: existing.hrv,
+            restingHR: existing.restingHR ?? rebuiltWithMeasuredRHR.restingHR,
+            respiratoryRate: existing.respiratoryRate,
+            sleepDuration: existing.sleepDuration,
+            sleepNeedSeconds: existing.sleepNeedSeconds,
+            sleepSpan: existing.sleepSpan,
+            sleepStart: existing.sleepStart,
+            sleepEnd: existing.sleepEnd,
+            sleepSource: existing.sleepSource,
+            sleepStageSegments: existing.sleepStageSegments,
+            sleepConsistencyPercent: existing.sleepConsistencyPercent,
+            strain: rebuilt.strain,
+            strainCoverageFraction: rebuilt.strainCoverageFraction,
+            strainEvidenceQuality: rebuilt.strainEvidenceQuality,
+            dayTRIMP: rebuilt.dayTRIMP,
+            skinTemperatureDeviationCelsius: rebuilt.skinTemperatureDeviationCelsius
+                ?? existing.skinTemperatureDeviationCelsius,
+            recoverySummary: existing.recoverySummary
+        )
+    }
+
     /// Whether the scored night's recovery inputs differ between the preserved
     /// frozen daily row and a fresh recompute — i.e. a sleep confirm / EXTEND /
     /// adjust re-derived today's overnight readiness, so the preserved recovery
@@ -22861,8 +22905,19 @@ final class SessionStore: ObservableObject {
 
         for metric in existing {
             let day = calendar.startOfDay(for: metric.day)
-            guard merged[day] == nil, !normalizedAuthoritativeDays.contains(day) else { continue }
-            merged[day] = metric
+            guard !normalizedAuthoritativeDays.contains(day) else { continue }
+            if calendar.isDate(day, inSameDayAs: today) {
+                if merged[day] == nil { merged[day] = metric }
+                continue
+            }
+            if let rebuilt = merged[day] {
+                merged[day] = dailyMetricPreservingFrozenOvernightScore(
+                    rebuilt: rebuilt,
+                    existing: metric
+                )
+            } else {
+                merged[day] = metric
+            }
         }
 
         if let frozenToday = existing.first(where: { calendar.isDate($0.day, inSameDayAs: today) }) {
@@ -23018,7 +23073,8 @@ final class SessionStore: ObservableObject {
                !normalizedAuthoritativeDays.contains(day) {
                 merged[day] = metric
             } else if let rebuilt = merged[day],
-                      !normalizedAuthoritativeDays.contains(day) {
+                      !normalizedAuthoritativeDays.contains(day),
+                      !calendar.isDate(day, inSameDayAs: today) {
                 // A rebuild that cannot OBSERVE a measured fact must not assert
                 // its absence.
                 //
@@ -23040,11 +23096,11 @@ final class SessionStore: ObservableObject {
                 // `healthDeviationDecision`, both of which need a minimum n),
                 // which is the real mechanism behind field report item 13.
                 //
-                // Carry forward only facts the recompute left nil, and only for
-                // non-authoritative days. A day the caller declared
-                // authoritative still replaces wholesale, and any value the
-                // rebuild DID derive still wins.
-                merged[day] = Self.dailyMetricPreservingMeasuredFacts(
+                // Overnight Recovery/HRV/RHR is the same class of fact: once a
+                // sleep-backed morning score exists, a later baseline sample
+                // (device 2026-09-17, 74 → 76 after daytime RHR joined the
+                // resting set) must not rewrite the night.
+                merged[day] = Self.dailyMetricPreservingFrozenOvernightScore(
                     rebuilt: rebuilt,
                     existing: metric
                 )
