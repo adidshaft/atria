@@ -248,9 +248,8 @@ enum AtriaWorkoutSharePresentation {
         guard [.walking, .running, .hiking].contains(activity),
               let count,
               count >= 0 else { return nil }
-        // The only current estimated workout source is the disproven sparse
-        // v24 cadence model. Sharing accepts detector-measured strap steps
-        // only; a research estimate must never look like a workout result.
+        // Share cards stay measured-only. Walking gyro-cadence totals are
+        // intentionally estimated and belong on the in-app recap, not here.
         guard isEstimated == false else { return nil }
         return "\(count)"
     }
@@ -271,6 +270,36 @@ enum AtriaWorkoutSharePresentation {
             activity: activity
         ), presentation.isAvailable else { return nil }
         return presentation.valueText
+    }
+
+    /// In-app recap may show the frozen walking gyro-cadence total End
+    /// persisted. Share cards remain measured-only via `completedStepsText`.
+    static func recapStepsText(count: Int?,
+                               isEstimated: Bool?,
+                               capturedAt: Date?,
+                               workoutEndedAt: Date,
+                               activity: AtriaWorkoutActivityType) -> String? {
+        if let measured = completedStepsText(
+            count: count,
+            isEstimated: isEstimated,
+            capturedAt: capturedAt,
+            workoutEndedAt: workoutEndedAt,
+            activity: activity
+        ) {
+            return measured
+        }
+        guard [.walking, .running, .hiking].contains(activity),
+              isEstimated == true,
+              let count, count > 0,
+              let capturedAt,
+              capturedAt <= workoutEndedAt.addingTimeInterval(
+                AtriaLiveWorkoutStepProjection.futureTolerance
+              ),
+              workoutEndedAt.timeIntervalSince(capturedAt)
+                <= AtriaLiveWorkoutStepProjection.freshnessInterval else {
+            return nil
+        }
+        return "\(count)"
     }
 
     /// Saved walking workouts always explain their strap-step state. Sharing
