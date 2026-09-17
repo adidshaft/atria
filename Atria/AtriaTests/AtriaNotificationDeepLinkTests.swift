@@ -309,6 +309,9 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         let end = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/end")!))
         XCTAssertEqual(end.action, .end)
 
+        let dismiss = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/dismiss")!))
+        XCTAssertEqual(dismiss.action, .dismiss)
+
         XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://metric/hrv")!))
         XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://overview")!))
 
@@ -319,8 +322,11 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("pendingWorkoutDeepLink"))
         XCTAssertTrue(home.contains("await handleWorkoutDeepLink(command)"))
         XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"))
-        XCTAssertTrue(home.contains("workoutReviewDraft = nil"),
-                      "a start deep link must dismiss the saved-workout sheet so the live HUD can present")
+        XCTAssertTrue(home.contains("dismissPresentedWorkoutChrome()"),
+                      "metric, widget, and workout start links must drop the saved-workout recap so the next sheet can present")
+        XCTAssertTrue(home.contains("case .dismiss:"),
+                      "atria://workout/dismiss must clear the recap without starting another session")
+        XCTAssertTrue(home.contains("workoutEndNotice = nil"))
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {

@@ -3851,6 +3851,7 @@ struct AtriaWorkoutDeepLink: Equatable, Hashable, Sendable {
     enum Action: String, Sendable {
         case start
         case end
+        case dismiss
     }
 
     let action: Action
@@ -3871,6 +3872,8 @@ struct AtriaWorkoutDeepLink: Equatable, Hashable, Sendable {
                         activityType: AtriaWorkoutActivityType.deepLinkType(typeToken) ?? .running)
         case "end":
             return Self(action: .end, activityType: .running)
+        case "dismiss":
+            return Self(action: .dismiss, activityType: .running)
         default:
             return nil
         }
