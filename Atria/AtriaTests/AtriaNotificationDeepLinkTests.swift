@@ -329,6 +329,8 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
                       "metric, widget, and workout start links must drop the saved-workout recap so the next sheet can present")
         XCTAssertTrue(home.contains("case .dismiss:"),
                       "atria://workout/dismiss must clear the recap without starting another session")
+        XCTAssertTrue(home.contains("showLiveActivityLockPreview = false"),
+                      "end and dismiss must drop the lock-preview sheet so it cannot stick after a run")
         XCTAssertTrue(home.contains("workoutEndNotice = nil"))
         XCTAssertTrue(home.contains("showWidgetOvernightBoard = false"),
                       "a metric deep link must drop the widget payload board so Day/Week/Month can present")
