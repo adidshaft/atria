@@ -2064,8 +2064,8 @@ struct AtriaLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: AtriaLiveActivityAttributes.self) { context in
             AtriaLiveActivityLockScreenView(context: context)
-                .activityBackgroundTint(Color(.systemBackground))
-                .activitySystemActionForegroundColor(.primary)
+                .activityBackgroundTint(Color.black)
+                .activitySystemActionForegroundColor(.white)
                 .widgetURL(atriaVitalsURL)
         } dynamicIsland: { context in
             // ActivityKit owns this stale transition. Once it fires, fail all
@@ -2997,6 +2997,9 @@ private struct AtriaLiveActivityLockScreenView: View {
                 lockScreenHeartRateHero
                     .frame(width: 112, alignment: .leading)
                     .layoutPriority(2)
+
+                lockScreenZoneSummary
+                    .layoutPriority(1)
 
                 liveActivityTimer(state: context.state,
                                   startedAt: context.attributes.startedAt)

@@ -3844,6 +3844,39 @@ struct AtriaMetricDeepLink: Equatable, Hashable, Sendable {
     }
 }
 
+/// Start or end the in-app workout from a consumed `atria://` URL so a
+/// running Release build can prove workout-start radio continuity without
+/// HID. `devicectl process launch --payload-url` only delivers at launch.
+struct AtriaWorkoutDeepLink: Equatable, Hashable, Sendable {
+    enum Action: String, Sendable {
+        case start
+        case end
+    }
+
+    let action: Action
+    let activityType: AtriaWorkoutActivityType
+
+    static func parse(_ url: URL) -> Self? {
+        guard url.scheme?.lowercased() == "atria" else { return nil }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        guard pieces.first == "workout", pieces.count >= 2 else { return nil }
+        switch pieces[1] {
+        case "start":
+            let typeToken = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?
+                .first(where: { $0.name.lowercased() == "type" })?
+                .value
+            return Self(action: .start,
+                        activityType: AtriaWorkoutActivityType.deepLinkType(typeToken) ?? .running)
+        case "end":
+            return Self(action: .end, activityType: .running)
+        default:
+            return nil
+        }
+    }
+}
+
 /// Sheet identity includes the range. `sheet(item:)` keyed only on the metric
 /// coalesces Day → Week as a no-op, which is why `atria://metric/hrv?range=week`
 /// left the Day sheet on screen (device 2026-09-17 12:02).

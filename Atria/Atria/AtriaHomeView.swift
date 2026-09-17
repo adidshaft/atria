@@ -875,6 +875,7 @@ struct AtriaHomeView: View {
         arguments: ProcessInfo.processInfo.arguments
     )
     @State private var pendingMetricDeepLink: AtriaMetricDeepLink?
+    @State private var pendingWorkoutDeepLink: AtriaWorkoutDeepLink?
     @State private var showRRImporter = false
     @State private var showHRImporter = false
     @State private var rrShareURL: URL?
@@ -1179,6 +1180,11 @@ struct AtriaHomeView: View {
                 guard !Task.isCancelled, scenePhase == .active else { return }
                 drainPendingFileDeepLink()
             }
+        }
+        .task(id: pendingWorkoutDeepLink) {
+            guard let command = pendingWorkoutDeepLink else { return }
+            pendingWorkoutDeepLink = nil
+            await handleWorkoutDeepLink(command)
         }
         .sheet(item: $sameDayMainSleepRoute) { choice in
             AtriaSameDayMainSleepSheet(choice: choice) { primaryID in
@@ -1832,6 +1838,16 @@ struct AtriaHomeView: View {
             hasUnlockedPrimaryContent = true
             return
         }
+        if let metricLink = AtriaMetricDeepLink.parse(url) {
+            selectedTab = .overview
+            pendingMetricDeepLink = metricLink
+            hasUnlockedPrimaryContent = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=metric_%@ range=%@ url=%@",
+                          metricLink.metric.rawValue,
+                          metricLink.range.rawValue,
+                          url.absoluteString)
+            return
+        }
         if Self.isSleepReviewDeepLink(url) {
             // Land on Overview AND force-present the review/edit sheet for the
             // latest reviewable night, so a "Review your sleep" notification tap
@@ -1856,13 +1872,23 @@ struct AtriaHomeView: View {
             }
             return
         }
-        if let metricLink = AtriaMetricDeepLink.parse(url) {
-            selectedTab = .overview
-            pendingMetricDeepLink = metricLink
+        if let workoutLink = AtriaWorkoutDeepLink.parse(url) {
+            pendingWorkoutDeepLink = workoutLink
             hasUnlockedPrimaryContent = true
-            AtriaDebugLog("ATRIADBG deeplink status=handled target=metric_%@ range=%@ url=%@",
-                          metricLink.metric.rawValue,
-                          metricLink.range.rawValue,
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=workout_%@ type=%@ url=%@",
+                          workoutLink.action.rawValue,
+                          workoutLink.activityType.rawValue,
+                          url.absoluteString)
+            return
+        }
+        if Self.isWidgetProofDeepLink(url) {
+            selectedTab = .overview
+            hasUnlockedPrimaryContent = true
+            widgetProofSnapshot = WidgetSnapshotPublisher.publish(store: store,
+                                                                  ble: ble,
+                                                                  reason: "deeplink_widget_proof")
+            showWidgetProofSheet = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=widget_proof url=%@",
                           url.absoluteString)
             return
         }
@@ -1894,6 +1920,20 @@ struct AtriaHomeView: View {
     private func drainPendingFileDeepLink() {
         guard let url = AtriaPendingDeepLinkFile.consume() else { return }
         handleDeepLink(url)
+    }
+
+    private func handleWorkoutDeepLink(_ command: AtriaWorkoutDeepLink) async {
+        switch command.action {
+        case .start:
+            liveWorkoutLoggedSets = []
+            liveWorkoutExcludedIntervals = []
+            liveWorkoutPauseStartedAt = nil
+            liveWorkoutMinimized = false
+            _ = await beginWorkoutSession(configuration: .init(activityType: command.activityType))
+        case .end:
+            guard let session = workoutSession else { return }
+            _ = await endWorkoutSession(startedAt: session.start)
+        }
     }
 
     private func drainPendingNotificationDeepLink() {
@@ -1943,7 +1983,16 @@ struct AtriaHomeView: View {
         guard url.scheme?.lowercased() == "atria" else { return false }
         let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
             .map { $0.lowercased() }
-        return pieces.contains("sleep-review") || pieces.contains("sleep")
+        // `atria://metric/sleep` is the Sleep trend sheet, not the review flow.
+        if pieces.first == "metric" { return false }
+        return pieces.contains("sleep-review") || pieces.first == "sleep"
+    }
+
+    private static func isWidgetProofDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "widget-proof" || pieces.first == "widget-board"
     }
 
     private func postDebugNotificationDeepLinkIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -3348,18 +3397,23 @@ struct AtriaHomeView: View {
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
         let pulse = model.pulseLiveStore.state
-        // Pulse zeros after the six-second live window. ActivityKit still
-        // needs the last real BPM/zone so the Lock Screen does not go `--`.
+        // Pulse zeros after the six-second live window, on contact loss, and
+        // across the workout session-boundary reset. ActivityKit still needs
+        // the last real BPM/zone so the Lock Screen does not go `--`.
         let lastKnownSample = ble.session.last
         let heartRate: Int
         let zone: Metrics.HeartRateZone?
-        if pulse.heartRate > 0 {
-            heartRate = pulse.heartRate
-            zone = pulse.heartRateZone
-        } else if let lastKnownSample, lastKnownSample.bpm > 0 {
-            heartRate = lastKnownSample.bpm
-            if let rest = store.baseline.restingInt {
-                zone = Metrics.heartRateZone(bpm: lastKnownSample.bpm,
+        let heldHeartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: pulse.heartRate,
+            lastKnown: lastKnownSample?.bpm ?? 0,
+            retained: ble.lastKnownDisplayHeartRate
+        )
+        if heldHeartRate > 0 {
+            heartRate = heldHeartRate
+            if pulse.heartRate > 0 {
+                zone = pulse.heartRateZone
+            } else if let rest = store.baseline.restingInt {
+                zone = Metrics.heartRateZone(bpm: heldHeartRate,
                                              rest: rest,
                                              max: store.profile.maxHR)
             } else {
@@ -3533,7 +3587,12 @@ struct AtriaHomeView: View {
                 $0 >= session.start ? $0 : nil
             },
             hasSensorEvidence: sensorMetrics.hasEvidence,
-            loadIsComplete: sensorMetrics.isComplete
+            loadIsComplete: sensorMetrics.isComplete,
+            lastKnownHeartRate: AtriaWorkoutHeartRateHold.displayed(
+                live: model.pulseLiveStore.state.heartRate,
+                lastKnown: ble.session.last?.bpm ?? 0,
+                retained: ble.lastKnownDisplayHeartRate
+            )
         )
     }
 
@@ -9724,6 +9783,7 @@ private struct AtriaLiveTabAccessoryHost: View {
 
     var body: some View {
         AtriaLiveTabAccessory(pulseStore: pulseStore,
+                              lastKnownHeartRate: metricStore.state.lastKnownHeartRate,
                               workoutStart: workoutStart,
                               workoutSystemImage: workoutSystemImage,
                               strainText: metricStore.state.strainHUDText,
@@ -9733,6 +9793,7 @@ private struct AtriaLiveTabAccessoryHost: View {
 
 private struct AtriaLiveTabAccessory: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
+    let lastKnownHeartRate: Int
     let workoutStart: Date?
     let workoutSystemImage: String
     let strainText: String
@@ -9746,6 +9807,7 @@ private struct AtriaLiveTabAccessory: View {
     var body: some View {
         if let workoutStart {
             AtriaLiveWorkoutTabAccessory(pulseStore: pulseStore,
+                                         lastKnownHeartRate: lastKnownHeartRate,
                                          workoutStart: workoutStart,
                                          workoutSystemImage: workoutSystemImage,
                                          strainText: strainText,
@@ -9757,6 +9819,7 @@ private struct AtriaLiveTabAccessory: View {
 
 private struct AtriaLiveWorkoutTabAccessory: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    let lastKnownHeartRate: Int
     let workoutStart: Date
     let workoutSystemImage: String
     let strainText: String
@@ -9765,7 +9828,11 @@ private struct AtriaLiveWorkoutTabAccessory: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let presentation = AtriaLiveTabAccessoryPresentation(heartRate: pulseStore.state.heartRate,
+        let heartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: pulseStore.state.heartRate,
+            lastKnown: lastKnownHeartRate
+        )
+        let presentation = AtriaLiveTabAccessoryPresentation(heartRate: heartRate,
                                                               strainText: strainText)
         Button(action: onOpenWorkout) {
             HStack(spacing: isInline ? 8 : 10) {
@@ -9785,12 +9852,12 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                         .layoutPriority(2)
                 }
 
-                Text(pulseStore.state.heartRate > 0 ? "\(pulseStore.state.heartRate) bpm" : "-- bpm")
+                Text(heartRate > 0 ? "\(heartRate) bpm" : "-- bpm")
                     .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
-                               value: pulseStore.state.heartRate)
+                               value: heartRate)
                     .lineLimit(1)
                     .minimumScaleFactor(0.62)
                     .allowsTightening(true)

@@ -1283,6 +1283,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingHRJump: (rate: Int, at: Date)?
     private var lastAcceptedHRAt: Date?
     var lastAcceptedHeartRateAt: Date? { lastAcceptedHRAt }
+    /// Survives workout session-boundary resets. HUD / Live Activity hold this
+    /// so Start cannot blank the last real BPM while a new live sample is
+    /// still arriving. Connection UI still uses `currentConnectionHasFreshHeartRate`.
+    private(set) var lastKnownDisplayHeartRate: Int = 0
+    private(set) var lastKnownDisplayHeartRateAt: Date?
     var lastAcceptedMotionFrameAt: Date? { lastR10MotionFrameAt }
     var liveStream5NotifyConfirmed: Bool { strapStream5NotifyConfirmed }
 
@@ -21439,6 +21444,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recentRRBeatTimes = payload.recentRRBeatTimes
         lastRRBeatTime = rrArchive.last?.t
         lastAcceptedHRAt = last.t
+        rememberDisplayHeartRate(last.bpm, at: last.t)
         lastRawHRNotificationAt = last.t
         lastStandardHR = (last.bpm, last.t)
         sessionRawHRNotifications = record.rawHRNotifications
@@ -28942,6 +28948,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         lastStandardHR = (rate, sampleTime)
         lastAcceptedHRAt = sampleTime
+        rememberDisplayHeartRate(rate, at: sampleTime)
         connectedEpochAcceptedHeartRateSamples += 1
         if let callbackSource,
            workoutHistoryPreemptionSuccessorGate
@@ -46821,6 +46828,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         lastSegmentHROnlyRRRecoveryAt = nil
         currentRRGapRecoveryCount = 0
         lastCurrentRRGapRecoveryAt = nil
+    }
+
+    private func rememberDisplayHeartRate(_ bpm: Int, at date: Date) {
+        guard bpm > 0 else { return }
+        lastKnownDisplayHeartRate = bpm
+        lastKnownDisplayHeartRateAt = date
     }
 
     private func appendLastHeartRate(_ rate: Int) {
