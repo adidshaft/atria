@@ -2331,6 +2331,10 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             manager.contains("reason: \"history_write_22_timeout_retry\""),
             "a live-preserving 0x22 timeout must re-queue catch-up without disconnecting"
         )
+        XCTAssertTrue(
+            manager.contains("queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil"),
+            "queued gym fill must not restore 2A37 after one ACK on the Home screen"
+        )
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {

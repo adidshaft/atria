@@ -4683,6 +4683,25 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             "console --activate is attended from t=0; consume-to-now still walks until the HR pause budget"
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                attendedForeground: true,
+                queuedPullIntent: true
+            ),
+            "queued gym fill must keep walking past the first ACK while Home is open"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                attendedForeground: true,
+                heartRatePauseElapsed: 18,
+                queuedPullIntent: true
+            ),
+            "queued gym fill restores 2A37 after the worn pause budget"
+        )
         XCTAssertTrue(
             AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
                 idleWindowDrainOwnsLink: true,
@@ -4815,6 +4834,16 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 now: Date(timeIntervalSince1970: 1_040)
             ),
             "unconsented idle-window keeps the existing 20s/180s budgets"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: false,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_018),
+                queuedPullIntent: true
+            ),
+            "queued gym fill restores 2A37 on the worn pause budget without consume consent"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
