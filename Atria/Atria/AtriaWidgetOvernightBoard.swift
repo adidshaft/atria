@@ -4,7 +4,7 @@ import SwiftUI
 /// WidgetKit renderer: it prints the same `WidgetSnapshot` the extension
 /// already received, so Home/Lock faces cannot silently disagree with Today.
 struct AtriaWidgetOvernightBoard: View {
-    let snapshot: WidgetSnapshot?
+    @State private var snapshot: WidgetSnapshot?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -52,6 +52,9 @@ struct AtriaWidgetOvernightBoard: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .accessibilityIdentifier("atria-widget-overnight-board")
+        .onAppear {
+            snapshot = AtriaIntentSnapshotStore.loadPublishedPayload()
+        }
     }
 
     private var clockText: String {

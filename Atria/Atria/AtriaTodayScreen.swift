@@ -289,6 +289,7 @@ struct AtriaTodayScreen: View {
     let onCustomizeToday: () -> Void
     var pendingMetricDeepLink: AtriaMetricDeepLink? = nil
     var onConsumeMetricDeepLink: () -> Void = {}
+    var metricSheetDismissToken: Int = 0
     /// The workout/sleep review items, built by AtriaHomeView (which owns
     /// their state) and rendered INSIDE the plan section — the user's strict
     /// rule (2026-07-07): one notifications block, max 3 items (workout,
@@ -508,6 +509,9 @@ struct AtriaTodayScreen: View {
             guard let link = pendingMetricDeepLink else { return }
             metricSheet = AtriaMetricSheetRoute(metric: link.metric, range: link.range)
             onConsumeMetricDeepLink()
+        }
+        .onChange(of: metricSheetDismissToken) { _, _ in
+            metricSheet = nil
         }
         .sheet(isPresented: $showInsights) {
             AtriaLearnedInsightsSheet(

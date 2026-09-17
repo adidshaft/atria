@@ -913,6 +913,7 @@ struct AtriaHomeView: View {
     @State private var showWidgetProofSheet = false
     @State private var showWidgetOvernightBoard = false
     @State private var widgetProofSnapshot: WidgetSnapshot?
+    @State private var metricSheetDismissToken = 0
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var workoutPersistenceRevision: UInt64 = 0
     @State private var showWorkoutStartSheet = false
@@ -1576,7 +1577,7 @@ struct AtriaHomeView: View {
                                   layoutConfig: currentHomeLayoutConfig)
         }
         .sheet(isPresented: $showWidgetOvernightBoard) {
-            AtriaWidgetOvernightBoard(snapshot: widgetProofSnapshot)
+            AtriaWidgetOvernightBoard()
         }
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
@@ -1889,10 +1890,16 @@ struct AtriaHomeView: View {
         if Self.isWidgetOvernightBoardDeepLink(url) {
             selectedTab = .overview
             hasUnlockedPrimaryContent = true
-            widgetProofSnapshot = WidgetSnapshotPublisher.publish(store: store,
-                                                                  ble: ble,
-                                                                  reason: "deeplink_widget_board")
-            showWidgetOvernightBoard = true
+            pendingMetricDeepLink = nil
+            metricSheetDismissToken += 1
+            showWidgetProofSheet = false
+            // Do not republish. The board must print the payload WidgetKit
+            // already has, and a Sleep sheet already on screen has to dismiss
+            // before this sheet can take the presentation slot.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showWidgetOvernightBoard = true
+            }
             AtriaDebugLog("ATRIADBG deeplink status=handled target=widget_board url=%@",
                           url.absoluteString)
             return
@@ -5722,6 +5729,7 @@ struct AtriaHomeView: View {
                              onConsumeMetricDeepLink: {
                                  pendingMetricDeepLink = nil
                              },
+                             metricSheetDismissToken: metricSheetDismissToken,
                              systemNotifications: todayNotifications)
 
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
@@ -12139,7 +12147,7 @@ final class AtriaHomeModel {
             retained: ble.lastKnownDisplayHeartRate
         )
         let zone = pulse.heartRateZone?.name
-        let publishedWidget = AtriaIntentSnapshotStore.loadLatestSnapshot()
+        let publishedWidget = AtriaIntentSnapshotStore.loadPublishedPayload()
         func diagnosisWorkout(_ workout: UserConfirmedWorkout) -> AtriaDiagnosisReport.Workout {
             AtriaDiagnosisReport.Workout(
                 activityType: workout.activityType ?? workout.label,

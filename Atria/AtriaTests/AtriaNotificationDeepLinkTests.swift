@@ -322,14 +322,20 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {
-        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let home = try String(contentsOf: testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let board = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWidgetOvernightBoard.swift"), encoding: .utf8)
         XCTAssertTrue(home.contains("isWidgetOvernightBoardDeepLink"))
         XCTAssertTrue(home.contains("showWidgetOvernightBoard = true"))
         XCTAssertTrue(home.contains("pieces.first == \"widget-board\""))
         XCTAssertTrue(home.contains("pieces.first == \"widget-proof\""))
         XCTAssertFalse(home.contains("return pieces.first == \"widget-proof\" || pieces.first == \"widget-board\""))
+        XCTAssertFalse(home.contains("deeplink_widget_board"),
+                       "widget-board must print the already-published payload, not republish")
+        XCTAssertTrue(home.contains("metricSheetDismissToken += 1"))
+        XCTAssertTrue(board.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
+        XCTAssertTrue(board.contains(".onAppear"))
     }
 }
