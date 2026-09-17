@@ -312,6 +312,9 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         let dismiss = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/dismiss")!))
         XCTAssertEqual(dismiss.action, .dismiss)
 
+        let minimize = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/minimize")!))
+        XCTAssertEqual(minimize.action, .minimize)
+
         XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://metric/hrv")!))
         XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://overview")!))
 
@@ -329,6 +332,10 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("workoutEndNotice = nil"))
         XCTAssertTrue(home.contains("showWidgetOvernightBoard = false"),
                       "a metric deep link must drop the widget payload board so Day/Week/Month can present")
+        XCTAssertTrue(home.contains("isLiveActivityLockPreviewDeepLink"))
+        XCTAssertTrue(home.contains("pieces.first == \"live-activity\""))
+        XCTAssertTrue(home.contains("AtriaLiveActivityLockPreviewSheet("))
+        XCTAssertTrue(home.contains("case .minimize:"))
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {

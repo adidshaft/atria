@@ -912,6 +912,7 @@ struct AtriaHomeView: View {
     @State private var showCustomizeSheet = false
     @State private var showWidgetProofSheet = false
     @State private var showWidgetOvernightBoard = false
+    @State private var showLiveActivityLockPreview = false
     @State private var widgetProofSnapshot: WidgetSnapshot?
     @State private var metricSheetDismissToken = 0
     @State private var workoutSession: AtriaWorkoutSession?
@@ -1579,6 +1580,13 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showWidgetOvernightBoard) {
             AtriaWidgetOvernightBoard()
         }
+        .sheet(isPresented: $showLiveActivityLockPreview) {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                AtriaLiveActivityLockPreviewSheet(
+                    snapshot: liveActivityCoordinator.lastPublishedSnapshot
+                )
+            }
+        }
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
                 AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
@@ -1881,6 +1889,20 @@ struct AtriaHomeView: View {
             }
             return
         }
+        if Self.isLiveActivityLockPreviewDeepLink(url) {
+            dismissPresentedWorkoutChrome()
+            liveWorkoutMinimized = true
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
+            hasUnlockedPrimaryContent = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showLiveActivityLockPreview = true
+            }
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=live_activity url=%@",
+                          url.absoluteString)
+            return
+        }
         if let workoutLink = AtriaWorkoutDeepLink.parse(url) {
             if workoutLink.action != .end {
                 dismissPresentedWorkoutChrome()
@@ -1970,12 +1992,19 @@ struct AtriaHomeView: View {
             liveWorkoutExcludedIntervals = []
             liveWorkoutPauseStartedAt = nil
             liveWorkoutMinimized = false
+            showLiveActivityLockPreview = false
             _ = await beginWorkoutSession(configuration: .init(activityType: command.activityType))
         case .end:
             guard let session = workoutSession else { return }
             _ = await endWorkoutSession(startedAt: session.start)
         case .dismiss:
             dismissPresentedWorkoutChrome()
+        case .minimize:
+            liveWorkoutMinimized = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showLiveActivityLockPreview = true
+            }
         }
     }
 
@@ -2036,6 +2065,13 @@ struct AtriaHomeView: View {
         let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
             .map { $0.lowercased() }
         return pieces.first == "widget-proof"
+    }
+
+    private static func isLiveActivityLockPreviewDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "live-activity"
     }
 
     private static func isWidgetOvernightBoardDeepLink(_ url: URL) -> Bool {
