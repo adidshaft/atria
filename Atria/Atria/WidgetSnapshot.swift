@@ -1027,6 +1027,14 @@ enum WidgetSnapshotPublisher {
            ) {
             shouldPreserveCurrent = false
         }
+        if liveEstimateIsReconnectFragmentDrop(
+            currentSteps: current.steps,
+            currentSource: current.stepsSource,
+            candidateSteps: candidate.steps,
+            candidateSource: candidate.stepsSource
+        ) {
+            shouldPreserveCurrent = true
+        }
         guard shouldPreserveCurrent else { return candidate }
 
         var merged = candidate
@@ -1099,12 +1107,19 @@ enum WidgetSnapshotPublisher {
                 candidateSteps: steps,
                 candidateSource: stepsSource ?? "live"
             )
+        let dropsToReconnectFragment =
+            liveEstimateIsReconnectFragmentDrop(
+                currentSteps: current.steps,
+                currentSource: current.stepsSource,
+                candidateSteps: steps,
+                candidateSource: stepsSource ?? "live"
+            )
         // This lane may have captured its arguments before a durable receipt
         // landed. Keep the latest snapshot's step projection unless the live
         // sample is at least as new as every delivered step/receipt clock, or
         // the incoming live gyro count is replacing a contaminated leftover.
         let acceptsIncomingSteps = replacesContaminatedLiveEstimate
-            || (incomingStepEvidenceAt.map { incoming in
+            || (!dropsToReconnectFragment && (incomingStepEvidenceAt.map { incoming in
             let equalsRevisionedDurableReceipt =
                 current.stepsReceiptAuthorityVersion
                     == qualifiedStepAuthorityVersion
@@ -1116,7 +1131,7 @@ enum WidgetSnapshotPublisher {
                 && (currentStepEvidenceAt.map { incoming >= $0 } ?? true)
         } ?? (current.steps == nil
                 && current.stepsCapturedAt == nil
-                && current.stepsReceiptCapturedAt == nil))
+                && current.stepsReceiptCapturedAt == nil)))
         let patchedSteps = acceptsIncomingSteps ? steps : current.steps
         let patchedStepsAreEstimated = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAreEstimated)
@@ -2234,6 +2249,30 @@ enum WidgetSnapshotPublisher {
             sameCycle: true,
             trustedPrefix: 0
         )
+            // gyroOnlySessionSteps treats a sub-1000 drop as a reconnect
+            // fragment (214 vs 18), not accel leftover. Device 2026-09-17:
+            // 10946 vs 1901 may replace; 1926 vs 101 after ship must not.
+            && candidateSteps >= 1_000
+    }
+
+    /// A post-relaunch session-local count (device 2026-09-17: 101 vs Today
+    /// 1926) is not authority to erase the in-cycle gyro total.
+    nonisolated static func liveEstimateIsReconnectFragmentDrop(
+        currentSteps: Int?,
+        currentSource: String?,
+        candidateSteps: Int?,
+        candidateSource: String?
+    ) -> Bool {
+        guard currentSource == "live",
+              candidateSource == "live",
+              let currentSteps,
+              let candidateSteps,
+              candidateSteps > 0,
+              currentSteps > candidateSteps + AtriaHeldDailyStepFloor.contaminationSlack
+        else {
+            return false
+        }
+        return currentSteps >= 1_000 && candidateSteps < 1_000
     }
 
     /// Live writes can arrive every five seconds. WidgetKit cannot sustainably

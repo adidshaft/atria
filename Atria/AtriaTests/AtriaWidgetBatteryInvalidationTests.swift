@@ -1627,6 +1627,58 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.stepsCapturedAt, earlierGyroClock)
     }
 
+    func testReconnectFragmentDoesNotReplaceTodayGyroOnTheWidget() {
+        let laterClock = Date(timeIntervalSince1970: 2_200)
+        let reconnectClock = Date(timeIntervalSince1970: 2_300)
+        var current = deliverySnapshot(
+            steps: 1_926,
+            stepsCapturedAt: laterClock,
+            heartRate: 82,
+            heartRateCapturedAt: laterClock
+        )
+        current.stepsSource = "live"
+        current.stepsAreEstimated = true
+        current.stepsCompleteness = "partial"
+
+        var candidate = deliverySnapshot(
+            steps: 101,
+            stepsCapturedAt: reconnectClock,
+            heartRate: 84,
+            heartRateCapturedAt: reconnectClock,
+            strain: 0.6
+        )
+        candidate.stepsSource = "live"
+        candidate.stepsAreEstimated = true
+        candidate.stepsCompleteness = "partial"
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: candidate,
+                current: current
+            )
+
+        XCTAssertEqual(merged.steps, 1_926)
+        XCTAssertEqual(merged.stepsCapturedAt, laterClock)
+
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: current,
+            createdAt: reconnectClock,
+            heartRate: 84,
+            heartRateCapturedAt: reconnectClock,
+            steps: 101,
+            stepsAreEstimated: true,
+            stepsCapturedAt: reconnectClock,
+            stepsSource: "live",
+            stepsCompleteness: "partial",
+            strain: current.strain,
+            batteryLevel: current.batteryLevel,
+            batteryChargeStatus: current.batteryChargeStatus ?? "levelOnly",
+            batteryChargeText: current.batteryChargeText ?? "Unavailable"
+        )
+        XCTAssertEqual(patched.steps, 1_926)
+        XCTAssertEqual(patched.stepsCapturedAt, laterClock)
+    }
+
     func testCorrectedSameClockReceiptSurvivesDelayedLivePatchWhileHRAdvances() {
         let source = UUID().uuidString
         let cycleStart = Date(timeIntervalSince1970: 1_000)
