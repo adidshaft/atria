@@ -962,6 +962,7 @@ class HandoffStaticChecks(unittest.TestCase):
             # collapsed them behind an opaque affordance on physical iOS 26.
             ".toolbarBackground(.hidden, for: .tabBar)",
             ".tabViewBottomAccessory",
+            ".safeAreaPadding(.bottom, bottomContentMargin)",
             ".padding(.bottom, scrollBottomClearance)",
             "private var scrollBottomClearance: CGFloat",
             "shouldShowLiveAccessory ? 260 : 188",
