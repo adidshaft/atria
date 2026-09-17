@@ -153,6 +153,46 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.lastWorkout?.strain, 0.2)
     }
 
+    func testLiveActivityDiagnosisKeepsLockScreenFacts() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "112",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 71,
+            officialAppRisk: "cleared",
+            workoutRecording: true,
+            settledHRV: 77,
+            liveHRV: 77,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 74,
+            todayRecovery: 38,
+            lastWorkout: nil,
+            liveHeartRate: 88,
+            liveZone: "Z2",
+            widgetHeartRate: 88,
+            liveActivityName: "Running",
+            liveActivityAvailability: "live",
+            liveActivityStrain: 0.1,
+            liveActivitySteps: 12,
+            liveActivityElapsedSeconds: 211
+        )
+        XCTAssertEqual(snapshot.liveActivity.recording, true)
+        XCTAssertEqual(snapshot.liveActivity.heartRate, 88)
+        XCTAssertEqual(snapshot.liveActivity.activityName, "Running")
+        XCTAssertEqual(snapshot.liveActivity.availability, "live")
+        XCTAssertEqual(snapshot.liveActivity.strain, 0.1)
+        XCTAssertEqual(snapshot.liveActivity.steps, 12)
+        XCTAssertEqual(snapshot.liveActivity.elapsedSeconds, 211)
+    }
+
     func testPublishWritesPullableJSONAndCoalescesUnchangedHeartbeats() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let first = AtriaDiagnosisReport.make(

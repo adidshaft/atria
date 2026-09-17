@@ -2952,6 +2952,12 @@ def emit_projection_artifact_revisions():
             live_activity = diagnosis.get("liveActivity") if isinstance(diagnosis.get("liveActivity"), dict) else {}
             print(f"diagnosis_live_activity_recording={live_activity.get('recording', 'missing')}")
             print(f"diagnosis_live_activity_hr={live_activity.get('heartRate', 'missing')}")
+            print(f"diagnosis_live_activity_zone={live_activity.get('zone', 'missing')}")
+            print(f"diagnosis_live_activity_name={live_activity.get('activityName', 'missing')}")
+            print(f"diagnosis_live_activity_availability={live_activity.get('availability', 'missing')}")
+            print(f"diagnosis_live_activity_strain={live_activity.get('strain', 'missing')}")
+            print(f"diagnosis_live_activity_steps={live_activity.get('steps', 'missing')}")
+            print(f"diagnosis_live_activity_elapsed_s={live_activity.get('elapsedSeconds', 'missing')}")
             widget_diag = diagnosis.get("widget") if isinstance(diagnosis.get("widget"), dict) else {}
             print(f"diagnosis_widget_hrv={widget_diag.get('hrv', 'missing')}")
             print(f"diagnosis_widget_rhr={widget_diag.get('rhr', 'missing')}")
