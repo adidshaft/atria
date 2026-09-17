@@ -1,18 +1,13 @@
 import XCTest
 @testable import Atria
 
-/// 2026-09-03, from seeded renders of the recovery sheet. Two things in the
-/// detail template said one thing while the number beside them said another:
+/// Overnight HRV/recovery/RHR must keep one number across Today, Day, Week,
+/// and Month. Week/Month charts still plot the window; the hero is the latest
+/// sleep-backed night in that window, not the average (device 2026-09-17:
+/// Today 77 ms, Week averaged 45 and 77 into 61 ms).
 ///
-///  * on Week and Month the hero shows `periodHeroText`, an aggregate, but the
-///    state word under it still described a single day — Recovery read
-///    "59% / Moderate" on a month whose latest day was 38%, and Sleep put a
-///    30-day mean under last night's "98% of need". Strain alone said
-///    "Period average"; every other metric now does too.
-///  * an excluded recovery contributor carries weight 0 and a placeholder
-///    zScore of 0, which the directional grammar read as "at or above
-///    baseline" — so the HRV row said "Above baseline" next to its own value
-///    of "HRV unavailable".
+/// Strain still names a period average because it is accumulated load, not a
+/// morning score. An excluded recovery contributor must not claim a direction.
 final class AtriaPeriodHeroHonestyTests: XCTestCase {
     private var source: String {
         get throws {
@@ -22,18 +17,17 @@ final class AtriaPeriodHeroHonestyTests: XCTestCase {
         }
     }
 
-    func testAggregateHeroesSayTheyAreAnAverage() throws {
+    func testOvernightHeroesNameTheLatestNight() throws {
         let source = try source
         XCTAssertTrue(source.contains("private func periodHeroState(_ dayState: @autoclosure () -> String) -> String {"))
         XCTAssertTrue(source.contains("guard range != .day, state != \"Learning\" else { return state }"),
                       "the Day hero is untouched and Learning still describes calibration")
-        XCTAssertTrue(source.contains("return \"Period average\""))
+        XCTAssertTrue(source.contains("return \"Latest night\""))
     }
 
-    /// Every metric whose hero value comes from `periodHeroText`, plus the two
-    /// that compute their own aggregate, must go through the wrapper. Strain
-    /// is deliberately absent: its own hero state already says it.
-    func testEveryAggregatingHeroIsWrapped() throws {
+    /// Every overnight metric whose hero value comes from `periodHeroText`
+    /// goes through the latest-night wrapper. Strain keeps its own average.
+    func testEveryOvernightHeroIsWrapped() throws {
         let source = try source
         for state in ["periodHeroState(recoveryHeroState)",
                       "periodHeroState(hrvBand == nil ? \"Learning\" : \"Typical\")",
@@ -49,12 +43,12 @@ final class AtriaPeriodHeroHonestyTests: XCTestCase {
                       "and that is where it says it")
     }
 
-    /// The number itself must keep coming from the aggregate — the label was
-    /// the defect, not the value.
-    func testHeroValueStillAggregatesOnMultiDayRanges() throws {
+    func testOvernightHeroValueIsTheLatestNightNotTheAverage() throws {
         let source = try source
-        XCTAssertTrue(source.contains("if range != .day, let summary {\n            return summary.averageText"))
-        XCTAssertTrue(source.contains("return recoverySummaryForSelectedPeriod?.averageRaw"))
+        XCTAssertTrue(source.contains("if let summary {\n            return summary.latestText"))
+        XCTAssertTrue(source.contains("return recoverySummaryForSelectedPeriod?.latestRaw"))
+        XCTAssertFalse(source.contains("return summary.averageText"))
+        XCTAssertFalse(source.contains("return recoverySummaryForSelectedPeriod?.averageRaw"))
     }
 
     func testExcludedContributorDoesNotClaimADirection() throws {
