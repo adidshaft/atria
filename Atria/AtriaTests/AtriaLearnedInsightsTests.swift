@@ -33,6 +33,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             DailyRollupStoreEntry(
                 day: calendar.date(byAdding: .day, value: -offset, to: today)!,
                 rhr: offset == 0 ? 62 : 54,
+                sleepSeconds: 7 * 3_600,
                 calendar: calendar
             )
         }
@@ -40,6 +41,29 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         let rhr = insights.first { $0.kind == .restingHRDrift }
         XCTAssertEqual(rhr?.headline, "Resting HR is 8 bpm above usual")
         XCTAssertTrue(rhr?.detail.contains("62 bpm") == true)
+    }
+
+    func testRestingHRDriftIgnoresDaytimeWearWithoutSleep() {
+        let today = calendar.startOfDay(for: now)
+        let daytime = DailyRollupStoreEntry(
+            day: today,
+            rhr: 84,
+            strain: 0.2,
+            calendar: calendar
+        )
+        let nights = (1...4).map { offset -> DailyRollupStoreEntry in
+            DailyRollupStoreEntry(
+                day: calendar.date(byAdding: .day, value: -offset, to: today)!,
+                rhr: offset == 1 ? 55 : 61,
+                sleepSeconds: 7 * 3_600,
+                calendar: calendar
+            )
+        }
+        let insights = AtriaLearnedInsights.insights(rollups: [daytime] + nights, now: now)
+        let rhr = insights.first { $0.kind == .restingHRDrift }
+        XCTAssertEqual(rhr?.headline, "Resting HR is 6 bpm below usual")
+        XCTAssertTrue(rhr?.detail.contains("55 bpm") == true, rhr?.detail ?? "missing")
+        XCTAssertFalse(rhr?.detail.contains("84 bpm") == true, rhr?.detail ?? "missing")
     }
 
     func testDaySnapshotFiresWhenNothingElseQualifies() {
@@ -475,7 +499,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         let todayRollup = DailyRollupStoreEntry(
             day: today,
             recovery: 46,
-            rhr: 65,
+            rhr: 84,
             strain: 0.01,
             calendar: calendar
         )
@@ -483,7 +507,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             DailyRollupStoreEntry(
                 day: calendar.date(byAdding: .day, value: -offset, to: today)!,
                 recovery: offset == 0 ? 46 : 60,
-                rhr: offset == 0 ? 65 : 58,
+                rhr: offset == 0 ? 84 : (offset == 1 ? 65 : 58),
                 sleepSeconds: offset == 0 ? nil : (offset == 1 ? 17_349 : 18_500),
                 calendar: calendar
             )
@@ -498,7 +522,10 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             || $0.headline.contains("only") })
         XCTAssertTrue(insights.contains { $0.kind == .stackedRecovery || $0.kind == .recoveryDrift
             || $0.kind == .readiness })
-        XCTAssertTrue(insights.contains { $0.kind == .restingHRDrift })
+        let rhr = insights.first { $0.kind == .restingHRDrift }
+        XCTAssertEqual(rhr?.headline, "Resting HR is 7 bpm above usual")
+        XCTAssertTrue(rhr?.detail.contains("65 bpm") == true, rhr?.detail ?? "missing")
+        XCTAssertFalse(rhr?.detail.contains("84 bpm") == true, rhr?.detail ?? "missing")
         XCTAssertTrue(insights.allSatisfy { $0.detail.count > 20 })
     }
 

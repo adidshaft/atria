@@ -534,8 +534,9 @@ enum AtriaLearnedInsights {
 
     private static func restingHRDrift(ordered: [DailyRollupStoreEntry],
                                        now: Date) -> AtriaLearnedInsight? {
-        guard let latest = ordered.first?.rhr, latest > 0 else { return nil }
-        let prior = ordered.dropFirst().prefix(7).compactMap(\.rhr).filter { $0 > 0 }
+        let nights = ordered.filter { ($0.sleepSeconds ?? 0) > 0 && ($0.rhr ?? 0) > 0 }
+        guard let latest = nights.first?.rhr, latest > 0 else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.rhr).filter { $0 > 0 }
         guard prior.count >= 3 else { return nil }
         let mean = Double(prior.reduce(0, +)) / Double(prior.count)
         let delta = Int((Double(latest) - mean).rounded())
@@ -647,8 +648,9 @@ enum AtriaLearnedInsights {
     private static func hrvDrift(ordered: [DailyRollupStoreEntry],
                                  now: Date) -> AtriaLearnedInsight? {
         func ms(_ ln: Double) -> Int { Int(exp(ln).rounded()) }
-        guard let latestLn = ordered.first?.lnRMSSD else { return nil }
-        let prior = ordered.dropFirst().prefix(7).compactMap(\.lnRMSSD)
+        let nights = ordered.filter { $0.lnRMSSD != nil }
+        guard let latestLn = nights.first?.lnRMSSD else { return nil }
+        let prior = nights.dropFirst().prefix(7).compactMap(\.lnRMSSD)
         guard prior.count >= 3 else { return nil }
         let latest = ms(latestLn)
         let mean = ms(prior.reduce(0, +) / Double(prior.count))

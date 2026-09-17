@@ -17,6 +17,9 @@ final class AtriaHighlightWarningRulesTests: XCTestCase {
                                               bedtimeMinutes: nil)
             if offset < rhr.count { entry.rhr = rhr[offset] }
             if offset < lnRMSSD.count { entry.lnRMSSD = lnRMSSD[offset] }
+            if entry.rhr != nil || entry.lnRMSSD != nil {
+                entry.sleepSeconds = 7 * 3_600
+            }
             return entry
         }
     }
