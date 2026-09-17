@@ -327,6 +327,8 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("case .dismiss:"),
                       "atria://workout/dismiss must clear the recap without starting another session")
         XCTAssertTrue(home.contains("workoutEndNotice = nil"))
+        XCTAssertTrue(home.contains("showWidgetOvernightBoard = false"),
+                      "a metric deep link must drop the widget payload board so Day/Week/Month can present")
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {

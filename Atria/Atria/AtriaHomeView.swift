@@ -1846,6 +1846,8 @@ struct AtriaHomeView: View {
         }
         if let metricLink = AtriaMetricDeepLink.parse(url) {
             dismissPresentedWorkoutChrome()
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
             selectedTab = .overview
             pendingMetricDeepLink = metricLink
             hasUnlockedPrimaryContent = true
