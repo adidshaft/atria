@@ -3566,9 +3566,15 @@ struct AtriaHomeView: View {
                 now: now
             )
         } ?? 0
-        let connected = model.coreLiveStore.state.status == .connected
+        let status = model.coreLiveStore.state.status
+        let linkUsable = status == .connected || status == .connecting
         let workoutActive = session != nil
-        let livePresence = !workoutActive && connected && heldHeartRate > 0
+        let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+            workoutActive: workoutActive,
+            linkUsable: linkUsable,
+            heldHeartRate: heldHeartRate,
+            presenceAlreadyStarted: livePresenceStartedAt != nil
+        )
         if workoutActive || !livePresence {
             livePresenceStartedAt = nil
         } else if livePresenceStartedAt == nil {

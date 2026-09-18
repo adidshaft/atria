@@ -1013,6 +1013,7 @@ def emit_offline_sync_preferences():
     imu_hr_age_n = float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1.0
     imu_imu_age_n = float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1.0
     print(f"imu_recovery_hr_stayed_up={bool_int(imu_imu_age_n > 4 and 0 <= imu_hr_age_n <= 15)}")
+    print(f"imu_recovery_both_live={bool_int(0 <= imu_imu_age_n <= 4 and 0 <= imu_hr_age_n <= 15)}")
     print(f"imu_recovery_skip_reason={pref(prefs, 'radio.lastIMURecoverySkipReason', 'none') or 'none'}")
     imu_skip_at = pref(prefs, "radio.lastIMURecoverySkipAt")
     imu_skip_age = max(0.0, now - float(imu_skip_at)) if isinstance(imu_skip_at, (int, float)) and imu_skip_at > 0 else -1.0

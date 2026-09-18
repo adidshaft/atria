@@ -400,6 +400,23 @@ final class AtriaLiveActivityCoordinator {
             <= AtriaLiveWorkoutActionStore.sessionMatchTolerance
     }
 
+    /// Idle Live Activity used to require a live BPM every tick. Pulse
+    /// zeros after `liveHeartRateFreshnessInterval`, so a 15s blip ended
+    /// ActivityKit (`isRecording=false`) and emptied the island while the
+    /// widget still showed the last HR (device 2026-09-18 ~16:33Z).
+    /// Keep presence on a usable link after the first pulse; metric hold
+    /// then keeps the last BPM.
+    nonisolated static func idleLivePresenceShouldStayActive(
+        workoutActive: Bool,
+        linkUsable: Bool,
+        heldHeartRate: Int,
+        presenceAlreadyStarted: Bool
+    ) -> Bool {
+        guard !workoutActive, linkUsable else { return false }
+        if heldHeartRate > 0 { return true }
+        return presenceAlreadyStarted
+    }
+
     /// Pulse and the BLE session zero when the radio drops or an R10
     /// boundary clears samples. ActivityKit still needs the last real BPM
     /// and zone so a reconnecting workout does not go `--`.
