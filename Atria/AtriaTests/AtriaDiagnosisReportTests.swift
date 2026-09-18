@@ -597,6 +597,30 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.metrics.todayStrain, 0.6)
     }
 
+    func testFreshHeartRateReportsConnectedInsteadOfLaggingConnecting() {
+        XCTAssertEqual(
+            AtriaDiagnosisReport.reportedConnectionStatus(
+                status: .connecting,
+                hrAgeSeconds: 0.01
+            ),
+            .connected
+        )
+        XCTAssertEqual(
+            AtriaDiagnosisReport.reportedConnectionStatus(
+                status: .connecting,
+                hrAgeSeconds: 16
+            ),
+            .connecting
+        )
+        XCTAssertEqual(
+            AtriaDiagnosisReport.reportedConnectionStatus(
+                status: .disconnected,
+                hrAgeSeconds: nil
+            ),
+            .disconnected
+        )
+    }
+
     func testDiscrepanciesNameStaleCompactAssemblerWhileStream5IsLive() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let snapshot = AtriaDiagnosisReport.make(
