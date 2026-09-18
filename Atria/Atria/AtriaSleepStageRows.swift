@@ -378,7 +378,8 @@ struct AtriaTodaySleepStageStrip: View, Equatable {
                     segments: segments,
                     start: start,
                     end: end,
-                    duration: max(night.duration, end.timeIntervalSince(start))
+                    duration: max(night.duration, end.timeIntervalSince(start)),
+                    isEstimate: night.isEstimatedStageDisplay
                 )
                 .frame(height: 36)
             }

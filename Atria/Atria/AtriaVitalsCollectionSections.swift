@@ -5007,7 +5007,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
                     for: night.displayStageSegments,
                     windowStart: start,
-                    windowEnd: end
+                    windowEnd: end,
+                    isEstimate: night.isEstimatedStageDisplay
                 )
                 AtriaSleepStageTimelineChart(
                     runs: timeline.runs,
@@ -5227,6 +5228,7 @@ struct AtriaSleepStageHypnogram: View, Equatable {
     let start: Date?
     let end: Date?
     let duration: TimeInterval
+    var isEstimate: Bool = false
 
     var body: some View {
         Canvas { context, size in
@@ -5261,29 +5263,46 @@ struct AtriaSleepStageHypnogram: View, Equatable {
         // Broader lanes (2026-07-08, user request: ~3-4x): scale with the frame
         // and cap so lanes stay distinct at the taller 120pt hypnogram.
         let laneHeight = max(12, min(22, size.height / 5.5))
-        for segment in segments {
-            guard let normalizedRange = Self.normalizedRange(for: segment,
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: segments,
+            windowStart: timelineStart,
+            windowEnd: timelineEnd,
+            isEstimate: isEstimate
+        )
+        for run in timeline.runs {
+            guard let normalizedRange = Self.normalizedRange(start: run.start,
+                                                             end: run.end,
                                                              timelineStart: timelineStart,
                                                              timelineEnd: timelineEnd) else { continue }
             let width = max(1, size.width * (normalizedRange.upperBound - normalizedRange.lowerBound))
             let x = size.width * normalizedRange.lowerBound
-            let y = stageY(segment.stage, height: size.height) - laneHeight / 2
+            let y = stageY(run.stage, height: size.height) - laneHeight / 2
             let rect = CGRect(x: x,
                               y: y,
                               width: min(width, max(0, size.width - x)),
                               height: laneHeight)
             context.fill(Path(roundedRect: rect, cornerRadius: laneHeight / 2),
-                         with: .color(color(for: segment.stage)))
+                         with: .color(color(for: run.stage)))
         }
     }
 
     static func normalizedRange(for segment: SleepStageSegment,
                                 timelineStart: Date,
                                 timelineEnd: Date) -> ClosedRange<Double>? {
+        normalizedRange(start: segment.start,
+                        end: segment.end,
+                        timelineStart: timelineStart,
+                        timelineEnd: timelineEnd)
+    }
+
+    static func normalizedRange(start: Date,
+                                end: Date,
+                                timelineStart: Date,
+                                timelineEnd: Date) -> ClosedRange<Double>? {
         let timelineDuration = timelineEnd.timeIntervalSince(timelineStart)
         guard timelineDuration > 0 else { return nil }
-        let clippedStart = max(segment.start, timelineStart)
-        let clippedEnd = min(segment.end, timelineEnd)
+        let clippedStart = max(start, timelineStart)
+        let clippedEnd = min(end, timelineEnd)
         guard clippedEnd > clippedStart else { return nil }
         let lower = clippedStart.timeIntervalSince(timelineStart) / timelineDuration
         let upper = clippedEnd.timeIntervalSince(timelineStart) / timelineDuration

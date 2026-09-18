@@ -272,6 +272,9 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
         XCTAssertTrue(strip.contains("struct AtriaTodaySleepStageStrip"))
         XCTAssertTrue(strip.contains("AtriaSleepStageEstimateLabel.title"))
         XCTAssertTrue(strip.contains("row.stage.symbolName"))
+        XCTAssertTrue(strip.contains("isEstimate: night.isEstimatedStageDisplay"))
+        XCTAssertTrue(strip.contains("displayMarkBudget(isEstimate:")
+                         || strip.contains("isEstimate: night.isEstimatedStageDisplay"))
     }
 
     // MARK: - Container pin: inset card + design tokens only

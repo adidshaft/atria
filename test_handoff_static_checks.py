@@ -12166,11 +12166,11 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, text, "sampleCount")
 
         assert_contains(self, home, "readingCount: model.coreLiveStore.state.sessionSampleCount")
-        for needle in ["activityName", "activitySystemImage", "heartRateZoneIndex", "heartRateZoneName", "steps", "workoutStrain"]:
+        for needle in ["activityName", "activitySystemImage", "heartRateZoneIndex", "heartRateZoneName", "steps", "workoutStrain", "showsWorkoutControls"]:
             assert_contains(self, app_attributes, needle)
             assert_contains(self, widget_attributes, needle)
             assert_contains(self, coordinator, needle)
-        assert_contains(self, home, "isRecording: session != nil")
+        assert_contains(self, home, "isRecording: workoutActive || livePresence")
         assert_contains(self, widget, "liveActivityZoneLabel(for: context.state,")
         assert_contains(self, widget, "availability: heartAvailability")
         assert_contains(self, widget, "liveActivityStepsPresentation(for: context.state)")

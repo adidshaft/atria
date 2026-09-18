@@ -163,10 +163,32 @@ enum AtriaSleepHypnogramPresentation {
     /// to the second); a real gap or stage change always starts a new run.
     private static let adjacencyTolerance: TimeInterval = 0.5
 
+    /// Motion-backed nights keep a fine hypnogram. HR-only estimates used to
+    /// paint 30-second speckles that read as static, not stages (device
+    /// 2026-09-18: 109 post-reconcile fragments on a 6h55m night).
+    static let validatedTimelineMarkBudget = 96
+    static let estimatedTimelineMarkBudget = 16
+
+    static func displayMarkBudget(isEstimate: Bool) -> Int {
+        isEstimate ? estimatedTimelineMarkBudget : validatedTimelineMarkBudget
+    }
+
     /// Clip → fold (SWS→Deep) → lossless adjacent merge → width-aware
     /// display compositor. `composited` is true only when sub-pixel runs
     /// were collapsed, so callers can show a "Dense estimate" cue instead of
     /// pretending the trace became scientifically cleaner.
+    static func timelineRuns(
+        for segments: [SleepStageSegment],
+        windowStart: Date,
+        windowEnd: Date,
+        isEstimate: Bool
+    ) -> (runs: [Run], composited: Bool) {
+        timelineRuns(for: segments,
+                     windowStart: windowStart,
+                     windowEnd: windowEnd,
+                     maximumMarks: displayMarkBudget(isEstimate: isEstimate))
+    }
+
     static func timelineRuns(
         for segments: [SleepStageSegment],
         windowStart: Date,
@@ -718,7 +740,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
             for: segments,
             windowStart: windowStart,
-            windowEnd: windowEnd
+            windowEnd: windowEnd,
+            isEstimate: isEstimate
         )
         return AtriaSleepStageTimelineChart(
             runs: timeline.runs,

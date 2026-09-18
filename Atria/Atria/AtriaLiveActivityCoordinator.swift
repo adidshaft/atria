@@ -258,6 +258,8 @@ final class AtriaLiveActivityCoordinator {
         var targetUpperHeartRateZone: Int? = nil
         var isPaused: Bool
         var elapsedDuration: TimeInterval
+        /// Idle all-day presence must not expose Pause/End workout controls.
+        var showsWorkoutControls: Bool = true
     }
 
     struct QueuedActivityUpdate: Equatable {
@@ -560,7 +562,8 @@ final class AtriaLiveActivityCoordinator {
                                                  isPaused: snapshot.isPaused,
                                                  isEnding: isEnding,
                                                  timerAnchor: now.addingTimeInterval(-elapsed),
-                                                 elapsedDuration: elapsed)
+                                                 elapsedDuration: elapsed,
+                                                 showsWorkoutControls: snapshot.showsWorkoutControls)
     }
 
     private func enqueueActivityUpdate(_ snapshot: Snapshot,

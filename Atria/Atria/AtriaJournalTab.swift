@@ -567,6 +567,10 @@ private struct AtriaJournalTypedInsightsSection: View {
                             .symbolRenderingMode(.hierarchical)
                             .frame(width: 36, height: 36)
                             .accessibilityHidden(true)
+                        Text(insight.label)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                         Spacer(minLength: 8)
                         Image(systemName: insight.signedEffect < 0
                               ? "arrow.down.circle.fill"

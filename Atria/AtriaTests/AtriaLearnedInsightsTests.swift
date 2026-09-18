@@ -467,6 +467,8 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(insights.contains("showsHeader: false"))
         XCTAssertTrue(insights.contains("usesOwnCard: false"))
         XCTAssertFalse(insights.contains("style: .compactBar"))
+        XCTAssertTrue(journal.contains("Text(insight.label)"))
+        XCTAssertTrue(insights.contains("Text(i.tagLabel)"))
     }
 
     func testWeeklySleepDebtUsesStoredNeedAcrossShortNightsWithoutOne() {

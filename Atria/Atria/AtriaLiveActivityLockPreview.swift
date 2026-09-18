@@ -137,11 +137,11 @@ struct AtriaLiveActivityLockPreviewSheet: View {
                     Text("Lock Screen Live Activity")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    if let snapshot, snapshot.isRecording {
+                    if let snapshot, snapshot.isRecording || snapshot.heartRate > 0 {
                         AtriaLiveActivityLockPreview(snapshot: snapshot)
                             .padding(.horizontal, 16)
                     } else {
-                        Text("No running workout")
+                        Text("Waiting for live heart rate")
                             .font(.headline)
                             .foregroundStyle(.secondary)
                     }

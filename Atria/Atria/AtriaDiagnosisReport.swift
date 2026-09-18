@@ -196,12 +196,16 @@ enum AtriaDiagnosisReport {
                 : recentNoHeartRateWorkouts,
             liveActivity: LiveActivity(
                 recording: workoutRecording,
-                heartRate: workoutRecording ? liveHeartRate : 0,
-                zone: workoutRecording ? liveZone : nil,
-                activityName: workoutRecording ? liveActivityName : nil,
-                availability: workoutRecording ? liveActivityAvailability : "unavailable",
+                heartRate: liveHeartRate,
+                zone: liveHeartRate > 0 ? liveZone : nil,
+                activityName: workoutRecording
+                    ? liveActivityName
+                    : (liveHeartRate > 0 ? "Live" : nil),
+                availability: workoutRecording
+                    ? (liveActivityAvailability ?? "live")
+                    : (liveHeartRate > 0 ? "idle" : "unavailable"),
                 strain: workoutRecording ? liveActivityStrain : nil,
-                steps: workoutRecording ? liveActivitySteps : nil,
+                steps: liveHeartRate > 0 ? liveActivitySteps : nil,
                 elapsedSeconds: workoutRecording ? liveActivityElapsedSeconds : nil
             ),
             widget: Widget(
