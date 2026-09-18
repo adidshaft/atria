@@ -4334,6 +4334,9 @@ struct AtriaHomeView: View {
                   workout.samples == 0 else { return nil }
             return workout.end
         }
+        ble.retireStuckIdleWindowLeftoverIfNeeded(
+            metadataOnlyWorkoutEnds: metadataOnlyEnds
+        )
         guard AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
             endedWorkoutSampleCount: endedWorkoutSampleCount,
             metadataOnlyWorkoutEnds: metadataOnlyEnds,
@@ -12394,6 +12397,15 @@ final class AtriaHomeModel {
                     )
                     guard at > 0 else { return nil }
                     return now.timeIntervalSince1970 - at
+                }(),
+                idleWindowPending: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
+                    ) != nil else { return nil }
+                    return defaults.integer(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
+                    )
                 }()
             ),
             reason: reason

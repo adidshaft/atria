@@ -457,6 +457,8 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("widgetSteps: publishedWidget?.steps"))
         XCTAssertTrue(home.contains("todaySteps: core.dailyStepPresentation.count"))
         XCTAssertTrue(home.contains("compactAssembledAgeSeconds:"))
+        XCTAssertTrue(home.contains("idleWindowPending:"))
+        XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
     }
 
     func testDiscrepanciesNameWidgetStepsVersusTodaySteps() {
@@ -522,5 +524,63 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             compactAssembledAgeSeconds: 3_600
         )
         XCTAssertTrue(snapshot.discrepancies.contains("compact_imu_assembled_stale"))
+    }
+
+    func testDiscrepanciesNameStuckIdleWindowLeftoverPending() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stuck = AtriaDiagnosisReport.make(
+            now: now,
+            build: "147",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 72,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 84,
+            liveZone: "Z1",
+            widgetHeartRate: 84,
+            idleWindowPending: 5
+        )
+        XCTAssertEqual(stuck.connection.idleWindowPending, 5)
+        XCTAssertTrue(stuck.discrepancies.contains("idle_window_pending_5"))
+
+        let clear = AtriaDiagnosisReport.make(
+            now: now,
+            build: "147",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 72,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 84,
+            liveZone: "Z1",
+            widgetHeartRate: 84,
+            idleWindowPending: 0
+        )
+        XCTAssertFalse(clear.discrepancies.contains { $0.hasPrefix("idle_window_pending_") })
     }
 }

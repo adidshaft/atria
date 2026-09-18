@@ -318,6 +318,41 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "a 13h-old gym is gone from strap flash; re-queuing leftover drain is why Today sat on Reading…"
         )
         XCTAssertTrue(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd
+            ),
+            "dry leftover pending=5 must drop once no gym pull is queued"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: true,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(2 * 60 * 60)
+            ),
+            "a queued Strength still inside 6h may keep the 0x22 snapshot"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: true,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(13 * 60 * 60)
+            ),
+            "an expired gym pull must drop leftover pending so 2A37 stays up"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 0,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            )
+        )
+        XCTAssertTrue(
             AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
                 queuedPullIntent: true,
                 idleWindowAdmitted: true,

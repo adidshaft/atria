@@ -39,26 +39,6 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         }
     }
 
-    /// Larger, more pictorial glyph for Today's read rings. Distinct from the
-    /// compact-bar icon so Sleep / Recovery / Strain can be recognized at a
-    /// glance.
-    var pictureSystemImage: String {
-        switch kind {
-        case .sleepDebt: return "moon.stars.fill"
-        case .weeklySleepDebt: return "moon.fill"
-        case .easyLoadSleepDebt: return "moon.zzz.fill"
-        case .bedtimeSpread: return "clock.fill"
-        case .recoveryDrift, .readiness: return "heart.circle.fill"
-        case .stackedRecovery: return "square.stack.3d.up.fill"
-        case .hrvDrift: return "waveform.path.ecg"
-        case .restingHRDrift: return "heart.fill"
-        case .loadMismatch, .weeklyStrain: return "bolt.heart.fill"
-        case .yesterdayStrain: return "flame.fill"
-        case .daySnapshot: return "sun.max.fill"
-        case .workoutWithoutHeartRate: return "heart.slash.fill"
-        }
-    }
-
     enum RingFamily: String, Equatable, Sendable {
         case recovery
         case sleep
@@ -83,41 +63,6 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .loadMismatch, .weeklyStrain, .yesterdayStrain, .workoutWithoutHeartRate:
             return .strain
         case .daySnapshot: return .other
-        }
-    }
-
-    /// Visual valence for the picture ring. Not a metric score.
-    var pictureRingFill: Double {
-        isPositive ? 0.84 : 0.36
-    }
-
-    /// Lower ranks win the Sleep / Recovery / Strain hero slot.
-    var ringHeroRank: Int {
-        switch kind {
-        case .stackedRecovery: return 0
-        case .recoveryDrift: return 1
-        case .readiness: return 2
-        case .hrvDrift: return 3
-        case .restingHRDrift: return 4
-        case .sleepDebt: return 0
-        case .weeklySleepDebt: return 1
-        case .easyLoadSleepDebt: return 0
-        case .bedtimeSpread: return 2
-        case .workoutWithoutHeartRate: return 0
-        case .yesterdayStrain: return 1
-        case .loadMismatch: return 2
-        case .weeklyStrain: return 3
-        case .daySnapshot: return 9
-        }
-    }
-
-    /// One Sleep / Recovery / Strain read, in the same order as Today's rings.
-    static func ringHeroInsights(from insights: [AtriaLearnedInsight]) -> [AtriaLearnedInsight] {
-        let order: [RingFamily] = [.recovery, .sleep, .strain]
-        return order.compactMap { family in
-            insights
-                .filter { $0.ringFamily == family }
-                .min { $0.ringHeroRank < $1.ringHeroRank }
         }
     }
 

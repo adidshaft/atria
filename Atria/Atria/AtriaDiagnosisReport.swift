@@ -25,6 +25,7 @@ enum AtriaDiagnosisReport {
         var batteryPercent: Int?
         var officialAppRisk: String
         var workoutRecording: Bool
+        var idleWindowPending: Int?
     }
 
     struct Metrics: Equatable, Codable {
@@ -161,7 +162,8 @@ enum AtriaDiagnosisReport {
         liveActivityStrain: Double? = nil,
         liveActivitySteps: Int? = nil,
         liveActivityElapsedSeconds: Int? = nil,
-        compactAssembledAgeSeconds: Double? = nil
+        compactAssembledAgeSeconds: Double? = nil,
+        idleWindowPending: Int? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -182,7 +184,8 @@ enum AtriaDiagnosisReport {
             stream5Confirmed: stream5Confirmed,
             batteryPercent: batteryPercent,
             officialAppRisk: officialAppRisk,
-            workoutRecording: workoutRecording
+            workoutRecording: workoutRecording,
+            idleWindowPending: idleWindowPending
         )
         return Snapshot(
             schema: schema,
@@ -281,6 +284,9 @@ enum AtriaDiagnosisReport {
         }
         if noHR.count > 1 {
             keys.append("workout_no_hr_count_\(noHR.count)")
+        }
+        if let pending = connection.idleWindowPending, pending > 0 {
+            keys.append("idle_window_pending_\(pending)")
         }
         if let settled = metrics.settledHRV,
            let weekLast = metricWindows?.hrvWeek.last?.value,

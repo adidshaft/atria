@@ -389,9 +389,21 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertFalse(source.contains("featuredCard"))
         XCTAssertFalse(source.contains("railColor(for:"))
         XCTAssertFalse(source.contains("Capsule()"))
+        let insightsModel = try String(
+            contentsOfFile: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaLearnedInsights.swift")
+                .path,
+            encoding: .utf8
+        )
+        XCTAssertFalse(insightsModel.contains("ringHeroInsights"),
+                       "Today's read must not pick a second Sleep / Recovery / Strain ring set")
+        XCTAssertFalse(insightsModel.contains("pictureRingFill"))
+        XCTAssertFalse(insightsModel.contains("pictureSystemImage"))
     }
 
-    func testRingHeroPicksSleepRecoveryAndStrainInTodayOrder() {
+    func testCompactReadIsSentencesNotASecondRingSet() {
         let recovery = AtriaLearnedInsight(
             id: "rec",
             kind: .recoveryDrift,
@@ -427,10 +439,7 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertEqual(sleep.ringFamily, .sleep)
         XCTAssertEqual(recovery.ringFamily, .recovery)
         XCTAssertEqual(strain.ringFamily, .strain)
-        XCTAssertEqual(sleep.pictureSystemImage, "moon.stars.fill")
-        let hero = AtriaLearnedInsight.ringHeroInsights(from: [extra, strain, sleep, recovery])
-        XCTAssertEqual(hero.map(\.ringFamily), [.recovery, .sleep, .strain])
-        XCTAssertEqual(hero.map(\.id), ["rec", "sleep", "strain"])
+        XCTAssertEqual(extra.ringFamily, .sleep)
         XCTAssertEqual(
             AtriaLearnedInsight.compactReadSummary(from: [extra, strain, sleep, recovery]),
             "Bedtime is swinging · Yesterday was a heavy load day"

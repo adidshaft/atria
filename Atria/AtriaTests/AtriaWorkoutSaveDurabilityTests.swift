@@ -2292,6 +2292,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(home.contains("queueConnectedRawHistoryCatchUpIntent(reason: \"post_workout_hr_backfill\")"))
         XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
         XCTAssertTrue(home.contains("shouldQueuePostWorkoutHistoryBackfill("))
+        XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
         let confirm = try XCTUnwrap(body.range(of: "confirmWorkoutWindowForUIAsync("))
         let backfill = try XCTUnwrap(body.range(of: "requestPostWorkoutHistoryBackfillIfNeeded("))
         XCTAssertLessThan(

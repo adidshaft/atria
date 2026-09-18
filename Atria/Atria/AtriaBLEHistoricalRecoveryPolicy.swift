@@ -1814,6 +1814,30 @@ extension AtriaBLEManager {
         }
     }
 
+    /// Device 2026-09-18: leftover idle-window `pending=5` survived abort and
+    /// the 6h gym-pull lifetime. Dry `no_rows` tails must not keep a 0x22
+    /// snapshot that can re-pause 2A37. Keep the pointer only while a queued
+    /// metadata-only gym is still inside the durable flash window.
+    nonisolated static func shouldRetireStuckIdleWindowLeftover(
+        pendingRecords: UInt32?,
+        queuedPullIntent: Bool,
+        metadataOnlyWorkoutEnds: [Date] = [],
+        now: Date = Date(),
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        guard let pending = pendingRecords, pending > 0 else { return false }
+        if queuedPullIntent,
+           shouldQueuePostWorkoutHistoryBackfill(
+               endedWorkoutSampleCount: nil,
+               metadataOnlyWorkoutEnds: metadataOnlyWorkoutEnds,
+               now: now,
+               durableLifetime: durableLifetime
+           ) {
+            return false
+        }
+        return true
+    }
+
     /// A queued gym pull that already selected an idle window must not mint a
     /// keep-2A37 0x22 on the same callback. Device 123 timed out every live
     /// range write while notify stayed on.
