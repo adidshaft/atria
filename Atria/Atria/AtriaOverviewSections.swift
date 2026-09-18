@@ -7501,13 +7501,13 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                 Spacer(minLength: 0)
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
-                        Text("\(load)")
+                    if let trailing = AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(workout) {
+                        Text(trailing.value)
                             .font(.headline.monospacedDigit().weight(.bold))
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
                             .layoutPriority(1)
-                        Text("HR load")
+                        Text(trailing.caption)
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -8970,13 +8970,21 @@ private struct AtriaPreparedMetricHistory: Sendable {
             let previousInterval = projection.priorInterval
             let filtered = projection.currentIndices.map { chronologicalRollups[$0] }
             let priorFiltered = projection.priorIndices.map { chronologicalRollups[$0] }
-            let recoveryPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
+            let recoveryPoints = Self.overnightPoints(
+                from: rollups,
+                interval: interval,
+                calendar: calendar
+            ) { item in
                 guard let recovery = item.recovery, (item.sleepSeconds ?? 0) > 0 else { return nil }
-                return AtriaDetailChartPoint(day: item.day, value: Double(recovery), tint: Metrics.recoveryColor(recovery))
+                return (Double(recovery), Metrics.recoveryColor(recovery))
             }
-            let priorRecoveryPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+            let priorRecoveryPoints = Self.overnightPoints(
+                from: rollups,
+                interval: previousInterval,
+                calendar: calendar
+            ) { item in
                 guard let recovery = item.recovery, (item.sleepSeconds ?? 0) > 0 else { return nil }
-                return AtriaDetailChartPoint(day: item.day, value: Double(recovery), tint: Metrics.recoveryColor(recovery))
+                return (Double(recovery), Metrics.recoveryColor(recovery))
             }
             recoveryByRange[range] = Self.bucketedForDisplay(recoveryPoints, range: range, calendar: calendar, within: interval)
             recoveryRawByRange[range] = recoveryPoints
@@ -8984,19 +8992,23 @@ private struct AtriaPreparedMetricHistory: Sendable {
             recoverySummaryByRange[range] = AtriaDetailPeriodSummary(points: recoveryPoints, unit: "%")
             recoveryComparisonByRange[range] = AtriaDetailComparisonSummary(current: recoveryPoints, prior: priorRecoveryPoints, unit: "%")
 
-            let hrvPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
+            let hrvPoints = Self.overnightPoints(
+                from: rollups,
+                interval: interval,
+                calendar: calendar
+            ) { item in
                 guard let lnRMSSD = item.lnRMSSD, (item.sleepSeconds ?? 0) > 0 else { return nil }
                 let value = Int(exp(lnRMSSD).rounded())
-                return AtriaDetailChartPoint(day: item.day,
-                                             value: Double(value),
-                                             tint: Self.hrvTint(value: value, baseline: baseline))
+                return (Double(value), Self.hrvTint(value: value, baseline: baseline))
             }
-            let priorHRVPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+            let priorHRVPoints = Self.overnightPoints(
+                from: rollups,
+                interval: previousInterval,
+                calendar: calendar
+            ) { item in
                 guard let lnRMSSD = item.lnRMSSD, (item.sleepSeconds ?? 0) > 0 else { return nil }
                 let value = Int(exp(lnRMSSD).rounded())
-                return AtriaDetailChartPoint(day: item.day,
-                                             value: Double(value),
-                                             tint: Self.hrvTint(value: value, baseline: baseline))
+                return (Double(value), Self.hrvTint(value: value, baseline: baseline))
             }
             hrvByRange[range] = Self.bucketedForDisplay(hrvPoints, range: range, calendar: calendar, within: interval)
             hrvRawByRange[range] = hrvPoints
@@ -9004,19 +9016,23 @@ private struct AtriaPreparedMetricHistory: Sendable {
             hrvSummaryByRange[range] = AtriaDetailPeriodSummary(points: hrvPoints, unit: "ms")
             hrvComparisonByRange[range] = AtriaDetailComparisonSummary(current: hrvPoints, prior: priorHRVPoints, unit: "ms")
 
-            let restingPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
+            let restingPoints = Self.overnightPoints(
+                from: rollups,
+                interval: interval,
+                calendar: calendar
+            ) { item in
                 guard let value = item.restingHeartRate,
                       (item.sleepSeconds ?? 0) > 0 else { return nil }
-                return AtriaDetailChartPoint(day: item.day,
-                                             value: Double(value),
-                                             tint: Self.restingTint(value: value, baseline: baseline))
+                return (Double(value), Self.restingTint(value: value, baseline: baseline))
             }
-            let priorRestingPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+            let priorRestingPoints = Self.overnightPoints(
+                from: rollups,
+                interval: previousInterval,
+                calendar: calendar
+            ) { item in
                 guard let value = item.restingHeartRate,
                       (item.sleepSeconds ?? 0) > 0 else { return nil }
-                return AtriaDetailChartPoint(day: item.day,
-                                             value: Double(value),
-                                             tint: Self.restingTint(value: value, baseline: baseline))
+                return (Double(value), Self.restingTint(value: value, baseline: baseline))
             }
             restingByRange[range] = Self.bucketedForDisplay(restingPoints, range: range, calendar: calendar, within: interval)
             restingRawByRange[range] = restingPoints
@@ -9036,22 +9052,25 @@ private struct AtriaPreparedMetricHistory: Sendable {
             respiratorySummaryByRange[range] = AtriaDetailPeriodSummary(points: respiratoryPoints, unit: "/min")
             respiratoryComparisonByRange[range] = AtriaDetailComparisonSummary(current: respiratoryPoints, prior: priorRespiratoryPoints, unit: "/min")
 
-            let sleepPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                guard let duration = item.sleepSeconds, duration > 0 else { return nil }
-                let hours = duration / 3_600
-                let tint: Color
-                if let zone = Metrics.sleepDurationZone(hours, goalHours: sleepGoalHours) {
-                    tint = zone.tint
-                } else {
-                    tint = .cyan
-                }
-                return AtriaDetailChartPoint(day: item.day, value: hours, tint: tint)
-            }
-            let priorSleepPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
+            let sleepPoints = Self.overnightPoints(
+                from: rollups,
+                interval: interval,
+                calendar: calendar
+            ) { item in
                 guard let duration = item.sleepSeconds, duration > 0 else { return nil }
                 let hours = duration / 3_600
                 let tint = Metrics.sleepDurationZone(hours, goalHours: sleepGoalHours)?.tint ?? .cyan
-                return AtriaDetailChartPoint(day: item.day, value: hours, tint: tint)
+                return (hours, tint)
+            }
+            let priorSleepPoints = Self.overnightPoints(
+                from: rollups,
+                interval: previousInterval,
+                calendar: calendar
+            ) { item in
+                guard let duration = item.sleepSeconds, duration > 0 else { return nil }
+                let hours = duration / 3_600
+                let tint = Metrics.sleepDurationZone(hours, goalHours: sleepGoalHours)?.tint ?? .cyan
+                return (hours, tint)
             }
             sleepByRange[range] = Self.bucketedForDisplay(sleepPoints, range: range, calendar: calendar, within: interval)
             sleepRawByRange[range] = sleepPoints
@@ -9184,6 +9203,36 @@ private struct AtriaPreparedMetricHistory: Sendable {
         self.fitnessAgeSummary = fitnessAgeSummaryByRange
         self.fitnessAgeComparison = fitnessAgeComparisonByRange
         self.fitnessAgeEntryCount = fitnessAgeEntryCount
+    }
+
+    private static func overnightPoints(
+        from rollups: [AtriaMetricDetailPreparationInput.Rollup],
+        interval: DateInterval,
+        calendar: Calendar,
+        value: (AtriaMetricDetailPreparationInput.Rollup) -> (Double, Color)?
+    ) -> [AtriaDetailChartPoint] {
+        var tintByDay: [Date: Color] = [:]
+        let nights = AtriaOvernightMetricChartSeries.nights(
+            from: rollups,
+            interval: interval,
+            calendar: calendar,
+            day: \.day,
+            value: { item in
+                guard let pair = value(item) else { return nil }
+                let civil = calendar.startOfDay(for: item.day)
+                if tintByDay[civil] == nil {
+                    tintByDay[civil] = pair.1
+                }
+                return pair.0
+            }
+        )
+        return nights.map {
+            AtriaDetailChartPoint(
+                day: $0.day,
+                value: $0.value,
+                tint: tintByDay[$0.day] ?? .secondary
+            )
+        }
     }
 
     private static func hrvTint(value: Int,

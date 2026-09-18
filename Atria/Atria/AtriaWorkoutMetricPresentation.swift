@@ -146,14 +146,16 @@ enum AtriaWorkoutMetricPresentation {
             .sorted { $0.start > $1.start }
     }
 
-    /// Today only shows the newest recap so a stack of yesterday's sessions
-    /// cannot rest under the glass tab (device 2026-09-17 16:37).
+    /// Today keeps the last two recaps in the lookback window. One row hid a
+    /// walked session with HR behind a later Strength window that had none
+    /// (device 2026-09-18). Two rows still fit above the tab; a stack of every
+    /// yesterday fragment does not.
     static func todayFirstScreenSavedWorkouts(
         _ workouts: [UserConfirmedWorkout],
         now: Date = Date(),
         calendar: Calendar = .current,
         lookbackDays: Int = 2,
-        limit: Int = 1
+        limit: Int = 2
     ) -> [UserConfirmedWorkout] {
         Array(
             recentSavedWorkouts(
@@ -345,6 +347,19 @@ enum AtriaWorkoutMetricPresentation {
 
     static func heartRateLoadText(_ workout: UserConfirmedWorkout) -> String {
         heartRateLoadPoints(workout).map { "\($0)" } ?? "--"
+    }
+
+    /// Trailing number on Today / Activity rows. Edwards Z1+ load when the
+    /// session left the restorative bucket; otherwise the measured average —
+    /// never a second ring, and never "No HR" on a walk that actually recorded.
+    static func firstScreenTrailingMetric(_ workout: UserConfirmedWorkout) -> (value: String, caption: String)? {
+        if let load = heartRateLoadPoints(workout) {
+            return ("\(load)", "HR load")
+        }
+        if hasHeartRateData(workout) {
+            return ("\(workout.avgHR)", "avg HR")
+        }
+        return nil
     }
 
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {

@@ -387,17 +387,21 @@ enum AtriaDiagnosisReport {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = "yyyy-MM-dd"
-        return rollups.compactMap { entry in
-            guard (entry.sleepSeconds ?? 0) > 0,
-                  entry.day >= interval.start,
-                  entry.day < interval.end,
-                  let value = value(entry) else { return nil }
-            return WindowPoint(
-                day: formatter.string(from: calendar.startOfDay(for: entry.day)),
-                value: value
+        return AtriaOvernightMetricChartSeries.nights(
+            from: rollups,
+            interval: interval,
+            calendar: calendar,
+            day: \.day,
+            value: { entry in
+                guard (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return value(entry).map(Double.init)
+            }
+        ).map {
+            WindowPoint(
+                day: formatter.string(from: $0.day),
+                value: Int($0.value.rounded())
             )
         }
-        .sorted { $0.day < $1.day }
     }
 
     static func publish(_ snapshot: Snapshot, reason: String, force: Bool = false) {
