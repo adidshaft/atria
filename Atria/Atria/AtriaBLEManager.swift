@@ -16983,10 +16983,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             metadataOnlyWorkoutEnds: metadataOnlyWorkoutEnds,
             now: now
         ) else { return }
-        queuedConnectedRawHistoryCatchUpIntent = nil
-        clearIdleWindowAckedHistoryRangePointer()
+        abortIdleWindowHeartRatePauseForExplicitWorkout(reason: "retired_stuck_leftover")
+        if offlineHistoricalSyncInProgress {
+            finishOfflineHistoricalSync(
+                reason: "retired_stuck_leftover_restore_2a37",
+                generation: offlineHistoricalSyncGeneration,
+                resumePendingSync: false
+            )
+        }
+        reassertHeartRateNotificationsIfConnected(
+            reason: "retired_stuck_leftover_restore_2a37"
+        )
         AtriaDebugLog(
-            "ATRIADBG idle_window_drain status=retired_stuck_leftover pending=%u action=keep_2a37",
+            "ATRIADBG idle_window_drain status=retired_stuck_leftover pending=%u action=restore_2a37",
             pending ?? 0
         )
     }

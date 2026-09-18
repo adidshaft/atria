@@ -12900,6 +12900,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             abort.contains("clearIdleWindowAckedHistoryRangePointer()"),
             "Start must drop leftover pending=5 so the next gym cannot re-pause 2A37"
         )
+        let retireStart = try XCTUnwrap(source.range(
+            of: "func retireStuckIdleWindowLeftoverIfNeeded("
+        ))
+        let retireEnd = try XCTUnwrap(source.range(
+            of: "private func loadIdleWindowAckedHistoryRangePointer()",
+            range: retireStart.upperBound..<source.endIndex
+        ))
+        let retire = String(source[retireStart.lowerBound..<retireEnd.lowerBound])
+        XCTAssertTrue(
+            retire.contains("abortIdleWindowHeartRatePauseForExplicitWorkout(reason: \"retired_stuck_leftover\")"),
+            "clearing the 0x22 pointer must also drop an in-flight 2A37 pause"
+        )
+        XCTAssertTrue(
+            retire.contains("retired_stuck_leftover_restore_2a37"),
+            "attended leftover retirement must restore live HR notify"
+        )
     }
 
     func testAcceptedHRDoesNotRetryRetiredRealtimeWorkoutCutover() throws {
