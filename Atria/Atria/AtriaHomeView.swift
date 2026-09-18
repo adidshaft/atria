@@ -3620,9 +3620,7 @@ struct AtriaHomeView: View {
             targetLowerHeartRateZone: session?.lowerTargetZone,
             targetUpperHeartRateZone: session?.upperTargetZone,
             isPaused: workoutActive && liveWorkoutPauseStartedAt != nil,
-            elapsedDuration: workoutActive
-                ? movingDuration
-                : (livePresenceStartedAt.map { now.timeIntervalSince($0) } ?? 0),
+            elapsedDuration: workoutActive ? movingDuration : 0,
             showsWorkoutControls: workoutActive
         ), forceActivityWrite: forceActivityWrite)
         model.publishDiagnosisReport(

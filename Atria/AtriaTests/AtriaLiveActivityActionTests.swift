@@ -106,8 +106,10 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "the truth helper must retain exact last-seen sensor evidence for diagnostics")
         XCTAssertTrue(source.contains("liveActivityZoneAccessibilityLabel("),
                       "stale lock-screen copy must keep last zone instead of a blank unavailable hero")
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"\\(context.state.activityName ?? \"Workout\") workout\")"),
-                      "compact and minimal island presentations need a meaningful activity label")
+        XCTAssertTrue(source.contains("liveActivityIsExplicitWorkout("),
+                      "all-day Live must drop workout timer, strain, and Pause/End chrome")
+        XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation("),
+                      "idle Lock Screen should show daily steps instead of workout strain --")
         XCTAssertTrue(source.contains(".accessibilityLabel(lockScreenStatusAccessibilityLabel(showsBattery: showsBattery))"),
                       "the combined Lock Screen status element must preserve any visible battery evidence")
         XCTAssertTrue(source.contains("guard showsBattery, batteryAvailability == .live else"))
@@ -207,7 +209,10 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let lockEnd = try XCTUnwrap(source.range(of: "#if DEBUG",
                                                 range: lockStart.upperBound..<source.endIndex))
         let lockScreen = String(source[lockStart.lowerBound..<lockEnd.lowerBound])
-        XCTAssertTrue(lockScreen.contains(".accessibilityLabel(\"Workout strain "))
+        XCTAssertTrue(lockScreen.contains("\"Workout strain \\(workoutStrainText)"),
+                      "workout Lock Screen still speaks strain; idle Live must not show strain --")
+        XCTAssertTrue(lockScreen.contains("liveActivityIsExplicitWorkout(context.state)"),
+                      "all-day Live hides the workout timer, strain --, and Pause/End")
         XCTAssertTrue(lockScreen.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(lockScreen.contains("ViewThatFits(in: .vertical)"))
         XCTAssertTrue(lockScreen.contains("compactLockScreenContent"),
@@ -1229,6 +1234,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
         XCTAssertTrue(body.contains("isRecording: workoutActive || livePresence"))
         XCTAssertTrue(body.contains("showsWorkoutControls: workoutActive"))
+        XCTAssertTrue(body.contains("elapsedDuration: workoutActive ? movingDuration : 0"),
+                      "all-day Live must not publish a presence timer as workout elapsed")
         XCTAssertTrue(body.contains("activityName: workoutActive"))
         XCTAssertFalse(body.contains("store.baseline.restingInt ?? 60"))
         XCTAssertTrue(home.contains("AtriaHomeModel.latestHeartRateCapturedAt("))
