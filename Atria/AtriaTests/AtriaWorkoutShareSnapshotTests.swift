@@ -330,7 +330,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap motion for this workout",
+                detailText: "No verified motion for this workout",
                 isAvailable: false
             )
         )
@@ -346,7 +346,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "Strap motion was not verified at workout end",
+                detailText: "Motion was not verified at workout end",
                 isAvailable: false
             )
         )
@@ -360,7 +360,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap step count for this workout",
+                detailText: "No verified step count for this workout",
                 isAvailable: false
             )
         )
@@ -374,7 +374,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap step count for this workout",
+                detailText: "No verified step count for this workout",
                 isAvailable: false
             )
         )

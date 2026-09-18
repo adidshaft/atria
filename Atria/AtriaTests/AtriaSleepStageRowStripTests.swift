@@ -253,6 +253,27 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
                        "raw engine segments never reach the review sheet's strip")
     }
 
+    func testTodayMountsTheCompactStageStripOnDisplaySegments() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let today = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaTodayScreen.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(today.contains("AtriaTodaySleepStageStrip(night: night)"))
+        XCTAssertTrue(today.contains("!night.displayStageSegments.isEmpty"))
+        let strip = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaSleepStageRows.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(strip.contains("struct AtriaTodaySleepStageStrip"))
+        XCTAssertTrue(strip.contains("AtriaSleepStageEstimateLabel.title"))
+        XCTAssertTrue(strip.contains("row.stage.symbolName"))
+    }
+
     // MARK: - Container pin: inset card + design tokens only
 
     func testStripKeepsTheHouseContainerAndTokens() throws {

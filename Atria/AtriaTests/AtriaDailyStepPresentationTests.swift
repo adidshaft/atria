@@ -205,7 +205,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, coverageDetail)
         // The forward-looking promise becomes the terminal blocker.
         XCTAssertEqual(value.motionAvailabilityFootnote,
-                       "Strap motion is unavailable in the current connection mode. "
+                       "Motion is unavailable in the current connection mode. "
                         + "Live heart rate is still connected.")
     }
 
@@ -225,7 +225,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         var value = partialVerified176()
         value.motionAvailability = .unknown
         XCTAssertEqual(value.motionAvailabilityFootnote,
-                       "Counted so far — updates when strap motion syncs.")
+                       "Counted so far — updates when motion syncs.")
         // Never asserts the terminal "unavailable in the current connection mode".
         XCTAssertFalse(value.motionAvailabilityFootnote?
             .contains("unavailable in the current connection mode") ?? false)
@@ -341,7 +341,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.unavailabilityReason, .stepModelNotQualified)
         XCTAssertEqual(
             value.detailText,
-            "Strap step model is still validating"
+            "Step model is still validating"
         )
     }
 
@@ -399,7 +399,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             value.detailText,
-            "Strap motion found · count still resolving"
+            "Steps found · count still resolving"
         )
         XCTAssertFalse(value.detailText.contains("Today so far · estimate"))
     }

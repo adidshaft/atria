@@ -2628,7 +2628,7 @@ private func liveActivityStepsPresentation(
         return AtriaLiveActivityStepsPresentation(compactText: "--",
                                                   labelText: "Steps stale",
                                                   tint: .orange,
-                                                  accessibilityText: "Strap step signal stale")
+                                                  accessibilityText: "Step signal stale")
     }
     return AtriaLiveActivityStepsPresentation(compactText: "--",
                                               labelText: "Steps unavailable",

@@ -24,6 +24,21 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertLessThan(packet.rotationRate.map(\.magnitude).max() ?? 99, 5)
     }
 
+    func testLiveStream5NotifyThisMorningDecodesTenPlusTen() throws {
+        let frame = Data(hex:
+            "aa9400b5330100001ddce50138196b8299010300030568000a000a00" +
+            "06f12af12af136f122f115f1f1f01df12cf119f17afa72fa66fa95fa" +
+            "89faa0fac1faacfa94fa94fa91ff6cff79ff7effa5ffc4ffbfffbdff" +
+            "a1ffa0ff930081007a007e008d00a100aa00b100ba00ca00e3ffdeff" +
+            "e2ffe6fff0ff0100060010002800410007000d001100100007000000" +
+            "0200fffff7ffefff132d3ffe"
+        )
+        let packet = try XCTUnwrap(AtriaWhoop4CompactIMUDecoder.decode(frame: frame))
+        XCTAssertEqual(packet.acceleration.count, 10)
+        XCTAssertEqual(packet.rotationRate.count, 10)
+        XCTAssertEqual(packet.deviceTimestamp, 31_841_309)
+    }
+
     func testTenPacketsAssembleOneHundredSampleR10Second() throws {
         let packet = try XCTUnwrap(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
         let assembler = AtriaWhoop4CompactIMUAssembler()

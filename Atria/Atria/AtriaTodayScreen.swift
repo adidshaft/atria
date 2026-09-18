@@ -387,6 +387,16 @@ struct AtriaTodayScreen: View {
                                 value: compactRingPresentation)
                     .overlay(alignment: .topTrailing) { topActionMenu }
             }
+            if let night = latestSleep,
+               !night.displayStageSegments.isEmpty {
+                Button {
+                    openMetricDetail(.sleep)
+                } label: {
+                    AtriaTodaySleepStageStrip(night: night)
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens sleep stages.")
+            }
             // Says what the app is doing with last night instead of saying
             // nothing while it settles. Sits under the hero because it is about
             // the night the ring is already showing.
@@ -2080,12 +2090,7 @@ struct AtriaTodayScreen: View {
             subtype: workout.activitySubtype,
             label: workout.label
         )
-        let badge: String = {
-            if workout.samples > 0, workout.avgHR > 0, let strain = workout.strain {
-                return String(format: "Strain %.1f", strain)
-            }
-            return AtriaWorkoutMetricPresentation.compactStatus(workout)
-        }()
+        let badge = AtriaActivityMonitorTab.strainBadge(for: workout)
         return HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.subheadline.weight(.bold))
@@ -2097,16 +2102,33 @@ struct AtriaTodayScreen: View {
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text(AtriaWorkoutMetricPresentation.durationText(workout.duration))
+                Text("\(AtriaWorkoutMetricPresentation.durationText(workout.duration)) · \(AtriaActivityMonitorTab.timeRange(start: workout.start, end: workout.end))")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             Spacer(minLength: 8)
-            Text(badge)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(workout.samples > 0 ? Color.secondary : Color.orange)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("\(load)")
+                        .font(.headline.monospacedDigit().weight(.bold))
+                    Text("HR load")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Image(systemName: workout.samples > 0 ? "heart.fill" : "heart.slash")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(workout.samples > 0 ? Color.secondary : Color.orange)
+                    .symbolRenderingMode(.hierarchical)
+                    .accessibilityHidden(true)
+                Text(badge)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(workout.samples > 0 ? Color.secondary : Color.orange)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.tertiary)

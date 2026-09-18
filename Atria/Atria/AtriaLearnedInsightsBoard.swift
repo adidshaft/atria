@@ -230,16 +230,10 @@ struct AtriaLearnedInsightsBoard: View {
     private func nakedRow(_ insight: AtriaLearnedInsight, compact: Bool = false) -> some View {
         HStack(alignment: .center, spacing: 12) {
             AtriaInsightPictureRing(insight: insight, size: compact ? 40 : 48)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(insight.emphasisLabel)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(insight.pictureTint)
-                Text(insight.headline)
-                    .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.85)
-            }
+            Text(insight.emphasisLabel)
+                .font(compact ? .subheadline.weight(.bold) : .body.weight(.bold))
+                .foregroundStyle(insight.pictureTint)
+                .lineLimit(1)
             Spacer(minLength: 8)
             Image(systemName: insight.isPositive
                   ? "arrow.up.circle.fill"
@@ -327,14 +321,11 @@ struct AtriaLearnedInsightsSheet: View {
         let tint = up ? Metrics.electricGreen : Metrics.electricRed
         return HStack(spacing: 12) {
             Image(systemName: insight.symbolName)
-                .font(.title3.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(tint)
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 36, height: 36)
                 .accessibilityHidden(true)
-            Text(insight.tagLabel)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
             Spacer(minLength: 8)
             Image(systemName: up ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
                 .font(.title3)

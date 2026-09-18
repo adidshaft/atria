@@ -562,14 +562,11 @@ private struct AtriaJournalTypedInsightsSection: View {
                 ForEach(insights) { insight in
                     HStack(spacing: 12) {
                         Image(systemName: insight.symbolName)
-                            .font(.title3.weight(.semibold))
+                            .font(.title2.weight(.semibold))
                             .foregroundStyle(insight.signedEffect < 0 ? .orange : Metrics.electricGreen)
                             .symbolRenderingMode(.hierarchical)
                             .frame(width: 36, height: 36)
                             .accessibilityHidden(true)
-                        Text(AtriaJournalInsights.displayLabel(for: insight.questionID))
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
                         Spacer(minLength: 8)
                         Image(systemName: insight.signedEffect < 0
                               ? "arrow.down.circle.fill"
@@ -1009,8 +1006,10 @@ private struct AtriaJournalCheckInDeck: View {
                 .accessibilityHidden(true)
 
             Text(tag.label)
-                .font(.title.weight(.bold))
+                .font(.title2.weight(.bold))
                 .multilineTextAlignment(.center)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             if isAutoTag {
                 AtriaStatusChip(text: "from Health", systemImage: "heart.fill", tint: .pink)

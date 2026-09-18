@@ -1370,7 +1370,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(value.contains("ingestLiveMotionFrame("))
         XCTAssertTrue(
             value.contains("if !historyPhase.isActive {\n                    ingestLiveMotionFrame("),
-            "history-channel 0x33/R10 must not increment today's live step coordinate"
+            "history-channel R10 must not increment today's live step coordinate"
+        )
+        XCTAssertTrue(value.contains("for compactSecond in compactIMUSecond("))
+        XCTAssertFalse(
+            value.contains("else if !historyPhase.isActive"),
+            "leftover history metadata must not freeze compact IMU ingest"
         )
         let r10Start = try XCTUnwrap(source.range(
             of: "private nonisolated func ingestLiveMotionFrame("

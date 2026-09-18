@@ -3207,7 +3207,7 @@ struct AtriaActivityMonitorTab: View {
     /// hundreds of samples. Only the recorded sample metadata may declare the
     /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
-        guard workout.samples > 0, workout.avgHR > 0 else { return "Saved without strap HR" }
+        guard workout.samples > 0, workout.avgHR > 0 else { return "No HR" }
         if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
             let strain = workout.strain.map { String(format: " · %.1f", $0) } ?? ""
             return "HR \(load)\(strain)"
@@ -3286,7 +3286,7 @@ struct AtriaActivityMonitorTab: View {
         return formatter
     }()
 
-    private static func timeRange(start: Date?, end: Date?) -> String {
+    static func timeRange(start: Date?, end: Date?) -> String {
         switch (start, end) {
         case let (start?, end?):
             return "\(timeFormatter.string(from: start)) – \(timeFormatter.string(from: end))"
@@ -3996,39 +3996,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        if workout.strain != nil {
-                            statTile("Strain",
-                                     AtriaWorkoutMetricPresentation.strainText(workout),
-                                     tint: Metrics.electricStrain)
-                        }
-                        statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
-                        if let steps = completedWorkoutStepsPresentation {
-                            statTile("Steps",
-                                     steps.valueText,
-                                     detail: steps.detailText,
-                                     tint: .mint)
-                        }
-                        if AtriaWorkoutMetricPresentation.hasHeartRateData(workout) {
-                            statTile("Avg HR",
-                                     AtriaWorkoutMetricPresentation.averageHeartRateText(workout),
-                                     tint: .pink)
-                            statTile("Peak HR",
-                                     AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
-                                     tint: .red)
-                            if AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) != nil {
-                                statTile("HR load",
-                                         AtriaWorkoutMetricPresentation.heartRateLoadText(workout),
-                                         detail: "Zone minutes",
-                                         tint: Metrics.electricStrain)
-                            }
-                        }
-                        if workout.activeEnergyKilocalories != nil {
-                            statTile("Calories",
-                                     AtriaWorkoutMetricPresentation.energyText(workout),
-                                     tint: .orange)
-                        }
-                    }
+                    workoutMetricTiles
 
                     heartRateTraceCard
                     workoutHeartRateLoadCard
@@ -4507,6 +4475,46 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             workoutEndedAt: workout.end,
             activity: resolvedActivity
         )
+    }
+
+    @ViewBuilder
+    private var workoutMetricTiles: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+            if workout.strain != nil {
+                statTile("Strain",
+                         AtriaWorkoutMetricPresentation.strainText(workout),
+                         tint: Metrics.electricStrain)
+            }
+            statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
+            statTile("Time",
+                     AtriaActivityMonitorTab.timeRange(start: workout.start, end: workout.end),
+                     tint: .secondary)
+            statTile("HR load",
+                     AtriaWorkoutMetricPresentation.heartRateLoadText(workout),
+                     detail: AtriaWorkoutMetricPresentation.hasHeartRateData(workout)
+                        ? "Edwards Z1–Z5"
+                        : "Needs HR",
+                     tint: Metrics.electricStrain)
+            if let steps = completedWorkoutStepsPresentation {
+                statTile("Steps",
+                         steps.valueText,
+                         detail: steps.detailText,
+                         tint: .mint)
+            }
+            if AtriaWorkoutMetricPresentation.hasHeartRateData(workout) {
+                statTile("Avg HR",
+                         AtriaWorkoutMetricPresentation.averageHeartRateText(workout),
+                         tint: .pink)
+                statTile("Peak HR",
+                         AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
+                         tint: .red)
+            }
+            if workout.activeEnergyKilocalories != nil {
+                statTile("Calories",
+                         AtriaWorkoutMetricPresentation.energyText(workout),
+                         tint: .orange)
+            }
+        }
     }
 
     private func statTile(_ title: String,

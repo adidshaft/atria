@@ -653,11 +653,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
     }
 
     func testOnlyMissingSamplesClaimNoHRData() {
-        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(samples: 0)), "Saved without strap HR")
-        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "Saved without strap HR")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(samples: 0)), "No HR")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR")
         XCTAssertEqual(
             AtriaWorkoutMetricPresentation.compactStatus(workout(samples: 0)),
-            "Saved without strap HR"
+            "No HR"
         )
     }
 

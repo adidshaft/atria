@@ -199,10 +199,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var motionAvailabilityFootnote: String? {
         switch motionAvailability {
         case .unavailableInCurrentTransport:
-            return "Strap motion is unavailable in the current connection mode. "
+            return "Motion is unavailable in the current connection mode. "
                 + "Live heart rate is still connected."
         case .unknown:
-            return "Counted so far — updates when strap motion syncs."
+            return "Counted so far — updates when motion syncs."
         case .live, .catchingUp, .qualifying, .stale, .none:
             return nil
         }
@@ -291,17 +291,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                         time: .shortened
                     )
             case .staleLiveReceipt:
-                return "Last strap movement is no longer live"
+                return "Last step count is no longer live"
             case .heldWhileMotionSyncing:
                 return "Last count · motion syncing"
             case .unvalidatedLiveReceipt:
-                return "Strap motion is still validating"
+                return "Steps are still validating"
             case .motionObservedCountUnresolved:
-                return "Strap motion found · count still resolving"
+                return "Steps found · count still resolving"
             case .conflictingExactReceipts:
                 return "Conflicting verified strap receipts"
             case .stepModelNotQualified:
-                return "Strap step model is still validating"
+                return "Step model is still validating"
             case .none, .noCurrentCycleReceipt:
                 return "No verified receipt for this cycle"
             }

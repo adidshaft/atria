@@ -317,7 +317,7 @@ enum AtriaWorkoutSharePresentation {
         guard let capturedAt else {
             return CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap motion for this workout",
+                detailText: "No verified motion for this workout",
                 isAvailable: false
             )
         }
@@ -327,7 +327,7 @@ enum AtriaWorkoutSharePresentation {
             <= AtriaLiveWorkoutStepProjection.freshnessInterval else {
             return CompletedSteps(
                 valueText: "--",
-                detailText: "Strap motion was not verified at workout end",
+                detailText: "Motion was not verified at workout end",
                 isAvailable: false
             )
         }
@@ -338,13 +338,13 @@ enum AtriaWorkoutSharePresentation {
         ) else {
             return CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap step count for this workout",
+                detailText: "No verified step count for this workout",
                 isAvailable: false
             )
         }
         return CompletedSteps(
             valueText: valueText,
-            detailText: "WHOOP strap motion",
+            detailText: "Wrist motion",
             isAvailable: true
         )
     }
