@@ -4764,7 +4764,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: periodHeroState(hrvBand == nil ? "Learning" : "Typical"),
                                       tint: metric.tint,
                                       heroLearning: hrvBand == nil
-                                        ? learningNights(baseline.hrvSampleCount)
+                                        ? learningNights(preparedHistory.hrvLearningNightCount)
                                         : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "waveform.path.ecg",
@@ -4802,7 +4802,7 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: periodHeroState(restingBand == nil ? "Learning" : "Typical"),
                                       tint: metric.tint,
                                       heroLearning: restingBand == nil
-                                        ? learningNights(baseline.restingSampleCount)
+                                        ? learningNights(preparedHistory.restingLearningNightCount)
                                         : nil) {
                 AtriaMetricContributorRows(rows: [
                     AtriaMetricContributorRow(systemImage: "heart.fill",
@@ -8908,6 +8908,11 @@ private struct AtriaPreparedMetricHistory: Sendable {
     /// `AtriaFitnessAge.summary`.
     let fitnessAgeEntryCount: Int
     let paceOfAging: AtriaFitnessAge.PaceOfAging
+    /// Overnight HRV nights in the same 14-night window the chart uses, so
+    /// the learning track cannot lag a restored night the Week/Month series
+    /// already plots.
+    let hrvLearningNightCount: Int
+    let restingLearningNightCount: Int
 
     /// Long ranges (6M/1Y/All) display weekly buckets instead of every raw
     /// daily sample: value = average of the week's REAL days, band = that
@@ -9271,6 +9276,26 @@ private struct AtriaPreparedMetricHistory: Sendable {
         self.fitnessAgeSummary = fitnessAgeSummaryByRange
         self.fitnessAgeComparison = fitnessAgeComparisonByRange
         self.fitnessAgeEntryCount = fitnessAgeEntryCount
+        let learningInterval = AtriaOvernightMetricChartSeries.learningInterval(
+            now: input.referenceDate,
+            calendar: calendar
+        )
+        self.hrvLearningNightCount = Self.overnightPoints(
+            from: rollups,
+            interval: learningInterval,
+            calendar: calendar
+        ) { item in
+            guard let lnRMSSD = item.lnRMSSD, (item.sleepSeconds ?? 0) > 0 else { return nil }
+            return (exp(lnRMSSD), .pink)
+        }.count
+        self.restingLearningNightCount = Self.overnightPoints(
+            from: rollups,
+            interval: learningInterval,
+            calendar: calendar
+        ) { item in
+            guard let value = item.restingHeartRate, (item.sleepSeconds ?? 0) > 0 else { return nil }
+            return (Double(value), .pink)
+        }.count
     }
 
     private static func overnightPoints(

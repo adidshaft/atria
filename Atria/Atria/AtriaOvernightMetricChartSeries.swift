@@ -30,4 +30,23 @@ enum AtriaOvernightMetricChartSeries {
         }
         return byDay.keys.sorted().map { Night(day: $0, value: byDay[$0]!) }
     }
+
+    /// The 14-night calibration window that the HRV/RHR learning track shares
+    /// with Day/Week/Month overnight charts: trailing civil nights ending on
+    /// the reference day, inclusive.
+    static func learningInterval(
+        now: Date,
+        calendar: Calendar,
+        nights: Int = PersonalBaseline.trustedMinimumSamples
+    ) -> DateInterval {
+        let startOfToday = calendar.startOfDay(for: now)
+        let start = calendar.date(
+            byAdding: .day,
+            value: -(max(nights, 1) - 1),
+            to: startOfToday
+        ) ?? startOfToday
+        let end = calendar.date(byAdding: .day, value: 1, to: startOfToday)
+            ?? startOfToday.addingTimeInterval(24 * 60 * 60)
+        return DateInterval(start: start, end: end)
+    }
 }
