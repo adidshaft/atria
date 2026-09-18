@@ -436,11 +436,17 @@ struct AtriaTodayScreen: View {
                 }
             }
 
-            if layoutConfig.showHighlights && !highlights.isEmpty {
+            // Master rings + Today's read already carry RHR/sleep/strain.
+            // Highlights duplicated that as "3 bpm below usual" and sat
+            // under the glass tab (device 2026-09-18 11:09).
+#if DEBUG
+            if Self.debugShowsNorthStarHighlights(arguments: ProcessInfo.processInfo.arguments),
+               !highlights.isEmpty {
                 AtriaTodayHighlightsStrip(highlights: highlights) { metric in
                     openMetricDetail(metric)
                 }
             }
+#endif
 
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
             // big sections (user feedback 2026-07-07): the major blocks below

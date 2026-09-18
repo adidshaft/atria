@@ -5330,7 +5330,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let layoutConfig: AtriaHomeLayoutConfig",
             "if layoutConfig.showLiveStrip",
-            "if layoutConfig.showHighlights && !highlights.isEmpty",
+            "style: .compactBar",
             "if layoutConfig.showPlan",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
             "switch layoutConfig.ringCenterMetric",
@@ -10978,12 +10978,8 @@ class HandoffStaticChecks(unittest.TestCase):
             (today, "return sessionProjectionStore.state.dailyRollupHistory"),
             (today, 'arguments[valueIndex] == "north-star-highlights"'),
             (today, "debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail"),
-            # 2026-07-07: strip gained the onOpen route (insight rows are
-            # real buttons now, not fake chevrons).
-            (today, "AtriaTodayHighlightsStrip(highlights: highlights) { metric in"),
             (today, "private struct AtriaTodayHighlightsStrip: View, Equatable"),
             (today, "AtriaTodayLiveStatusStrip(live: liveStore.state,"),
-            (today, "AtriaTodayPlanCard(title: planTitle,"),
             (today, "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)"),
             (today, "private var glanceColumns: [GridItem]"),
             (today, "if horizontalSizeClass == .regular"),
@@ -10998,7 +10994,6 @@ class HandoffStaticChecks(unittest.TestCase):
             # shortcut strip's Journal value on the same screen and was
             # removed; the shortcut strip (pinned below) carries the value.
             (today, "private struct AtriaTodayLiveStatusStrip: View, Equatable"),
-            (today, "private struct AtriaTodayPlanCard: View, Equatable"),
             (today, "private struct AtriaTodayGlanceTile: View, Equatable"),
             (health, "struct AtriaHealthScreen: View"),
             (health, 'Text("Health Monitor")'),
@@ -11379,21 +11374,10 @@ class HandoffStaticChecks(unittest.TestCase):
         ordered_tokens = [
             "triRingHero",
             "AtriaTodayLiveStatusHost(liveStore: liveStore,",
-            # Perf pass (2026-07-06 docs/26 follow-up): AtriaHighlights.topTwo
-            # was hoisted out of the Today body into a
-            # dailyRollupHistoryRevision-memoized `highlights` property (it was
-            # re-sorting the full history up to 4x per ~700ms live tick). The
-            # highlights section still renders in this exact slot, so the
-            # ordering marker migrates from the (now-hoisted) topTwo call to the
-            # section's guard condition, which occupies the same position.
-            "if layoutConfig.showHighlights && !highlights.isEmpty",
-            # 2026-07-07: same onOpen-route migration as above.
-            "AtriaTodayHighlightsStrip(highlights: highlights) { metric in",
-            "AtriaTodayPlanCard(title: planTitle,",
+            "style: .compactBar",
+            "todaySavedWorkoutRow(workout)",
             "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
-            # 2026-07-07: Journal info row removed (duplicate of shortcut
-            # strip value) — see UX-audit commit.
         ]
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
