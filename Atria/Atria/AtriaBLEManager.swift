@@ -4864,6 +4864,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return lastAcceptedHRAge <= freshnessWindow
     }
 
+    /// Device 2026-09-18 163: `status` stayed `.connecting` for ~19 min after
+    /// `powered_on` while `live_hr_notifying=1`. IMU 6A/51 and the zombie
+    /// stream-5 toggle both required `status == .connected`, so compact 0x33
+    /// never resumed (`packets_this_connection=0`). A live HR epoch on a
+    /// connected peripheral is enough to own same-link IMU repair.
+    nonisolated static func liveHeartRateEpochOwnsRadio(
+        status: Status,
+        peripheralConnected: Bool,
+        heartRateEpochLive: Bool
+    ) -> Bool {
+        guard peripheralConnected, status != .poweredOff else { return false }
+        if status == .connected { return true }
+        return heartRateEpochLive
+    }
+
     /// The only in-process escalation allowed from a pure-HR fallback owner.
     /// It is intentionally more restrictive than normal launch preparation:
     /// a user must have a durable, active manual workout and a previous dense
@@ -8868,15 +8883,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// packets. Never touches 2A37. `setNotify(true)` on the restored zombie
     /// CCCD did not resume IMU (device 2026-09-14 23:54).
     private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
         guard !standardHROnlyMode,
               !readOnlyHistoryCaptureRequested,
-              status == .connected,
               let peripheral,
-              peripheral.state == .connected else { return }
+              peripheral.state == .connected,
+              Self.liveHeartRateEpochOwnsRadio(
+                  status: status,
+                  peripheralConnected: true,
+                  heartRateEpochLive: hrLive
+              ) else { return }
         let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
         guard Self.shouldToggleZombieProprietaryCCCD(
             connected: true,
-            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            heartRateNotifying: hrLive,
             packetsThisConnection: Self.proprietaryTrafficThisConnection(
                 protocolPackets: protocolPacketsThisConnection,
                 notifyCallbacks: protocolNotifyCallbacksThisConnection
@@ -31674,7 +31698,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             assignIfChanged(\.rangeLossBackfillPending, false)
         }
-        let connected = status == .connected && peripheral?.state == .connected
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        let connected = Self.liveHeartRateEpochOwnsRadio(
+            status: status,
+            peripheralConnected: peripheral?.state == .connected,
+            heartRateEpochLive: hrLive
+        )
         let eligible = r10TransportIsExpected
         let fallbackIMU = connected
             && Self.shouldRefreshIMUOnLiveHeartRateFallback(
@@ -31682,11 +31715,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 state: protectedR10CleanOwnerState,
                 connected: connected,
                 historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
-                heartRateNotifying: Self.heartRateEpochAllowsIMURefresh(
-                    characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
-                    lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
-                        .map { now.timeIntervalSince($0) }
-                ),
+                heartRateNotifying: hrLive,
                 imuAge: Self.liveIMUEvidenceAgeSeconds(
                     rawFrameAt: currentR10MotionFrameAt(),
                     compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
@@ -31703,6 +31732,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) {
             // same-link 51
         } else if fallbackIMU {
+            kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_pure_hr_imu")
             _ = refreshProtectedBoundedRawCaptureIfNeeded(
                 now: now,
                 reason: "\(reason)_pure_hr_imu"

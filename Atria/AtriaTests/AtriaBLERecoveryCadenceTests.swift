@@ -12168,6 +12168,36 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "sitting skip with live type-33 packets is not an IMU drop"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.liveHeartRateEpochOwnsRadio(
+                status: .connecting,
+                peripheralConnected: true,
+                heartRateEpochLive: true
+            ),
+            "device 2026-09-18 163: Connecting… with live 2A37 must still repair IMU"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.liveHeartRateEpochOwnsRadio(
+                status: .connecting,
+                peripheralConnected: true,
+                heartRateEpochLive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.liveHeartRateEpochOwnsRadio(
+                status: .poweredOff,
+                peripheralConnected: true,
+                heartRateEpochLive: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.liveHeartRateEpochOwnsRadio(
+                status: .connected,
+                peripheralConnected: true,
+                heartRateEpochLive: false
+            ),
+            "an already-connected peripheral still owns radio work without a pulse"
+        )
     }
 
     func testCompactIMUPacketsCountAsR10LivenessEvidence() throws {
@@ -12256,6 +12286,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(toggleBody.contains("strapStream5NotifyConfirmed = true"))
         XCTAssertTrue(toggleBody.contains("rediscoverZombieProprietaryTransportIfNeeded"))
         XCTAssertTrue(toggleBody.contains("after_zombie_toggle"))
+        XCTAssertTrue(toggleBody.contains("liveHeartRateEpochOwnsRadio"),
+                      "zombie stream-5 must toggle while CoreBluetooth is still Connecting with live HR")
+        XCTAssertTrue(toggleBody.contains("heartRateNotifying: hrLive"),
+                      "zombie toggle must treat a fresh 2A37 sample as notifying")
         XCTAssertFalse(toggleBody.contains("Cmd.sendR10R11Realtime"))
         XCTAssertFalse(toggleBody.contains("cancelPeripheralConnection"))
 
@@ -12286,6 +12320,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
                       "a leftover queued 6A/51 must flush on the liveness tick")
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
+        XCTAssertTrue(liveBody.contains("liveHeartRateEpochOwnsRadio"),
+                      "Connecting… with live 2A37 must still evaluate IMU 6A/51")
+        XCTAssertTrue(
+            liveBody.contains("kickZombieProprietaryStreamIfNeeded(now: now, reason: \"\\(reason)_pure_hr_imu\")"),
+            "pure-HR IMU repair must toggle zombie stream-5 before 6A/51"
+        )
         XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
                       "full_protocol IMU recovery must not wait on protected-only eligibility")
         XCTAssertTrue(liveBody.contains("currentR10LivenessLastMotionAt"),
