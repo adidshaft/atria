@@ -4148,7 +4148,6 @@ struct AtriaHomeView: View {
         // The workout stopped successfully: release the strap motion ownership
         // lease and cancel its bounded activation tasks.
         ble.endWorkoutMotionLease(reason: "workout_end")
-        requestPostWorkoutHistoryBackfill()
         let finalizedExcludedIntervals = finalIntent.finalizedExcludedIntervals()
         // Give the tap immediate visual acknowledgement. The durable pending
         // intent above remains the crash-recovery authority while the ordered
@@ -4212,6 +4211,9 @@ struct AtriaHomeView: View {
                                                         workoutSteps: finalIntent.completedStepCount,
                                                         workoutStepsAreEstimated: finalIntent.completedStepsAreEstimated,
                                                         workoutStepsCapturedAt: finalIntent.completedStepsCapturedAt)
+        requestPostWorkoutHistoryBackfillIfNeeded(
+            endedWorkoutSampleCount: confirmed?.samples ?? 0
+        )
         if let confirmed {
             store.exportToHealthKit()
             if let routeDraft {
@@ -4317,6 +4319,26 @@ struct AtriaHomeView: View {
     /// reported no backlog, and a process restart after install never
     /// re-queued catch-up: Home only observed status *changes*, while
     /// CoreBluetooth restored already-connected.
+    ///
+    /// Do not queue leftover drain after a walk that already has HR — that
+    /// pause is how Strength started into a silent 2A37. Connect/restore
+    /// only retries metadata-only windows still inside the 6h pull lifetime.
+    private func requestPostWorkoutHistoryBackfillIfNeeded(
+        endedWorkoutSampleCount: Int? = nil
+    ) {
+        let metadataOnlyEnds = store.confirmedWorkouts.compactMap { workout -> Date? in
+            guard workout.confidence == "user_confirmed_no_hr",
+                  workout.samples == 0 else { return nil }
+            return workout.end
+        }
+        guard AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+            endedWorkoutSampleCount: endedWorkoutSampleCount,
+            metadataOnlyWorkoutEnds: metadataOnlyEnds,
+            now: Date()
+        ) else { return }
+        requestPostWorkoutHistoryBackfill()
+    }
+
     private func requestPostWorkoutHistoryBackfill() {
         ble.queueConnectedRawHistoryCatchUpIntent(reason: "post_workout_hr_backfill")
         store.upgradeMetadataOnlyWorkoutsFromHistoryInBackground()
@@ -6357,7 +6379,7 @@ struct AtriaHomeView: View {
             showConnectionGuide = false
             connectionGuidePresentationToken = UUID()
             logHomeTiming(event: "connected", status: status)
-            requestPostWorkoutHistoryBackfill()
+            requestPostWorkoutHistoryBackfillIfNeeded()
             if selectedTab == .overview, !model.snapshotStore.diagnosticsReady {
                 scheduleOverviewDiagnosticsKickoff(reason: "connected_overview_idle",
                                                    delayNanoseconds: 6_800_000_000)

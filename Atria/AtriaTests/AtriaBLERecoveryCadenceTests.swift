@@ -12802,6 +12802,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "device 2026-09-11: Start must unpause 2A37 before IMU or history yield"
         )
         XCTAssertTrue(body.contains("explicit_workout_restore_2a37"))
+        let abortStart = try XCTUnwrap(source.range(
+            of: "private func abortIdleWindowHeartRatePauseForExplicitWorkout(reason: String) {"
+        ))
+        let abortEnd = try XCTUnwrap(source.range(
+            of: "private func currentIdleWindowHistoryDrainWindow(",
+            range: abortStart.upperBound..<source.endIndex
+        ))
+        let abort = String(source[abortStart.lowerBound..<abortEnd.lowerBound])
+        XCTAssertTrue(
+            abort.contains("queuedConnectedRawHistoryCatchUpIntent = nil"),
+            "Start must drop the previous walk's leftover pull so Strength keeps 2A37"
+        )
     }
 
     func testAcceptedHRDoesNotRetryRetiredRealtimeWorkoutCutover() throws {

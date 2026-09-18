@@ -11314,6 +11314,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         naturalGapDrainArmed = false
         idleWindowDrainArmFence.clear()
         cancelIdleWindowHistoryPipeRetry()
+        // A previous walk's End leftover pull must not re-pause 2A37 one
+        // second into the next Strength session.
+        queuedConnectedRawHistoryCatchUpIntent = nil
         AtriaDebugLog(
             "ATRIADBG idle_window_drain status=aborted_for_explicit_workout reason=%@ action=restore_2a37",
             reason
