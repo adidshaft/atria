@@ -1965,6 +1965,9 @@ struct AtriaHomeView: View {
             return
         }
         guard let tab = HomeTab.deepLinkDestination(for: url) else { return }
+        dismissPresentedWorkoutChrome()
+        showWidgetOvernightBoard = false
+        showWidgetProofSheet = false
 #if DEBUG
         if url.absoluteString.lowercased().contains("heart-rate-timeline") {
             UserDefaults.standard.set(true, forKey: AtriaHealthScreen.debugOpenHeartRateTimelineKey)
