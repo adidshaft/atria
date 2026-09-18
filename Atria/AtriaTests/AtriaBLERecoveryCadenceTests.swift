@@ -12290,6 +12290,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "zombie stream-5 must toggle while CoreBluetooth is still Connecting with live HR")
         XCTAssertTrue(toggleBody.contains("heartRateNotifying: hrLive"),
                       "zombie toggle must treat a fresh 2A37 sample as notifying")
+        XCTAssertTrue(toggleBody.contains("discoverServices([Self.UUIDs.strapService])"),
+                      "suppressed pure-HR reconnects omit strap service; IMU repair must rediscover it")
+        XCTAssertTrue(toggleBody.contains("UUIDs.strapStream5, Self.UUIDs.strapTX"),
+                      "missing stream-5 must rediscover notify+TX instead of skipping 6A/51")
         XCTAssertFalse(toggleBody.contains("Cmd.sendR10R11Realtime"))
         XCTAssertFalse(toggleBody.contains("cancelPeripheralConnection"))
 
