@@ -1551,6 +1551,26 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(AtriaJournalInsights.thresholdSplitInsight(questionID: "d", label: "d", pairs: Array(eleven.prefix(11))))
     }
 
+    func testJournalBooleanTagQuestionIDNeverLeaksRawKey() {
+        XCTAssertEqual(AtriaJournalInsights.displayLabel(for: "tag.caffeine"), "Caffeine")
+        XCTAssertEqual(AtriaJournalInsights.displayLabel(for: "tag.alcohol"), "Alcohol")
+        XCTAssertEqual(AtriaJournalInsights.displayLabel(for: "caffeine.lastTime"), "Caffeine")
+        XCTAssertEqual(
+            SessionStore.journalQuestionLabels[AtriaJournalCheckInProgress.booleanQuestionID(for: .caffeine)],
+            "Caffeine"
+        )
+        let insight = JournalInsight(
+            questionID: "tag.caffeine",
+            label: AtriaJournalInsights.displayLabel(for: "tag.caffeine"),
+            kind: .booleanImpact(impact: -6, loggedDays: 8, comparisonDays: 10, pValue: 0.04)
+        )
+        XCTAssertEqual(insight.label, "Caffeine")
+        XCTAssertEqual(insight.symbolName, "cup.and.saucer.fill")
+        XCTAssertEqual(insight.compactEffectText, "-6%")
+        XCTAssertFalse(insight.valueText.contains("tag.caffeine"))
+        XCTAssertTrue(insight.valueText.contains("Caffeine"))
+    }
+
     func testHRVBaselineRampIsContinuousAcrossOvernightThreshold() throws {
         let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
         func baseline(overnightCount: Int) -> PersonalBaseline {

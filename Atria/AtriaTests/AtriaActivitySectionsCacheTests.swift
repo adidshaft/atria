@@ -635,6 +635,23 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout()), "Strain 0.1")
     }
 
+    func testHeartRateLoadPointsUsesEdwardsZoneMinutes() {
+        var loaded = workout(strain: 5.4, coverage: 92)
+        loaded.zoneSeconds = [
+            "warmup": 60,
+            "fatBurn": 120,
+            "aerobic": 180,
+            "anaerobic": 60,
+            "max": 60
+        ]
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateLoadPoints(loaded), 23)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateLoadText(loaded), "23")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: loaded), "HR 23 · 5.4")
+        XCTAssertNil(AtriaWorkoutMetricPresentation.heartRateLoadPoints(
+            workout(samples: 0, avgHR: 0, strain: nil)
+        ))
+    }
+
     func testOnlyMissingSamplesClaimNoHRData() {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(samples: 0)), "Saved without strap HR")
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "Saved without strap HR")

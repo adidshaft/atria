@@ -2334,7 +2334,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: respiratory.detail,
                                 zone: respiratory.zone,
                                 targetMetric: .respiratoryRate)
-                AtriaMetricTile(label: "Strap steps",
+                AtriaMetricTile(label: "Steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
                                 tint: .green,

@@ -557,18 +557,33 @@ private struct AtriaJournalTypedInsightsSection: View {
                         .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
                 }
             } else {
-                // Direction-coded rows (design handoff): green up-arrow for a
-                // helpful pattern, orange down-arrow for a harmful one --
-                // derived from the insight's real signed effect.
+                // Symbol-first rows: the raw `tag.caffeine` id must never
+                // appear. VoiceOver still gets the full evidence sentence.
                 ForEach(insights) { insight in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: insight.signedEffect < 0 ? "arrow.down" : "arrow.up")
-                            .font(.caption.weight(.bold))
+                    HStack(spacing: 12) {
+                        Image(systemName: insight.symbolName)
+                            .font(.title3.weight(.semibold))
                             .foregroundStyle(insight.signedEffect < 0 ? .orange : Metrics.electricGreen)
-                        Text(insight.valueText)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .symbolRenderingMode(.hierarchical)
+                            .frame(width: 36, height: 36)
+                            .accessibilityHidden(true)
+                        Text(AtriaJournalInsights.displayLabel(for: insight.questionID))
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Image(systemName: insight.signedEffect < 0
+                              ? "arrow.down.circle.fill"
+                              : "arrow.up.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(insight.signedEffect < 0 ? .orange : Metrics.electricGreen)
+                            .symbolRenderingMode(.hierarchical)
+                            .accessibilityHidden(true)
+                        Text(insight.compactEffectText)
+                            .font(.headline.weight(.bold).monospacedDigit())
+                            .foregroundStyle(insight.signedEffect < 0 ? .orange : Metrics.electricGreen)
                     }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(insight.valueText)
                 }
             }
         }
@@ -988,14 +1003,14 @@ private struct AtriaJournalCheckInDeck: View {
             Spacer(minLength: 8)
 
             Image(systemName: tag.symbolName)
-                .font(.system(size: 40, weight: .medium))
+                .font(.system(size: 56, weight: .medium))
                 .foregroundStyle(.cyan)
                 .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
 
-            Text(question(for: tag))
-                .font(.title2.weight(.semibold))
+            Text(tag.label)
+                .font(.title.weight(.bold))
                 .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
 
             if isAutoTag {
                 AtriaStatusChip(text: "from Health", systemImage: "heart.fill", tint: .pink)
@@ -1012,9 +1027,10 @@ private struct AtriaJournalCheckInDeck: View {
                         presentFollowUp(followUp)
                     }
                 } label: {
-                    Text("Yes")
-                        .font(.body.weight(.semibold))
+                    Image(systemName: "checkmark")
+                        .font(.title3.weight(.bold))
                         .frame(maxWidth: .infinity, minHeight: 30)
+                        .accessibilityLabel("Yes")
                 }
                 // Equal visual weight with No (2026-08-04): a filled Yes
                 // beside a pale No nudged the answer, and journal answers
@@ -1027,9 +1043,10 @@ private struct AtriaJournalCheckInDeck: View {
                     recordNo(tag: tag, followUp: followUp)
                     advance()
                 } label: {
-                    Text("No")
-                        .font(.body.weight(.semibold))
+                    Image(systemName: "xmark")
+                        .font(.title3.weight(.bold))
                         .frame(maxWidth: .infinity, minHeight: 30)
+                        .accessibilityLabel("No")
                 }
                 .atriaCardAction(prominent: false, tint: .accentColor)
             }
@@ -1054,6 +1071,8 @@ private struct AtriaJournalCheckInDeck: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 26)
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(tag.label). \(question(for: tag))")
     }
 
     private static let scaleEmoji = ["😖", "😕", "😐", "🙂", "😄"]

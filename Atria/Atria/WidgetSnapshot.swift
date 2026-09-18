@@ -1674,7 +1674,12 @@ enum WidgetSnapshotPublisher {
             now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
-            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            liveCapturedAt: AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+                cycleStart: savedAggregate.day,
+                now: now,
+                presentedCount: strapStepsToday
+            ),
             canonicalDays: projectedStepDays,
             liveAuthorityQualified:
                 stepReleaseAuthorityQualified,

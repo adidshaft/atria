@@ -1538,6 +1538,40 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
               knownCoverageSeconds: covered,
               missingCoverageSeconds: missing)
     }
+
+    func testInCycleCaptureClockStampsNowWhenBLEClockIsPriorCycle() {
+        let cycleStart = day.addingTimeInterval(8 * 3_600)
+        let now = cycleStart.addingTimeInterval(3_600)
+        let prior = cycleStart.addingTimeInterval(-10 * 3_600)
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: prior,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 2_379
+            ),
+            now
+        )
+        let inCycle = now.addingTimeInterval(-2)
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: inCycle,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 100
+            ),
+            inCycle
+        )
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: prior,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 0
+            ),
+            prior
+        )
+    }
 }
 
 final class AtriaStrapMotionAvailabilityTests: XCTestCase {

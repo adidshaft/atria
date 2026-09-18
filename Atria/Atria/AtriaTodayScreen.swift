@@ -534,7 +534,8 @@ struct AtriaTodayScreen: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStrapStepsDetail) {
-            AtriaStrapStepsDetailSheet(count: liveStore.state.strapStepResearchCount,
+            AtriaStrapStepsDetailSheet(count: liveStore.state.dailyStepPresentation.count
+                                           ?? liveStore.state.strapStepResearchCount,
                                        validationState: liveStore.state.strapStepResearchState,
                                        presentation: liveStore.state.dailyStepPresentation,
                                        goal: stepsGoal,

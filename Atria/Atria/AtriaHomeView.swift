@@ -13469,12 +13469,18 @@ final class AtriaHomeModel {
                 strapIdentifiers: strapIdentifiers
             )
         let heldFloor = AtriaHeldDailyStepFloor.load(cycleStart: savedAggregate.cycleStart)
+        let now = Date()
         var dailyStepPresentation = AtriaDailyStepPresentation.resolve(
-            day: Date(),
-            now: Date(),
+            day: now,
+            now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
-            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            liveCapturedAt: AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+                cycleStart: savedAggregate.cycleStart,
+                now: now,
+                presentedCount: strapStepsToday
+            ),
             canonicalDays: currentCycleStepDays,
             liveAuthorityQualified:
                 AtriaWhoop4GravityCadenceStepModel

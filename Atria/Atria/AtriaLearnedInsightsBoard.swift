@@ -107,44 +107,31 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private var compactBar: some View {
-        let featured = insights.first
+        let hero = AtriaLearnedInsight.ringHeroInsights(from: insights)
         return HStack(spacing: 10) {
-            if let featured {
-                AtriaInsightPictureRing(insight: featured, size: 34)
-            } else {
+            if hero.isEmpty {
                 Image(systemName: "text.alignleft")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
                     .frame(width: 28, height: 28)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(title)
-                        .atriaEyebrow()
-                    if !insights.isEmpty {
-                        Text("\(insights.count)")
-                            .font(AtriaDesignTokens.Typography.eyebrow)
-                            .tracking(AtriaDesignTokens.Typography.eyebrowTracking)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                Text(featured?.headline ?? "Open for the full read")
+                Text(title)
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-                    .minimumScaleFactor(0.75)
-                    .allowsTightening(true)
-                if let detail = featured?.detail, !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+            } else {
+                ForEach(hero) { insight in
+                    VStack(spacing: 4) {
+                        AtriaInsightPictureRing(insight: insight, size: 38)
+                        Text(insight.emphasisLabel)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(insight.pictureTint)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(insight.ringFamily.title). \(insight.emphasisLabel). \(insight.headline)")
                 }
             }
-            Spacer(minLength: 8)
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.tertiary)
@@ -241,21 +228,27 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private func nakedRow(_ insight: AtriaLearnedInsight, compact: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(insight.headline)
-                .font(compact ? .subheadline.weight(.semibold) : .headline)
-                .foregroundStyle(.primary)
-                .lineLimit(nil)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(insight.detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .top, spacing: 14) {
+            AtriaInsightPictureRing(insight: insight, size: compact ? 44 : 56)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(insight.emphasisLabel)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(insight.pictureTint)
+                Text(insight.headline)
+                    .font(compact ? .subheadline.weight(.semibold) : .title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(insight.detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, compact ? 6 : 10)
+        .padding(.vertical, compact ? 8 : 12)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(insight.headline). \(insight.detail)")
+        .accessibilityLabel("\(insight.emphasisLabel). \(insight.headline). \(insight.detail)")
     }
 }
 
@@ -297,32 +290,7 @@ struct AtriaLearnedInsightsSheet: View {
                             .font(.headline)
                             .accessibilityAddTraits(.isHeader)
                         ForEach(tagged.prefix(5)) { insight in
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: insight.isPositive
-                                      ? "arrow.up.right.circle.fill"
-                                      : "arrow.down.right.circle.fill")
-                                    .font(.title3)
-                                    .foregroundStyle(insight.isPositive
-                                                     ? Metrics.electricGreen
-                                                     : Metrics.electricRed)
-                                    .symbolRenderingMode(.hierarchical)
-                                    .frame(width: 36, height: 36)
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(insight.tagLabel)
-                                        .font(.headline)
-                                        .lineLimit(nil)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .layoutPriority(2)
-                                    Text("\(insight.headline). \(insight.detail)")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                            .padding(.vertical, 8)
-                            .accessibilityElement(children: .combine)
-                            .accessibilityLabel("\(insight.tagLabel). \(insight.headline). \(insight.detail)")
+                            taggedInsightRow(insight)
                         }
                     }
                 }
@@ -348,5 +316,33 @@ struct AtriaLearnedInsightsSheet: View {
             }
         }
         .atriaDemoSampleBadge()
+    }
+
+    private func taggedInsightRow(_ insight: AtriaInsight) -> some View {
+        let up = insight.isPositive
+        let tint = up ? Metrics.electricGreen : Metrics.electricRed
+        return HStack(spacing: 12) {
+            Image(systemName: insight.symbolName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(tint)
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 36, height: 36)
+                .accessibilityHidden(true)
+            Text(insight.tagLabel)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Image(systemName: up ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                .font(.title3)
+                .foregroundStyle(tint)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
+            Text(insight.compactDeltaText)
+                .font(.headline.weight(.bold).monospacedDigit())
+                .foregroundStyle(tint)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(insight.tagLabel). \(insight.headline). \(insight.detail)")
     }
 }

@@ -3208,10 +3208,10 @@ struct AtriaActivityMonitorTab: View {
     /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
         guard workout.samples > 0, workout.avgHR > 0 else { return "Saved without strap HR" }
-        // 2026-08-21: show the measured strain even on partial coverage rather
-        // than replacing it with a bare coverage badge. It upgrades as history
-        // drains and the workout re-scores. Fall back to coverage only when no
-        // strain has been computed at all.
+        if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
+            let strain = workout.strain.map { String(format: " · %.1f", $0) } ?? ""
+            return "HR \(load)\(strain)"
+        }
         guard let strain = workout.strain else {
             return AtriaWorkoutMetricPresentation.compactStatus(workout)
         }
@@ -4016,6 +4016,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             statTile("Peak HR",
                                      AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
                                      tint: .red)
+                            if AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) != nil {
+                                statTile("HR load",
+                                         AtriaWorkoutMetricPresentation.heartRateLoadText(workout),
+                                         detail: "Zone minutes",
+                                         tint: Metrics.electricStrain)
+                            }
                         }
                         if workout.activeEnergyKilocalories != nil {
                             statTile("Calories",
@@ -4025,6 +4031,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     }
 
                     heartRateTraceCard
+                    workoutHeartRateLoadCard
                     workoutZoneDistributionCard
                     recoveryEffectCard
 
@@ -4542,6 +4549,54 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     private var recordedZoneSeconds: TimeInterval {
         workoutZoneRows.reduce(0) { $0 + $1.seconds }
+    }
+
+    @ViewBuilder
+    private var workoutHeartRateLoadCard: some View {
+        let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout)
+        let loadRows = workoutZoneRows.filter { $0.key != "rest" && $0.seconds > 0 }
+        let loadSeconds = loadRows.reduce(0) { $0 + $1.seconds }
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("HR load", systemImage: "heart.circle.fill")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.pink)
+                Spacer(minLength: 8)
+                Text(load.map { "\($0)" } ?? "--")
+                    .font(.title2.weight(.black).monospacedDigit())
+                    .foregroundStyle(Metrics.electricStrain)
+            }
+
+            if loadSeconds > 0 {
+                GeometryReader { proxy in
+                    HStack(spacing: 2) {
+                        ForEach(loadRows, id: \.key) { zone in
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(zone.tint)
+                                .frame(width: max(6, proxy.size.width * CGFloat(zone.seconds / loadSeconds)))
+                        }
+                    }
+                }
+                .frame(height: 10)
+                HStack {
+                    ForEach(loadRows, id: \.key) { zone in
+                        Text(zone.label.split(separator: "·").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? "")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(zone.tint)
+                    }
+                    Spacer(minLength: 0)
+                }
+            } else {
+                Label("No zone minutes in this recording.",
+                      systemImage: "heart.slash")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .atriaInsetCard(tint: .pink)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(load.map { "Heart-rate load \($0)." } ?? "Heart-rate load unavailable.")
     }
 
     @ViewBuilder

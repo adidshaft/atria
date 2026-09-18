@@ -329,6 +329,24 @@ enum AtriaWorkoutMetricPresentation {
         workout.activeEnergyKilocalories.map { "\(Int($0.rounded()))" } ?? "--"
     }
 
+    /// Edwards zone-minute load: Z1×1 … Z5×5. Restorative time is omitted.
+    /// Nil when the workout has no usable heart-rate zone evidence.
+    static func heartRateLoadPoints(_ workout: UserConfirmedWorkout) -> Int? {
+        guard hasHeartRateData(workout), let zones = workout.zoneSeconds else { return nil }
+        let weights: [(key: String, weight: Double)] = [
+            ("warmup", 1), ("fatBurn", 2), ("aerobic", 3), ("anaerobic", 4), ("max", 5)
+        ]
+        let points = weights.reduce(0.0) { total, zone in
+            total + zone.weight * (zones[zone.key] ?? 0) / 60
+        }
+        guard points > 0 else { return nil }
+        return Int(points.rounded())
+    }
+
+    static func heartRateLoadText(_ workout: UserConfirmedWorkout) -> String {
+        heartRateLoadPoints(workout).map { "\($0)" } ?? "--"
+    }
+
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
         case .unavailable: return "Saved without strap HR"

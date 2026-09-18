@@ -38,7 +38,7 @@ enum AtriaLegacyOverviewDestination: String, CaseIterable, Identifiable {
         case .workout: return "Workout"
         case .backfill: return "Catch-up"
         case .hapticAlerts: return "Alerts"
-        case .strapSteps: return "Strap steps"
+        case .strapSteps: return "Steps"
         */
         switch self {
         case .today: return "Today"
@@ -1062,7 +1062,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleepPerformance: return "Sleep suff."
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
-        case .steps: return "Strap steps"
+        case .steps: return "Steps"
         case .calories: return "Calories"
         case .vo2max: return "VO2max"
         case .bioAge: return "Fitness age"
@@ -2662,9 +2662,9 @@ struct AtriaStrapStepLiveStatus: Equatable {
     func liveStripStepAccessibility(count: Int) -> String {
         guard count > 0 else { return "" }
         if isLive {
-            return " \(count) strap steps."
+            return " \(count) steps."
         }
-        return " \(count) strap steps held. \(lastMotionText)."
+        return " \(count) steps held. \(lastMotionText)."
     }
 
     var tint: Color {
@@ -2777,8 +2777,8 @@ struct AtriaStrapStepsDetailSheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(
                                 status.isLive
-                                    ? "Strap motion live"
-                                    : "Strap motion not live"
+                                    ? "Motion live"
+                                    : "Motion not live"
                             )
                                 .font(.headline)
                             Text(status.lastMotionText.capitalized)
@@ -2848,7 +2848,7 @@ struct AtriaStrapStepsDetailSheet: View {
                             Text(presentation.detailText)
                                 .font(.caption.weight(.semibold))
                             Text(status.wearerGuidance
-                                 ?? "Appears when reliable strap steps are available.")
+                                 ?? "Appears when reliable steps are available.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -2867,7 +2867,7 @@ struct AtriaStrapStepsDetailSheet: View {
                 }
             }
             .task { await loadWeekSteps() }
-            .navigationTitle("Strap steps")
+            .navigationTitle("Steps")
             .navigationBarTitleDisplayMode(.inline)
             .accessibilityIdentifier("atria.metric.detail.steps")
             .atriaDemoSampleBadge()
@@ -3471,7 +3471,7 @@ struct AtriaGlanceTargetEditorSheet: View {
         case .steps:
             VStack(alignment: .leading, spacing: 12) {
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
-                    LabeledContent("Strap steps goal") {
+                    LabeledContent("Steps goal") {
                         Text("\(stepsGoal)")
                             .monospacedDigit()
                     }
@@ -3479,7 +3479,7 @@ struct AtriaGlanceTargetEditorSheet: View {
                 Button {
                     stepsGoal = 8_000
                 } label: {
-                    Label("Reset strap steps goal", systemImage: "figure.walk")
+                    Label("Reset steps goal", systemImage: "figure.walk")
                 }
                 .atriaCardAction(tint: .green)
             }
@@ -3639,7 +3639,7 @@ private extension AtriaTodayMetric {
         case .vo2max:
             return "Adjust the VO2max trend gain or decline needed for target colors."
         case .steps:
-            return "Adjust the daily strap-step goal used by the steps card."
+            return "Adjust the daily step goal used by the steps card."
         case .calories:
             return "Adjust the estimated active-calorie goal used by the calories card."
         case .sleepEfficiency:
@@ -7487,16 +7487,28 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                 Spacer(minLength: 0)
 
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(strainText)
-                        .font(.headline.monospacedDigit().weight(.bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .layoutPriority(1)
-                    Text(AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                         ? "metrics" : "workout strain")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
+                        Text("\(load)")
+                            .font(.headline.monospacedDigit().weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .layoutPriority(1)
+                        Text("HR load")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else {
+                        Text(strainText)
+                            .font(.headline.monospacedDigit().weight(.bold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .layoutPriority(1)
+                        Text(AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
+                             ? "metrics" : "workout strain")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
 
@@ -7542,7 +7554,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         .padding(12)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(durationText), \(AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) ? "workout metrics incomplete" : "strain \(strainText)"), heart rate \(heartRateText), \(zoneMinutesSummary).")
+        .accessibilityLabel("\(title), \(durationText), \(AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout).map { "HR load \($0)" } ?? (AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) ? "workout metrics incomplete" : "strain \(strainText)")), heart rate \(heartRateText), \(zoneMinutesSummary).")
     }
 
     private func zoneWidth(_ seconds: TimeInterval, totalWidth: CGFloat) -> CGFloat {
@@ -9870,19 +9882,21 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
                             }
                         }
                     } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: todayEntry.tags.contains(tag) ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(todayEntry.tags.contains(tag) ? .cyan : .secondary)
+                        VStack(spacing: 6) {
+                            Image(systemName: tag.symbolName)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(todayEntry.tags.contains(tag) ? Color.cyan : Color.secondary)
+                                .symbolRenderingMode(.hierarchical)
                             Text(tag.label)
-                                .font(.caption.weight(.semibold))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.primary)
                                 .lineLimit(1)
-                                .minimumScaleFactor(0.76)
-                            Spacer(minLength: 0)
+                                .minimumScaleFactor(0.65)
                         }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, minHeight: 64)
                     }
+                    .accessibilityLabel(tag.label)
+                    .accessibilityAddTraits(todayEntry.tags.contains(tag) ? .isSelected : [])
                     .atriaGlassSelectable(selected: todayEntry.tags.contains(tag))
                 }
             }
@@ -9895,7 +9909,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         }
     }
 
-    private static let tagColumns = [GridItem(.adaptive(minimum: 118), spacing: 8)]
+    private static let tagColumns = [GridItem(.adaptive(minimum: 84), spacing: 8)]
     private static let sleepFactColumns = [GridItem(.flexible(), spacing: 8),
                                            GridItem(.flexible(), spacing: 8),
                                            GridItem(.flexible(), spacing: 8)]
@@ -9986,18 +10000,14 @@ private struct AtriaJournalTodayTagStrip: View, Equatable {
     }
 
     private var title: String {
-        selectedTags.isEmpty ? "Tag today" : "\(selectedTags.count) logged today"
+        selectedTags.isEmpty ? "Tag today" : "\(selectedTags.count)"
     }
 
     private var detail: String {
         if selectedTags.isEmpty {
             return taggedDays > 0
-                ? "Keep the loop going; one tap is enough."
-                : "Tap what happened and Atria compares it locally."
-        }
-        let healthCount = selectedTags.filter { healthAutoTags.contains($0) }.count
-        if healthCount > 0 {
-            return "\(selectedTags.map(\.label).joined(separator: " · ")) · \(healthCount) from Health"
+                ? "Keep the loop going"
+                : "Tap a symbol"
         }
         return selectedTags.map(\.label).joined(separator: " · ")
     }
@@ -10125,24 +10135,27 @@ struct AtriaInsightsCard: View, Equatable {
     }
 
     private func insightRow(_ i: AtriaInsight) -> some View {
-        let tint: Color = i.isPositive ? .green : .red
-        return HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(i.tagLabel)
-                    .font(.headline)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-                Text("\(i.headline) · \(i.detail.lowercased())")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Image(systemName: i.isPositive ? "arrow.up.right" : "arrow.down.right")
-                .font(.subheadline.weight(.bold))
+        let up = i.isPositive
+        let tint: Color = up ? Metrics.electricGreen : Metrics.electricRed
+        return HStack(spacing: 12) {
+            Image(systemName: i.symbolName)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 36, height: 36)
+                .accessibilityHidden(true)
+            Text(i.tagLabel)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Image(systemName: up ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                .font(.title3)
+                .foregroundStyle(tint)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
+            Text(i.compactDeltaText)
+                .font(.headline.weight(.bold).monospacedDigit())
+                .foregroundStyle(tint)
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
