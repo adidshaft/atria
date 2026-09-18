@@ -1936,20 +1936,28 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
+        formatter.locale = calendar.locale
         switch self {
         case .day:
             formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
             return formatter.string(from: interval.start)
         case .week, .month:
             // A trailing window is a date range, never a month name.
+            // Device 2026-09-18 Recovery Week: start template "d" plus end
+            // "d MMM" localized to US order as "12–Sep 18". Month belongs on
+            // the start so a same-month week reads "Sep 12–18".
             let end = interval.end.addingTimeInterval(-1)
             let startMonth = calendar.component(.month, from: interval.start)
             let endMonth = calendar.component(.month, from: end)
-            formatter.setLocalizedDateFormatFromTemplate(
-                startMonth == endMonth ? "d" : "d MMM"
-            )
+            let startYear = calendar.component(.year, from: interval.start)
+            let endYear = calendar.component(.year, from: end)
+            let sameMonth = startMonth == endMonth && startYear == endYear
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
             let startText = formatter.string(from: interval.start)
-            formatter.setLocalizedDateFormatFromTemplate("d MMM")
+            if sameMonth {
+                formatter.setLocalizedDateFormatFromTemplate("d")
+                return "\(startText)–\(formatter.string(from: end))"
+            }
             return "\(startText)–\(formatter.string(from: end))"
         default:
             formatter.setLocalizedDateFormatFromTemplate("d MMM yyyy")
