@@ -440,8 +440,60 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_week_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_month_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("recovery_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("recovery_month_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("rhr_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("rhr_month_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("sleep_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("sleep_month_last_") })
+    }
+
+    func testMonthLastDisagreeingWithDayIsADiscrepancy() {
+        let windows = AtriaDiagnosisReport.MetricWindows(
+            hrvDay: 53,
+            hrvWeek: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 53)],
+            hrvMonth: [
+                AtriaDiagnosisReport.WindowPoint(day: "2026-09-01", value: 40),
+                AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 40)
+            ],
+            recoveryDay: 71,
+            recoveryWeek: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 71)],
+            recoveryMonth: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 60)],
+            rhrDay: 55,
+            rhrWeek: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 55)],
+            rhrMonth: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 55)],
+            sleepDay: 415,
+            sleepWeek: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 415)],
+            sleepMonth: [AtriaDiagnosisReport.WindowPoint(day: "2026-09-18", value: 180)]
+        )
+        let snapshot = AtriaDiagnosisReport.make(
+            now: Date(timeIntervalSince1970: 1_800_000_000),
+            build: "159",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 70,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 80,
+            liveZone: "Rest",
+            widgetHeartRate: 80,
+            metricWindows: windows
+        )
+        XCTAssertTrue(snapshot.discrepancies.contains("hrv_month_last_40_settled_53"))
+        XCTAssertTrue(snapshot.discrepancies.contains("recovery_month_last_60_day_71"))
+        XCTAssertTrue(snapshot.discrepancies.contains("sleep_month_last_180_day_415"))
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("rhr_month_last_") })
     }
 
     func testOvernightClockNamesYesterdayMorningNotTheLivePatchTime() {
