@@ -1719,6 +1719,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("advancedOldestFirstHistoryDrainCursor("))
         XCTAssertTrue(source.contains("idle_window_drain status=slice"))
         XCTAssertTrue(source.contains("attended_foreground_abort"))
+        XCTAssertTrue(source.contains("leftoverPendingRecords: leftoverPending"))
+        XCTAssertTrue(source.contains("attended_leftover_tail"))
         XCTAssertTrue(source.contains("2a37_unsubscribe_retry"))
         XCTAssertTrue(source.contains("pointer_diagnosis"))
         XCTAssertTrue(source.contains("shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist("))
@@ -5010,6 +5012,28 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 drainBeganUnattended: true,
                 historyRangeRequested: true
             )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: false,
+                historyRangeRequested: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "leftover pending=5 started on Recovery Week must restore 2A37 even if the chunk began attended"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: false,
+                historyRangeRequested: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: true
+            ),
+            "an in-flight gym pull may keep 0x22 while Home is open"
         )
         XCTAssertEqual(
             AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(

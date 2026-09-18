@@ -17211,17 +17211,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func restoreIdleWindowHeartRateForAttendedForegroundIfNeeded() {
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        let queuedPull = queuedConnectedRawHistoryCatchUpIntent != nil
         guard Self.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
             idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
             attendedForeground: true,
             drainBeganUnattended: idleWindowDrainBeganUnattended,
-            historyRangeRequested: idleWindowDrainRangeRequestedAt != nil
+            historyRangeRequested: idleWindowDrainRangeRequestedAt != nil,
+            leftoverPendingRecords: leftoverPending,
+            queuedPullIntent: queuedPull
         ),
         offlineHistoricalSyncInProgress else { return }
         AtriaDebugLog(
-            "ATRIADBG idle_window_drain status=attended_foreground_abort generation=%llu action=restore_2a37_same_epoch_no_cancel",
-            offlineHistoricalSyncGeneration
+            "ATRIADBG idle_window_drain status=attended_foreground_abort generation=%llu pending=%u queued=%d action=restore_2a37_same_epoch_no_cancel",
+            offlineHistoricalSyncGeneration,
+            leftoverPending ?? 0,
+            queuedPull ? 1 : 0
         )
+        if !queuedPull, (leftoverPending ?? 0) > 0 {
+            abortIdleWindowHeartRatePauseForExplicitWorkout(
+                reason: "attended_leftover_tail"
+            )
+        }
         finishOfflineHistoricalSync(
             reason: "idle_window_drain_attended_foreground_restore_2a37",
             generation: offlineHistoricalSyncGeneration,

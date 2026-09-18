@@ -998,16 +998,29 @@ extension AtriaBLEManager {
     /// the handshake absolute budget. A same-launch restore that starts
     /// pre-HR before scene-active is not pickup — require the chunk to
     /// have begun unattended and already issued 0x22.
+    ///
+    /// Device 2026-09-18: leftover `pending=5` started while Recovery Week
+    /// was already foreground, so `drainBeganUnattended` stayed false and
+    /// 2A37 stayed paused. A dry leftover with no gym pull is not pickup.
     nonisolated static func shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
         idleWindowDrainOwnsLink: Bool,
         attendedForeground: Bool,
         drainBeganUnattended: Bool,
-        historyRangeRequested: Bool
+        historyRangeRequested: Bool,
+        leftoverPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false
     ) -> Bool {
-        idleWindowDrainOwnsLink
-            && attendedForeground
-            && drainBeganUnattended
-            && historyRangeRequested
+        guard idleWindowDrainOwnsLink,
+              attendedForeground,
+              historyRangeRequested else { return false }
+        if drainBeganUnattended { return true }
+        if queuedPullIntent { return false }
+        guard let pending = leftoverPendingRecords,
+              pending > 0,
+              pending <= idleWindowConsumeLiveTailPendingLimit else {
+            return false
+        }
+        return true
     }
 
     /// Charging / off-wrist bursts are thermal-bounded, not the 20s worn
