@@ -2015,38 +2015,58 @@ private func liveActivityStatusPresentation(
     }
     switch heartRateAvailability {
     case .live:
+        let workout = liveActivityIsExplicitWorkout(state)
         return .init(text: "Live",
                      systemImage: "circle.fill",
                      tint: .green,
-                     accessibilityText: "Workout live")
+                     accessibilityText: workout ? "Workout live" : "Live heart rate")
     case .reconnecting:
         return .init(text: "Reconnecting",
                      systemImage: "antenna.radiowaves.left.and.right",
                      tint: .orange,
-                     accessibilityText: "Workout active, strap reconnecting")
+                     accessibilityText: liveActivityIsExplicitWorkout(state)
+                        ? "Workout active, strap reconnecting"
+                        : "Strap reconnecting")
     case .stale:
         if state.heartRate > 0 {
             return .init(text: "Last HR",
                          systemImage: "heart.fill",
                          tint: .secondary,
-                         accessibilityText: "Workout active, last heart rate \(state.heartRate)")
+                         accessibilityText: liveActivityIsExplicitWorkout(state)
+                            ? "Workout active, last heart rate \(state.heartRate)"
+                            : "Last heart rate \(state.heartRate)")
         }
         return .init(text: "Signal stale",
                      systemImage: "exclamationmark.triangle.fill",
                      tint: .orange,
-                     accessibilityText: "Workout active, heart rate signal stale")
+                     accessibilityText: liveActivityIsExplicitWorkout(state)
+                        ? "Workout active, heart rate signal stale"
+                        : "Heart rate signal stale")
     case .unavailable:
         if state.heartRate > 0 {
             return .init(text: "Last HR",
                          systemImage: "heart.fill",
                          tint: .secondary,
-                         accessibilityText: "Workout active, last heart rate \(state.heartRate)")
+                         accessibilityText: liveActivityIsExplicitWorkout(state)
+                            ? "Workout active, last heart rate \(state.heartRate)"
+                            : "Last heart rate \(state.heartRate)")
         }
         return .init(text: "No signal",
                      systemImage: "exclamationmark.circle",
                      tint: .secondary,
-                     accessibilityText: "Workout active, heart rate unavailable")
+                     accessibilityText: liveActivityIsExplicitWorkout(state)
+                        ? "Workout active, heart rate unavailable"
+                        : "Heart rate unavailable")
     }
+}
+
+/// All-day Live publishes `showsWorkoutControls = false`. A growing presence
+/// timer and workout strain `--` made the Lock Screen look like an empty
+/// session (device 2026-09-18). Older activities without the field stay workouts.
+private func liveActivityIsExplicitWorkout(
+    _ state: AtriaLiveActivityAttributes.ContentState
+) -> Bool {
+    state.showsWorkoutControls != false
 }
 
 private func liveActivityShowsWorkoutMetrics(
@@ -2090,18 +2110,20 @@ struct AtriaLiveActivityWidget: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
-                    liveActivityTimer(state: context.state,
-                                      startedAt: context.attributes.startedAt)
-                        .font(.headline.monospacedDigit().weight(.bold))
-                        .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .frame(minWidth: 54, alignment: .trailing)
-                        .layoutPriority(2)
-                        .accessibilityLabel(liveActivityDurationAccessibilityText(
-                            state: context.state,
-                            startedAt: context.attributes.startedAt
-                        ))
+                    if liveActivityIsExplicitWorkout(context.state) {
+                        liveActivityTimer(state: context.state,
+                                          startedAt: context.attributes.startedAt)
+                            .font(.headline.monospacedDigit().weight(.bold))
+                            .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .frame(minWidth: 54, alignment: .trailing)
+                            .layoutPriority(2)
+                            .accessibilityLabel(liveActivityDurationAccessibilityText(
+                                state: context.state,
+                                startedAt: context.attributes.startedAt
+                            ))
+                    }
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
@@ -2135,7 +2157,11 @@ struct AtriaLiveActivityWidget: Widget {
                                                     availability: heartAvailability),
                         isPaused: context.state.isPaused ?? false
                     )
-                        .accessibilityLabel("\(context.state.activityName ?? "Workout") workout")
+                        .accessibilityLabel(
+                            liveActivityIsExplicitWorkout(context.state)
+                                ? "\(context.state.activityName ?? "Workout") workout"
+                                : (context.state.activityName ?? "Live")
+                        )
                 }
             } compactTrailing: {
                 AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate,
@@ -2177,7 +2203,9 @@ private struct AtriaDynamicIslandExpandedHeader: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             Label(title, systemImage: symbol)
-            Label(nominalState ? "Workout" : status.text, systemImage: symbol)
+            Label(nominalState
+                  ? (liveActivityIsExplicitWorkout(state) ? "Workout" : "Live")
+                  : status.text, systemImage: symbol)
             Image(systemName: symbol)
         }
         .font(.caption.weight(.bold))
@@ -2187,7 +2215,9 @@ private struct AtriaDynamicIslandExpandedHeader: View {
         .allowsTightening(true)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(nominalState
-                            ? "\(state.activityName ?? "Workout") workout"
+                            ? (liveActivityIsExplicitWorkout(state)
+                               ? "\(state.activityName ?? "Workout") workout"
+                               : (state.activityName ?? "Live"))
                             : status.accessibilityText)
     }
 }
@@ -2232,7 +2262,7 @@ private struct AtriaDynamicIslandExpandedBottom: View {
                 isLive: signalFresh
             ))
 
-            if showsSupportingFacts {
+            if showsSupportingFacts, liveActivityIsExplicitWorkout(state) {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 4) {
                         Text(zoneValue)
@@ -2266,10 +2296,12 @@ private struct AtriaDynamicIslandExpandedBottom: View {
 
             Spacer(minLength: 0)
 
-            AtriaLiveActivityControls(state: state,
-                                      startedAt: startedAt)
-                .frame(width: 96)
-                .layoutPriority(3)
+            if liveActivityIsExplicitWorkout(state) {
+                AtriaLiveActivityControls(state: state,
+                                          startedAt: startedAt)
+                    .frame(width: 96)
+                    .layoutPriority(3)
+            }
         }
     }
 
@@ -2956,18 +2988,20 @@ private struct AtriaLiveActivityLockScreenView: View {
                 lockScreenZoneSummary
                     .layoutPriority(1)
 
-                liveActivityTimer(state: context.state,
-                                  startedAt: context.attributes.startedAt)
-                    .font(.headline.monospacedDigit().weight(.bold))
-                    .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
-                    .frame(width: 74, alignment: .trailing)
-                    .layoutPriority(3)
-                    .accessibilityLabel(liveActivityDurationAccessibilityText(
-                        state: context.state,
-                        startedAt: context.attributes.startedAt
-                    ))
+                if liveActivityIsExplicitWorkout(context.state) {
+                    liveActivityTimer(state: context.state,
+                                      startedAt: context.attributes.startedAt)
+                        .font(.headline.monospacedDigit().weight(.bold))
+                        .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(width: 74, alignment: .trailing)
+                        .layoutPriority(3)
+                        .accessibilityLabel(liveActivityDurationAccessibilityText(
+                            state: context.state,
+                            startedAt: context.attributes.startedAt
+                        ))
+                }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(lockScreenHeroAccessibilityLabel)
@@ -2976,22 +3010,40 @@ private struct AtriaLiveActivityLockScreenView: View {
 
             HStack(spacing: 8) {
                 HStack(spacing: 9) {
-                    lockScreenCompactMetric(value: workoutStrainText,
-                                            systemImage: "bolt.fill",
-                                            tint: liveActivityStrainProgressColor(for: context.state,
-                                                                                  now: presentationNow))
-                    lockScreenCompactMetric(value: steps.compactText,
-                                            systemImage: "figure.walk",
-                                            tint: steps.tint)
+                    if liveActivityIsExplicitWorkout(context.state) {
+                        lockScreenCompactMetric(value: workoutStrainText,
+                                                systemImage: "bolt.fill",
+                                                tint: liveActivityStrainProgressColor(for: context.state,
+                                                                                      now: presentationNow))
+                        lockScreenCompactMetric(value: steps.compactText,
+                                                systemImage: "figure.walk",
+                                                tint: steps.tint)
+                    } else if let daily = liveActivityDailyStepGoalPresentation(
+                        for: context.state,
+                        now: presentationNow
+                    ) {
+                        lockScreenCompactMetric(value: daily.text,
+                                                systemImage: "figure.walk",
+                                                tint: daily.tint)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Workout strain \(workoutStrainText). \(steps.accessibilityText).")
+                .accessibilityLabel(
+                    liveActivityIsExplicitWorkout(context.state)
+                        ? "Workout strain \(workoutStrainText). \(steps.accessibilityText)."
+                        : (liveActivityDailyStepGoalPresentation(
+                            for: context.state,
+                            now: presentationNow
+                        )?.accessibilityText ?? "Live heart rate")
+                )
 
-                AtriaLiveActivityControls(state: context.state,
-                                          startedAt: context.attributes.startedAt)
-                    .frame(width: 96, height: 44)
-                    .layoutPriority(2)
+                if liveActivityIsExplicitWorkout(context.state) {
+                    AtriaLiveActivityControls(state: context.state,
+                                              startedAt: context.attributes.startedAt)
+                        .frame(width: 96, height: 44)
+                        .layoutPriority(2)
+                }
             }
         }
     }
@@ -3010,23 +3062,25 @@ private struct AtriaLiveActivityLockScreenView: View {
                 lockScreenZoneSummary
                     .layoutPriority(1)
 
-                liveActivityTimer(state: context.state,
-                                  startedAt: context.attributes.startedAt)
-                    .font(.headline.monospacedDigit().weight(.bold))
-                    .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .frame(width: 74, alignment: .trailing)
-                    .layoutPriority(1)
-                    .accessibilityLabel(liveActivityDurationAccessibilityText(
-                        state: context.state,
-                        startedAt: context.attributes.startedAt
-                    ))
+                if liveActivityIsExplicitWorkout(context.state) {
+                    liveActivityTimer(state: context.state,
+                                      startedAt: context.attributes.startedAt)
+                        .font(.headline.monospacedDigit().weight(.bold))
+                        .foregroundStyle((context.state.isPaused ?? false) ? .orange : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .frame(width: 74, alignment: .trailing)
+                        .layoutPriority(1)
+                        .accessibilityLabel(liveActivityDurationAccessibilityText(
+                            state: context.state,
+                            startedAt: context.attributes.startedAt
+                        ))
 
-                AtriaLiveActivityControls(state: context.state,
-                                          startedAt: context.attributes.startedAt)
-                    .frame(width: 96, height: 44)
-                    .layoutPriority(3)
+                    AtriaLiveActivityControls(state: context.state,
+                                              startedAt: context.attributes.startedAt)
+                        .frame(width: 96, height: 44)
+                        .layoutPriority(3)
+                }
             }
         }
     }
@@ -3036,7 +3090,7 @@ private struct AtriaLiveActivityLockScreenView: View {
             ViewThatFits(in: .horizontal) {
                 Label(context.state.activityName ?? "Workout",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
-                Label("Workout",
+                Label(liveActivityIsExplicitWorkout(context.state) ? "Workout" : "Live",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
                 Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
             }
@@ -3136,11 +3190,14 @@ private struct AtriaLiveActivityLockScreenView: View {
     }
 
     private var lockScreenHeroAccessibilityLabel: String {
-        let duration = liveActivityDurationAccessibilityText(
-            state: context.state,
-            startedAt: context.attributes.startedAt
-        )
-        return "\(heartRateAccessibilityLabel). \(zoneAccessibilityLabel). \(duration)."
+        if liveActivityIsExplicitWorkout(context.state) {
+            let duration = liveActivityDurationAccessibilityText(
+                state: context.state,
+                startedAt: context.attributes.startedAt
+            )
+            return "\(heartRateAccessibilityLabel). \(zoneAccessibilityLabel). \(duration)."
+        }
+        return "\(heartRateAccessibilityLabel). \(zoneAccessibilityLabel)."
     }
 
     private func lockScreenCompactMetric(value: String,
