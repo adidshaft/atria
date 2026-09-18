@@ -2012,4 +2012,67 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
             81
         )
     }
+
+    func testMorningSettlementReusesOvernightFreezeWhenBaselineDrifts() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(
+            of: "private func settleConfirmedMorningAuthority("
+        ))
+        let persist = try XCTUnwrap(source.range(
+            of: "dailyMetricHistory = metrics",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = source[start.lowerBound..<persist.lowerBound]
+        XCTAssertTrue(body.contains("dailyMetricPreservingFrozenOvernightScore("))
+        XCTAssertTrue(body.contains("existingMorning"))
+
+        let day = Date(timeIntervalSince1970: 1_789_700_000)
+        let existing = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 69,
+            recoveryConfidence: "unverified",
+            hrv: 53,
+            restingHR: 55,
+            respiratoryRate: 9.75,
+            sleepDuration: 24_925.55300796032,
+            sleepSpan: 25_320,
+            sleepStart: day.addingTimeInterval(-25_320),
+            sleepEnd: day.addingTimeInterval(-5_400),
+            sleepSource: "user_adjusted_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.4
+        )
+        var rebuilt = existing
+        rebuilt = SavedDailyMetric(
+            day: existing.day,
+            recoveryPercent: 71,
+            recoveryConfidence: existing.recoveryConfidence,
+            hrv: existing.hrv,
+            restingHR: existing.restingHR,
+            respiratoryRate: existing.respiratoryRate,
+            sleepDuration: existing.sleepDuration,
+            sleepSpan: existing.sleepSpan,
+            sleepStart: existing.sleepStart,
+            sleepEnd: existing.sleepEnd,
+            sleepSource: existing.sleepSource,
+            sleepStageSegments: existing.sleepStageSegments,
+            sleepConsistencyPercent: existing.sleepConsistencyPercent,
+            strain: existing.strain
+        )
+        let preserved = SessionStore.dailyMetricPreservingFrozenOvernightScore(
+            rebuilt: rebuilt,
+            existing: existing
+        )
+        XCTAssertEqual(preserved.recoveryPercent, 69,
+                       "a historical HRV restore must not rescore last night when the night itself did not change")
+        XCTAssertEqual(preserved.hrv, 53)
+        XCTAssertEqual(preserved.restingHR, 55)
+    }
 }

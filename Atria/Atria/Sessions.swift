@@ -43858,12 +43858,15 @@ final class SessionStore: ObservableObject {
         let start: Date
         let end: Date
         let isPhysiologicalMainSleep: Bool
+        let restingHR: Int
+        let hrv: Int?
+        let hrvWindowCount: Int?
     }
 
-    /// Baseline learning depends on the confirmed main-sleep windows, not on
-    /// presentation-only fields such as stage labels or motion provenance.
-    /// Keeping this comparison explicit prevents a stage repair from replaying
-    /// every saved RR window on the main actor during launch/backgrounding.
+    /// Baseline learning depends on the confirmed main-sleep windows and the
+    /// overnight HRV/RHR those windows carry. Stage labels and motion
+    /// provenance stay out so a stage repair cannot replay every saved RR
+    /// window on the main actor during launch/backgrounding.
     nonisolated static func confirmedSleepMutationAffectsBaseline(
         previous: [UserConfirmedSleep],
         next: [UserConfirmedSleep]
@@ -43891,7 +43894,10 @@ final class SessionStore: ObservableObject {
                     start: sleep.start,
                     end: sleep.end,
                     isPhysiologicalMainSleep:
-                        confirmedSleepIsPhysiologicalMainSleep(sleep)
+                        confirmedSleepIsPhysiologicalMainSleep(sleep),
+                    restingHR: sleep.restingHR,
+                    hrv: sleep.hrv,
+                    hrvWindowCount: sleep.hrvWindowCount
                 ))
             }
             guard AtriaSleepCooperativeAlgorithms.stableSort(
@@ -56975,10 +56981,25 @@ final class SessionStore: ObservableObject {
             return false
         }
 
+        // Restoring a compacted historical night still saves confirmed sleeps
+        // and would otherwise remint today's frozen recovery from a drifted
+        // baseline (device 2026-09-18: last night 69 became 71 while sleep /
+        // HRV / RHR stayed 6h55m / 53 / 55). Keep that morning unless this
+        // night's own inputs changed.
+        let existingMorning = dailyMetricHistory.first {
+            calendar.isDate($0.day, inSameDayAs: wakeDay)
+        }
+        let settledMetric = existingMorning.map {
+            Self.dailyMetricPreservingFrozenOvernightScore(
+                rebuilt: metric,
+                existing: $0
+            )
+        } ?? metric
+
         var metrics = dailyMetricHistory.filter {
             !calendar.isDate($0.day, inSameDayAs: wakeDay)
         }
-        metrics.append(metric)
+        metrics.append(settledMetric)
         metrics.sort { $0.day > $1.day }
 
         let preparedRollups = Self.makeDailyRollupStoreEntries(

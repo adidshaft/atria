@@ -1165,6 +1165,20 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         ))
     }
 
+    func testConfirmedSleepHRVFillTriggersBaselineReplay() {
+        let original = confirmedSleep(hrv: nil, hrvWindowCount: 0)
+        let filled = confirmedSleep(hrv: 40, hrvWindowCount: 26)
+
+        XCTAssertTrue(SessionStore.confirmedSleepMutationAffectsBaseline(
+            previous: [original],
+            next: [filled]
+        ))
+        XCTAssertFalse(SessionStore.confirmedSleepMutationAffectsBaseline(
+            previous: [filled],
+            next: [filled]
+        ))
+    }
+
     @MainActor
     func testCorrectedSleepSaveSettlesTodayRecoveryStrainAndWidgetInProcess() async throws {
         // Confirmed records are intentionally process-global durable state. A
