@@ -11,6 +11,7 @@ final class AtriaTrendRangeTrailingWindowTests: XCTestCase {
     private let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US")
         return calendar
     }()
     private var wednesday: Date {
@@ -36,6 +37,15 @@ final class AtriaTrendRangeTrailingWindowTests: XCTestCase {
         let month = AtriaTrendRange.month.periodLabel(containing: wednesday, calendar: calendar)
         XCTAssertTrue(month.contains("4") && month.contains("Aug") && month.contains("Sep"), month)
         XCTAssertFalse(month.contains("September 2026"), "a trailing window is not a month name")
+    }
+
+    func testSameMonthWeekPutsTheMonthOnTheStartNotBetweenTheDays() {
+        var calendar = self.calendar
+        calendar.locale = Locale(identifier: "en_US")
+        let friday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 18, hour: 15))!
+        let week = AtriaTrendRange.week.periodLabel(containing: friday, calendar: calendar)
+        XCTAssertEqual(week, "Sep 12–18", week)
+        XCTAssertFalse(week.contains("12–Sep"), "device Recovery Week printed 12–Sep 18 under bars for Sep 13–18")
     }
 
     func testTwentyDaysOfRollupsFillTheWindows() {
