@@ -7371,27 +7371,16 @@ private struct AtriaPreparedMetricChart: View {
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
         .chartYAxisLabel(unit)
         .chartXAxis {
-            if rendersAsDailyBar {
-                // A `unit: .day` bar owns its whole day, so its label belongs
-                // at the day's MIDDLE. Label the nights that actually have a
-                // bar — a trailing week of empty days would otherwise print
-                // Sep 12 under a Sep 13 Recovery (device 2026-09-18).
-                AxisMarks(values: AtriaChartVisualGrammar.nightBarAxisMarks(
-                    days: points.map(\.day),
-                    targetCount: 4
-                )) { _ in
-                    AxisGridLine().foregroundStyle(.quaternary)
-                    AxisTick()
-                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                }
-            } else {
-                // A line plots each point AT its date, so the mark belongs on
-                // the date itself and the label stays uncentred.
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisGridLine().foregroundStyle(.quaternary)
-                    AxisTick()
-                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                }
+            // Overnight points (bars or lines) must be labeled on recorded
+            // nights. HRV/RHR Week used `.automatic` across Sep 12–18 and
+            // printed 12/14/16/18 under 15/16/18 (device 2026-09-18 16:25).
+            AxisMarks(values: AtriaChartVisualGrammar.nightBarAxisMarks(
+                days: points.map(\.day),
+                targetCount: 4
+            )) { _ in
+                AxisGridLine().foregroundStyle(.quaternary)
+                AxisTick()
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
             }
         }
         // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so

@@ -407,35 +407,16 @@ struct AtriaExpandedChartView: View {
         .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: barAwareYDomain)
         .chartXAxis {
-            if effectiveChartType == .bars {
-                // A `unit: .day` bar owns its whole day, so its label belongs
-                // at the day's MIDDLE — marked directly, rather than asked for
-                // with `centered:`, which offsets by half the step to the NEXT
-                // mark and so drifts further off the bar the wider the window.
-                // This chart also scrolls, so the count is scaled to hold the
-                // same on-screen density that `.automatic` gave.
-                AxisMarks(values: barAxisMarks) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
-                    if let date = value.as(Date.self) {
-                        AxisValueLabel {
-                            Text(date, format: .dateTime.month(.abbreviated).day())
-                                .font(.caption2)
-                        }
-                    }
-                }
-            } else {
-                // Line and range plot each point AT its date, so the mark
-                // belongs on the date and `.automatic` can keep adapting to
-                // whatever the scroll brings on screen.
-                AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
-                    if let date = value.as(Date.self) {
-                        AxisValueLabel {
-                            Text(date, format: .dateTime.month(.abbreviated).day())
-                                .font(.caption2)
-                        }
+            // Overnight bars and HRV/RHR lines share one rule: label the
+            // nights that have a value. `.automatic` on a trailing week
+            // printed empty domain days under recorded points.
+            AxisMarks(values: barAxisMarks) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                if let date = value.as(Date.self) {
+                    AxisValueLabel {
+                        Text(date, format: .dateTime.month(.abbreviated).day())
+                            .font(.caption2)
                     }
                 }
             }

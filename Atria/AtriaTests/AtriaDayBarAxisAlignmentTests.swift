@@ -61,6 +61,10 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
                            "\(name) must not reintroduce step-relative centring")
             XCTAssertFalse(text.contains("centered: effectiveChartType == .bars"),
                            "\(name) must not reintroduce step-relative centring")
+            XCTAssertFalse(text.contains("AxisMarks(values: .automatic(desiredCount: 4)) { _ in"),
+                           "HRV/RHR Week must not label empty domain days under recorded points")
+            XCTAssertFalse(text.contains("AxisMarks(values: .automatic(desiredCount: 6))"),
+                           "the expanded line chart must use recorded-night marks")
         }
     }
 
