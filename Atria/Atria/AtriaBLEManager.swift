@@ -30304,11 +30304,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieCCCDToggleAt: Date?
     private var lastR10ZombieTxRediscoverAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
-    /// Compact IMU arrives about once a second. Four seconds of silence is a
-    /// real drop; eight used to wait through a MainActor-stale live stream.
+    /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
+    /// to wait through a MainActor-stale live stream.
     nonisolated static let r10LivenessStaleInterval: TimeInterval = 4
-    /// Assembled compact seconds (Today gyro) can stall while native 0x33
-    /// still trickles. Twelve seconds matches the 6A/51 activation lease.
+    /// Compact 0x33 is not 1 Hz — sitting 30–60s, walking assembled ~8–12s
+    /// (device 2026-09-18 21:03: scored 44 dps, assembled 8.7s, 6A/51 17s ago
+    /// while 2A37 stayed up). Twelve seconds matches the 6A/51 activation lease.
     nonisolated static let r10LivenessCompactStaleInterval: TimeInterval = 12
     /// Faster than stale so a drop is seen within one stale window, not two.
     nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 2
@@ -30410,6 +30411,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedAt: Date?
     ) -> Date? {
         evidenceAt ?? connectedAt
+    }
+
+    /// Dense raw within 4s keeps the 1 Hz watchdog. Compact 0x33 on a live
+    /// 2A37 epoch uses 12s so walking assembled seconds do not 6A/51-storm HR.
+    nonisolated static func r10LivenessStaleIntervalForEvidence(
+        rawFrameAt: Date?,
+        compactPacketAt: Date?,
+        compactSecondAt: Date?,
+        now: Date
+    ) -> TimeInterval {
+        if let rawFrameAt {
+            let rawAge = now.timeIntervalSince(rawFrameAt)
+            if rawAge >= 0, rawAge <= r10LivenessStaleInterval {
+                return r10LivenessStaleInterval
+            }
+        }
+        let compactNewest = [compactPacketAt, compactSecondAt].compactMap { $0 }.max()
+        if let compactNewest, now.timeIntervalSince(compactNewest) >= 0 {
+            return r10LivenessCompactStaleInterval
+        }
+        return r10LivenessStaleInterval
     }
 
     /// Pure policy used by the persistent R10 watchdog. Heart-rate continuity
@@ -31756,10 +31778,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheralConnected: peripheral?.state == .connected,
             heartRateEpochLive: hrLive
         )
+        let rawFrameAt = currentR10MotionFrameAt()
+        let compactSecondAt = AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt()
+        let compactPacketAt = AtriaCompactIMULiveDiagnostics.lastPacketAt()
         let imuAge = Self.liveIMUEvidenceAgeSeconds(
-            rawFrameAt: currentR10MotionFrameAt(),
-            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
-            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            rawFrameAt: rawFrameAt,
+            compactSecondAt: compactSecondAt,
+            compactPacketAt: compactPacketAt,
             now: now
         )
         let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
@@ -31832,6 +31857,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             UserDefaults.standard.set("unconfirmed_stream5", forKey: RadioDefaults.liveR10LivenessAction)
             return
         }
+        let staleInterval = Self.r10LivenessStaleIntervalForEvidence(
+            rawFrameAt: rawFrameAt,
+            compactPacketAt: compactPacketAt,
+            compactSecondAt: compactSecondAt,
+            now: now
+        )
         let action = Self.r10LivenessAction(
             eligible: eligible,
             connected: connected,
@@ -31844,6 +31875,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
             now: now,
+            staleInterval: staleInterval,
             sittingSkipFresh: sittingSkipFresh
         )
         UserDefaults.standard.set(
