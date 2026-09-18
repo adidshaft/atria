@@ -7374,14 +7374,21 @@ private struct AtriaPreparedMetricChart: View {
             // Overnight points (bars or lines) must be labeled on recorded
             // nights. HRV/RHR Week used `.automatic` across Sep 12–18 and
             // printed 12/14/16/18 under 15/16/18 (device 2026-09-18 16:25).
-            AxisMarks(values: AtriaChartVisualGrammar.nightBarAxisMarks(
+            AxisMarks(preset: .aligned, values: AtriaChartVisualGrammar.nightBarAxisMarks(
                 days: points.map(\.day),
                 targetCount: 4,
                 domain: prepared.xDomain ?? fallbackXDomain
-            )) { _ in
+            )) { value in
                 AxisGridLine().foregroundStyle(.quaternary)
                 AxisTick()
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                if let date = value.as(Date.self) {
+                    AxisValueLabel(anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                        for: date,
+                        domain: prepared.xDomain ?? fallbackXDomain
+                    )) {
+                        Text(date, format: .dateTime.month(.abbreviated).day())
+                    }
+                }
             }
         }
         // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so

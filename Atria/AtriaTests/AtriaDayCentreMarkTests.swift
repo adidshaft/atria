@@ -159,9 +159,33 @@ final class AtriaDayCentreMarkTests: XCTestCase {
             calendar: calendar,
             domain: domain(days: 30)
         )
-        XCTAssertEqual(marks.count, 2)
-        XCTAssertEqual(marks.first, calendar.date(byAdding: .hour, value: 12, to: day(26)))
+        XCTAssertEqual(marks.count, 1)
         XCTAssertEqual(marks.last, calendar.date(byAdding: .hour, value: 12, to: day(29)),
                        "month-last must stay labeled so it can match the hero")
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(29),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .topTrailing,
+            "the last night of a month window must draw its label left of the tick"
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(0),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .topLeading
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(15),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .top
+        )
     }
 }
