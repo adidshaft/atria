@@ -1745,6 +1745,174 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(invalidatedCancellablePreserved.strain, 0.6)
     }
 
+    /// Device 2026-09-18: a 137 recovered-data relaunch marked today
+    /// authoritative and reminted overnight 71 → 69 while sleep/HRV/RHR
+    /// stayed 6h55m / 53 / 55. A later nap must not be the excuse either.
+    func testTodayAuthoritativeRelaunchDoesNotRescoreMatchingFrozenMorning() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let main = UserConfirmedSleep(id: "relaunch-main",
+                                      createdAt: day,
+                                      start: day.addingTimeInterval(-7 * 3_600),
+                                      end: day,
+                                      source: "manual_sleep",
+                                      confidence: "manual_user_entered",
+                                      sessions: 1,
+                                      samples: 1_000,
+                                      avgHR: 52,
+                                      peakHR: 66,
+                                      restingHR: 48,
+                                      hrv: 58,
+                                      hrvWindowCount: 4,
+                                      duration: 7 * 3_600,
+                                      span: 7 * 3_600,
+                                      reason: "test",
+                                      motionSource: "manual",
+                                      motionValidated: false,
+                                      stageSegments: nil)
+        let morningSnapshot = SleepHistorySnapshot(rollups: [],
+                                                   confirmedSleeps: [main],
+                                                   calendar: calendar)
+        let morningNow = day.addingTimeInterval(2 * 3_600)
+        let frozenEstimate = Metrics.RecoveryEstimate(
+            percent: 71,
+            confidence: .unverified,
+            usesHRV: true,
+            detail: "fixture overnight 71",
+            contributors: []
+        )
+        let morning = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 71,
+            recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            hrv: 58,
+            restingHR: 48,
+            respiratoryRate: nil,
+            sleepDuration: 7 * 3_600,
+            sleepSpan: 7 * 3_600,
+            sleepStart: main.start,
+            sleepEnd: main.end,
+            sleepSource: main.source,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.4,
+            recoverySummary: FrozenRecoverySummary(estimate: frozenEstimate, scoredDay: day)
+        )
+        let matchedNight = try XCTUnwrap(morningSnapshot.nights.first { $0.id == "relaunch-main" })
+        XCTAssertTrue(SessionStore.frozenRecoveryMatchesConfirmedNight(
+            frozen: morning,
+            night: matchedNight
+        ))
+
+        let driftedSamples = (0..<PersonalBaseline.trustedMinimumSamples).map { index in
+            PersonalBaseline.BaselineSample(
+                date: morningNow.addingTimeInterval(Double(-index * 86_400)),
+                restingHR: 70,
+                rmssd: 28,
+                overnight: true
+            )
+        }
+        let driftedBaseline = PersonalBaseline(restingHR: 70,
+                                               hrvEMA: 28,
+                                               sessions: PersonalBaseline.trustedMinimumSamples,
+                                               updated: morningNow,
+                                               samples: driftedSamples)
+        let afternoonNow = day.addingTimeInterval(10 * 3_600)
+        let reminted = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: morningSnapshot,
+            baseline: driftedBaseline,
+            maxHR: 190,
+            now: afternoonNow,
+            calendar: calendar))
+        XCTAssertNotEqual(reminted.recoveryPercent, morning.recoveryPercent,
+                          "the drifted baseline must actually change the score so the freeze is load-bearing")
+
+        let computed = SavedDailyMetric(
+            day: reminted.day,
+            recoveryPercent: reminted.recoveryPercent,
+            recoveryConfidence: reminted.recoveryConfidence,
+            hrv: reminted.hrv,
+            restingHR: reminted.restingHR,
+            respiratoryRate: reminted.respiratoryRate,
+            sleepDuration: reminted.sleepDuration,
+            sleepNeedSeconds: reminted.sleepNeedSeconds,
+            sleepSpan: reminted.sleepSpan,
+            sleepStart: reminted.sleepStart,
+            sleepEnd: reminted.sleepEnd,
+            sleepSource: reminted.sleepSource,
+            sleepStageSegments: reminted.sleepStageSegments,
+            sleepConsistencyPercent: reminted.sleepConsistencyPercent,
+            strain: 3.2,
+            strainCoverageFraction: reminted.strainCoverageFraction,
+            strainEvidenceQuality: reminted.strainEvidenceQuality,
+            dayTRIMP: reminted.dayTRIMP,
+            skinTemperatureDeviationCelsius: reminted.skinTemperatureDeviationCelsius,
+            recoverySummary: reminted.recoverySummary
+        )
+        let nap = UserConfirmedSleep(id: "relaunch-nap",
+                                     createdAt: day.addingTimeInterval(6 * 3_600),
+                                     start: day.addingTimeInterval(5 * 3_600),
+                                     end: day.addingTimeInterval(6 * 3_600),
+                                     source: "manual_nap",
+                                     confidence: "manual_user_entered",
+                                     sessions: 1,
+                                     samples: 200,
+                                     avgHR: 50,
+                                     peakHR: 58,
+                                     restingHR: 44,
+                                     hrv: 120,
+                                     hrvWindowCount: 5,
+                                     duration: 3_600,
+                                     span: 3_600,
+                                     reason: "test",
+                                     motionSource: "manual",
+                                     motionValidated: false,
+                                     stageSegments: nil)
+        let afternoonSnapshot = SleepHistorySnapshot(rollups: [],
+                                                     confirmedSleeps: [main, nap],
+                                                     calendar: calendar)
+
+        func assertPreserved(_ merged: [SavedDailyMetric], file: StaticString = #filePath, line: UInt = #line) throws {
+            let today = try XCTUnwrap(
+                merged.first { calendar.isDate($0.day, inSameDayAs: day) },
+                file: file,
+                line: line
+            )
+            XCTAssertEqual(today.recoveryPercent, morning.recoveryPercent, file: file, line: line)
+            XCTAssertEqual(today.hrv, morning.hrv, file: file, line: line)
+            XCTAssertEqual(today.restingHR, morning.restingHR, file: file, line: line)
+            XCTAssertEqual(today.strain, 3.2, file: file, line: line)
+        }
+
+        try assertPreserved(SessionStore.mergeDailyMetricHistory(
+            existing: [morning],
+            computed: [computed],
+            sessions: [],
+            sleep: afternoonSnapshot,
+            baseline: driftedBaseline,
+            maxHR: 190,
+            now: afternoonNow,
+            authoritativeDays: [day],
+            calendar: calendar
+        ))
+        try assertPreserved(try XCTUnwrap(SessionStore.mergeDailyMetricHistoryCancellable(
+            existing: [morning],
+            computed: [computed],
+            sessions: [],
+            sleep: afternoonSnapshot,
+            baseline: driftedBaseline,
+            maxHR: 190,
+            now: afternoonNow,
+            authoritativeDays: [day],
+            calendar: calendar,
+            shouldContinue: { true }
+        )))
+    }
+
     func testHistoricalSleepEditStillRemintsOvernightRecovery() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))

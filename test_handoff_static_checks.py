@@ -5330,7 +5330,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let layoutConfig: AtriaHomeLayoutConfig",
             "if layoutConfig.showLiveStrip",
-            "style: .compactBar",
+            "Label(\"Today's read\", systemImage: \"text.alignleft\")",
             "if layoutConfig.showPlan",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
             "switch layoutConfig.ringCenterMetric",
@@ -11374,7 +11374,6 @@ class HandoffStaticChecks(unittest.TestCase):
         ordered_tokens = [
             "triRingHero",
             "AtriaTodayLiveStatusHost(liveStore: liveStore,",
-            "style: .compactBar",
             "todaySavedWorkoutRow(workout)",
             "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",

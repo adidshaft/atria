@@ -459,12 +459,12 @@ final class AtriaLearnedInsightsTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(today.contains("style: .compactBar"))
+        XCTAssertFalse(today.contains("style: .compactBar"),
+                       "Today already has master rings; do not clone Sleep / Recovery / Strain as a compact read")
+        XCTAssertTrue(today.contains("Label(\"Today's read\", systemImage: \"text.alignleft\")"),
+                      "Today's read stays behind the actions menu, not under the rings")
         XCTAssertTrue(today.contains("todayFirstScreenSavedWorkouts"))
-        let recap = try XCTUnwrap(today.range(of: "if !recentSavedWorkouts.isEmpty"))
-        let compactRead = try XCTUnwrap(today.range(of: "style: .compactBar"))
-        XCTAssertLessThan(compactRead.lowerBound, recap.lowerBound,
-                          "Compact read first, then one recap row, so a stack of workouts cannot sit under the tab")
+        XCTAssertTrue(today.contains("if !recentSavedWorkouts.isEmpty"))
         XCTAssertTrue(today.contains("AtriaActivityWorkoutDetailSheetHost("))
         XCTAssertTrue(today.contains("showInsights = true"))
         XCTAssertTrue(today.contains("AtriaLearnedInsightsSheet("))

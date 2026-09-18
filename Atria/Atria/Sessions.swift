@@ -22992,11 +22992,12 @@ final class SessionStore: ObservableObject {
             let missingHRVProvenanceNeedsMint = frozenToday.hrv == nil
                 && frozenToday.recoverySummary?.usesHRV == true
                 && confirmedNight?.confirmed == true
-            let freshMorning = todayIsAuthoritative
-                    || (!frozenLimitedFallbackIsAuthoritative
-                        && (!confirmedNightStillMatches
-                            || blankRecoveryNeedsMint
-                            || missingHRVProvenanceNeedsMint))
+            let needsFreshMorning = todayIsAuthoritative
+                || (!frozenLimitedFallbackIsAuthoritative
+                    && (!confirmedNightStillMatches
+                        || blankRecoveryNeedsMint
+                        || missingHRVProvenanceNeedsMint))
+            let freshMorning = needsFreshMorning
                 ? makeMorningFrozenDailyMetric(for: today,
                                                computed: computed,
                                                sessions: sessions,
@@ -23012,9 +23013,12 @@ final class SessionStore: ObservableObject {
                 merged.removeValue(forKey: today)
                 return merged.values.sorted { $0.day > $1.day }
             }
-            let base: SavedDailyMetric = if todayIsAuthoritative {
-                freshMorning ?? frozenToday
-            } else if let freshMorning,
+            // Recovered-data invalidation marks today authoritative (device
+            // 2026-09-18: 137 relaunch turned overnight 71 into 69 while
+            // sleep/HRV/RHR stayed 6h55m / 53 / 55). Remint only when the
+            // scored night itself changed — same rule as a closed historical
+            // night. Deletion remains `freshMorning == nil`.
+            let base: SavedDailyMetric = if let freshMorning,
                       blankRecoveryNeedsMint
                         || missingHRVProvenanceNeedsMint
                         || dailyRecoveryInputsChanged(frozen: frozenToday, fresh: freshMorning) {
@@ -23196,16 +23200,16 @@ final class SessionStore: ObservableObject {
             if todayIsAuthoritative, freshMorning == nil {
                 merged.removeValue(forKey: today)
             } else {
+                // Same 137 relaunch rule as the non-cancellable merge:
+                // authoritative today is deletion, not a baseline-drift rescore.
                 let base: SavedDailyMetric
-                if todayIsAuthoritative {
-                    base = freshMorning ?? frozenToday
-                } else if let freshMorning,
-                          blankRecoveryNeedsMint
-                            || missingHRVProvenanceNeedsMint
-                            || dailyRecoveryInputsChanged(
-                                frozen: frozenToday,
-                                fresh: freshMorning
-                            ) {
+                if let freshMorning,
+                   blankRecoveryNeedsMint
+                     || missingHRVProvenanceNeedsMint
+                     || dailyRecoveryInputsChanged(
+                        frozen: frozenToday,
+                        fresh: freshMorning
+                     ) {
                     base = freshMorning
                 } else {
                     base = frozenToday

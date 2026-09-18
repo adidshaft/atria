@@ -181,7 +181,8 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet("),
                       "Today should open the naked Insights sheet, not a nested card host")
         XCTAssertTrue(source.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
-        XCTAssertTrue(source.contains("style: .compactBar"))
+        XCTAssertFalse(source.contains("style: .compactBar"),
+                       "Master rings already occupy Today; compact read must not clone them")
         XCTAssertTrue(source.contains("AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory"))
     }
 
