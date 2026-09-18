@@ -1055,7 +1055,8 @@ extension AtriaBLEManager {
         consumeToNow: Bool = false,
         lastPendingRecords: UInt32? = nil,
         chargingOrOffWrist: Bool = false,
-        queuedPullIntent: Bool = false
+        queuedPullIntent: Bool = false,
+        lastAttemptYieldedRows: Bool = true
     ) -> Bool {
         guard let lastFinishedAt else { return true }
         let interval: TimeInterval
@@ -1065,10 +1066,21 @@ extension AtriaBLEManager {
                 $0 <= idleWindowConsumeLiveTailPendingLimit
             } == true) {
             let pending = lastPendingRecords ?? 0
-            interval = pending > 0
-                && pending <= idleWindowConsumeLiveTailPendingLimit
-                ? idleWindowConsumeLiveTailImmediateResumeInterval
-                : idleWindowConsumeLiveTailResumeInterval
+            // Device 2026-09-18 build 130: pending=5 no_rows terminal re-armed
+            // every 0.4s and skipped 2A37 reassert (`hr_stale_while_connected`
+            // at 15.7s, liveHRNotifying=false). A dry live tail is not a
+            // drainable page — let HR breathe on the worn 20s beat.
+            if !lastAttemptYieldedRows,
+               !chargingOrOffWrist,
+               pending > 0,
+               pending <= idleWindowConsumeLiveTailPendingLimit {
+                interval = minimumResumeInterval
+            } else {
+                interval = pending > 0
+                    && pending <= idleWindowConsumeLiveTailPendingLimit
+                    ? idleWindowConsumeLiveTailImmediateResumeInterval
+                    : idleWindowConsumeLiveTailResumeInterval
+            }
         } else if chargingOrOffWrist {
             // The 20s beat exists to let live 2A37 breathe between chunks.
             // On the charger / off the wrist the firmware is not producing a
@@ -1323,9 +1335,13 @@ extension AtriaBLEManager {
         lastPendingRecords: UInt32?,
         verifiedEmptyHistoryCursor: Bool,
         linkStillConnected: Bool,
-        consumePauseElapsed: TimeInterval
+        consumePauseElapsed: TimeInterval,
+        lastAttemptYieldedRows: Bool = true
     ) -> Bool {
         if verifiedEmptyHistoryCursor { return false }
+        // A no_rows live tail never ACK'd a page. Keeping 2A37 paused for the
+        // next 0.4s 0x22 is the 130 stale-HR loop (pending stuck at 5).
+        if !lastAttemptYieldedRows { return false }
         guard consumeToNow, linkStillConnected else { return false }
         if consumePauseElapsed >= idleWindowConsumeHeartRatePauseLimit {
             return false
