@@ -650,6 +650,23 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertNil(AtriaWorkoutMetricPresentation.heartRateLoadPoints(
             workout(samples: 0, avgHR: 0, strain: nil)
         ))
+        XCTAssertEqual(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 523, avgHR: 102, peakHR: 122, strain: 0.6)
+            )?.caption,
+            "avg HR"
+        )
+        XCTAssertEqual(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 523, avgHR: 102, peakHR: 122, strain: 0.6)
+            )?.value,
+            "102"
+        )
+        XCTAssertNil(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 0, avgHR: 0, strain: nil)
+            )
+        )
     }
 
     func testOnlyMissingSamplesClaimNoHRData() {
@@ -687,7 +704,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             now: now,
             calendar: calendar
         )
-        XCTAssertEqual(firstScreen.map(\.start), [todayMorning])
+        XCTAssertEqual(firstScreen.map(\.start), [todayMorning, yesterday])
     }
 
     func testSparseHeartRateShowsMeasuredStrainValue() {

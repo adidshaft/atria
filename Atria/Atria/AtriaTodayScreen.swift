@@ -2096,23 +2096,23 @@ struct AtriaTodayScreen: View {
                     .minimumScaleFactor(0.8)
             }
             Spacer(minLength: 8)
-            if let load = AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout) {
+            if let trailing = AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(workout) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text("\(load)")
+                    Text(trailing.value)
                         .font(.headline.monospacedDigit().weight(.bold))
-                    Text("HR load")
+                    Text(trailing.caption)
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Image(systemName: workout.samples > 0 ? "heart.fill" : "heart.slash")
+                Image(systemName: "heart.slash")
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(workout.samples > 0 ? Color.secondary : Color.orange)
+                    .foregroundStyle(Color.orange)
                     .symbolRenderingMode(.hierarchical)
                     .accessibilityHidden(true)
                 Text(badge)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(workout.samples > 0 ? Color.secondary : Color.orange)
+                    .foregroundStyle(Color.orange)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
