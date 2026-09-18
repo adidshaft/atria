@@ -4530,6 +4530,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(pause.contains("cancelPeripheralConnection("))
         XCTAssertTrue(pause.contains("startBudgetClock"))
         XCTAssertTrue(
+            pause.contains("shouldRefuseIdleWindowHeartRatePauseForDryLeftover"),
+            "device 168 21:17: a dry leftover must not unsubscribe 2A37"
+        )
+        XCTAssertTrue(
+            pause.contains("skip_pause_cleared_dry_leftover"),
+            "refusing that pause must drop the leftover 0x22 snapshot"
+        )
+        XCTAssertTrue(
             source.contains("startBudgetClock: false"),
             "soak-2 09:27: pause during orphan replay must not start the 20s handshake clock"
         )
@@ -4545,7 +4553,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(eval.contains("connectedChunkedBackfill: false"))
         XCTAssertTrue(eval.contains("preserveConnectedRealtimeOwner: false"))
         XCTAssertTrue(
-            eval.contains("lastAttemptYieldedRows: UserDefaults.standard.object("),
+            eval.contains("lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows()"),
             "a no_rows live tail must feed the 20s HR resume, not the 0.4s re-pause"
         )
         XCTAssertFalse(eval.contains("preserveConnectedRealtimeOwner: true"))
@@ -5336,6 +5344,51 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 lastAttemptYieldedRows: false
             ),
             "a dry leftover on-wrist must not keep pausing 2A37 on the 20s beat"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: false,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 168 21:17: dry leftover without consume consent still re-paused 2A37"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: false,
+                lastPendingRecords: nil,
+                lastAttemptYieldedRows: false
+            ),
+            "after the dry pointer is cleared, on-wrist must not mint a new pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: false,
+                chargingOrOffWrist: false,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: false,
+                chargingOrOffWrist: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "charger / off-wrist may still drain a dry leftover"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: false,
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5
+            ),
+            "pause admission must refuse the same dry leftover that retry refuses"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(

@@ -1951,6 +1951,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect",
             "shouldSkipIdleWindowHeartRateReassert",
             "shouldAdmitIdleWindowHeartRatePause",
+            "shouldRefuseIdleWindowHeartRatePauseForDryLeftover",
             "shouldAdmitFreshHistoryOwnerOnConnect",
             "shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry",
             "shouldBlockHistoryTransportForTerminalConsumerMaterialization",
