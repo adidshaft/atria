@@ -12168,6 +12168,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "sitting skip with live type-33 packets is not an IMU drop"
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 46,
+                lastActivationAge: 11 * 60,
+                sittingSkipFresh: true
+            ),
+            "device 2026-09-18 167: sitting skip at 46s must not 6A/51-storm a live 2A37 link"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 2_000,
+                lastActivationAge: 11 * 60,
+                sittingSkipFresh: false
+            )
+        )
         XCTAssertTrue(
             AtriaBLEManager.liveHeartRateEpochOwnsRadio(
                 status: .connecting,
@@ -12326,6 +12351,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
         XCTAssertTrue(liveBody.contains("liveHeartRateEpochOwnsRadio"),
                       "Connecting… with live 2A37 must still evaluate IMU 6A/51")
+        XCTAssertTrue(liveBody.contains("sittingSkipFresh"),
+                      "sitting compact 0x33 must not 6A/51-storm a live HR epoch")
         XCTAssertTrue(
             liveBody.contains("kickZombieProprietaryStreamIfNeeded(now: now, reason: \"\\(reason)_pure_hr_imu\")"),
             "pure-HR IMU repair must toggle zombie stream-5 before 6A/51"

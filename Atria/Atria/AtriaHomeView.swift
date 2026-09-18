@@ -12430,7 +12430,10 @@ final class AtriaHomeModel {
                     return defaults.integer(
                         forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
                     )
-                }()
+                }(),
+                compactSittingSkip: UserDefaults.standard.bool(
+                    forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+                )
             ),
             reason: reason
         )
