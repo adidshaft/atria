@@ -3238,6 +3238,18 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(router.contains("scheduleLiveSensorWidgetPatch"))
     }
 
+    func testHomeHeroHoldsSameCycleStrainAcrossInstall() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("AtriaHeldDayStrainFloor.load("))
+        XCTAssertTrue(source.contains("AtriaHeldDayStrainFloor.persist("))
+        XCTAssertTrue(source.contains("resolvedPresentedWidgetStrain("))
+        XCTAssertTrue(source.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
+    }
+
     func testStableAndLivePublishGenerationsCannotCancelEachOther() {
         var authority = WidgetSnapshotPublisher.PublishLaneAuthority()
         let stable = authority.mint(.stable)

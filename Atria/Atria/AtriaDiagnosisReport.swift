@@ -127,6 +127,23 @@ enum AtriaDiagnosisReport {
         return directory.appendingPathComponent(filename)
     }
 
+    /// A live 2A37 pulse is stronger than a lagging CoreBluetooth `.connecting`
+    /// string. Device 2026-09-18 163: diagnosis said Connecting… while HR age
+    /// was 0.01s and `live_hr_notifying=1`.
+    static func reportedConnectionStatus(
+        status: AtriaBLEManager.Status,
+        hrAgeSeconds: Double?,
+        liveFreshnessSeconds: TimeInterval = 15
+    ) -> AtriaBLEManager.Status {
+        if status != .connected,
+           let age = hrAgeSeconds,
+           age >= 0,
+           age <= liveFreshnessSeconds {
+            return .connected
+        }
+        return status
+    }
+
     static func make(
         now: Date,
         build: String,

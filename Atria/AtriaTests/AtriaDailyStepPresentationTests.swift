@@ -1650,4 +1650,42 @@ final class AtriaStrapMotionAvailabilityTests: XCTestCase {
         XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
             input(owner: .legacy, state: .none)), .unknown)
     }
+
+    func testHeldDayStrainSurvivesReconnectZeroOnTheSameCycle() throws {
+        let suiteName = "AtriaHeldDayStrainFloor.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let cycleStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let expires = cycleStart.addingTimeInterval(86_400)
+        let now = cycleStart.addingTimeInterval(12 * 3_600)
+        AtriaHeldDayStrainFloor.persist(
+            value: 0.7,
+            cycleStart: cycleStart,
+            cycleExpiresAt: expires,
+            detail: "Current cycle",
+            now: now,
+            defaults: defaults
+        )
+        AtriaHeldDayStrainFloor.persist(
+            value: 0,
+            cycleStart: cycleStart,
+            cycleExpiresAt: expires,
+            detail: "learning",
+            now: now.addingTimeInterval(60),
+            defaults: defaults
+        )
+        let held = try XCTUnwrap(AtriaHeldDayStrainFloor.load(
+            cycleStart: cycleStart,
+            now: now.addingTimeInterval(8 * 3_600),
+            defaults: defaults
+        ))
+        XCTAssertEqual(held.value, 0.7, accuracy: 0.000_000_001)
+        XCTAssertEqual(held.detail, "Current cycle")
+        XCTAssertNil(AtriaHeldDayStrainFloor.load(
+            cycleStart: cycleStart.addingTimeInterval(86_400),
+            now: now,
+            defaults: defaults
+        ))
+        defaults.removePersistentDomain(forName: suiteName)
+    }
 }

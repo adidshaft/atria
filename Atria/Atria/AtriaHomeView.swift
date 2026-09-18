@@ -12343,7 +12343,14 @@ final class AtriaHomeModel {
             AtriaDiagnosisReport.make(
                 now: now,
                 build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
-                status: core.status,
+                status: AtriaDiagnosisReport.reportedConnectionStatus(
+                    status: core.status,
+                    hrAgeSeconds: Self.diagnosisHeartRateAgeSeconds(
+                        lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+                        latestSampleAt: ble.session.last?.t,
+                        now: now
+                    )
+                ),
                 recovering: core.isInRecentLiveRecovery(now: now),
                 reconnectAgeSeconds: core.pendingKnownReconnectAge(now: now),
                 reconnectReason: core.pendingKnownReconnectReason,
@@ -14091,15 +14098,57 @@ final class AtriaHomeModel {
         // (guidance, strain target) above intentionally still uses the
         // wake-to-wake projection; only what the Today surface DISPLAYS as
         // primary changes.
-        let presentedStrain = dayResolution.strainOverride ?? strain
-        let presentedStrainConfidence = dayResolution.strainOverride != nil
-            ? Metrics.StrainPresentation.resolve(
+        let computedPresentedStrain = dayResolution.strainOverride ?? strain
+        let computedPresentedDetail = dayResolution.strainOverride != nil
+            ? "Partial · current day"
+            : strainConfidence
+        let strainCycleExpiresAt = WidgetSnapshotPublisher.cumulativeStrainCycleExpiration(
+            cycle: physiologicalCycle,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: calendar
+        )
+        let heldStrain = AtriaHeldDayStrainFloor.load(
+            cycleStart: physiologicalCycle.start,
+            now: now
+        )
+        let widgetCycleStrain = AtriaIntentSnapshotStore.loadPublishedPayload().flatMap { snapshot -> Double? in
+            guard snapshot.strain > 0 else { return nil }
+            let sameCycle = snapshot.strainCycleStart == physiologicalCycle.start
+                || snapshot.strainCycleExpiresAt == strainCycleExpiresAt
+            return sameCycle ? snapshot.strain : nil
+        }
+        let previousCycleStrain = max(heldStrain?.value ?? 0, widgetCycleStrain ?? 0)
+        let presentedStrainResolution = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: computedPresentedStrain,
+            computedDetail: computedPresentedDetail,
+            heroStrain: previousCycleStrain > 0 ? previousCycleStrain : nil,
+            heroDetail: heldStrain?.detail
+        )
+        let presentedStrain = presentedStrainResolution.value
+        if presentedStrain > 0 {
+            AtriaHeldDayStrainFloor.persist(
+                value: presentedStrain,
+                cycleStart: physiologicalCycle.start,
+                cycleExpiresAt: strainCycleExpiresAt,
+                detail: presentedStrainResolution.detail,
+                now: now
+            )
+        }
+        let presentedStrainConfidence: String
+        if presentedStrain > 0,
+           strainConfidence.localizedCaseInsensitiveContains("learning")
+            || strainConfidence.localizedCaseInsensitiveContains("standby") {
+            presentedStrainConfidence = presentedStrainResolution.detail ?? "Current cycle"
+        } else if dayResolution.strainOverride != nil {
+            presentedStrainConfidence = Metrics.StrainPresentation.resolve(
                 value: presentedStrain,
                 coverageFraction: wearCoverage,
                 baseConfidence: baseStrainConfidence,
                 additionalIncompleteEvidence: true
               ).confidence
-            : strainConfidence
+        } else {
+            presentedStrainConfidence = strainConfidence
+        }
         return HeroSnapshot(recoveryEstimate: presentedRecovery,
                             recoveryIsProvisional: presentedRecoveryIsProvisional,
                             recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,

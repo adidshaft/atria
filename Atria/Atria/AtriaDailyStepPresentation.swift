@@ -986,3 +986,50 @@ enum AtriaHeldDailyStepFloor {
         return (count, captured)
     }
 }
+
+/// Same-cycle day load floor. Device 2026-09-18: after a 163 install bounce,
+/// widgets kept Today’s 0.7 while Home hero TRIMP reset to 0 and diagnosis
+/// reported `widget_strain_7_today_0`.
+enum AtriaHeldDayStrainFloor {
+    static let valueKey = "atria.strain.heldDayValue"
+    static let cycleKey = "atria.strain.heldDayCycleStart"
+    static let expiresKey = "atria.strain.heldDayCycleExpiresAt"
+    static let detailKey = "atria.strain.heldDayDetail"
+
+    static func persist(value: Double,
+                        cycleStart: Date,
+                        cycleExpiresAt: Date,
+                        detail: String?,
+                        now: Date = Date(),
+                        defaults: UserDefaults = .standard) {
+        guard value > 0, cycleExpiresAt > cycleStart, now < cycleExpiresAt else { return }
+        if let existing = load(cycleStart: cycleStart, now: now, defaults: defaults),
+           value + 0.05 < existing.value {
+            return
+        }
+        defaults.set(value, forKey: valueKey)
+        defaults.set(cycleStart.timeIntervalSince1970, forKey: cycleKey)
+        defaults.set(cycleExpiresAt.timeIntervalSince1970, forKey: expiresKey)
+        if let detail, !detail.isEmpty {
+            defaults.set(detail, forKey: detailKey)
+        } else {
+            defaults.removeObject(forKey: detailKey)
+        }
+    }
+
+    static func load(cycleStart: Date,
+                     now: Date = Date(),
+                     defaults: UserDefaults = .standard) -> (value: Double, detail: String?)? {
+        let value = defaults.double(forKey: valueKey)
+        guard value > 0 else { return nil }
+        let storedCycle = defaults.double(forKey: cycleKey)
+        let storedExpires = defaults.double(forKey: expiresKey)
+        guard storedCycle > 0,
+              abs(Date(timeIntervalSince1970: storedCycle).timeIntervalSince(cycleStart)) < 1,
+              storedExpires > storedCycle,
+              now.timeIntervalSince1970 < storedExpires else {
+            return nil
+        }
+        return (value, defaults.string(forKey: detailKey))
+    }
+}
