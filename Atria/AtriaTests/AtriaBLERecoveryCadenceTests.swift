@@ -6564,6 +6564,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             now: now,
             sittingSkipFresh: false
         ), .rearm, "a true assembled stall without sitting skip still rearms")
+        let walkingCompact = now.addingTimeInterval(-8.7)
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessStaleIntervalForEvidence(
+                rawFrameAt: walkingCompact,
+                compactPacketAt: walkingCompact,
+                compactSecondAt: walkingCompact,
+                now: now
+            ),
+            AtriaBLEManager.r10LivenessCompactStaleInterval,
+            "device 2026-09-18 21:03: scored walking 0x33 at 8.7s must not use the dense 4s gate"
+        )
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: walkingCompact,
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now,
+            staleInterval: AtriaBLEManager.r10LivenessCompactStaleInterval
+        ), .none, "walking compact IMU at 8.7s must not 6A/51-storm live 2A37")
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessStaleIntervalForEvidence(
+                rawFrameAt: now.addingTimeInterval(-1),
+                compactPacketAt: nil,
+                compactSecondAt: nil,
+                now: now
+            ),
+            AtriaBLEManager.r10LivenessStaleInterval,
+            "dense 1 Hz R10 keeps the 4s drop gate"
+        )
     }
 
     func testIMURecoveryPersistedAgeKeepsTriggerSilenceNotPostWriteFreshness() {
@@ -12393,6 +12424,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "sitting compact 0x33 must not 6A/51-storm a live HR epoch")
         XCTAssertTrue(liveBody.contains("sittingSkipFresh: sittingSkipFresh"),
                       "the 4s IMU watchdog must see sitting skip, not only the fallback 6A/51 path")
+        XCTAssertTrue(liveBody.contains("r10LivenessStaleIntervalForEvidence"),
+                      "walking compact 0x33 at ~8s must not 6A/51 on the dense 4s gate")
+        XCTAssertTrue(liveBody.contains("staleInterval: staleInterval"),
+                      "evaluateR10Liveness must pass the compact-aware stale window into r10LivenessAction")
         XCTAssertTrue(liveBody.contains("currentConnectionProprietaryTraffic > 0"),
                       "a persisted sitting-skip flag must not suppress 6A/51 before this connection has 0x33")
         XCTAssertTrue(
