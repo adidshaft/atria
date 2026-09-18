@@ -525,6 +525,7 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("widgetSteps: publishedWidget?.steps"))
         XCTAssertTrue(home.contains("todaySteps: core.dailyStepPresentation.count"))
         XCTAssertTrue(home.contains("compactAssembledAgeSeconds:"))
+        XCTAssertTrue(home.contains("compactSittingSkip:"))
         XCTAssertTrue(home.contains("idleWindowPending:"))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
     }
@@ -618,6 +619,34 @@ final class AtriaDiagnosisReportTests: XCTestCase {
                 hrAgeSeconds: nil
             ),
             .disconnected
+        )
+    }
+
+    func testSittingSkipDoesNotFlagIMUStaleInsideTheSittingFreshWindow() {
+        XCTAssertFalse(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWhileConnected(
+                imuAgeSeconds: 46,
+                skippedSitting: true
+            ),
+            "device 2026-09-18 167: sitting 0x33 at 46s is not an IMU drop"
+        )
+        XCTAssertTrue(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWhileConnected(
+                imuAgeSeconds: 46,
+                skippedSitting: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWhileConnected(
+                imuAgeSeconds: 2_000,
+                skippedSitting: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWhileConnected(
+                imuAgeSeconds: 1,
+                skippedSitting: false
+            )
         )
     }
 

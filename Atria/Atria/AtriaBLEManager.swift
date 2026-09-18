@@ -4836,12 +4836,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         imuAge: TimeInterval?,
         lastActivationAge: TimeInterval?,
         staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds,
-        minimumActivationInterval: TimeInterval = r10LivenessRearmMinimumInterval
+        minimumActivationInterval: TimeInterval = r10LivenessRearmMinimumInterval,
+        sittingSkipFresh: Bool = false
     ) -> Bool {
         let fallbackOwner = owner == .pureHRV10 || owner == .pureHRV8
         let fallbackState = state == .fallbackActive || state == .fallbackPending
         guard fallbackOwner || fallbackState else { return false }
         guard connected, !historyOwnsTransport, heartRateNotifying else { return false }
+        if sittingSkipFresh { return false }
         let stale = imuAge.map { $0 > staleInterval } ?? true
         guard stale else { return false }
         if let lastActivationAge, lastActivationAge >= 0,
@@ -31367,6 +31369,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             now: now
         )
         let lastActivationAge = lastActivationAt.map { now.timeIntervalSince($0) }
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        )
         let fallbackIMU = Self.shouldRefreshIMUOnLiveHeartRateFallback(
             owner: protectedR10CleanOwner,
             state: protectedR10CleanOwnerState,
@@ -31374,7 +31382,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
             heartRateNotifying: hrLive,
             imuAge: imuAge,
-            lastActivationAge: lastActivationAge
+            lastActivationAge: lastActivationAge,
+            sittingSkipFresh: sittingSkipFresh
         )
         if let blocker = Self.protectedBoundedRawCaptureRefreshBlocker(
             standardHROnlyMode: standardHROnlyMode,
@@ -31722,6 +31731,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             peripheralConnected: peripheral?.state == .connected,
             heartRateEpochLive: hrLive
         )
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        )
         let eligible = r10TransportIsExpected
         let fallbackIMU = connected
             && Self.shouldRefreshIMUOnLiveHeartRateFallback(
@@ -31730,15 +31751,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 connected: connected,
                 historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
                 heartRateNotifying: hrLive,
-                imuAge: Self.liveIMUEvidenceAgeSeconds(
-                    rawFrameAt: currentR10MotionFrameAt(),
-                    compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
-                    compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
-                    now: now
-                ),
+                imuAge: imuAge,
                 lastActivationAge: (UserDefaults.standard.object(
                     forKey: Self.protectedR10ActivationSentAtKey
-                ) as? Double).map { now.timeIntervalSince(Date(timeIntervalSince1970: $0)) }
+                ) as? Double).map { now.timeIntervalSince(Date(timeIntervalSince1970: $0)) },
+                sittingSkipFresh: sittingSkipFresh
             )
         if sendCoverLiveBoundedRawCaptureIfNeeded(
             now: now,

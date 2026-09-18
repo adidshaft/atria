@@ -10,6 +10,10 @@ enum AtriaDiagnosisReport {
     static let coalesceInterval: TimeInterval = 5
     static let maxEvents = 24
     static let liveStaleSeconds: TimeInterval = 15
+    /// Compact 0x33 while sitting can be 30–60s apart (device 2026-09-18 167:
+    /// sitting skip, packet age 46s). The 15s HR window must not call that an
+    /// IMU drop or 6A/51 will storm a healthy 2A37 link.
+    static let imuSittingFreshSeconds: TimeInterval = 120
 
     /// Tests point this at a temporary directory. Production uses Documents.
     static var documentsDirectoryOverride: URL?
@@ -184,7 +188,8 @@ enum AtriaDiagnosisReport {
         liveActivitySteps: Int? = nil,
         liveActivityElapsedSeconds: Int? = nil,
         compactAssembledAgeSeconds: Double? = nil,
-        idleWindowPending: Int? = nil
+        idleWindowPending: Int? = nil,
+        compactSittingSkip: Bool = false
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -254,7 +259,8 @@ enum AtriaDiagnosisReport {
                 widgetHRV: widgetHRV,
                 widgetRecovery: widgetRecovery,
                 compactAssembledAgeSeconds: compactAssembledAgeSeconds,
-                widgetStrain: widgetStrain
+                widgetStrain: widgetStrain,
+                compactSittingSkip: compactSittingSkip
             ),
             events: []
         )
@@ -270,7 +276,8 @@ enum AtriaDiagnosisReport {
         widgetHRV: Int? = nil,
         widgetRecovery: Int? = nil,
         compactAssembledAgeSeconds: Double? = nil,
-        widgetStrain: Double? = nil
+        widgetStrain: Double? = nil,
+        compactSittingSkip: Bool = false
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -286,7 +293,10 @@ enum AtriaDiagnosisReport {
             if let age = connection.hrAgeSeconds, age > liveStaleSeconds {
                 keys.append("hr_stale_while_connected")
             }
-            if let age = connection.imuAgeSeconds, age > liveStaleSeconds {
+            if shouldFlagIMUStaleWhileConnected(
+                imuAgeSeconds: connection.imuAgeSeconds,
+                skippedSitting: compactSittingSkip
+            ) {
                 keys.append("imu_stale_while_connected")
             }
         }
@@ -386,6 +396,26 @@ enum AtriaDiagnosisReport {
             keys.append("compact_imu_assembled_stale")
         }
         return keys
+    }
+
+    static func compactIMUSittingSkipIsFresh(
+        skippedSitting: Bool,
+        imuAgeSeconds: Double?
+    ) -> Bool {
+        guard skippedSitting, let age = imuAgeSeconds, age >= 0,
+              age <= imuSittingFreshSeconds else { return false }
+        return true
+    }
+
+    static func shouldFlagIMUStaleWhileConnected(
+        imuAgeSeconds: Double?,
+        skippedSitting: Bool
+    ) -> Bool {
+        guard let age = imuAgeSeconds, age > liveStaleSeconds else { return false }
+        return !compactIMUSittingSkipIsFresh(
+            skippedSitting: skippedSitting,
+            imuAgeSeconds: age
+        )
     }
 
     /// Sleep-backed Day/Week/Month values for the same overnight numbers Today
