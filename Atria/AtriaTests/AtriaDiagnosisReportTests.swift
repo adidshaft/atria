@@ -328,6 +328,11 @@ final class AtriaDiagnosisReportTests: XCTestCase {
                 .first { $0.category == "sessions_and_daily" }?
                 .paths.contains("atria-pending-deeplink-v1.txt") == true
         )
+        XCTAssertTrue(
+            AtriaManagedStorageInventory.categoryPaths
+                .first { $0.category == "sessions_and_daily" }?
+                .paths.contains("atria-overnight-hrv-restore-v1.json") == true
+        )
     }
 
     func testOvernightMetricWindowsKeepOneHRVNumberAcrossDayWeekMonth() {

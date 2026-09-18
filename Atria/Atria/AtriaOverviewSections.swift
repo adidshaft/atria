@@ -3919,6 +3919,74 @@ enum AtriaPendingDeepLinkFile {
     }
 }
 
+/// Drop `Documents/atria-overnight-hrv-restore-v1.json` with identity-gated
+/// receipts. Session compaction can clear a 26-window overnight when no RR
+/// remains; this puts that measurement back only when sleep id, samples, and
+/// duration still match, and only when HRV is currently nil.
+enum AtriaOvernightHRVRestoreFile {
+    static let filename = "atria-overnight-hrv-restore-v1.json"
+    static var documentsDirectoryOverride: URL?
+
+    struct Receipt: Codable, Equatable, Sendable {
+        var sleepID: String
+        var hrv: Int
+        var hrvWindowCount: Int
+        var samples: Int
+        var duration: TimeInterval
+    }
+
+    static func fileURL() -> URL {
+        let directory = documentsDirectoryOverride
+            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return directory.appendingPathComponent(filename)
+    }
+
+    static func peek() -> [Receipt] {
+        let url = fileURL()
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        if let receipts = try? decoder.decode([Receipt].self, from: data) {
+            return receipts
+        }
+        if let receipt = try? decoder.decode(Receipt.self, from: data) {
+            return [receipt]
+        }
+        return []
+    }
+
+    static func remove() {
+        try? FileManager.default.removeItem(at: fileURL())
+    }
+
+    static func applying(
+        _ receipts: [Receipt],
+        to sleeps: [UserConfirmedSleep]
+    ) -> (sleeps: [UserConfirmedSleep], appliedIDs: [String]) {
+        guard !receipts.isEmpty else { return (sleeps, []) }
+        let byID = receipts.reduce(into: [String: Receipt]()) { dict, receipt in
+            if dict[receipt.sleepID] == nil { dict[receipt.sleepID] = receipt }
+        }
+        var applied: [String] = []
+        let next = sleeps.map { sleep -> UserConfirmedSleep in
+            guard let receipt = byID[sleep.id],
+                  sleep.hrv == nil,
+                  receipt.hrv > 0,
+                  receipt.hrvWindowCount >= 3,
+                  sleep.samples == receipt.samples,
+                  abs(sleep.duration - receipt.duration) <= 1 else {
+                return sleep
+            }
+            var restored = sleep
+            restored.hrv = receipt.hrv
+            restored.hrvWindowCount = receipt.hrvWindowCount
+            applied.append(sleep.id)
+            return restored
+        }
+        return (next, applied)
+    }
+}
+
 struct AtriaStaleWhileRefreshState<Key: Equatable & Sendable, Value: Sendable>: Sendable {
     private(set) var requestedKey: Key?
     private(set) var valueKey: Key?
