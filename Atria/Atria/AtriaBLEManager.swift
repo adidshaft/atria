@@ -8908,11 +8908,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedAge: connectedAge,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil
         ) else { return }
-        guard let stream5 = peripheral.services?
-            .first(where: { $0.uuid == Self.UUIDs.strapService })?
-            .characteristics?
+        guard let strapService = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) else {
+            peripheral.discoverServices([Self.UUIDs.strapService])
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_service reason=%@ action=no_2a37_no_3f_no_reconnect",
+                          reason)
+            return
+        }
+        guard let stream5 = strapService.characteristics?
             .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
-              stream5.properties.contains(.notify) else { return }
+              stream5.properties.contains(.notify) else {
+            peripheral.discoverCharacteristics(
+                [Self.UUIDs.strapStream5, Self.UUIDs.strapTX],
+                for: strapService
+            )
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_characteristics reason=%@ action=no_2a37_no_3f_no_reconnect",
+                          reason)
+            return
+        }
         lastR10ZombieCCCDToggleAt = now
         UserDefaults.standard.set(
             now.timeIntervalSince1970,
