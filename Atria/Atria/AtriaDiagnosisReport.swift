@@ -36,6 +36,7 @@ enum AtriaDiagnosisReport {
         var overnightRecovery: Int?
         var todayRecovery: Int?
         var todaySteps: Int?
+        var todayStrain: Double? = nil
     }
 
     struct Workout: Equatable, Codable {
@@ -71,6 +72,7 @@ enum AtriaDiagnosisReport {
         var hrvCapturedAt: Date?
         var createdAt: Date?
         var steps: Int?
+        var strain: Double? = nil
     }
 
     struct WindowPoint: Equatable, Codable {
@@ -156,6 +158,8 @@ enum AtriaDiagnosisReport {
         widgetCreatedAt: Date? = nil,
         widgetSteps: Int? = nil,
         todaySteps: Int? = nil,
+        widgetStrain: Double? = nil,
+        todayStrain: Double? = nil,
         metricWindows: MetricWindows? = nil,
         liveActivityName: String? = nil,
         liveActivityAvailability: String? = nil,
@@ -172,7 +176,8 @@ enum AtriaDiagnosisReport {
             daytimeRHR: daytimeRHR,
             overnightRecovery: overnightRecovery,
             todayRecovery: todayRecovery,
-            todaySteps: todaySteps
+            todaySteps: todaySteps,
+            todayStrain: todayStrain
         )
         let connection = Connection(
             status: status.rawValue,
@@ -218,7 +223,8 @@ enum AtriaDiagnosisReport {
                 heartRate: widgetHeartRate,
                 hrvCapturedAt: widgetHRVCapturedAt,
                 createdAt: widgetCreatedAt,
-                steps: widgetSteps
+                steps: widgetSteps,
+                strain: widgetStrain
             ),
             metricWindows: metricWindows,
             discrepancies: discrepancies(
@@ -230,7 +236,8 @@ enum AtriaDiagnosisReport {
                 widgetSteps: widgetSteps,
                 widgetHRV: widgetHRV,
                 widgetRecovery: widgetRecovery,
-                compactAssembledAgeSeconds: compactAssembledAgeSeconds
+                compactAssembledAgeSeconds: compactAssembledAgeSeconds,
+                widgetStrain: widgetStrain
             ),
             events: []
         )
@@ -245,7 +252,8 @@ enum AtriaDiagnosisReport {
         widgetSteps: Int? = nil,
         widgetHRV: Int? = nil,
         widgetRecovery: Int? = nil,
-        compactAssembledAgeSeconds: Double? = nil
+        compactAssembledAgeSeconds: Double? = nil,
+        widgetStrain: Double? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -342,6 +350,13 @@ enum AtriaDiagnosisReport {
            let today = metrics.todaySteps,
            abs(widget - today) > AtriaHeldDailyStepFloor.contaminationSlack {
             keys.append("widget_steps_\(widget)_today_\(today)")
+        }
+        if let widget = widgetStrain,
+           let today = metrics.todayStrain,
+           abs(widget - today) >= 0.3 {
+            let widgetTenths = Int((widget * 10).rounded())
+            let todayTenths = Int((today * 10).rounded())
+            keys.append("widget_strain_\(widgetTenths)_today_\(todayTenths)")
         }
         if let workout = lastWorkout, workout.samples > 0, workout.steps == 0 {
             keys.append("workout_zero_steps")

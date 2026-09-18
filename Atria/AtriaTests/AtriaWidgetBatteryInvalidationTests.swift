@@ -2367,6 +2367,44 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             "local · partial-day wear",
             "a pulse patch may conservatively downgrade authority"
         )
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainValue(
+                previous: 0.6,
+                next: 0,
+                nextDetail: "learning"
+            ),
+            0.6,
+            "install/reconnect must not wipe Today's 0.6 with a learning zero"
+        )
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainDetail(
+                previous: "Current cycle",
+                next: "learning"
+            ),
+            "Current cycle"
+        )
+        var loaded = current
+        loaded.strain = 0.6
+        loaded.strainDetail = "Current cycle"
+        loaded.strainValueText = "0.6"
+        let wiped = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: loaded,
+            createdAt: now,
+            heartRate: 76,
+            heartRateCapturedAt: now,
+            steps: nil,
+            stepsAreEstimated: true,
+            stepsCapturedAt: nil,
+            strain: 0,
+            strainDetail: "learning",
+            strainCapturedAt: now,
+            batteryLevel: nil,
+            batteryChargeStatus: "levelOnly",
+            batteryChargeText: "Unavailable"
+        )
+        XCTAssertEqual(wiped.strain, 0.6)
+        XCTAssertEqual(wiped.strainDetail, "Current cycle")
+        XCTAssertEqual(wiped.strainValueText, "0.6")
     }
 
     func testIndependentBatteryAndStrainClocksTriggerTrailingReload() {

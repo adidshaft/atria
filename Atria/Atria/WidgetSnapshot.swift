@@ -9,7 +9,7 @@ struct WidgetSnapshot: Codable {
     let recoveryPercent: Int?
     let recoveryConfidence: String
     let recoveryDetail: String
-    let strain: Double
+    var strain: Double
     /// Evidence qualifier for the numeric day-load value. Current writers use
     /// this to distinguish a partial sparse-HR aggregate from a complete cycle.
     var strainDetail: String? = nil
@@ -787,6 +787,36 @@ enum WidgetSnapshotPublisher {
         return value
     }
 
+    /// A reconnect/install live-session reset can recompute day strain as 0
+    /// while Today still holds the cycle load. Keep the delivered number for
+    /// the same physiological cycle.
+    nonisolated static func snapshotPreservingDayStrain(
+        candidate: WidgetSnapshot,
+        current: WidgetSnapshot
+    ) -> WidgetSnapshot {
+        let sameCycle = current.strainCycleStart == candidate.strainCycleStart
+            || current.strainCycleExpiresAt == candidate.strainCycleExpiresAt
+        guard sameCycle else { return candidate }
+        let held = mergedLiveStrainValue(
+            previous: current.strain,
+            next: candidate.strain,
+            nextDetail: candidate.strainDetail
+        )
+        guard abs(held - candidate.strain) > 0.000_000_001 else { return candidate }
+        var snapshot = candidate
+        snapshot.strain = held
+        snapshot.strainDetail = mergedLiveStrainDetail(
+            previous: current.strainDetail,
+            next: candidate.strainDetail
+        )
+        snapshot.strainCapturedAt = current.strainCapturedAt ?? candidate.strainCapturedAt
+        snapshot.strainCycleStart = current.strainCycleStart ?? candidate.strainCycleStart
+        snapshot.strainCycleExpiresAt = current.strainCycleExpiresAt ?? candidate.strainCycleExpiresAt
+        snapshot.strainValueText = current.strainValueText
+            ?? (held > 0 ? String(format: "%.1f", held) : nil)
+        return snapshot
+    }
+
     /// A broad rebuild can start immediately before a background receipt save
     /// and reach UserDefaults after the receipt-only lane. Merge only the step
     /// family from the stronger already-delivered authority; every non-step
@@ -1132,6 +1162,11 @@ enum WidgetSnapshotPublisher {
         } ?? (current.steps == nil
                 && current.stepsCapturedAt == nil
                 && current.stepsReceiptCapturedAt == nil)))
+        let mergedStrain = mergedLiveStrainValue(
+            previous: current.strain,
+            next: strain,
+            nextDetail: strainDetail
+        )
         let patchedSteps = acceptsIncomingSteps ? steps : current.steps
         let patchedStepsAreEstimated = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAreEstimated)
@@ -1157,7 +1192,7 @@ enum WidgetSnapshotPublisher {
             recoveryPercent: current.recoveryPercent,
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
-            strain: strain,
+            strain: mergedStrain,
             // A live patch may update the numeric lower bound, but it cannot
             // upgrade the evidence authority established by the full daily
             // projection. Preserve an existing partial marker unless the
@@ -1169,7 +1204,7 @@ enum WidgetSnapshotPublisher {
             strainCapturedAt: cumulativeStrainCaptureDate(
                 previousValue: current.strain,
                 previousCapturedAt: current.strainCapturedAt,
-                nextValue: strain,
+                nextValue: mergedStrain,
                 nextEvidenceAt: strainCapturedAt
             ),
             strainCycleStart: current.strainCycleStart,
@@ -1251,9 +1286,26 @@ enum WidgetSnapshotPublisher {
             ? (steps == nil ? nil : stepsStatusText)
             : current.stepsStatusText
         carried.strainValueText =
-            abs(current.strain - strain) <= 0.000_000_001
+            abs(current.strain - mergedStrain) <= 0.000_000_001
                 ? current.strainValueText : nil
         return carried
+    }
+
+    /// A reconnect / learning-zero pulse must not wipe a still-current cycle
+    /// load. Device 2026-09-18: Today showed 0.6 of 17 while the Home Screen
+    /// widget stayed on 0 / Learning after install restarted the live session.
+    nonisolated static func mergedLiveStrainValue(
+        previous: Double,
+        next: Double,
+        nextDetail: String?
+    ) -> Double {
+        let nextIsLearning =
+            nextDetail?.localizedCaseInsensitiveContains("learning") == true
+            || nextDetail?.localizedCaseInsensitiveContains("standby") == true
+        if previous > 0, next + 0.05 < previous, nextIsLearning || next <= 0 {
+            return previous
+        }
+        return next
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1263,6 +1315,12 @@ enum WidgetSnapshotPublisher {
         previous: String?,
         next: String?
     ) -> String? {
+        let nextIsLearning =
+            next?.localizedCaseInsensitiveContains("learning") == true
+            || next?.localizedCaseInsensitiveContains("standby") == true
+        if nextIsLearning, previous != nil {
+            return previous
+        }
         let previousIsPartial =
             previous?.localizedCaseInsensitiveContains("partial") == true
         let nextIsPartial =
@@ -2076,6 +2134,10 @@ enum WidgetSnapshotPublisher {
                 current: current,
                 authoritativeReceiptContentRevision:
                     authoritativeReceiptContentRevision
+            )
+            snapshot = snapshotPreservingDayStrain(
+                candidate: snapshot,
+                current: current
             )
         }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot),
