@@ -7376,7 +7376,8 @@ private struct AtriaPreparedMetricChart: View {
             // printed 12/14/16/18 under 15/16/18 (device 2026-09-18 16:25).
             AxisMarks(values: AtriaChartVisualGrammar.nightBarAxisMarks(
                 days: points.map(\.day),
-                targetCount: 4
+                targetCount: 4,
+                domain: prepared.xDomain ?? fallbackXDomain
             )) { _ in
                 AxisGridLine().foregroundStyle(.quaternary)
                 AxisTick()

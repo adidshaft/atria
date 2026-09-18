@@ -658,7 +658,8 @@ struct AtriaExpandedChartView: View {
         )
         return AtriaChartVisualGrammar.nightBarAxisMarks(
             days: points.map(\.day),
-            targetCount: target
+            targetCount: target,
+            domain: domain
         )
     }
 
