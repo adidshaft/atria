@@ -1074,7 +1074,15 @@ extension AtriaBLEManager {
                !chargingOrOffWrist,
                pending > 0,
                pending <= idleWindowConsumeLiveTailPendingLimit {
-                interval = minimumResumeInterval
+                // Device 2026-09-18 build 131: dry leftover still re-armed
+                // every 20s (`liveHRNotifying=false` during 0x22). Stuck
+                // pending=5 never yields rows on-wrist — keep 2A37 up unless
+                // a queued gym leftover still needs the worn beat.
+                if queuedPullIntent {
+                    interval = minimumResumeInterval
+                } else {
+                    return false
+                }
             } else {
                 interval = pending > 0
                     && pending <= idleWindowConsumeLiveTailPendingLimit

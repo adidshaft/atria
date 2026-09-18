@@ -2829,8 +2829,13 @@ private struct AtriaLiveActivityControls: View {
         (state.isPaused ?? false) ? .green : .orange
     }
 
+    private var showsWorkoutControls: Bool {
+        state.showsWorkoutControls != false
+    }
+
     var body: some View {
-        HStack(spacing: 8) {
+        if showsWorkoutControls {
+            HStack(spacing: 8) {
             Button(intent: AtriaLiveWorkoutControlIntent(
                 action: (state.isPaused ?? false) ? .resume : .pause,
                 workoutStartedAt: startedAt
@@ -2866,9 +2871,10 @@ private struct AtriaLiveActivityControls: View {
             .tint(.red)
             .accessibilityLabel("End workout")
             .accessibilityHint("Ends the active workout")
+            }
+            .disabled(state.isEnding ?? false)
+            .accessibilityElement(children: .contain)
         }
-        .disabled(state.isEnding ?? false)
-        .accessibilityElement(children: .contain)
     }
 }
 

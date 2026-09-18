@@ -5457,7 +5457,8 @@ struct AtriaSleepActivityReviewSheet: View {
         return AtriaSleepHypnogramPresentation.timelineRuns(
             for: night.displayStageSegments,
             windowStart: start,
-            windowEnd: end
+            windowEnd: end,
+            isEstimate: night.isEstimatedStageDisplay
         ).runs
     }
 

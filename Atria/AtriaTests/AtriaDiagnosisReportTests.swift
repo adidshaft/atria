@@ -268,9 +268,10 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             liveActivityElapsedSeconds: 0
         )
         XCTAssertEqual(snapshot.liveActivity.recording, false)
-        XCTAssertEqual(snapshot.liveActivity.heartRate, 0)
-        XCTAssertNil(snapshot.liveActivity.activityName)
-        XCTAssertEqual(snapshot.liveActivity.availability, "unavailable")
+        XCTAssertEqual(snapshot.liveActivity.heartRate, 85)
+        XCTAssertEqual(snapshot.liveActivity.activityName, "Live")
+        XCTAssertEqual(snapshot.liveActivity.availability, "idle")
+        XCTAssertEqual(snapshot.liveActivity.zone, "Z2")
         XCTAssertNil(snapshot.liveActivity.steps)
         XCTAssertEqual(snapshot.widget.heartRate, 85)
     }

@@ -5182,7 +5182,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             "device 130: no_rows pending=5 must not re-pause 2A37 every 0.4s"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
                 lastFinishedAt: Date(timeIntervalSince1970: 1_000),
                 now: Date(timeIntervalSince1970: 1_020),
@@ -5190,7 +5190,18 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 lastPendingRecords: 5,
                 lastAttemptYieldedRows: false
             ),
-            "a dry live tail still retries on the worn 20s HR beat"
+            "a dry leftover on-wrist must not keep pausing 2A37 on the 20s beat"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                queuedPullIntent: true,
+                lastAttemptYieldedRows: false
+            ),
+            "queued gym leftover still retries on the worn 20s beat"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(

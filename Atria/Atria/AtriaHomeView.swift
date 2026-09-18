@@ -1006,6 +1006,7 @@ struct AtriaHomeView: View {
     // evidence refresh even when the visible prompt does not change.
     @State private var motionActivityMonitor = AtriaMotionActivityMonitor()
     @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
+    @State private var livePresenceStartedAt: Date?
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
@@ -3555,8 +3556,17 @@ struct AtriaHomeView: View {
                 now: now
             )
         } ?? 0
+        let connected = model.coreLiveStore.state.status == .connected
+        let workoutActive = session != nil
+        let livePresence = !workoutActive && connected && heldHeartRate > 0
+        if workoutActive || !livePresence {
+            livePresenceStartedAt = nil
+        } else if livePresenceStartedAt == nil {
+            livePresenceStartedAt = now
+        }
+        let presenceStartedAt = session?.start ?? livePresenceStartedAt ?? now
         liveActivityCoordinator.update(AtriaLiveActivityCoordinator.Snapshot(
-            isRecording: session != nil,
+            isRecording: workoutActive || livePresence,
             heartRate: heartRate,
             heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? lastKnownSample?.t,
             sensorHasContact: pulse.sensorHasContact,
@@ -3568,9 +3578,11 @@ struct AtriaHomeView: View {
             batteryAvailability: batteryAvailability,
             batteryChargeStatus: model.coreLiveStore.state.batteryChargeStatus,
             readingCount: model.coreLiveStore.state.sessionSampleCount,
-            startedAt: session?.start ?? Date(),
-            activityName: activityType == .other ? "Workout" : activityType.rawValue,
-            activitySystemImage: activityType.icon,
+            startedAt: presenceStartedAt,
+            activityName: workoutActive
+                ? (activityType == .other ? "Workout" : activityType.rawValue)
+                : "Live",
+            activitySystemImage: workoutActive ? activityType.icon : "heart.fill",
             heartRateZoneIndex: zone?.index,
             heartRateZoneName: zone?.name,
             // Preserve the last source value and source clock in ActivityKit;
@@ -3604,8 +3616,11 @@ struct AtriaHomeView: View {
                 ? metricProjection.activeCalories : nil,
             targetLowerHeartRateZone: session?.lowerTargetZone,
             targetUpperHeartRateZone: session?.upperTargetZone,
-            isPaused: liveWorkoutPauseStartedAt != nil,
-            elapsedDuration: movingDuration
+            isPaused: workoutActive && liveWorkoutPauseStartedAt != nil,
+            elapsedDuration: workoutActive
+                ? movingDuration
+                : (livePresenceStartedAt.map { now.timeIntervalSince($0) } ?? 0),
+            showsWorkoutControls: workoutActive
         ), forceActivityWrite: forceActivityWrite)
         model.publishDiagnosisReport(
             reason: "live_activity",
