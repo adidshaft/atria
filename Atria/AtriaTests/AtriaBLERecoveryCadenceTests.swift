@@ -6532,6 +6532,38 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             lastRediscoveryAt: nil,
             now: now
         ), .none, "healthy assembled seconds must not rearm on a 2s 0x33 trickle")
+        let sittingPacket = now.addingTimeInterval(-14)
+        XCTAssertEqual(
+            AtriaBLEManager.r10LivenessEvidenceAt(
+                rawFrameAt: sittingPacket,
+                compactSecondAt: compactStale,
+                compactPacketAt: sittingPacket,
+                now: now,
+                sittingSkipFresh: true
+            ),
+            sittingPacket,
+            "sitting skip must not prefer a stalled assembled second over live 0x33"
+        )
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: now.addingTimeInterval(-46),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now,
+            sittingSkipFresh: true
+        ), .none, "device 2026-09-18 167: sitting 0x33 at 46s must not 6A/51 a live 2A37 link")
+        XCTAssertEqual(AtriaBLEManager.r10LivenessAction(
+            eligible: true,
+            connected: true,
+            realtimeArmed: true,
+            lastFrameAt: now.addingTimeInterval(-46),
+            lastRearmAt: nil,
+            lastRediscoveryAt: nil,
+            now: now,
+            sittingSkipFresh: false
+        ), .rearm, "a true assembled stall without sitting skip still rearms")
     }
 
     func testIMURecoveryPersistedAgeKeepsTriggerSilenceNotPostWriteFreshness() {
@@ -12271,6 +12303,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "cover-live IMU recovery must not write 0x3F")
         XCTAssertTrue(coverBody.contains("cmds=6a01,51_duration_le"))
         XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
+        XCTAssertTrue(coverBody.contains("cover_live_51_restore_2a37"),
+                      "6A/51 that still runs must reassert 2A37 (device 2026-09-18 167)")
 
         let refreshStart = try XCTUnwrap(source.range(
             of: "private func refreshProtectedBoundedRawCaptureIfNeeded"
@@ -12289,6 +12323,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "silent IMU refresh must not write 0x3F")
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
         XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
+        XCTAssertTrue(refreshBody.contains("sitting_skip_fresh"),
+                      "sitting compact 0x33 on this connection must not silent-refresh 6A/51")
+        XCTAssertTrue(refreshBody.contains("silent_stream_51_restore_2a37"),
+                      "a 6A/51 that still queues must reassert 2A37")
         XCTAssertTrue(refreshBody.contains("6a51"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
@@ -12353,6 +12391,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "Connecting… with live 2A37 must still evaluate IMU 6A/51")
         XCTAssertTrue(liveBody.contains("sittingSkipFresh"),
                       "sitting compact 0x33 must not 6A/51-storm a live HR epoch")
+        XCTAssertTrue(liveBody.contains("sittingSkipFresh: sittingSkipFresh"),
+                      "the 4s IMU watchdog must see sitting skip, not only the fallback 6A/51 path")
+        XCTAssertTrue(liveBody.contains("currentConnectionProprietaryTraffic > 0"),
+                      "a persisted sitting-skip flag must not suppress 6A/51 before this connection has 0x33")
         XCTAssertTrue(
             liveBody.contains("kickZombieProprietaryStreamIfNeeded(now: now, reason: \"\\(reason)_pure_hr_imu\")"),
             "pure-HR IMU repair must toggle zombie stream-5 before 6A/51"
