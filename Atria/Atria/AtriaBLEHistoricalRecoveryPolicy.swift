@@ -1077,6 +1077,14 @@ extension AtriaBLEManager {
         lastAttemptYieldedRows: Bool = true
     ) -> Bool {
         guard let lastFinishedAt else { return true }
+        if shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: lastPendingRecords,
+            queuedPullIntent: queuedPullIntent
+        ) {
+            return false
+        }
         let interval: TimeInterval
         if consumeToNow,
            chargingOrOffWrist
@@ -1324,10 +1332,46 @@ extension AtriaBLEManager {
     /// because `idleWindowDrainArchiveWarmRetry` kept admitting 2A37 pause
     /// after the user had already started the session. A live workout or
     /// calibration hold outranks that retry.
+    /// Device 2026-09-18 21:17: leftover pending=5 with `no_rows` re-paused
+    /// 2A37 on the worn 20s beat because consume-to-now was off, so the
+    /// dry-tail retry refusal never ran. Refuse that pause here too.
     nonisolated static func shouldAdmitIdleWindowHeartRatePause(
-        explicitMotionOwnershipActive: Bool
+        explicitMotionOwnershipActive: Bool,
+        lastAttemptYieldedRows: Bool = true,
+        leftoverPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false,
+        chargingOrOffWrist: Bool = false
     ) -> Bool {
-        !explicitMotionOwnershipActive
+        if explicitMotionOwnershipActive { return false }
+        if shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: leftoverPendingRecords,
+            queuedPullIntent: queuedPullIntent
+        ) {
+            return false
+        }
+        return true
+    }
+
+    /// Device 168 21:17: `lastDrainAttemptYieldedRows=false` and
+    /// `idleWindowAckedRange.pending=5` still admitted a new 0x22 after 20s
+    /// when consume-to-now was false. A dry live-tail leftover is not a
+    /// drainable on-wrist page — keep 2A37 until a gym pull or charger
+    /// window owns the leftover.
+    nonisolated static func shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+        lastAttemptYieldedRows: Bool,
+        chargingOrOffWrist: Bool,
+        leftoverPendingRecords: UInt32?,
+        queuedPullIntent: Bool
+    ) -> Bool {
+        guard !lastAttemptYieldedRows,
+              !chargingOrOffWrist,
+              !queuedPullIntent else {
+            return false
+        }
+        let pending = leftoverPendingRecords ?? 0
+        return pending <= idleWindowConsumeLiveTailPendingLimit
     }
 
     /// Workout Start may disconnect a history owner, but the replacement

@@ -11456,7 +11456,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         guard Self.shouldAdmitIdleWindowHeartRatePause(
-            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio(),
+            lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
+            leftoverPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            chargingOrOffWrist: batteryIsCharging || !hasContact
         ) else {
             return false
         }
@@ -11473,9 +11477,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         startBudgetClock: Bool = true
     ) {
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        let queuedPullIntent = queuedConnectedRawHistoryCatchUpIntent != nil
+        let chargingOrOffWrist = batteryIsCharging || !hasContact
+        let lastAttemptYieldedRows = lastIdleWindowDrainAttemptYieldedRows()
         guard Self.shouldAdmitIdleWindowHeartRatePause(
-            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
-        ) else { return }
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio(),
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            leftoverPendingRecords: leftoverPending,
+            queuedPullIntent: queuedPullIntent,
+            chargingOrOffWrist: chargingOrOffWrist
+        ) else {
+            if Self.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: lastAttemptYieldedRows,
+                chargingOrOffWrist: chargingOrOffWrist,
+                leftoverPendingRecords: leftoverPending,
+                queuedPullIntent: queuedPullIntent
+            ) {
+                clearIdleWindowAckedHistoryRangePointer()
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=skip_pause_cleared_dry_leftover pending=%u action=keep_2a37",
+                    leftoverPending ?? 0
+                )
+            }
+            return
+        }
         idleWindowDrainPausesHeartRate = true
         // Soak-2 09:27: pause during orphan replay before generation starts.
         // The 20s handshake budget must not run from that pause; it starts
@@ -11885,9 +11911,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
             chargingOrOffWrist: batteryIsCharging || !hasContact,
             queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
-            lastAttemptYieldedRows: UserDefaults.standard.object(
-                forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
-            ) as? Bool ?? true
+            lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows()
         ) else { return false }
         let ingressReplayBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
             orphanReplayInFlight: orphanHistoricalIngressArchiveInFlight,
@@ -17038,6 +17062,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             "ATRIADBG idle_window_drain status=retired_stuck_leftover pending=%u action=restore_2a37",
             pending ?? 0
         )
+    }
+
+    private func lastIdleWindowDrainAttemptYieldedRows() -> Bool {
+        UserDefaults.standard.object(
+            forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        ) as? Bool ?? true
     }
 
     private func loadIdleWindowAckedHistoryRangePointer()
