@@ -89,4 +89,42 @@ final class AtriaLiveSignalTruthTests: XCTestCase {
             hasRecentHeartRate: false
         ), "Not connected")
     }
+
+    func testFreshHeartRateIsLiveWhileCoreBluetoothIsStillConnecting() {
+        XCTAssertTrue(AtriaLiveSignalTruth.isLive(
+            status: .connecting,
+            streamState: .live,
+            hasRecentHeartRate: true
+        ))
+        XCTAssertEqual(AtriaLiveSignalTruth.valueText(
+            status: .connecting,
+            streamState: .warming,
+            hasRecentHeartRate: true
+        ), "Live")
+        XCTAssertEqual(AtriaLiveSignalTruth.valueText(
+            status: .scanning,
+            streamState: .unknown,
+            hasRecentHeartRate: true
+        ), "Live")
+        XCTAssertEqual(AtriaLiveSignalTruth.valueText(
+            status: .disconnected,
+            streamState: .live,
+            hasRecentHeartRate: true
+        ), "Live")
+        XCTAssertFalse(AtriaLiveSignalTruth.isLive(
+            status: .poweredOff,
+            streamState: .live,
+            hasRecentHeartRate: true
+        ))
+        XCTAssertEqual(AtriaLiveSignalTruth.valueText(
+            status: .poweredOff,
+            streamState: .live,
+            hasRecentHeartRate: true
+        ), "Bluetooth off")
+        XCTAssertEqual(AtriaLiveSignalTruth.valueText(
+            status: .connecting,
+            streamState: .live,
+            hasRecentHeartRate: false
+        ), "Finding")
+    }
 }
