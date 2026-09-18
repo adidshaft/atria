@@ -548,6 +548,108 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
     }
 
+    func testIdleLiveActivityIsAdoptedWithoutMatchingProcessLocalStart() {
+        let originalStart = Date(timeIntervalSince1970: 2_000_000_000)
+        let relaunchStart = originalStart.addingTimeInterval(3_600)
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: true,
+                snapshotShowsWorkoutControls: false,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: false
+            ),
+            "device 175: idle island start is process-local; adopt it instead of orphaning"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: true,
+                snapshotShowsWorkoutControls: true,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: true
+            ),
+            "a workout island still requires the same startedAt"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: false,
+                snapshotShowsWorkoutControls: false,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: false,
+                existingShowsWorkoutControls: false
+            ),
+            "the first post-install tick must not end an idle island before HR returns"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: false,
+                existingShowsWorkoutControls: true
+            ),
+            "leftover workout controls are still orphans while idle"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: true,
+                existingShowsWorkoutControls: false
+            )
+        )
+    }
+
+    func testIdleStartRetryThrottlesBackgroundAttemptsAndForcesOnForeground() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: nil,
+                now: now,
+                showsWorkoutControls: false,
+                force: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: false,
+                force: false
+            ),
+            "background Activity.request fails after --no-launch; do not spam it"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: false,
+                force: true
+            ),
+            "foreground must retry immediately when kit is empty"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: true,
+                force: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(
+                    AtriaLiveActivityCoordinator.idleStartRetryInterval
+                ),
+                showsWorkoutControls: false,
+                force: false
+            )
+        )
+    }
+
     func testSlowActivityKitWriterKeepsOnlyNewestSuccessorAndBackgroundProtection() {
         let first = liveSnapshot(elapsed: 100, heartRate: 120)
         var newer = first
@@ -1248,6 +1350,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(body.contains("isRecording: workoutActive || livePresence"))
         XCTAssertTrue(body.contains("idleLivePresenceShouldStayActive"),
                       "idle Live must not end ActivityKit when pulse freshness zeros BPM")
+        XCTAssertTrue(body.contains("liveActivityCoordinator.activityKitCount > 0"),
+                      "an existing idle island counts as presence already started after relaunch")
         XCTAssertTrue(
             AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
                 workoutActive: false,
@@ -1336,6 +1440,20 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             0,
             "the first beat of a workout must not invent a prior BPM"
         )
+
+        var idleLive = liveSnapshot(elapsed: 0, heartRate: 79)
+        idleLive.showsWorkoutControls = false
+        idleLive.activityName = "Live"
+        var idleDropped = idleLive
+        idleDropped.heartRate = 0
+        idleDropped.heartRateAvailability = .unavailable
+        idleDropped.startedAt = idleLive.startedAt.addingTimeInterval(3_600)
+        let idleHeld = AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+            idleDropped,
+            previous: idleLive
+        )
+        XCTAssertEqual(idleHeld.heartRate, 79,
+                       "idle presence start is process-local after relaunch; still hold BPM")
     }
 
     func testBatteryClockParticipatesInLiveActivityStalenessWithoutRenewingHR() {

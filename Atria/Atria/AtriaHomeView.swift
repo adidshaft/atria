@@ -3574,6 +3574,7 @@ struct AtriaHomeView: View {
             linkUsable: linkUsable,
             heldHeartRate: heldHeartRate,
             presenceAlreadyStarted: livePresenceStartedAt != nil
+                || liveActivityCoordinator.activityKitCount > 0
         )
         if workoutActive || !livePresence {
             livePresenceStartedAt = nil
@@ -4877,14 +4878,10 @@ struct AtriaHomeView: View {
             if !isDebugUIScreenLaunchActive {
                 consumePendingIntentCommandIfNeeded()
             }
-            if workoutSession != nil {
-                // A suspended process may not have delivered the final sensor
-                // publisher pulse. Refresh the complete HR/zone/steps/strain/
-                // calorie snapshot after the first returning frame, before any
-                // sleep/archive settlement work, and let the coordinator's
-                // bounded writer coalesce it with an in-flight ActivityKit call.
-                updateLiveActivity(forceActivityWrite: true)
-            }
+            // Workout or idle presence: a background --no-launch install can
+            // leave ActivityKit empty until the next foreground (device 175).
+            // Force a start/adopt retry after the first returning frame.
+            updateLiveActivity(forceActivityWrite: true)
             updateHapticCoordinator()
 
             try? await Task.sleep(for: .milliseconds(520))
