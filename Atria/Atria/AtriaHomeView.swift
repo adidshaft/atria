@@ -12390,7 +12390,9 @@ final class AtriaHomeModel {
                 liveActivityAvailability: liveActivitySnapshot?
                     .heartRateAvailability.rawValue,
                 liveActivityStrain: liveActivitySnapshot.map(\.workoutStrain),
-                liveActivitySteps: liveActivitySnapshot?.steps,
+                liveActivitySteps: liveWorkoutIsActive
+                    ? liveActivitySnapshot?.steps
+                    : liveActivitySnapshot?.dailySteps,
                 liveActivityElapsedSeconds: liveActivitySnapshot
                     .map { Int($0.elapsedDuration.rounded()) },
                 compactAssembledAgeSeconds: {
