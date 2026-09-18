@@ -264,7 +264,7 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             liveActivityName: "Workout",
             liveActivityAvailability: "unavailable",
             liveActivityStrain: 0,
-            liveActivitySteps: nil,
+            liveActivitySteps: 3535,
             liveActivityElapsedSeconds: 0
         )
         XCTAssertEqual(snapshot.liveActivity.recording, false)
@@ -272,8 +272,24 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.liveActivity.activityName, "Live")
         XCTAssertEqual(snapshot.liveActivity.availability, "idle")
         XCTAssertEqual(snapshot.liveActivity.zone, "Z2")
-        XCTAssertNil(snapshot.liveActivity.steps)
+        XCTAssertEqual(snapshot.liveActivity.steps, 3535,
+                       "idle Live shows daily steps on the Lock Screen (device 156); diagnosis must report them")
+        XCTAssertNil(snapshot.liveActivity.elapsedSeconds)
         XCTAssertEqual(snapshot.widget.heartRate, 85)
+    }
+
+    func testIdleLiveActivityDiagnosisReadsDailyStepsNotWorkoutSteps() throws {
+        let home = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(home.contains("liveActivitySnapshot?.dailySteps"),
+                      "idle diagnosis must copy the same daily steps the lock preview shows")
+        XCTAssertTrue(home.contains("liveWorkoutIsActive"),
+                      "workout diagnosis still uses session steps")
     }
 
     func testPublishWritesPullableJSONAndCoalescesUnchangedHeartbeats() throws {
