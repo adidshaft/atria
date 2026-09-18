@@ -1331,6 +1331,45 @@ enum WidgetSnapshotPublisher {
         return next ?? previous
     }
 
+    /// Widgets must show the same day load Today already rendered. A reconnect
+    /// or learning-zero recompute cannot replace a positive hero value.
+    nonisolated static func resolvedPresentedWidgetStrain(
+        computed: Double,
+        computedDetail: String?,
+        heroStrain: Double?,
+        heroDetail: String?
+    ) -> (value: Double, detail: String?) {
+        let value = mergedLiveStrainValue(
+            previous: heroStrain ?? 0,
+            next: computed,
+            nextDetail: computedDetail
+        )
+        let heroIsLearning =
+            heroDetail?.localizedCaseInsensitiveContains("learning") == true
+            || heroDetail?.localizedCaseInsensitiveContains("standby") == true
+        let previousDetail: String?
+        if (heroStrain ?? 0) > 0 {
+            if heroIsLearning || heroDetail?.isEmpty != false {
+                previousDetail = computedDetail ?? "Current cycle"
+            } else {
+                previousDetail = heroDetail
+            }
+        } else {
+            previousDetail = computedDetail
+        }
+        var detail = mergedLiveStrainDetail(
+            previous: previousDetail,
+            next: computedDetail
+        )
+        let detailIsLearning =
+            detail?.localizedCaseInsensitiveContains("learning") == true
+            || detail?.localizedCaseInsensitiveContains("standby") == true
+        if value > 0, detail == nil || detailIsLearning {
+            detail = "Current cycle"
+        }
+        return (value, detail)
+    }
+
     /// A partial publisher owns only its named live/battery fields. Carry every
     /// stable presentation and identity value as one unit so adding a new field
     /// cannot silently erase the current-day fence during a workout pulse.
@@ -1392,7 +1431,9 @@ enum WidgetSnapshotPublisher {
                                 ble: AtriaBLEManager,
                                 reason: String,
                                 forceImmediateTimelineReload: Bool = false,
-                                delay: Duration = .milliseconds(60)) {
+                                delay: Duration = .milliseconds(60),
+                                presentedDayStrain: Double? = nil,
+                                presentedDayStrainDetail: String? = nil) {
         scheduledStablePublishTask?.cancel()
         let ticket = publishLaneAuthority.mint(.stable)
         scheduledStablePublishTask = Task { @MainActor in
@@ -1406,7 +1447,9 @@ enum WidgetSnapshotPublisher {
                 store: store,
                 ble: ble,
                 reason: reason,
-                forceImmediateTimelineReload: forceImmediateTimelineReload
+                forceImmediateTimelineReload: forceImmediateTimelineReload,
+                presentedDayStrain: presentedDayStrain,
+                presentedDayStrainDetail: presentedDayStrainDetail
             )
             if publishLaneAuthority.isCurrent(ticket) {
                 scheduledStablePublishTask = nil
@@ -1560,7 +1603,9 @@ enum WidgetSnapshotPublisher {
                         ble: AtriaBLEManager,
                         reason: String = "update",
                         now: Date = Date(),
-                        forceImmediateTimelineReload: Bool = false) -> WidgetSnapshot {
+                        forceImmediateTimelineReload: Bool = false,
+                        presentedDayStrain: Double? = nil,
+                        presentedDayStrainDetail: String? = nil) -> WidgetSnapshot {
         // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
         // volatile live BLE resting reading used to outrank the stable
         // saved-session resting, so the first widget snapshots computed
@@ -1854,7 +1899,21 @@ enum WidgetSnapshotPublisher {
         } ?? presentedWidgetRecovery.detail
         let overnightWidgetRecoveryConfidence = settledRecoveryRollup?.recoverySummary?.confidence
             ?? presentedWidgetRecovery.confidence.rawValue
-        let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
+        let computedPresentedStrain = widgetDayResolution.strainOverride ?? strain
+        let computedPresentedDetail = widgetDayResolution.strainOverride != nil
+            ? "Partial · current day"
+            : strainDetail
+        // Device 2026-09-18: Today showed 0.6 while widgets recomputed 0 after
+        // install reset the live session. Use the same number the Home hero
+        // already rendered for this cycle.
+        let presentedWidgetStrainResolution = resolvedPresentedWidgetStrain(
+            computed: computedPresentedStrain,
+            computedDetail: computedPresentedDetail,
+            heroStrain: presentedDayStrain,
+            heroDetail: presentedDayStrainDetail
+        )
+        let presentedWidgetStrain = presentedWidgetStrainResolution.value
+        let presentedWidgetStrainDetail = presentedWidgetStrainResolution.detail
         // Home still shows a numeric day load (0.6 of 17) while confidence
         // says "learning". Withholding the widget clock then left Strain as
         // "--" / Learning on the Home Screen. A fabricated 0.0 with no load
@@ -1887,9 +1946,7 @@ enum WidgetSnapshotPublisher {
                                       recoveryConfidence: overnightWidgetRecoveryConfidence,
                                       recoveryDetail: overnightWidgetRecoveryDetail,
                                       strain: presentedWidgetStrain,
-                                      strainDetail: widgetDayResolution.strainOverride != nil
-                                        ? "Partial · current day"
-                                        : strainDetail,
+                                      strainDetail: presentedWidgetStrainDetail,
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.

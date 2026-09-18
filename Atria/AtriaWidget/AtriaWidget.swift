@@ -88,10 +88,9 @@ private let atriaQualifiedStepAuthorityVersion = "strap-steps-release-v1"
 private let atriaBatteryFreshness: TimeInterval = 10 * 60
 private let atriaBatteryChargeFreshness: TimeInterval = 90
 // Cumulative day strain is a durable wake-to-wake aggregate, not a live HR
-// packet. Its value remains displayable when the strap stream pauses; this
-// clock only describes how recently Atria recomputed the aggregate. Active
-// workout strain below retains the strict sensor-bound 90-second freshness.
-private let atriaCumulativeDayStrainFreshness: TimeInterval = 6 * 60 * 60
+// packet. Stay current for the physiological cycle the same way day steps do.
+// A 6h capture-age gate blanked Home Screen Strain overnight while Today still
+// showed 0.6 (device 2026-09-18). Active workout strain keeps a 90s sensor gate.
 private let atriaActiveWorkoutStrainFreshness: TimeInterval = 90
 private let atriaLiveActivityStepFreshness: TimeInterval = 15
 // Keep the source-specific gate explicit at the point of use. This alias also
@@ -186,16 +185,11 @@ private func atriaCumulativeDayStepsAreCurrent(_ snapshot: AtriaWidgetSnapshot,
 
 private func atriaCumulativeDayStrainIsCurrent(_ snapshot: AtriaWidgetSnapshot,
                                                now: Date) -> Bool {
-    guard let capturedAt = snapshot.strainCapturedAt,
+    guard snapshot.strain > 0,
           let cycleStart = snapshot.strainCycleStart,
           let cycleExpiresAt = snapshot.strainCycleExpiresAt,
           cycleExpiresAt > cycleStart else { return false }
-    let evidenceAge = now.timeIntervalSince(capturedAt)
-    return evidenceAge >= -atriaStaticSensorFutureTolerance
-        && evidenceAge <= atriaCumulativeDayStrainFreshness
-        && now >= cycleStart.addingTimeInterval(-atriaStaticSensorFutureTolerance)
-        && capturedAt >= cycleStart.addingTimeInterval(-atriaStaticSensorFutureTolerance)
-        && capturedAt < cycleExpiresAt
+    return now >= cycleStart.addingTimeInterval(-atriaStaticSensorFutureTolerance)
         && now < cycleExpiresAt
 }
 
@@ -543,8 +537,7 @@ struct AtriaWidgetProvider: TimelineProvider {
         var expirySources: [(Date?, TimeInterval)] = [
             (snapshot?.heartRateCapturedAt, atriaStaticHeartRateFreshness),
             (batteryEvidenceAt, atriaBatteryFreshness),
-            (snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness),
-            (snapshot?.strainCapturedAt, atriaCumulativeDayStrainFreshness)
+            (snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness)
         ]
         if snapshot?.stepsSource != "verifiedCanonical" {
             // 2026-08-20 (widget-sync RC5): a live-source value has two visible

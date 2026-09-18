@@ -1954,15 +1954,18 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
-        XCTAssertTrue(widgetSource.contains(
-            "private let atriaCumulativeDayStrainFreshness: TimeInterval = 6 * 60 * 60"
-        ))
+        XCTAssertFalse(widgetSource.contains(
+            "private let atriaCumulativeDayStrainFreshness"
+        ), "day strain stays current for the physiological cycle, not a 6h capture age")
         XCTAssertTrue(widgetSource.contains(
             "private let atriaActiveWorkoutStrainFreshness: TimeInterval = 90"
         ))
         XCTAssertTrue(widgetSource.contains(
             "guard atriaCumulativeDayStrainIsCurrent(s, now: now) else { return \"--\" }"
         ))
+        XCTAssertTrue(widgetSource.contains(
+            "guard snapshot.strain > 0"
+        ), "a learning-zero payload must not look current")
         XCTAssertTrue(widgetSource.contains(
             "let numeric = String(format: \"%.1f\", max(0, s.strain))"
         ))
@@ -1978,6 +1981,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("let cycleExpiresAt = snapshot.strainCycleExpiresAt"))
         XCTAssertTrue(widgetSource.contains("now < cycleExpiresAt"))
         XCTAssertFalse(widgetSource.contains("snapshot.strainCapturedAt ?? snapshot.createdAt"))
+        XCTAssertFalse(widgetSource.contains(
+            "(snapshot?.strainCapturedAt, atriaCumulativeDayStrainFreshness)"
+        ), "WidgetKit must not blank day load 6h after the last publish")
     }
 
     func testEveryStaticWidgetStrainSurfaceUsesCycleAndEvidenceGate() throws {
@@ -2405,6 +2411,58 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(wiped.strain, 0.6)
         XCTAssertEqual(wiped.strainDetail, "Current cycle")
         XCTAssertEqual(wiped.strainValueText, "0.6")
+    }
+
+    func testHeroDayStrainWinsOverReconnectLearningZero() {
+        let held = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: 0,
+            computedDetail: nil,
+            heroStrain: 0.6,
+            heroDetail: "learning"
+        )
+        XCTAssertEqual(held.value, 0.6, accuracy: 0.000_000_001)
+        XCTAssertEqual(held.detail, "Current cycle")
+
+        let computedWins = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: 0.8,
+            computedDetail: "Current cycle",
+            heroStrain: 0.6,
+            heroDetail: "Current cycle"
+        )
+        XCTAssertEqual(computedWins.value, 0.8, accuracy: 0.000_000_001)
+        XCTAssertEqual(computedWins.detail, "Current cycle")
+
+        let empty = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: 0,
+            computedDetail: nil,
+            heroStrain: 0,
+            heroDetail: "learning"
+        )
+        XCTAssertEqual(empty.value, 0, accuracy: 0.000_000_001)
+    }
+
+    func testSameCyclePublishKeepsPositiveDayStrain() {
+        let now = Date(timeIntervalSince1970: 80_000)
+        var current = deliverySnapshot(steps: nil, stepsCapturedAt: nil,
+                                       heartRate: 76, heartRateCapturedAt: now,
+                                       strain: 0.6)
+        current.strainDetail = "Current cycle"
+        current.strainValueText = "0.6"
+        current.strainCapturedAt = now.addingTimeInterval(-8 * 3_600)
+        current.strainCycleStart = now.addingTimeInterval(-10 * 3_600)
+        current.strainCycleExpiresAt = now.addingTimeInterval(14 * 3_600)
+        var candidate = current
+        candidate.strain = 0
+        candidate.strainDetail = nil
+        candidate.strainValueText = nil
+        candidate.strainCapturedAt = now
+        let held = WidgetSnapshotPublisher.snapshotPreservingDayStrain(
+            candidate: candidate,
+            current: current
+        )
+        XCTAssertEqual(held.strain, 0.6, accuracy: 0.000_000_001)
+        XCTAssertEqual(held.strainDetail, "Current cycle")
+        XCTAssertEqual(held.strainValueText, "0.6")
     }
 
     func testIndependentBatteryAndStrainClocksTriggerTrailingReload() {
@@ -3175,6 +3233,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(router.contains("isLiveOnlyReason"))
         XCTAssertTrue(router.contains("dashboard authority"))
         XCTAssertTrue(router.contains("WidgetSnapshotPublisher.schedulePublish"))
+        XCTAssertTrue(router.contains("presentedDayStrain: model.heroStore.state.strain"),
+                      "idle/full republish must send the Today hero load, not a reconnect zero")
         XCTAssertTrue(router.contains("scheduleLiveSensorWidgetPatch"))
     }
 
