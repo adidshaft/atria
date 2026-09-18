@@ -497,7 +497,7 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             reconnectReason: "",
             hrAgeSeconds: 1,
             imuAgeSeconds: 1,
-            stream5Confirmed: true,
+            stream5Confirmed: false,
             batteryPercent: 43,
             officialAppRisk: "cleared",
             workoutRecording: false,

@@ -116,7 +116,7 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     /// wall second (~10 Hz), not ten 100 Hz slices. Concatenating ten of
     /// those into one R10 second time-compresses gait out of band.
     static let tenHertzPacketMinInterval: TimeInterval = 0.65
-    static let tenHertzPacketMaxInterval: TimeInterval = 1.85
+    static let tenHertzPacketMaxInterval: TimeInterval = 2.45
 
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
@@ -126,6 +126,7 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private var streamStartedAt: Date?
     private var admittedSampleCount = 0
     private var consecutiveTenHertzIntervals = 0
+    private var lastPacketInterval: TimeInterval?
 
     func push(_ packet: AtriaWhoop4CompactIMUDecoder.Packet,
               receivedAt: Date) -> [AtriaR10MotionFrame] {
@@ -134,47 +135,60 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         let sampleCount = min(packet.acceleration.count, packet.rotationRate.count)
         guard sampleCount > 0 else { return [] }
 
-        if let previousPacketAt = lastPacketAt,
-           receivedAt.timeIntervalSince(previousPacketAt) > 2.5 {
-            outputAccel.removeAll(keepingCapacity: true)
-            outputGyro.removeAll(keepingCapacity: true)
-            lastPacketAt = nil
-            streamStartedAt = nil
-            admittedSampleCount = 0
-            consecutiveTenHertzIntervals = 0
-            if lastEmittedTimestamp > 0 {
-                lastEmittedTimestamp &+= 2
-            }
-        }
-
         if let previousPacketAt = lastPacketAt {
             let interval = receivedAt.timeIntervalSince(previousPacketAt)
-            if interval >= Self.tenHertzPacketMinInterval,
-               interval <= Self.tenHertzPacketMaxInterval {
-                consecutiveTenHertzIntervals += 1
-            } else {
-                consecutiveTenHertzIntervals = 0
-            }
-            // Two 1 Hz arrivals in a row — not a coalesced 100 Hz burst
-            // whose inter-burst gap is also ~1 s.
-            if consecutiveTenHertzIntervals >= 2, sampleCount <= 20 {
+            if interval > 2.5 {
+                let lastWasHundredHertzBurst = (lastPacketInterval ?? .infinity) < 0.25
                 outputAccel.removeAll(keepingCapacity: true)
                 outputGyro.removeAll(keepingCapacity: true)
-                admittedSampleCount = 0
-                streamStartedAt = receivedAt
                 lastPacketAt = receivedAt
-                let needed = AtriaR10MotionDecoder.sampleCount
-                return [makeFrame(
-                    acceleration: Self.upsample(
-                        Array(packet.acceleration.prefix(sampleCount)),
-                        to: needed
-                    ),
-                    rotationRate: Self.upsample(
-                        Array(packet.rotationRate.prefix(sampleCount)),
-                        to: needed
-                    ),
-                    packetTimestamp: packet.deviceTimestamp
-                )]
+                lastPacketInterval = interval
+                streamStartedAt = nil
+                admittedSampleCount = 0
+                consecutiveTenHertzIntervals = 0
+                if lastEmittedTimestamp > 0 {
+                    lastEmittedTimestamp &+= 2
+                }
+                if !lastWasHundredHertzBurst, sampleCount <= 20 {
+                    let needed = AtriaR10MotionDecoder.sampleCount
+                    return [makeFrame(
+                        acceleration: Self.upsample(
+                            Array(packet.acceleration.prefix(sampleCount)),
+                            to: needed
+                        ),
+                        rotationRate: Self.upsample(
+                            Array(packet.rotationRate.prefix(sampleCount)),
+                            to: needed
+                        ),
+                        packetTimestamp: packet.deviceTimestamp
+                    )]
+                }
+            } else if interval >= Self.tenHertzPacketMinInterval,
+                      interval <= Self.tenHertzPacketMaxInterval {
+                consecutiveTenHertzIntervals += 1
+                lastPacketInterval = interval
+                if consecutiveTenHertzIntervals >= 2, sampleCount <= 20 {
+                    outputAccel.removeAll(keepingCapacity: true)
+                    outputGyro.removeAll(keepingCapacity: true)
+                    admittedSampleCount = 0
+                    streamStartedAt = receivedAt
+                    lastPacketAt = receivedAt
+                    let needed = AtriaR10MotionDecoder.sampleCount
+                    return [makeFrame(
+                        acceleration: Self.upsample(
+                            Array(packet.acceleration.prefix(sampleCount)),
+                            to: needed
+                        ),
+                        rotationRate: Self.upsample(
+                            Array(packet.rotationRate.prefix(sampleCount)),
+                            to: needed
+                        ),
+                        packetTimestamp: packet.deviceTimestamp
+                    )]
+                }
+            } else {
+                consecutiveTenHertzIntervals = 0
+                lastPacketInterval = interval
             }
         }
 
@@ -210,6 +224,7 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         streamStartedAt = nil
         admittedSampleCount = 0
         consecutiveTenHertzIntervals = 0
+        lastPacketInterval = nil
     }
 
     /// One assembled R10 second per wall-clock second, plus 1.05 s slack so a

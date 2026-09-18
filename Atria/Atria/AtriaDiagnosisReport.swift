@@ -322,9 +322,10 @@ enum AtriaDiagnosisReport {
             keys.append("workout_zero_steps")
         }
         if connection.status == AtriaBLEManager.Status.connected.rawValue,
-           connection.stream5Confirmed,
            let age = compactAssembledAgeSeconds,
-           age > 60 {
+           age > 60,
+           connection.stream5Confirmed
+            || (connection.imuAgeSeconds ?? .greatestFiniteMagnitude) <= liveStaleSeconds {
             keys.append("compact_imu_assembled_stale")
         }
         return keys
