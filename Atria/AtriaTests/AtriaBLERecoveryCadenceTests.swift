@@ -14232,10 +14232,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
     func testBackgroundBacklogWithStableLiveEpochCreatesCatchUp() {
-        // The post-kill dead state: authority cleared, backlog pending, link
-        // healthy — a bg_processing/P3 re-arm must be able to START a drain
-        // without a human tap.
-        XCTAssertTrue(autonomousStart())
+        // The post-kill dead state used to mint a drain on a healthy worn
+        // epoch. That paused 2A37 and emptied all-day Live Activity. Charging
+        // / off-wrist / pre-HR idle-window still drain; this path stays retired.
+        XCTAssertFalse(autonomousStart())
         XCTAssertFalse(AtriaBLEManager.shouldRefuseUnprovenExactRecoveryStart(
                            fullDrainGapRecoveryEnabled: false,
                            syncInProgress: false,
@@ -14266,8 +14266,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(autonomousStart(storm: true))
         XCTAssertFalse(autonomousStart(lastAttemptAgo: 30),
                        "attempt cooldown bounds churn")
-        XCTAssertTrue(autonomousStart(lastAttemptAgo: nil),
-                      "no prior attempt is not a reason to starve")
+        XCTAssertFalse(autonomousStart(lastAttemptAgo: nil),
+                       "healthy live epoch must keep 2A37; lock-screen is attended")
     }
 
     // MARK: - Strap discovery owner resolver (handoff-7 CP1)

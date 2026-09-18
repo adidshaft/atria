@@ -209,15 +209,21 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
     }
 
     func testConnectedRawCatchUpMintsOnlyForStableExactLiveAuthority() {
-        XCTAssertTrue(connectedRawCatchUpAdmission())
+        XCTAssertFalse(
+            connectedRawCatchUpAdmission(),
+            "autonomous background mint paused 2A37 and emptied Live Activity"
+        )
         XCTAssertTrue(connectedRawCatchUpAdmission(
             background: false,
             queuedPull: true
         ))
-        XCTAssertTrue(connectedRawCatchUpAdmission(
-            background: false,
-            foregroundAutomatic: true
-        ))
+        XCTAssertFalse(
+            connectedRawCatchUpAdmission(
+                background: false,
+                foregroundAutomatic: true
+            ),
+            "foreground automatic catch-up also paused 2A37 on a healthy Home epoch"
+        )
         XCTAssertFalse(connectedRawCatchUpAdmission(background: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(backlog: false))
         XCTAssertTrue(
@@ -4192,6 +4198,22 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertEqual(
             AtriaBLEManager.selectedIdleWindowHistoryDrain(
                 launchFlagEnabled: true,
+                strapBacklogPending: true,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: true,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: false,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            .none,
+            "lock-screen Live Activity is attended; leftover backlog must not pause 2A37"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
                 strapBacklogPending: false,
                 strapIsCharging: false,
                 strapOffWrist: false,
@@ -4346,8 +4368,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertEqual(window(charging: true, thermal: true), .none)
         XCTAssertEqual(
             window(background: true, healthy: true, attended: false),
-            .appBackgroundIdle,
-            "background may pause 2A37; healthy attended foreground may not"
+            .none,
+            "healthy worn epoch keeps 2A37 while the phone is locked"
         )
     }
 
