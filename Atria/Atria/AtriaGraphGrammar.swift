@@ -127,7 +127,37 @@ enum AtriaChartVisualGrammar {
                 picked.append(last)
             }
         }
+        // A cluster narrower than the gap (HRV Month 15/16/18 on a 30-day
+        // axis) still collides if first and last both stay. Keep week-last.
+        if picked.count >= 2,
+           let span = calendar.dateComponents([.day], from: picked.first!, to: last).day,
+           span < minGapDays {
+            picked = [last]
+        }
         return picked
+    }
+
+    /// Sit an overnight date label fully inside the plot when its tick is
+    /// against an edge. Month 154 kept "Sep 18" at noon of the last day of
+    /// a 30-day window — twelve hours of axis, "Se…" on device.
+    static func nightAxisLabelAnchor(
+        for mark: Date,
+        domain: ClosedRange<Date>,
+        calendar: Calendar = .current
+    ) -> UnitPoint {
+        let start = calendar.startOfDay(for: domain.lowerBound)
+        let end = calendar.startOfDay(for: domain.upperBound)
+        let spanDays = max(
+            1,
+            calendar.dateComponents([.day], from: start, to: end).day ?? 1
+        )
+        let markDay = calendar.startOfDay(for: mark)
+        let fromStart = calendar.dateComponents([.day], from: start, to: markDay).day ?? 0
+        let fromEnd = calendar.dateComponents([.day], from: markDay, to: end).day ?? 0
+        let edgeDays = max(2, spanDays / 8)
+        if fromEnd <= edgeDays { return .topTrailing }
+        if fromStart <= edgeDays { return .topLeading }
+        return .top
     }
 
     /// Mark density for a SCROLLABLE day-bar chart.

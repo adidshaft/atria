@@ -410,11 +410,14 @@ struct AtriaExpandedChartView: View {
             // Overnight bars and HRV/RHR lines share one rule: label the
             // nights that have a value. `.automatic` on a trailing week
             // printed empty domain days under recorded points.
-            AxisMarks(values: barAxisMarks) { value in
+            AxisMarks(preset: .aligned, values: barAxisMarks) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
                 AxisTick().foregroundStyle(.secondary.opacity(0.55))
                 if let date = value.as(Date.self) {
-                    AxisValueLabel {
+                    AxisValueLabel(anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                        for: date,
+                        domain: prepared.xDomain
+                    )) {
                         Text(date, format: .dateTime.month(.abbreviated).day())
                             .font(.caption2)
                     }
