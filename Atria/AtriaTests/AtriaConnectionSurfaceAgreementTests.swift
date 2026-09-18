@@ -70,6 +70,29 @@ final class AtriaConnectionSurfaceAgreementTests: XCTestCase {
         }
     }
 
+    func testConnectingTransportWithFreshPulseIsLiveOnEverySurface() {
+        let presentation = AtriaTopStatusProjection.presentation(
+            input: input(status: .connecting, streamState: .live, hasPulse: true),
+            now: now)
+        XCTAssertTrue(presentation.isConnected)
+        XCTAssertEqual(presentation.tone, .green)
+        XCTAssertTrue(AtriaLiveSignalTruth.isLive(
+            status: .connecting,
+            streamState: .live,
+            hasRecentHeartRate: true))
+        XCTAssertEqual(
+            AtriaLiveSignalTruth.valueText(
+                status: .connecting,
+                streamState: .live,
+                hasRecentHeartRate: true),
+            "Live")
+        XCTAssertEqual(
+            AtriaDiagnosisReport.reportedConnectionStatus(
+                status: .connecting,
+                hrAgeSeconds: 0.01),
+            .connected)
+    }
+
     /// Without a pulse neither surface may claim live.
     func testNeitherSurfaceClaimsLiveWithoutAPulse() {
         for state in allStates where state != .live {
@@ -105,10 +128,11 @@ final class AtriaConnectionSurfaceAgreementTests: XCTestCase {
 
     private let now = Date(timeIntervalSince1970: 1_787_000_000)
 
-    private func input(streamState: AtriaBLEManager.StrapStreamState,
+    private func input(status: AtriaBLEManager.Status = .connected,
+                       streamState: AtriaBLEManager.StrapStreamState,
                        hasPulse: Bool) -> AtriaTopStatusProjectionInput {
         AtriaTopStatusProjectionInput(
-            status: .connected,
+            status: status,
             bluetoothPermissionDenied: false,
             isBluetoothReady: true,
             hasPulseSignal: hasPulse,

@@ -1440,7 +1440,11 @@ enum AtriaLiveSignalTruth {
     static func isLive(status: AtriaBLEManager.Status,
                        streamState: AtriaBLEManager.StrapStreamState,
                        hasRecentHeartRate: Bool) -> Bool {
-        guard status == .connected, hasRecentHeartRate else { return false }
+        // Device 2026-09-18 163: CoreBluetooth stayed `.connecting` while
+        // `live_hr_notifying=1` and HR age was 0.01s. A fresh pulse is Live
+        // on connecting/scanning/disconnected the same way the Today pill
+        // already promotes those transports; Bluetooth off still wins.
+        guard hasRecentHeartRate, status != .poweredOff else { return false }
         return streamState == .live
             || freshPulseOverridesLaggingStream(hasPulseSignal: hasRecentHeartRate,
                                                 streamState: streamState)
