@@ -174,4 +174,31 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
             )
         )
     }
+
+    func testDiagnosisIMUAgeUsesCompactAssemblyWhenR10ClockIsNil() {
+        let compact = now.addingTimeInterval(-4)
+        XCTAssertEqual(
+            AtriaHomeModel.diagnosisIMUAgeSeconds(
+                motionCapturedAt: nil,
+                compactAssembledAt: compact,
+                now: now
+            ),
+            4
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.diagnosisIMUAgeSeconds(
+                motionCapturedAt: now.addingTimeInterval(-12),
+                compactAssembledAt: compact,
+                now: now
+            ),
+            4
+        )
+        XCTAssertNil(
+            AtriaHomeModel.diagnosisIMUAgeSeconds(
+                motionCapturedAt: nil,
+                compactAssembledAt: nil,
+                now: now
+            )
+        )
+    }
 }

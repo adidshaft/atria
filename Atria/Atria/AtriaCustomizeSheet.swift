@@ -143,7 +143,6 @@ struct AtriaCustomizeSheet: View {
     private var cardsSection: some View {
         Section {
             Toggle("Live strip", isOn: $draft.showLiveStrip)
-            Toggle("Highlights", isOn: $draft.showHighlights)
             Toggle("Weekly plan", isOn: $draft.showPlan)
             Toggle("AI coach", isOn: $draft.showAICoach)
         } header: {

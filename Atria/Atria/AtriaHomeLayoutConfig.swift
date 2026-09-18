@@ -43,7 +43,7 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
         AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
-                              showHighlights: true,
+                              showHighlights: false,
                               showPlan: true,
                               showAICoach: true,
                               ringCenterMetric: .recovery,

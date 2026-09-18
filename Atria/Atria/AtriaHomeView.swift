@@ -12333,8 +12333,17 @@ final class AtriaHomeModel {
                     latestSampleAt: ble.session.last?.t,
                     now: now
                 ),
-                imuAgeSeconds: (ble.lastAcceptedMotionFrameAt ?? ble.liveStrapMotionCapturedAt)
-                    .map { now.timeIntervalSince($0) },
+                imuAgeSeconds: Self.diagnosisIMUAgeSeconds(
+                    motionCapturedAt: ble.lastAcceptedMotionFrameAt ?? ble.liveStrapMotionCapturedAt,
+                    compactAssembledAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt() ?? {
+                        let at = UserDefaults.standard.double(
+                            forKey: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAtKey
+                        )
+                        guard at > 0 else { return nil }
+                        return Date(timeIntervalSince1970: at)
+                    }(),
+                    now: now
+                ),
                 stream5Confirmed: ble.liveStream5NotifyConfirmed,
                 batteryPercent: core.batteryLevel >= 0 ? core.batteryLevel : nil,
                 officialAppRisk: ble.officialAppCoexistenceRisk.rawValue,
@@ -13711,6 +13720,19 @@ final class AtriaHomeModel {
             lastAcceptedAt: lastAcceptedAt,
             latestSampleAt: latestSampleAt
         ), now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
+    }
+
+    /// Compact 0x33 is live IMU on WHOOP 4. Diagnosis used only R10
+    /// `lastAcceptedMotionFrameAt`, so a post-install pull showed Connected
+    /// HR with missing IMU while type-33 packets were already flowing.
+    nonisolated static func diagnosisIMUAgeSeconds(
+        motionCapturedAt: Date?,
+        compactAssembledAt: Date?,
+        now: Date
+    ) -> Double? {
+        guard let captured = [motionCapturedAt, compactAssembledAt].compactMap({ $0 }).max(),
+              now >= captured else { return nil }
         return now.timeIntervalSince(captured)
     }
 
