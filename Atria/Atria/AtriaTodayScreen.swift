@@ -402,26 +402,12 @@ struct AtriaTodayScreen: View {
                                          pulseStore: pulseStore)
             }
 
-            // Compact read first: after saved workouts + highlights it sat in
-            // the glass tab's resting overlap (device 2026-09-17).
-            if !sessionProjectionStore.state.learnedInsights.isEmpty
-                || !sessionProjectionStore.state.learnedInsightLedger.isEmpty {
-                Button {
-                    showInsights = true
-                } label: {
-                    AtriaLearnedInsightsBoard(
-                        insights: sessionProjectionStore.state.learnedInsights,
-                        ledger: sessionProjectionStore.state.learnedInsightLedger,
-                        usesOwnCard: true,
-                        style: .compactBar
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-
-            // Keep yesterday's saved sessions on the first screen. Below the
-            // compact read they sat under the glass tab capsule and never
-            // read as workouts (device 2026-09-17 11:35).
+            // Master Sleep / Recovery / Strain rings already own this screen.
+            // A "Today's read" compact bar cloned those three families as
+            // another hero (device 2026-09-18). Sentences live in the Insights
+            // sheet from the glance tile / menu — not under the rings.
+            // Keep yesterday's saved sessions on the first screen so they
+            // are not under the glass tab capsule (device 2026-09-17 11:35).
             if !recentSavedWorkouts.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(recentSavedWorkouts) { workout in
@@ -436,9 +422,9 @@ struct AtriaTodayScreen: View {
                 }
             }
 
-            // Master rings + Today's read already carry RHR/sleep/strain.
-            // Highlights duplicated that as "3 bpm below usual" and sat
-            // under the glass tab (device 2026-09-18 11:09).
+            // Master rings already carry RHR/sleep/strain. Highlights
+            // duplicated that as "3 bpm below usual" and sat under the
+            // glass tab (device 2026-09-18 11:09).
 #if DEBUG
             if Self.debugShowsNorthStarHighlights(arguments: ProcessInfo.processInfo.arguments),
                !highlights.isEmpty {
@@ -1073,6 +1059,11 @@ struct AtriaTodayScreen: View {
                     .controlSize(.small)
                     .buttonBorderShape(.circle)
                 Menu {
+                    Button {
+                        showInsights = true
+                    } label: {
+                        Label("Today's read", systemImage: "text.alignleft")
+                    }
                     Button {
                         withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             glanceLayoutBars.toggle()

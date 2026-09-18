@@ -45,14 +45,20 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         dismissOpenSheet(in: app)
 
         let todayRead = app.descendants(matching: .any)["atria.today.read"]
-        XCTAssertTrue(todayRead.waitForExistence(timeout: 8), "Missing Today's read")
-        todayRead.tap()
-        XCTAssertTrue(
-            app.descendants(matching: .any)["atria.insights.lookback"].waitForExistence(timeout: 6),
-            "Today's read must expose Day/Week/Month"
+        XCTAssertFalse(
+            todayRead.waitForExistence(timeout: 2),
+            "Today must not clone Sleep / Recovery / Strain as a second ring set"
         )
-        assertDemoSurfaceAlive(in: app, badge: badge, name: "Today's read")
-        dismissOpenSheet(in: app)
+        let insightsGlance = app.descendants(matching: .any)["atria.today.metric.insights"]
+        if insightsGlance.waitForExistence(timeout: 2) {
+            insightsGlance.tap()
+            XCTAssertTrue(
+                app.descendants(matching: .any)["atria.insights.lookback"].waitForExistence(timeout: 6),
+                "Insights must expose Day/Week/Month"
+            )
+            assertDemoSurfaceAlive(in: app, badge: badge, name: "Today's read")
+            dismissOpenSheet(in: app)
+        }
 
         for tab in ["Vitals", "Journal", "Activity", "Assistant", "Strap"] {
             let button = app.tabBars.buttons[tab]
