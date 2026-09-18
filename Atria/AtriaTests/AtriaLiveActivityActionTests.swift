@@ -808,7 +808,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateAvailability: .live,
             stepsAvailability: .stale,
             sensorHasContact: true
-        ), freshHeartRate.addingTimeInterval(6),
+        ), freshHeartRate.addingTimeInterval(AtriaHomeModel.liveHeartRateFreshnessInterval),
         "stale steps stay labelled stale, but must not mark current HR and workout metrics globally stale")
 
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
@@ -954,7 +954,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"), encoding: .utf8)
 
-        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(6)"))
+        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(15)"))
         XCTAssertTrue(source.contains("state.stepsCapturedAt?.addingTimeInterval(15)"))
         XCTAssertTrue(source.contains("state.batteryCapturedAt?.addingTimeInterval(10 * 60)"))
         XCTAssertTrue(source.contains("expiry > canonicalState.appliedAt"),
@@ -1241,7 +1241,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             fallback: sample,
             heartRateAvailability: .live,
             sensorHasContact: true
-        ), sample.addingTimeInterval(6))
+        ), sample.addingTimeInterval(AtriaHomeModel.liveHeartRateFreshnessInterval))
     }
 
     func testLiveActivityHoldsLastKnownHeartRateWhenTheSessionClears() {

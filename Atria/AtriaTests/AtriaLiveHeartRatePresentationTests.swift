@@ -23,11 +23,42 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
             sensorHasContact: true,
             status: .connected,
             latestSampleHeartRate: 78,
-            latestSampleAt: now.addingTimeInterval(-7),
+            latestSampleAt: now.addingTimeInterval(-16),
             now: now
         )
 
         XCTAssertEqual(heartRate, 0)
+    }
+
+    func testTenSecondIdleBeatStillPresents() {
+        let heartRate = AtriaHomeModel.resolvedLiveHeartRate(
+            heartRate: 82,
+            sensorHasContact: true,
+            status: .connected,
+            latestSampleHeartRate: 82,
+            latestSampleAt: now.addingTimeInterval(-10.3),
+            now: now
+        )
+
+        XCTAssertEqual(heartRate, 82)
+    }
+
+    func testConnectingWithFreshSamplePresentsHeartRate() {
+        let heartRate = AtriaHomeModel.resolvedLiveHeartRate(
+            heartRate: 82,
+            sensorHasContact: true,
+            status: .connecting,
+            latestSampleHeartRate: 82,
+            latestSampleAt: now.addingTimeInterval(-4),
+            now: now
+        )
+
+        XCTAssertEqual(heartRate, 82)
+    }
+
+    func testLiveHeartRateWindowMatchesDiagnosisStaleSeconds() {
+        XCTAssertEqual(AtriaHomeModel.liveHeartRateFreshnessInterval,
+                       AtriaDiagnosisReport.liveStaleSeconds)
     }
 
     func testMissingTimestampDoesNotPresentCachedHeartRate() {

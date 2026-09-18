@@ -1925,8 +1925,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("private let atriaBatteryChargeFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaStaticHeartRateFreshness: TimeInterval = 65"),
                       "Static Last HR must cover the bounded one-minute WidgetKit delivery cadence")
-        XCTAssertTrue(widgetSource.contains("private let atriaLiveHeartRateFreshness: TimeInterval = 6"),
-                      "Live Activity must retain the app's six-second HR authority")
+        XCTAssertTrue(widgetSource.contains("private let atriaLiveHeartRateFreshness: TimeInterval = 15"),
+                      "Live Activity must keep the same 15s HR window as Today / diagnosis")
         XCTAssertTrue(widgetSource.contains("private let atriaStaticStepFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaLiveActivityStepFreshness: TimeInterval = 15"))
         XCTAssertTrue(widgetSource.contains("age <= freshness"))
@@ -3094,7 +3094,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             "private let atriaStaticHeartRateFreshness: TimeInterval = 65"
         ))
         XCTAssertTrue(widget.contains(
-            "private let atriaLiveHeartRateFreshness: TimeInterval = 6"
+            "private let atriaLiveHeartRateFreshness: TimeInterval = 15"
         ))
         XCTAssertTrue(widget.contains("zone: entry.snapshot?.recoveryZone"))
         XCTAssertTrue(widget.contains("snapshot.sleepFillFraction"),

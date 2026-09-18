@@ -3497,7 +3497,7 @@ struct AtriaHomeView: View {
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
         let pulse = model.pulseLiveStore.state
-        // Pulse zeros after the six-second live window, on contact loss, and
+        // Pulse zeros after `liveHeartRateFreshnessInterval`, on contact loss, and
         // across the workout session-boundary reset. ActivityKit still needs
         // the last real BPM/zone so the Lock Screen does not go `--`.
         let lastKnownSample = ble.session.last
@@ -10267,7 +10267,11 @@ struct AtriaHomeLivePresentationAuthority: Equatable, Sendable {
 
 @MainActor
 final class AtriaHomeModel {
-    nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
+    /// Idle 2A37 on this strap is often 8–12s, not 1Hz. Device 2026-09-18 10:26
+    /// IST on build 134: diagnosis `hrAgeSeconds=10.3` / Live Activity 82 bpm
+    /// while Today showed Reading… / Finding because this window was 6s.
+    /// Keep it aligned with `AtriaDiagnosisReport.liveStaleSeconds`.
+    nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 15
     /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
     var liveWorkoutIsActive = false
     private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
@@ -12439,7 +12443,7 @@ final class AtriaHomeModel {
     }
 
     /// A permanent 1 Hz timer used to wake the main run loop for the entire app
-    /// lifetime just to expire a six-second-old pulse. One coalesced sleeper is
+    /// lifetime just to expire a pulse past `liveHeartRateFreshnessInterval`. One coalesced sleeper is
     /// enough: while samples keep arriving it wakes at most once per freshness
     /// window and moves to the newest deadline; after the stream stops it clears
     /// the UI once and does not re-arm.
@@ -13648,12 +13652,17 @@ final class AtriaHomeModel {
                                                   latestSampleHeartRate: Int?,
                                                   latestSampleAt: Date?,
                                                   now: Date = Date()) -> Int {
-        guard status == .connected,
-              sensorHasContact,
+        guard sensorHasContact,
               let latestSampleAt,
               let latestSampleHeartRate,
               latestSampleHeartRate > 0 else {
             return 0
+        }
+        switch status {
+        case .poweredOff, .disconnected:
+            return 0
+        case .connected, .connecting, .scanning:
+            break
         }
         let sampleAge = now.timeIntervalSince(latestSampleAt)
         guard sampleAge >= 0,
