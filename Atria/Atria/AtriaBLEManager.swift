@@ -4808,6 +4808,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) == nil
     }
 
+    /// Same clock diagnosis uses: newest of R10 / assembled compact second /
+    /// native 0x33 packet. Sitting skip can leave assembled stale while
+    /// packets still flow; those packets must not look like an IMU drop.
+    nonisolated static func liveIMUEvidenceAgeSeconds(
+        rawFrameAt: Date?,
+        compactSecondAt: Date?,
+        compactPacketAt: Date?,
+        now: Date
+    ) -> TimeInterval? {
+        guard let captured = [rawFrameAt, compactSecondAt, compactPacketAt]
+            .compactMap({ $0 }).max(),
+              now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
+    }
+
+    /// `pure_hr_v10` fallback keeps 2A37 by suppressing R10. Compact 0x33 then
+    /// idles off and nothing writes 6A/51 (device 2026-09-18: packets stopped
+    /// 14:01 IST, HR age 0.02s, `liveR10Eligible=false`, IMU 37 min stale).
+    /// Same-link 6A/51 on a live HR epoch, 45s paced, no reconnect / 0x3F.
+    nonisolated static func shouldRefreshIMUOnLiveHeartRateFallback(
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        connected: Bool,
+        historyOwnsTransport: Bool,
+        heartRateNotifying: Bool,
+        imuAge: TimeInterval?,
+        lastActivationAge: TimeInterval?,
+        staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds,
+        minimumActivationInterval: TimeInterval = r10LivenessRearmMinimumInterval
+    ) -> Bool {
+        let fallbackOwner = owner == .pureHRV10 || owner == .pureHRV8
+        let fallbackState = state == .fallbackActive || state == .fallbackPending
+        guard fallbackOwner || fallbackState else { return false }
+        guard connected, !historyOwnsTransport, heartRateNotifying else { return false }
+        let stale = imuAge.map { $0 > staleInterval } ?? true
+        guard stale else { return false }
+        if let lastActivationAge, lastActivationAge >= 0,
+           lastActivationAge < minimumActivationInterval {
+            return false
+        }
+        return true
+    }
+
     /// CoreBluetooth `isNotifying` can be false while 2A37 samples still
     /// arrive. A fresh HR sample is enough proof the HR epoch is up, so IMU
     /// 6A/51 recovery must not wait on the CCCD flag.
@@ -31217,6 +31260,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
                 .map { now.timeIntervalSince($0) }
         )
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+        let lastActivationAge = lastActivationAt.map { now.timeIntervalSince($0) }
+        let fallbackIMU = Self.shouldRefreshIMUOnLiveHeartRateFallback(
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            connected: peripheral?.state == .connected,
+            historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
+            heartRateNotifying: hrLive,
+            imuAge: imuAge,
+            lastActivationAge: lastActivationAge
+        )
         if let blocker = Self.protectedBoundedRawCaptureRefreshBlocker(
             standardHROnlyMode: standardHROnlyMode,
             streamSuppressed: protectedR10StreamSuppressed,
@@ -31227,14 +31286,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: peripheral?.state == .connected,
             stream5Notifying: stream5Live,
             heartRateNotifying: hrLive,
-            lastFrameAge: currentR10LivenessLastMotionAt(now: now).map {
-                now.timeIntervalSince($0)
-            },
-            lastActivationAge: lastActivationAt.map { now.timeIntervalSince($0) }
+            lastFrameAge: fallbackIMU
+                ? imuAge
+                : currentR10LivenessLastMotionAt(now: now).map {
+                    now.timeIntervalSince($0)
+                },
+            lastActivationAge: lastActivationAge
         ) {
-            defaults.set(blocker, forKey: RadioDefaults.lastIMURecoverySkipReason)
-            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
-            return false
+            if fallbackIMU,
+               blocker == "stream_suppressed"
+                || blocker.hasPrefix("owner_")
+                || blocker.hasPrefix("state_") {
+                defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
+            } else {
+                defaults.set(blocker, forKey: RadioDefaults.lastIMURecoverySkipReason)
+                defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+                return false
+            }
         }
         guard let peripheral,
            peripheral.state == .connected,
@@ -31544,11 +31612,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             assignIfChanged(\.rangeLossBackfillPending, false)
         }
+        let connected = status == .connected && peripheral?.state == .connected
+        let eligible = r10TransportIsExpected
+        let fallbackIMU = connected
+            && Self.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: protectedR10CleanOwner,
+                state: protectedR10CleanOwnerState,
+                connected: connected,
+                historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+                heartRateNotifying: Self.heartRateEpochAllowsIMURefresh(
+                    characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+                    lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                        .map { now.timeIntervalSince($0) }
+                ),
+                imuAge: Self.liveIMUEvidenceAgeSeconds(
+                    rawFrameAt: currentR10MotionFrameAt(),
+                    compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                    compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                    now: now
+                ),
+                lastActivationAge: (UserDefaults.standard.object(
+                    forKey: Self.protectedR10ActivationSentAtKey
+                ) as? Double).map { now.timeIntervalSince(Date(timeIntervalSince1970: $0)) }
+            )
         if sendCoverLiveBoundedRawCaptureIfNeeded(
             now: now,
             reason: "\(reason)_cover_live_51"
         ) {
             // same-link 51
+        } else if fallbackIMU {
+            _ = refreshProtectedBoundedRawCaptureIfNeeded(
+                now: now,
+                reason: "\(reason)_pure_hr_imu"
+            )
         } else if protectedR10StreamSuppressed,
                   UserDefaults.standard.object(
                     forKey: OfflineSyncDefaults.historyCoverLiveUnix
@@ -31558,8 +31654,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "\(reason)_all_day_passive_requalify"
             )
         }
-        let connected = status == .connected && peripheral?.state == .connected
-        let eligible = r10TransportIsExpected
         if Self.shouldOpenWorkoutMotionGapForUnavailableR10(
             motionLeaseHeld: workoutMotionOwnerStartedAt != nil,
             historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,

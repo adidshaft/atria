@@ -12088,6 +12088,88 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    func testPureHRFallbackRearmsCompactIMUOnLiveHeartRateWithoutReconnect() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 37 * 60,
+                lastActivationAge: 11 * 60
+            ),
+            "device 2026-09-18: 0x33 idle-off in pure_hr_v10 must same-link 6A/51"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 2,
+                lastActivationAge: 11 * 60
+            ),
+            "live 0x33 packets must not look like an IMU drop"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 90,
+                lastActivationAge: 20
+            ),
+            "45s pace keeps 6A/51 from becoming a disconnect storm"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .protectedV9,
+                state: .qualified,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 90,
+                lastActivationAge: 11 * 60
+            ),
+            "qualified v9 stays on the existing silent-stream refresh"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: true,
+                heartRateNotifying: true,
+                imuAge: 90,
+                lastActivationAge: 11 * 60
+            )
+        )
+        let packetFresh = AtriaBLEManager.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: now.addingTimeInterval(-40),
+            compactSecondAt: now.addingTimeInterval(-40),
+            compactPacketAt: now.addingTimeInterval(-1),
+            now: now
+        )
+        XCTAssertEqual(packetFresh ?? -1, 1, accuracy: 0.01)
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: packetFresh,
+                lastActivationAge: 11 * 60
+            ),
+            "sitting skip with live type-33 packets is not an IMU drop"
+        )
+    }
+
     func testCompactIMUPacketsCountAsR10LivenessEvidence() throws {
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
