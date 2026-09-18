@@ -1535,6 +1535,120 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(merged.isEmpty)
     }
 
+    func testAuthoritativeRebuildKeepsHoleyUserAdjustedNightWhenSleepStillExists() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let start = calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 14, hour: 23, minute: 21
+        ))!
+        let span: TimeInterval = 27_648.603010058403
+        let measured: TimeInterval = 5_112.069190979004
+        let end = start.addingTimeInterval(span)
+        let day = calendar.startOfDay(for: end)
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 18, hour: 12
+        )))
+        let night = UserConfirmedSleep(
+            id: "1789408260-1789435909-user_adjusted_sleep",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "user_adjusted_sleep",
+            confidence: "user_adjusted_hr_only",
+            sessions: 1,
+            samples: 5_059,
+            avgHR: 60,
+            peakHR: 90,
+            restingHR: 67,
+            hrv: 40,
+            hrvWindowCount: 26,
+            duration: measured,
+            span: span,
+            reason: "device holey overnight",
+            motionSource: "user_adjusted",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        let frozen = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 52,
+            recoveryConfidence: "unverified",
+            hrv: 49,
+            restingHR: 61,
+            respiratoryRate: nil,
+            sleepDuration: 15_693,
+            sleepSpan: span,
+            sleepStart: start,
+            sleepEnd: end,
+            sleepSource: "user_adjusted_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.6
+        )
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [day],
+            calendar: calendar
+        )
+        let preserved = try XCTUnwrap(merged.first { calendar.isDate($0.day, inSameDayAs: day) })
+        XCTAssertEqual(preserved.recoveryPercent, 52)
+        XCTAssertEqual(preserved.hrv, 49)
+        XCTAssertEqual(preserved.restingHR, 61)
+
+        let cancellable = try XCTUnwrap(SessionStore.mergeDailyMetricHistoryCancellable(
+            existing: [frozen],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [day],
+            calendar: calendar,
+            shouldContinue: { true }
+        ))
+        let cancellablePreserved = try XCTUnwrap(
+            cancellable.first { calendar.isDate($0.day, inSameDayAs: day) }
+        )
+        XCTAssertEqual(cancellablePreserved.recoveryPercent, 52)
+        XCTAssertEqual(cancellablePreserved.hrv, 49)
+
+        let recomputed = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        )
+        let reminted = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: recomputed,
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        )
+        let updated = try XCTUnwrap(reminted.first { calendar.isDate($0.day, inSameDayAs: day) })
+        XCTAssertEqual(updated.recoveryPercent, 52,
+                       "a holey remint that cannot score Recovery must keep the frozen morning")
+        XCTAssertEqual(updated.hrv, 40)
+        XCTAssertEqual(updated.restingHR, 67)
+    }
+
     func testAuthoritativeTodayDeletionRemovesFrozenMetricWithoutFreshEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!

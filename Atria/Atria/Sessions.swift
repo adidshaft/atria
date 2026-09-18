@@ -22849,7 +22849,39 @@ final class SessionStore: ObservableObject {
         let rebuiltStillHasTheNight = (rebuilt.sleepDuration ?? 0) > 0
         if rebuiltStillHasTheNight,
            dailyRecoveryInputsChanged(frozen: existing, fresh: rebuilt) {
-            return rebuiltWithMeasuredRHR
+            // A requalification/rebuild that still has the night but cannot
+            // score Recovery must not punch the morning out. Keep the frozen
+            // percent and take the rebuilt HRV/RHR/sleep (device 2026-09-18:
+            // Sep 15 coverage dropped to 1h 25m, HRV 40, Recovery stayed 52).
+            if rebuilt.recoveryPercent != nil || existing.recoveryPercent == nil {
+                return rebuiltWithMeasuredRHR
+            }
+            return SavedDailyMetric(
+                day: rebuilt.day,
+                recoveryPercent: existing.recoveryPercent,
+                recoveryConfidence: existing.recoveryConfidence,
+                hrv: rebuilt.hrv ?? existing.hrv,
+                restingHR: rebuilt.restingHR ?? existing.restingHR,
+                respiratoryRate: rebuilt.respiratoryRate ?? existing.respiratoryRate,
+                sleepDuration: rebuilt.sleepDuration ?? existing.sleepDuration,
+                sleepNeedSeconds: rebuilt.sleepNeedSeconds ?? existing.sleepNeedSeconds,
+                sleepSpan: rebuilt.sleepSpan ?? existing.sleepSpan,
+                sleepStart: rebuilt.sleepStart ?? existing.sleepStart,
+                sleepEnd: rebuilt.sleepEnd ?? existing.sleepEnd,
+                sleepSource: rebuilt.sleepSource ?? existing.sleepSource,
+                sleepStageSegments: rebuilt.sleepStageSegments.isEmpty
+                    ? existing.sleepStageSegments
+                    : rebuilt.sleepStageSegments,
+                sleepConsistencyPercent: rebuilt.sleepConsistencyPercent
+                    ?? existing.sleepConsistencyPercent,
+                strain: rebuilt.strain,
+                strainCoverageFraction: rebuilt.strainCoverageFraction,
+                strainEvidenceQuality: rebuilt.strainEvidenceQuality,
+                dayTRIMP: rebuilt.dayTRIMP,
+                skinTemperatureDeviationCelsius: rebuilt.skinTemperatureDeviationCelsius
+                    ?? existing.skinTemperatureDeviationCelsius,
+                recoverySummary: existing.recoverySummary
+            )
         }
         return SavedDailyMetric(
             day: rebuilt.day,
@@ -22890,6 +22922,28 @@ final class SessionStore: ObservableObject {
             || frozen.hrv != fresh.hrv
             || frozen.restingHR != fresh.restingHR
             || frozen.respiratoryRate != fresh.respiratoryRate
+    }
+
+    /// HRV requalification used to mark a wake day authoritative and then
+    /// rebuild with an empty computed set, which punched overnight HRV /
+    /// Recovery / RHR out of the rollup while fitness-age kept the civil row
+    /// (device 2026-09-18: Sep 15 49 vanished). Keep that morning while a
+    /// confirmed non-nap sleep still owns the day.
+    nonisolated static func retainsSleepBackedDailyMetricWhenRebuildOmitsDay(
+        existing: SavedDailyMetric,
+        sleep: SleepHistorySnapshot,
+        calendar: Calendar
+    ) -> Bool {
+        guard (existing.sleepDuration ?? 0) > 0,
+              existing.recoveryPercent != nil || existing.hrv != nil else {
+            return false
+        }
+        let day = calendar.startOfDay(for: existing.day)
+        return sleep.nights.contains { night in
+            guard night.confirmed, !night.isNapEvidence else { return false }
+            let wake = calendar.startOfDay(for: night.end ?? night.day)
+            return calendar.isDate(wake, inSameDayAs: day)
+        }
     }
 
     /// A confirmed night is the authoritative source for the frozen morning
@@ -22939,12 +22993,18 @@ final class SessionStore: ObservableObject {
                 // not skip the overnight freeze just because the day is
                 // marked authoritative (device 2026-09-17: last night 76
                 // became 74 after a 108 relaunch while sleep/HRV/RHR stayed
-                // 7h15m / 77 / 55). Deletion remains `computed` empty.
+                // 7h15m / 77 / 55). Deletion remains `computed` empty AND no
+                // confirmed non-nap sleep for that wake day.
                 merged[day] = dailyMetricPreservingFrozenOvernightScore(
                     rebuilt: rebuilt,
                     existing: metric
                 )
-            } else if !normalizedAuthoritativeDays.contains(day) {
+            } else if !normalizedAuthoritativeDays.contains(day)
+                        || retainsSleepBackedDailyMetricWhenRebuildOmitsDay(
+                            existing: metric,
+                            sleep: sleep,
+                            calendar: calendar
+                        ) {
                 merged[day] = metric
             }
         }
@@ -23022,7 +23082,10 @@ final class SessionStore: ObservableObject {
                       blankRecoveryNeedsMint
                         || missingHRVProvenanceNeedsMint
                         || dailyRecoveryInputsChanged(frozen: frozenToday, fresh: freshMorning) {
-                freshMorning
+                dailyMetricPreservingFrozenOvernightScore(
+                    rebuilt: freshMorning,
+                    existing: frozenToday
+                )
             } else {
                 frozenToday
             }
@@ -23102,11 +23165,8 @@ final class SessionStore: ObservableObject {
         for (index, metric) in existing.enumerated() {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
             let day = calendar.startOfDay(for: metric.day)
-            if merged[day] == nil,
-               !normalizedAuthoritativeDays.contains(day) {
-                merged[day] = metric
-            } else if let rebuilt = merged[day],
-                      !calendar.isDate(day, inSameDayAs: today) {
+            if let rebuilt = merged[day],
+               !calendar.isDate(day, inSameDayAs: today) {
                 // A rebuild that cannot OBSERVE a measured fact must not assert
                 // its absence.
                 //
@@ -23136,6 +23196,16 @@ final class SessionStore: ObservableObject {
                     rebuilt: rebuilt,
                     existing: metric
                 )
+            } else if merged[day] == nil {
+                let keepHistoricalNight = !calendar.isDate(day, inSameDayAs: today)
+                    && Self.retainsSleepBackedDailyMetricWhenRebuildOmitsDay(
+                        existing: metric,
+                        sleep: sleep,
+                        calendar: calendar
+                    )
+                if !normalizedAuthoritativeDays.contains(day) || keepHistoricalNight {
+                    merged[day] = metric
+                }
             }
             if frozenToday == nil,
                calendar.isDate(metric.day, inSameDayAs: today) {
@@ -23210,7 +23280,10 @@ final class SessionStore: ObservableObject {
                         frozen: frozenToday,
                         fresh: freshMorning
                      ) {
-                    base = freshMorning
+                    base = Self.dailyMetricPreservingFrozenOvernightScore(
+                        rebuilt: freshMorning,
+                        existing: frozenToday
+                    )
                 } else {
                     base = frozenToday
                 }
@@ -43277,6 +43350,12 @@ final class SessionStore: ObservableObject {
             // physiological day never moved and daytime HR 72 overwrote the
             // night's resting 58. Twenty minutes in an 8-hour window still
             // fails both legs.
+            //
+            // Device 2026-09-18: a user-adjusted 23:21–07:01 night had 1h 25m
+            // of strap coverage after evidence refresh. That is below the 3h
+            // floor, so remint omitted the morning and Week HRV lost 49.
+            // An overnight-shaped window with at least an hour of measured
+            // coverage is still the night the user named.
             let span = end.timeIntervalSince(start)
             guard span > 0,
                   span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
@@ -43287,7 +43366,9 @@ final class SessionStore: ObservableObject {
                 >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
             let substantialNight = measuredDuration
                 >= AtriaPhysiologicalCycle.minimumMainSleepDuration
-            return denselyObserved || substantialNight
+            let holeyOvernight = span >= AtriaPhysiologicalCycle.minimumMainSleepDuration
+                && measuredDuration >= 60 * 60
+            return denselyObserved || substantialNight || holeyOvernight
         }
         return measuredDuration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
     }
@@ -57066,20 +57147,15 @@ final class SessionStore: ObservableObject {
                                                             succeeded: false)
         }
 
-        let filteredMetrics = dailyMetricHistory.filter { metric in
-            !changedDays.contains(calendar.startOfDay(for: metric.day))
-        }
-        if filteredMetrics != dailyMetricHistory {
-            dailyMetricHistory = filteredMetrics
-            scheduleDailyMetricPersist(reason: "confirmed_sleep_hrv_requalification")
-        }
-        dailyRollupStore.reconcile([], replacingDays: changedDays)
-        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
-        dailyRollupHistoryRevision &+= 1
+        // Do not empty-reconcile or drop dailyMetricHistory here. That punched
+        // overnight HRV/Recovery/RHR out of days that still have a confirmed
+        // sleep when remint later skipped the night (device 2026-09-18 Sep 15).
+        // Keep the morning until prepareDailyMetricRollupPreparation writes a
+        // replacement; merge retains sleep-backed rows when computed is empty.
         if !deferDerivedPublication {
             refreshHistorySnapshotCache(deferred: true)
         }
-        AtriaDebugLog("ATRIADBG confirmed_sleep_hrv_requalification status=updated reason=%@ changed_records=%d invalidated_days=%d action=recompute_from_verified_rr",
+        AtriaDebugLog("ATRIADBG confirmed_sleep_hrv_requalification status=updated reason=%@ changed_records=%d invalidated_days=%d action=retain_overnight_until_remint",
                       reason,
                       changedSleeps.count,
                       changedDays.count)
