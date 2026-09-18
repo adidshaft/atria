@@ -3098,18 +3098,27 @@ struct AtriaActivityMonitorTab: View {
     private func sleepRow(_ night: SleepHistorySnapshot.Night) -> some View {
         let isNap = night.isNapEvidence
         let tint: Color = isNap ? .indigo : Metrics.electricSleep
-        return activityRow(icon: isNap ? "moon.zzz.fill" : "bed.double.fill",
-                           tint: tint,
-                           title: isNap ? "Nap" : "Sleep",
-                           subtitle: Self.timeRange(start: night.start, end: night.end),
-                           value: night.durationText,
-                           badge: AtriaActivitySleepStatusPresentation.badge(
+        return VStack(alignment: .leading, spacing: 8) {
+            activityRow(icon: isNap ? "moon.zzz.fill" : "bed.double.fill",
+                        tint: tint,
+                        title: isNap ? "Nap" : "Sleep",
+                        subtitle: Self.timeRange(start: night.start, end: night.end),
+                        value: night.durationText,
+                        badge: AtriaActivitySleepStatusPresentation.badge(
                             confirmed: night.confirmed,
                             confidence: night.confidence
-                           ),
-                           context: nil,
-                           contextTint: .secondary)
-            .accessibilityLabel("\(isNap ? "Nap" : "Sleep"), \(night.durationText), \(Self.timeRange(start: night.start, end: night.end)). Tap to adjust.")
+                        ),
+                        context: nil,
+                        contextTint: .secondary,
+                        chrome: false)
+            if !night.displayStageSegments.isEmpty {
+                AtriaSleepStageCompactStrip(night: night, usesOwnCard: false)
+            }
+        }
+        .padding(10)
+        .atriaInsetCard(tint: tint)
+        .contentShape(Rectangle())
+        .accessibilityLabel("\(isNap ? "Nap" : "Sleep"), \(night.durationText), \(Self.timeRange(start: night.start, end: night.end)). Tap to adjust.")
     }
 
     private func workoutRow(_ workout: UserConfirmedWorkout) -> some View {
@@ -3218,6 +3227,7 @@ struct AtriaActivityMonitorTab: View {
         return "Strain \(String(format: "%.1f", strain))"
     }
 
+    @ViewBuilder
     private func activityRow(icon: String,
                              tint: Color,
                              title: String,
@@ -3225,8 +3235,9 @@ struct AtriaActivityMonitorTab: View {
                              value: String,
                              badge: String,
                              context: String?,
-                             contextTint: Color) -> some View {
-        HStack(spacing: 12) {
+                             contextTint: Color,
+                             chrome: Bool = true) -> some View {
+        let row = HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.callout.weight(.bold))
                 .foregroundStyle(tint)
@@ -3271,9 +3282,14 @@ struct AtriaActivityMonitorTab: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(10)
-        .atriaInsetCard(tint: tint)
-        .contentShape(Rectangle())
+        if chrome {
+            row
+                .padding(10)
+                .atriaInsetCard(tint: tint)
+                .contentShape(Rectangle())
+        } else {
+            row
+        }
     }
 
     // MARK: - Formatting

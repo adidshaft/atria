@@ -387,16 +387,6 @@ struct AtriaTodayScreen: View {
                                 value: compactRingPresentation)
                     .overlay(alignment: .topTrailing) { topActionMenu }
             }
-            if let night = latestSleep,
-               !night.displayStageSegments.isEmpty {
-                Button {
-                    openMetricDetail(.sleep)
-                } label: {
-                    AtriaTodaySleepStageStrip(night: night)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("Opens sleep stages.")
-            }
             // Says what the app is doing with last night instead of saying
             // nothing while it settles. Sits under the hero because it is about
             // the night the ring is already showing.

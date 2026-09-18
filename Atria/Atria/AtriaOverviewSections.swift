@@ -4804,10 +4804,10 @@ struct AtriaMetricDetailSheet: View {
         case .sleep:
             // Minimalism restructure (owner directive 2026-08-29, "the sleep
             // tab has 1000s of things"): above the fold = hero, chart,
-            // hypnogram, one neutral 4-up stat row, reveal — 5 blocks. The
-            // plan card, need ledger and About live behind the reveal. The
-            // debt-trend card mount was DELETED: it re-plotted the same data
-            // the main chart already shows in W/M.
+            // hypnogram, last-night stage rows, one neutral 4-up stat row,
+            // reveal. The plan card, need ledger and About live behind the
+            // reveal. The debt-trend card mount was DELETED: it re-plotted
+            // the same data the main chart already shows in W/M.
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
@@ -4817,6 +4817,20 @@ struct AtriaMetricDetailSheet: View {
                     // building states itself for unvalidated nights.
                     AtriaSleepHypnogramCard(night: latest,
                                             motionAvailability: strapMotionAvailability)
+                    if let start = latest.start, let end = latest.end, end > start,
+                       !latest.displayStageSegments.isEmpty {
+                        AtriaSleepStageRowStrip(
+                            segments: latest.displayStageSegments,
+                            windowStart: start,
+                            windowEnd: end,
+                            isEstimated: latest.isEstimatedStageDisplay,
+                            confidenceTier: latest.estimateConfidenceTier,
+                            eventTimeZoneIdentifier: latest.eventTimeZoneIdentifier
+                        )
+                        .padding(.vertical, 10)
+                        .padding(.horizontal, 12)
+                        .atriaInsetCard(tint: Metrics.electricSleep)
+                    }
                 }
                 sleepStatSummaryRow
             } contributors: {
