@@ -3063,10 +3063,8 @@ struct AtriaActivityMonitorTab: View {
     private func entryRow(_ entry: Entry) -> some View {
         switch entry {
         case .sleep(let night):
-            // Review-first (user feedback 2026-08-06: tapping a sleep opened
-            // the bare time editor with no visualization). The review sheet
-            // hosts the shared hypnogram + stage breakdown; editing is a
-            // button inside it.
+            // Review-first: tapping a sleep opens the night sheet. The list
+            // itself is just Sleep / Nap / duration — stages live inside.
             Button { sleepDetail = night } label: { sleepRow(night) }
                 .buttonStyle(AtriaPressableCardStyle())
         case .workout(let workout):
@@ -3098,27 +3096,18 @@ struct AtriaActivityMonitorTab: View {
     private func sleepRow(_ night: SleepHistorySnapshot.Night) -> some View {
         let isNap = night.isNapEvidence
         let tint: Color = isNap ? .indigo : Metrics.electricSleep
-        return VStack(alignment: .leading, spacing: 8) {
-            activityRow(icon: isNap ? "moon.zzz.fill" : "bed.double.fill",
-                        tint: tint,
-                        title: isNap ? "Nap" : "Sleep",
-                        subtitle: Self.timeRange(start: night.start, end: night.end),
-                        value: night.durationText,
-                        badge: AtriaActivitySleepStatusPresentation.badge(
-                            confirmed: night.confirmed,
-                            confidence: night.confidence
-                        ),
-                        context: nil,
-                        contextTint: .secondary,
-                        chrome: false)
-            if !night.displayStageSegments.isEmpty {
-                AtriaSleepStageCompactStrip(night: night, usesOwnCard: false)
-            }
-        }
-        .padding(10)
-        .atriaInsetCard(tint: tint)
-        .contentShape(Rectangle())
-        .accessibilityLabel("\(isNap ? "Nap" : "Sleep"), \(night.durationText), \(Self.timeRange(start: night.start, end: night.end)). Tap to adjust.")
+        return activityRow(icon: isNap ? "moon.zzz.fill" : "bed.double.fill",
+                    tint: tint,
+                    title: isNap ? "Nap" : "Sleep",
+                    subtitle: Self.timeRange(start: night.start, end: night.end),
+                    value: night.durationText,
+                    badge: AtriaActivitySleepStatusPresentation.badge(
+                        confirmed: night.confirmed,
+                        confidence: night.confidence
+                    ),
+                    context: nil,
+                    contextTint: .secondary)
+            .accessibilityLabel("\(isNap ? "Nap" : "Sleep"), \(night.durationText), \(Self.timeRange(start: night.start, end: night.end)). Tap for details.")
     }
 
     private func workoutRow(_ workout: UserConfirmedWorkout) -> some View {
@@ -5512,16 +5501,12 @@ struct AtriaSleepActivityReviewSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     header
-                    AtriaSleepHypnogramCard(night: night)
                     if !stageRows.isEmpty {
                         stageBreakdown
                     }
                     nightVitals
-                    // P6 (2026-08-20 design 2.1): the overnight HR trace is
-                    // stage-colored from the SAME display runs the hypnogram
-                    // card above draws, so the two surfaces cannot disagree;
-                    // estimate nights carry the mandatory estimate title in
-                    // the card's own legend (2.0 invariant).
+                    // Overnight HR is stage-colored from the same display
+                    // runs the row strip uses, so the two cannot disagree.
                     AtriaSleepStressCard(projection: overnightHRProjection,
                                          displayTimeZone: eventTimeZone,
                                          typicalRestingBand: typicalRestingBand,
@@ -5553,9 +5538,6 @@ struct AtriaSleepActivityReviewSheet: View {
                 .font(AtriaDesignTokens.Typography.cardHeroValue)
                 .monospacedDigit()
             if let start = night.start, let end = night.end {
-                // stageDisplayLabel: an HR-only night that renders estimated
-                // bars is titled "Estimated stages · HR-only" here so the
-                // header never contradicts the hypnogram below it.
                 Text("\(clockText(start)) – \(clockText(end)) · \(night.stageDisplayLabel)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -5567,12 +5549,8 @@ struct AtriaSleepActivityReviewSheet: View {
         }
     }
 
-    /// P5 (2026-08-20): the per-stage row strip replaces the P4 percent bars.
-    /// Same shares percent basis (the `stageRows` legend above gates the
-    /// mount), but the pixels now show WHERE each stage occurred on the real
-    /// clock — `AtriaSleepStageRowStrip` renders one occurrence lane per
-    /// display stage from the same pure span math as the hypnogram, and
-    /// co-renders the mandatory estimate title on HR-only estimate nights.
+    /// One stages surface: duration + occurrence lanes. The hypnogram
+    /// duplicated this timeline as bars.
     @ViewBuilder
     private var stageBreakdown: some View {
         if let start = night.start, let end = night.end, end > start {
@@ -5582,6 +5560,9 @@ struct AtriaSleepActivityReviewSheet: View {
                                     isEstimated: night.isEstimatedStageDisplay,
                                     confidenceTier: night.estimateConfidenceTier,
                                     eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .atriaInsetCard(tint: Metrics.electricSleep)
         }
     }
 

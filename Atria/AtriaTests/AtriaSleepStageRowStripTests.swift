@@ -243,6 +243,8 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
 
         XCTAssertTrue(sheet.contains("AtriaSleepStageRowStrip(segments: night.displayStageSegments"),
                       "the strip consumes only the honesty-gated display segments")
+        XCTAssertFalse(sheet.contains("AtriaSleepHypnogramCard("),
+                       "one stages surface: keep the row strip, drop the hypnogram")
         XCTAssertTrue(sheet.contains("isEstimated: night.isEstimatedStageDisplay"),
                       "the estimate co-render is driven by the night's own state")
         XCTAssertTrue(sheet.contains("confidenceTier: night.estimateConfidenceTier"),
@@ -267,7 +269,7 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
         XCTAssertFalse(today.contains("AtriaSleepHypnogramCard("))
     }
 
-    func testActivityMountsTheCompactStageStripOnSleepRows() throws {
+    func testActivityListsSleepWithoutInlineStages() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let activity = try String(
             contentsOf: testsDirectory
@@ -279,8 +281,10 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
         let end = try XCTUnwrap(activity.range(of: "private func workoutRow",
                                                range: start.lowerBound..<activity.endIndex))
         let sleepRow = String(activity[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(sleepRow.contains("AtriaSleepStageCompactStrip(night: night, usesOwnCard: false)"))
-        XCTAssertTrue(sleepRow.contains("!night.displayStageSegments.isEmpty"))
+        XCTAssertFalse(sleepRow.contains("AtriaSleepStageCompactStrip"))
+        XCTAssertFalse(sleepRow.contains("AtriaSleepStageRowStrip"))
+        XCTAssertFalse(sleepRow.contains("AtriaSleepHypnogramCard"))
+        XCTAssertTrue(sleepRow.contains("isNap ? \"Nap\" : \"Sleep\""))
         let strip = try String(
             contentsOf: testsDirectory
                 .deletingLastPathComponent()
@@ -290,9 +294,6 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
         XCTAssertTrue(strip.contains("struct AtriaSleepStageCompactStrip"))
         XCTAssertTrue(strip.contains("AtriaSleepStageEstimateLabel.title"))
         XCTAssertTrue(strip.contains("row.stage.symbolName"))
-        XCTAssertTrue(strip.contains("isEstimate: night.isEstimatedStageDisplay"))
-        XCTAssertTrue(strip.contains("displayMarkBudget(isEstimate:")
-                         || strip.contains("isEstimate: night.isEstimatedStageDisplay"))
     }
 
     func testSleepMetricDetailMountsTheStageRowStripForLastNight() throws {

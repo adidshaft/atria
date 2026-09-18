@@ -305,7 +305,6 @@ struct AtriaTodayScreen: View {
     @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
     @State private var showWeeklyReport = false
     @State private var showInsights = false
-    @State private var openedSavedWorkout: UserConfirmedWorkout?
     @State private var showBreathworkSession = false
     // The stress tile lands on stress INFORMATION (owner directive
     // 2026-08-29); breathwork stays reachable via the detail's Relax action.
@@ -406,21 +405,8 @@ struct AtriaTodayScreen: View {
             // A "Today's read" compact bar cloned those three families as
             // another hero (device 2026-09-18). Sentences live in the Insights
             // sheet from the glance tile / menu — not under the rings.
-            // Keep yesterday's saved sessions on the first screen so they
-            // are not under the glass tab capsule (device 2026-09-17 11:35).
-            if !recentSavedWorkouts.isEmpty {
-                VStack(spacing: 8) {
-                    ForEach(recentSavedWorkouts) { workout in
-                        Button {
-                            openedSavedWorkout = workout
-                        } label: {
-                            todaySavedWorkoutRow(workout)
-                        }
-                        .buttonStyle(AtriaPressableCardStyle())
-                        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
-                    }
-                }
-            }
+            // Saved Strength / Walking / sleep belong on Activity, not as
+            // recap rows under the rings.
 
             // Master rings already carry RHR/sleep/strain. Highlights
             // duplicated that as "3 bpm below usual" and sat under the
@@ -523,15 +509,6 @@ struct AtriaTodayScreen: View {
                 tagged: sessionProjectionStore.state.behaviorInsights
             )
             .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-        }
-        .sheet(item: $openedSavedWorkout) { workout in
-            AtriaActivityWorkoutDetailSheetHost(
-                store: store,
-                workout: workout,
-                stressMonitorStore: stressMonitorStore
-            )
-            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStrapStepsDetail) {
@@ -2072,70 +2049,6 @@ struct AtriaTodayScreen: View {
         glanceMemo.dayDescendingRevision = revision
         glanceMemo.dayDescendingRollups = sorted
         return sorted
-    }
-
-    private var recentSavedWorkouts: [UserConfirmedWorkout] {
-        AtriaWorkoutMetricPresentation.todayFirstScreenSavedWorkouts(
-            sessionProjectionStore.state.confirmedWorkouts
-        )
-    }
-
-    private func todaySavedWorkoutRow(_ workout: UserConfirmedWorkout) -> some View {
-        let icon = AtriaActivityDisplayIcon.icon(
-            activityType: workout.activityType,
-            subtype: workout.activitySubtype,
-            label: workout.label
-        )
-        let badge = AtriaActivityMonitorTab.strainBadge(for: workout)
-        return HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(Metrics.electricStrain)
-                .frame(width: 34, height: 34)
-                .background(Metrics.electricStrain.opacity(0.14), in: Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(workout.label)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text("\(AtriaWorkoutMetricPresentation.durationText(workout.duration)) · \(AtriaActivityMonitorTab.timeRange(start: workout.start, end: workout.end))")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            Spacer(minLength: 8)
-            if let trailing = AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(workout) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text(trailing.value)
-                        .font(.headline.monospacedDigit().weight(.bold))
-                    Text(trailing.caption)
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Image(systemName: "heart.slash")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(Color.orange)
-                    .symbolRenderingMode(.hierarchical)
-                    .accessibilityHidden(true)
-                Text(badge)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.orange)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.tertiary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(workout.label), \(AtriaWorkoutMetricPresentation.durationText(workout.duration)), \(badge). Tap for details.")
-        .accessibilityAddTraits(.isButton)
     }
 
     private var displayRecovery: (value: String, detail: String, percent: Int?) {
