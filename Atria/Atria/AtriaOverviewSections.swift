@@ -7373,14 +7373,11 @@ private struct AtriaPreparedMetricChart: View {
         .chartXAxis {
             if rendersAsDailyBar {
                 // A `unit: .day` bar owns its whole day, so its label belongs
-                // at the day's MIDDLE — and the way to put it there is to mark
-                // noon, not to centre the label. `centered:` offsets by half
-                // the step to the NEXT mark, which is only half a day when
-                // marks are one day apart; at `.automatic(desiredCount: 4)`
-                // over a month the step is about a week, so it threw every
-                // label three-and-a-half days right, onto a different bar.
-                AxisMarks(values: AtriaChartVisualGrammar.dayCentreMarks(
-                    in: prepared.xDomain ?? fallbackXDomain,
+                // at the day's MIDDLE. Label the nights that actually have a
+                // bar — a trailing week of empty days would otherwise print
+                // Sep 12 under a Sep 13 Recovery (device 2026-09-18).
+                AxisMarks(values: AtriaChartVisualGrammar.nightBarAxisMarks(
+                    days: points.map(\.day),
                     targetCount: 4
                 )) { _ in
                     AxisGridLine().foregroundStyle(.quaternary)

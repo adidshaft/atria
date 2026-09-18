@@ -59,6 +59,28 @@ enum AtriaChartVisualGrammar {
             .compactMap { calendar.date(byAdding: .hour, value: 12, to: $0.element) }
     }
 
+    /// Sparse overnight bars must be labeled on the nights that actually have
+    /// a value. Domain-wide `dayCentreMarks` on Recovery Week (device
+    /// 2026-09-18) printed Sep 12, 14, 16, 18 under bars that were Sep 13,
+    /// 15, 16, 18 — diagnosis week-last matched the hero, the x-axis did not.
+    static func nightBarAxisMarks(
+        days: [Date],
+        targetCount: Int,
+        calendar: Calendar = .current
+    ) -> [Date] {
+        guard targetCount > 0 else { return [] }
+        let unique = Array(Set(days.map { calendar.startOfDay(for: $0) })).sorted()
+        guard !unique.isEmpty else { return [] }
+        let stride = max(1, Int(ceil(Double(unique.count) / Double(targetCount))))
+        var picked: [Date] = unique.enumerated().compactMap { offset, day in
+            offset % stride == 0 ? day : nil
+        }
+        if let last = unique.last, picked.last != last {
+            picked.append(last)
+        }
+        return picked.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) }
+    }
+
     /// Mark density for a SCROLLABLE day-bar chart.
     ///
     /// `.automatic(desiredCount:)` recomputes against whatever is on screen, so

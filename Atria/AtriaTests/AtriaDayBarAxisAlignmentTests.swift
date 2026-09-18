@@ -55,8 +55,8 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
         // because it no longer depends on where the next mark falls.
         for name in ["AtriaOverviewSections.swift", "AtriaExpandedChart.swift"] {
             let text = try source(name)
-            XCTAssertTrue(text.contains("dayCentreMarks("),
-                          "\(name) must mark day centres when drawing day bars")
+            XCTAssertTrue(text.contains("nightBarAxisMarks("),
+                          "\(name) must label the recorded nights, not empty domain days")
             XCTAssertFalse(text.contains("centered: rendersAsDailyBar"),
                            "\(name) must not reintroduce step-relative centring")
             XCTAssertFalse(text.contains("centered: effectiveChartType == .bars"),

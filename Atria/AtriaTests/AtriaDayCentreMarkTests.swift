@@ -109,4 +109,33 @@ final class AtriaDayCentreMarkTests: XCTestCase {
             XCTAssertTrue(range.contains(mark), "a mark outside the domain is not drawn")
         }
     }
+
+    func testOvernightBarLabelsSitOnRecordedNightsNotEmptyDomainDays() {
+        // Device 2026-09-18 Recovery Week: domain Sep 12–18, bars on
+        // 13/15/16/18. Domain-wide dayCentreMarks printed 12, 14, 16, 18.
+        let nights = [day(1), day(3), day(4), day(6)]
+        let marks = AtriaChartVisualGrammar.nightBarAxisMarks(
+            days: nights,
+            targetCount: 4,
+            calendar: calendar
+        )
+        XCTAssertEqual(marks, nights.compactMap {
+            calendar.date(byAdding: .hour, value: 12, to: $0)
+        })
+        let domainMarks = AtriaChartVisualGrammar.dayCentreMarks(
+            in: domain(days: 7),
+            targetCount: 4,
+            calendar: calendar
+        )
+        XCTAssertNotEqual(marks, domainMarks)
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightBarAxisMarks(
+                days: nights,
+                targetCount: 2,
+                calendar: calendar
+            ).last,
+            calendar.date(byAdding: .hour, value: 12, to: day(6)),
+            "week-last must stay labeled so it can match the hero"
+        )
+    }
 }

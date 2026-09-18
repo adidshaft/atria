@@ -661,9 +661,10 @@ struct AtriaExpandedChartView: View {
     /// `AtriaOverviewSections`' metric chart and `AtriaTrendChart.trendYDomain`.
     /// This is the same rule at the third surface, which now opens in bar form
     /// by default for once-a-day metrics.
-    /// Noon marks across the whole scrollable domain, at a density chosen so a
-    /// screenful shows about as many labels as `.automatic(desiredCount: 6)`
-    /// did before.
+    /// Noon of each recorded night, at a density chosen so a screenful shows
+    /// about as many labels as `.automatic(desiredCount: 6)` did before.
+    /// Empty domain days stay unlabeled so a Recovery bar is not dated as
+    /// the neighbouring hole.
     private var barAxisMarks: [Date] {
         let domain = prepared.xDomain
         let totalDays = Calendar.current.dateComponents([.day],
@@ -674,7 +675,10 @@ struct AtriaExpandedChartView: View {
             visibleDays: visibleDays == 0 ? max(totalDays, 1) : visibleDays,
             labelsPerScreen: 6
         )
-        return AtriaChartVisualGrammar.dayCentreMarks(in: domain, targetCount: target)
+        return AtriaChartVisualGrammar.nightBarAxisMarks(
+            days: points.map(\.day),
+            targetCount: target
+        )
     }
 
     private var barAwareYDomain: ClosedRange<Double> {
