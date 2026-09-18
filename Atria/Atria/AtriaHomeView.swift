@@ -3638,7 +3638,8 @@ struct AtriaHomeView: View {
         ), forceActivityWrite: forceActivityWrite)
         model.publishDiagnosisReport(
             reason: "live_activity",
-            liveActivity: liveActivityCoordinator.lastPublishedSnapshot
+            liveActivity: liveActivityCoordinator.lastPublishedSnapshot,
+            activityKitCount: liveActivityCoordinator.activityKitCount
         )
     }
 
@@ -10322,6 +10323,7 @@ final class AtriaHomeModel {
     /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
     var liveWorkoutIsActive = false
     private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
+    private var lastActivityKitCount: Int?
     /// Charging is a short explicit-evidence lease, not a percentage trend.
     /// The strap can keep reporting rising SOC after physical removal, so the
     /// top-left bolt disappears within 90 seconds unless another accepted
@@ -12306,10 +12308,14 @@ final class AtriaHomeModel {
 
     func publishDiagnosisReport(
         reason: String,
-        liveActivity: AtriaLiveActivityCoordinator.Snapshot? = nil
+        liveActivity: AtriaLiveActivityCoordinator.Snapshot? = nil,
+        activityKitCount: Int? = nil
     ) {
         if let liveActivity {
             lastLiveActivityDiagnosis = liveActivity
+        }
+        if let activityKitCount {
+            lastActivityKitCount = activityKitCount
         }
         let liveActivitySnapshot = liveActivity ?? lastLiveActivityDiagnosis
         let now = Date()
@@ -12439,7 +12445,8 @@ final class AtriaHomeModel {
                 }(),
                 compactSittingSkip: UserDefaults.standard.bool(
                     forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
-                )
+                ),
+                liveActivityKitCount: lastActivityKitCount
             ),
             reason: reason
         )

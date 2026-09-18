@@ -527,6 +527,8 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("compactAssembledAgeSeconds:"))
         XCTAssertTrue(home.contains("compactSittingSkip:"))
         XCTAssertTrue(home.contains("idleWindowPending:"))
+        XCTAssertTrue(home.contains("liveActivityKitCount: lastActivityKitCount"))
+        XCTAssertTrue(home.contains("activityKitCount: liveActivityCoordinator.activityKitCount"))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
     }
 
@@ -738,5 +740,64 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             idleWindowPending: 0
         )
         XCTAssertFalse(clear.discrepancies.contains { $0.hasPrefix("idle_window_pending_") })
+    }
+
+    func testDiscrepanciesNameEmptyActivityKitWhileHeartRateIsLive() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let empty = AtriaDiagnosisReport.make(
+            now: now,
+            build: "175",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 0.2,
+            imuAgeSeconds: 0.2,
+            stream5Confirmed: true,
+            batteryPercent: 85,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 81,
+            liveZone: "Z1",
+            widgetHeartRate: 81,
+            liveActivityKitCount: 0
+        )
+        XCTAssertTrue(empty.discrepancies.contains("live_activity_kit_empty"))
+        XCTAssertEqual(empty.liveActivity.activityKitCount, 0)
+
+        let present = AtriaDiagnosisReport.make(
+            now: now,
+            build: "175",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 0.2,
+            imuAgeSeconds: 0.2,
+            stream5Confirmed: true,
+            batteryPercent: 85,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 81,
+            liveZone: "Z1",
+            widgetHeartRate: 81,
+            liveActivityKitCount: 1
+        )
+        XCTAssertFalse(present.discrepancies.contains("live_activity_kit_empty"))
+        XCTAssertEqual(present.liveActivity.activityKitCount, 1)
     }
 }
