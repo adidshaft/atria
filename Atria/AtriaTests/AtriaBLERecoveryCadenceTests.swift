@@ -12900,6 +12900,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             abort.contains("clearIdleWindowAckedHistoryRangePointer()"),
             "Start must drop leftover pending=5 so the next gym cannot re-pause 2A37"
         )
+        XCTAssertFalse(
+            abort.contains("activityType"),
+            "explicit Start of any type must abort leftover drain, not Strength only"
+        )
         let retireStart = try XCTUnwrap(source.range(
             of: "func retireStuckIdleWindowLeftoverIfNeeded("
         ))

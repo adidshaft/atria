@@ -3786,9 +3786,13 @@ struct AtriaHomeView: View {
             // Stable dashboard authority (sleep, Recovery, RHR, HRV, layout)
             // must still rebuild during a workout. Laundering it through the
             // live-only patch leaves those fields stale until the workout ends.
-            WidgetSnapshotPublisher.schedulePublish(store: store,
-                                                     ble: ble,
-                                                     reason: reason)
+            WidgetSnapshotPublisher.schedulePublish(
+                store: store,
+                ble: ble,
+                reason: reason,
+                presentedDayStrain: model.heroStore.state.strain,
+                presentedDayStrainDetail: model.heroStore.state.strainDetail
+            )
             return
         }
         scheduleLiveSensorWidgetPatch(reason: reason)
@@ -4792,7 +4796,9 @@ struct AtriaHomeView: View {
                                                              ble: ble,
                                                              reason: "scene_background",
                                                              forceImmediateTimelineReload: true,
-                                                             delay: .zero)
+                                                             delay: .zero,
+                                                             presentedDayStrain: model.heroStore.state.strain,
+                                                             presentedDayStrainDetail: model.heroStore.state.strainDetail)
                 }
                 if AtriaSceneResumePolicy.shouldStopMotionMonitor(isBackground: true) {
                     motionActivityMonitor.stop()
@@ -4922,7 +4928,9 @@ struct AtriaHomeView: View {
                     store: store,
                     ble: ble,
                     reason: "scene_foreground_sleep_projection",
-                    delay: .milliseconds(80)
+                    delay: .milliseconds(80),
+                    presentedDayStrain: model.heroStore.state.strain,
+                    presentedDayStrainDetail: model.heroStore.state.strainDetail
                 )
                 Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
                 let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),

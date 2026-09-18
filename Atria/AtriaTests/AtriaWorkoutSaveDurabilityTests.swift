@@ -2273,6 +2273,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                           "The exact boundary must follow the persisted intent start")
         XCTAssertLessThan(boundary.lowerBound, lease.lowerBound)
         XCTAssertTrue(body.contains("status=start_boundary_persist_failed action=retain_all_day_journal"))
+        XCTAssertFalse(body.contains("activityType == .strength"),
+                       "Start restores 2A37 for walk/run/ride/Strength, not Strength only")
+        XCTAssertFalse(body.contains("switch session.activityType"),
+                       "the live-HR lease is not gated on the picker type")
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: configuration)"),
+                      "the Start sheet passes every catalog type through the same lease")
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"),
+                      "Live Activity / deep-link Start of any type keeps 2A37")
     }
 
     func testWorkoutEndCheckpointPassesPersistedStartOwnership() throws {
