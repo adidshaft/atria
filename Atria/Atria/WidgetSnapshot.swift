@@ -1797,6 +1797,12 @@ enum WidgetSnapshotPublisher {
         let overnightWidgetRecoveryConfidence = settledRecoveryRollup?.recoverySummary?.confidence
             ?? presentedWidgetRecovery.confidence.rawValue
         let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
+        // Home still shows a numeric day load (0.6 of 17) while confidence
+        // says "learning". Withholding the widget clock then left Strain as
+        // "--" / Learning on the Home Screen. A fabricated 0.0 with no load
+        // still fails closed. A positive number Today is already showing must
+        // publish.
+        let publishDayStrainClock = strainIsCredible || presentedWidgetStrain > 0
         // Same cross-midnight hold as the app (field report item 4), so the
         // widget and the Today ring cannot disagree about whether last night's
         // hours are still the current value.
@@ -1833,11 +1839,13 @@ enum WidgetSnapshotPublisher {
                                       // above rest, TRIMP integrates against a
                                       // fabricated anchor and reads a confident
                                       // 0.0 — withhold the credibility clock so
-                                      // the widget shows its placeholder, the
-                                      // same honesty gate as the Home hero.
-                                      strainCapturedAt: strainIsCredible ? now : nil,
-                                      strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil,
-                                      strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil,
+                                      // the widget shows its placeholder. A
+                                      // positive load Today already displays
+                                      // still gets the clock even if confidence
+                                      // is still "learning".
+                                      strainCapturedAt: publishDayStrainClock ? now : nil,
+                                      strainCycleStart: publishDayStrainClock ? physiologicalCycle.start : nil,
+                                      strainCycleExpiresAt: publishDayStrainClock ? strainCycleExpiresAt : nil,
                                       restingHR: settledRHR ?? presentationRestingHeartRate,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
@@ -2018,9 +2026,11 @@ enum WidgetSnapshotPublisher {
                 String(format: "%.1f", max(0, presentedWidgetStrain))
         } else if strainIsCredible, strainPresentation.value != nil {
             snapshot.strainValueText = strainPresentation.valueText
+        } else if presentedWidgetStrain > 0 {
+            snapshot.strainValueText =
+                String(format: "%.1f", presentedWidgetStrain)
         } else {
-            // Not credible: the credibility clock is withheld above and the
-            // widget fails closed to its placeholder — never a rendered value.
+            // Fabricated 0.0 / no load: fail closed to the placeholder.
             snapshot.strainValueText = nil
         }
         // Cold-start + card-settlement guard: landing sessions makes the UI
