@@ -66,6 +66,7 @@ enum AtriaDiagnosisReport {
         var strain: Double? = nil
         var steps: Int? = nil
         var elapsedSeconds: Int? = nil
+        var activityKitCount: Int? = nil
     }
 
     struct Widget: Equatable, Codable {
@@ -189,7 +190,8 @@ enum AtriaDiagnosisReport {
         liveActivityElapsedSeconds: Int? = nil,
         compactAssembledAgeSeconds: Double? = nil,
         idleWindowPending: Int? = nil,
-        compactSittingSkip: Bool = false
+        compactSittingSkip: Bool = false,
+        liveActivityKitCount: Int? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -236,7 +238,8 @@ enum AtriaDiagnosisReport {
                     : (liveHeartRate > 0 ? "idle" : "unavailable"),
                 strain: workoutRecording ? liveActivityStrain : nil,
                 steps: liveHeartRate > 0 ? liveActivitySteps : nil,
-                elapsedSeconds: workoutRecording ? liveActivityElapsedSeconds : nil
+                elapsedSeconds: workoutRecording ? liveActivityElapsedSeconds : nil,
+                activityKitCount: liveActivityKitCount
             ),
             widget: Widget(
                 hrv: widgetHRV ?? settledHRV,
@@ -260,7 +263,9 @@ enum AtriaDiagnosisReport {
                 widgetRecovery: widgetRecovery,
                 compactAssembledAgeSeconds: compactAssembledAgeSeconds,
                 widgetStrain: widgetStrain,
-                compactSittingSkip: compactSittingSkip
+                compactSittingSkip: compactSittingSkip,
+                liveHeartRate: liveHeartRate,
+                liveActivityKitCount: liveActivityKitCount
             ),
             events: []
         )
@@ -277,7 +282,9 @@ enum AtriaDiagnosisReport {
         widgetRecovery: Int? = nil,
         compactAssembledAgeSeconds: Double? = nil,
         widgetStrain: Double? = nil,
-        compactSittingSkip: Bool = false
+        compactSittingSkip: Bool = false,
+        liveHeartRate: Int = 0,
+        liveActivityKitCount: Int? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -387,6 +394,9 @@ enum AtriaDiagnosisReport {
         }
         if let workout = lastWorkout, workout.samples > 0, workout.steps == 0 {
             keys.append("workout_zero_steps")
+        }
+        if liveHeartRate > 0, let count = liveActivityKitCount, count == 0 {
+            keys.append("live_activity_kit_empty")
         }
         if connection.status == AtriaBLEManager.Status.connected.rawValue,
            let age = compactAssembledAgeSeconds,

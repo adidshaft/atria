@@ -270,6 +270,9 @@ final class AtriaLiveActivityCoordinator {
     private var activity: Activity<AtriaLiveActivityAttributes>?
     private var startedAt: Date?
     var lastPublishedSnapshot: Snapshot? { lastSnapshot }
+    var activityKitCount: Int {
+        Activity<AtriaLiveActivityAttributes>.activities.count
+    }
 
     private var lastSnapshot: Snapshot?
     private var lastActivitySnapshot: Snapshot?

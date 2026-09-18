@@ -2968,6 +2968,7 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_live_activity_strain={live_activity.get('strain', 'missing')}")
             print(f"diagnosis_live_activity_steps={live_activity.get('steps', 'missing')}")
             print(f"diagnosis_live_activity_elapsed_s={live_activity.get('elapsedSeconds', 'missing')}")
+            print(f"diagnosis_live_activity_kit_count={live_activity.get('activityKitCount', 'missing')}")
             widget_diag = diagnosis.get("widget") if isinstance(diagnosis.get("widget"), dict) else {}
             print(f"diagnosis_widget_hrv={widget_diag.get('hrv', 'missing')}")
             print(f"diagnosis_widget_rhr={widget_diag.get('rhr', 'missing')}")
