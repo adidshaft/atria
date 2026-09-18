@@ -137,5 +137,31 @@ final class AtriaDayCentreMarkTests: XCTestCase {
             calendar.date(byAdding: .hour, value: 12, to: day(6)),
             "week-last must stay labeled so it can match the hero"
         )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightBarAxisMarks(
+                days: nights,
+                targetCount: 4,
+                calendar: calendar,
+                domain: domain(days: 7)
+            ),
+            nights.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) },
+            "a 7-day window still names adjacent recorded nights"
+        )
+    }
+
+    func testClusteredNightsOnAMonthWindowStayReadableAndKeepWeekLast() {
+        // Device 2026-09-18 16:40 HRV Month: 15/16/18 on Aug 20–Sep 18
+        // stacked into "S S…". Label the ends of the cluster, not every night.
+        let nights = [day(26), day(27), day(29)]
+        let marks = AtriaChartVisualGrammar.nightBarAxisMarks(
+            days: nights,
+            targetCount: 4,
+            calendar: calendar,
+            domain: domain(days: 30)
+        )
+        XCTAssertEqual(marks.count, 2)
+        XCTAssertEqual(marks.first, calendar.date(byAdding: .hour, value: 12, to: day(26)))
+        XCTAssertEqual(marks.last, calendar.date(byAdding: .hour, value: 12, to: day(29)),
+                       "month-last must stay labeled so it can match the hero")
     }
 }

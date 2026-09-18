@@ -66,19 +66,68 @@ enum AtriaChartVisualGrammar {
     static func nightBarAxisMarks(
         days: [Date],
         targetCount: Int,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        domain: ClosedRange<Date>? = nil
     ) -> [Date] {
         guard targetCount > 0 else { return [] }
         let unique = Array(Set(days.map { calendar.startOfDay(for: $0) })).sorted()
         guard !unique.isEmpty else { return [] }
-        let stride = max(1, Int(ceil(Double(unique.count) / Double(targetCount))))
-        var picked: [Date] = unique.enumerated().compactMap { offset, day in
-            offset % stride == 0 ? day : nil
+        let pickedDays: [Date]
+        if let domain, domain.upperBound > domain.lowerBound {
+            // Thin against the plotted window, not the night count. HRV Month
+            // 153 labeled Sep 15/16/18 on Aug 20–Sep 18 and Charts stacked
+            // them into "S S…" (device 2026-09-18 16:40). Week (7d/4) still
+            // keeps a one-day gap so adjacent Recovery bars stay named.
+            let start = calendar.startOfDay(for: domain.lowerBound)
+            let end = calendar.startOfDay(for: domain.upperBound)
+            let spanDays = max(
+                1,
+                calendar.dateComponents([.day], from: start, to: end).day ?? 1
+            )
+            pickedDays = thinnedRecordedNights(
+                unique,
+                minGapDays: max(1, spanDays / targetCount),
+                calendar: calendar
+            )
+        } else {
+            let stride = max(1, Int(ceil(Double(unique.count) / Double(targetCount))))
+            var picked: [Date] = unique.enumerated().compactMap { offset, day in
+                offset % stride == 0 ? day : nil
+            }
+            if let last = unique.last, picked.last != last {
+                picked.append(last)
+            }
+            pickedDays = picked
         }
-        if let last = unique.last, picked.last != last {
-            picked.append(last)
+        return pickedDays.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) }
+    }
+
+    /// Always keeps the first and last recorded night so week-last can match
+    /// the hero. Interior nights closer than `minGapDays` are dropped.
+    private static func thinnedRecordedNights(
+        _ unique: [Date],
+        minGapDays: Int,
+        calendar: Calendar
+    ) -> [Date] {
+        guard let first = unique.first, let last = unique.last else { return [] }
+        if unique.count == 1 { return unique }
+        var picked = [first]
+        for day in unique.dropFirst().dropLast() {
+            let gap = calendar.dateComponents([.day], from: picked.last!, to: day).day ?? 0
+            if gap >= minGapDays {
+                picked.append(day)
+            }
         }
-        return picked.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) }
+        if picked.last != last {
+            let gap = calendar.dateComponents([.day], from: picked.last!, to: last).day ?? 0
+            if gap < minGapDays, picked.count > 1 {
+                picked.removeLast()
+            }
+            if picked.last != last {
+                picked.append(last)
+            }
+        }
+        return picked
     }
 
     /// Mark density for a SCROLLABLE day-bar chart.
