@@ -1855,6 +1855,27 @@ extension AtriaBLEManager {
         return true
     }
 
+    /// Device 2026-09-18 21:17: idle-window `no_rows` left
+    /// `idleWindowAckedRange.pending=5` in UserDefaults after in-memory abort.
+    /// The next background scene then re-paused 2A37 (`live_hr_notifying=0`,
+    /// sample age 42s) while Today still showed Live from the session clock.
+    /// A dry live-tail leftover is not a drainable page — drop the 0x22
+    /// snapshot unless a queued gym pull still owns it.
+    nonisolated static func shouldClearIdleWindowPointerAfterDryTerminal(
+        durableRowsThisAttempt: Int,
+        pendingRecords: UInt32?,
+        queuedPullIntent: Bool
+    ) -> Bool {
+        guard durableRowsThisAttempt <= 0,
+              !queuedPullIntent,
+              let pending = pendingRecords,
+              pending > 0,
+              pending <= idleWindowConsumeLiveTailPendingLimit else {
+            return false
+        }
+        return true
+    }
+
     /// A queued gym pull that already selected an idle window must not mint a
     /// keep-2A37 0x22 on the same callback. Device 123 timed out every live
     /// range write while notify stayed on.
