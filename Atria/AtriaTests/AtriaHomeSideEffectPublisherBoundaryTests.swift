@@ -11,10 +11,9 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
             XCTAssertTrue(source.contains("private var \(publisher): AnyPublisher<Void, Never>"))
             XCTAssertTrue(source.contains(".onReceive(\(publisher))"))
         }
-        // 2026-08-14 pin migration: the App Review restructure moved the
-        // ownership guards into named handlers. The invariants are unchanged:
-        // detection stays silent during an explicit live workout, and
-        // Live Activity updates flow only while one exists.
+        // Detection stays silent during an explicit live workout. Live
+        // Activity also carries all-day strap presence, so its handler must
+        // keep publishing while Connected with a held beat.
         XCTAssertTrue(source.contains(".onReceive(workoutDetectionUpdates) { _ in\n            handleWorkoutDetectionUpdate()"))
         XCTAssertTrue(source.contains(".onReceive(liveActivityUpdates) { _ in\n            handleLiveActivityUpdate()"))
         let detectionHandler = try XCTUnwrap(source.range(of: "private func handleWorkoutDetectionUpdate()"))
@@ -22,9 +21,10 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
             .contains("guard workoutSession == nil else { return }"),
                       "detection must fail closed during an explicit live workout")
         let liveActivityHandler = try XCTUnwrap(source.range(of: "private func handleLiveActivityUpdate()"))
-        XCTAssertTrue(String(source[liveActivityHandler.lowerBound...].prefix(200))
-            .contains("guard workoutSession != nil else { return }"),
-                      "Live Activity updates require an owning workout session")
+        let liveActivityBody = String(source[liveActivityHandler.lowerBound...].prefix(420))
+        XCTAssertTrue(liveActivityBody.contains("updateLiveActivity()"))
+        XCTAssertFalse(liveActivityBody.contains("guard workoutSession != nil else { return }"),
+                       "all-day live presence must keep the Lock Screen on the current beat")
     }
 
     func testWidgetAndDetectionPublishersExcludeMediaAndGuidanceTimer() throws {

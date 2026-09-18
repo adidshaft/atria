@@ -1338,7 +1338,8 @@ struct AtriaHomeView: View {
     }
 
     private func handleLiveActivityUpdate() {
-        guard workoutSession != nil else { return }
+        // All-day live presence, not only an explicit workout (device
+        // 2026-09-18 11:51: preview waited while Today already had 73 bpm).
         updateLiveActivity()
     }
 
@@ -12342,6 +12343,13 @@ final class AtriaHomeModel {
                         guard at > 0 else { return nil }
                         return Date(timeIntervalSince1970: at)
                     }(),
+                    compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt() ?? {
+                        let at = UserDefaults.standard.double(
+                            forKey: AtriaCompactIMULiveDiagnostics.lastPacketAtKey
+                        )
+                        guard at > 0 else { return nil }
+                        return Date(timeIntervalSince1970: at)
+                    }(),
                     now: now
                 ),
                 stream5Confirmed: ble.liveStream5NotifyConfirmed,
@@ -13726,12 +13734,16 @@ final class AtriaHomeModel {
     /// Compact 0x33 is live IMU on WHOOP 4. Diagnosis used only R10
     /// `lastAcceptedMotionFrameAt`, so a post-install pull showed Connected
     /// HR with missing IMU while type-33 packets were already flowing.
+    /// Sitting skip then left assembled-seconds stale while packets still
+    /// arrived (device 2026-09-18: assembled 2437s, last notify type 33).
     nonisolated static func diagnosisIMUAgeSeconds(
         motionCapturedAt: Date?,
         compactAssembledAt: Date?,
+        compactPacketAt: Date? = nil,
         now: Date
     ) -> Double? {
-        guard let captured = [motionCapturedAt, compactAssembledAt].compactMap({ $0 }).max(),
+        guard let captured = [motionCapturedAt, compactAssembledAt, compactPacketAt]
+            .compactMap({ $0 }).max(),
               now >= captured else { return nil }
         return now.timeIntervalSince(captured)
     }

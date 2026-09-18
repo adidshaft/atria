@@ -302,6 +302,7 @@ enum AtriaCompactIMULiveDiagnostics {
     static let peak60Key = "atria.compactIMU.lastRotationPeak60Dps"
     static let atKey = "atria.compactIMU.lastRotationAt"
     static let lastAssembledSecondAtKey = "atria.compactIMU.lastAssembledSecondAt"
+    static let lastPacketAtKey = "atria.compactIMU.lastPacketAt"
     static let samplesKey = "atria.compactIMU.lastRotationSamples"
     static let lastSecondSkippedKey = "atria.compactIMU.lastSecondSkippedSitting"
     static let lastScoredMeanKey = "atria.compactIMU.lastScoredMeanDps"
@@ -381,6 +382,7 @@ enum AtriaCompactIMULiveDiagnostics {
         lastPacketAtMemory = receivedAt
         lock.unlock()
         let defaults = UserDefaults.standard
+        defaults.set(receivedAt.timeIntervalSince1970, forKey: lastPacketAtKey)
         defaults.set(Int(deviceTimestamp), forKey: lastDeviceTimestampKey)
         defaults.set(emitCount, forKey: lastEmitCountKey)
         defaults.set(
@@ -441,6 +443,7 @@ enum AtriaCompactIMULiveDiagnostics {
         defaults.removeObject(forKey: peak60Key)
         defaults.removeObject(forKey: atKey)
         defaults.removeObject(forKey: lastAssembledSecondAtKey)
+        defaults.removeObject(forKey: lastPacketAtKey)
         defaults.removeObject(forKey: samplesKey)
         defaults.removeObject(forKey: lastSecondSkippedKey)
         defaults.removeObject(forKey: lastScoredMeanKey)
@@ -480,6 +483,16 @@ enum AtriaCompactIMULiveDiagnostics {
     static func lastAssembledSecondAt() -> Date? {
         lock.lock()
         let memory = lastAssembledSecondAtMemory
+        lock.unlock()
+        return memory
+    }
+
+    /// Native 0x33 packet clock. Sitting skip leaves assembled-seconds stale
+    /// while type-33 is still flowing (device 2026-09-18: assembled 2437s,
+    /// last notify type 33).
+    static func lastPacketAt() -> Date? {
+        lock.lock()
+        let memory = lastPacketAtMemory
         lock.unlock()
         return memory
     }

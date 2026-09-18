@@ -193,6 +193,16 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
             ),
             4
         )
+        XCTAssertEqual(
+            AtriaHomeModel.diagnosisIMUAgeSeconds(
+                motionCapturedAt: nil,
+                compactAssembledAt: now.addingTimeInterval(-2400),
+                compactPacketAt: now.addingTimeInterval(-3),
+                now: now
+            ),
+            3,
+            "sitting skip must not report IMU missing while type-33 packets are live"
+        )
         XCTAssertNil(
             AtriaHomeModel.diagnosisIMUAgeSeconds(
                 motionCapturedAt: nil,
