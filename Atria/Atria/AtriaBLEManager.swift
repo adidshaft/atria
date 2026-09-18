@@ -8881,9 +8881,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason)
     }
 
-    /// One stream-5 off/on when this connection has HR but zero proprietary
-    /// packets. Never touches 2A37. `setNotify(true)` on the restored zombie
-    /// CCCD did not resume IMU (device 2026-09-14 23:54).
+    /// One stream-5 off/on per ticket when this connection has HR but the
+    /// proprietary pipe is empty *or* compact 0x33 flowed and then died.
+    /// Stream-5 traffic rearms the ticket. Never touches 2A37.
+    /// `setNotify(true)` on the restored zombie CCCD did not resume IMU
+    /// (device 2026-09-14 23:54). Device 172 22:12: compact 0x33 for 132s
+    /// after install, then silence; packets>0 skipped the toggle so 6A/51
+    /// could not revive stream-5.
     private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
         let hrLive = Self.heartRateEpochAllowsIMURefresh(
             characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
@@ -8900,6 +8904,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   heartRateEpochLive: hrLive
               ) else { return }
         let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        ) && currentConnectionProprietaryTraffic > 0
         guard Self.shouldToggleZombieProprietaryCCCD(
             connected: true,
             heartRateNotifying: hrLive,
@@ -8908,7 +8924,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 notifyCallbacks: protocolNotifyCallbacksThisConnection
             ),
             connectedAge: connectedAge,
-            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil
+            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
+            imuAge: imuAge,
+            sittingSkipFresh: sittingSkipFresh
         ) else { return }
         guard let strapService = peripheral.services?.first(where: {
             $0.uuid == Self.UUIDs.strapService
@@ -30588,10 +30606,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         packetsThisConnection: Int,
         connectedAge: TimeInterval,
         alreadyToggledThisConnection: Bool,
-        minimumConnectedAge: TimeInterval = 20
+        minimumConnectedAge: TimeInterval = 20,
+        imuAge: TimeInterval? = nil,
+        sittingSkipFresh: Bool = false
     ) -> Bool {
-        guard connected, heartRateNotifying, packetsThisConnection == 0 else { return false }
+        guard connected, heartRateNotifying else { return false }
         guard !alreadyToggledThisConnection, connectedAge >= minimumConnectedAge else {
+            return false
+        }
+        if packetsThisConnection == 0 { return true }
+        // Device 172 22:12: compact 0x33 flowed 132s after install, then
+        // died. packetsThisConnection>0 blocked the once-per-epoch stream-5
+        // off/on, so 6A/51 setNotify(true) on the zombie CCCD restored
+        // nothing (`stream5` callbacks stayed 0, IMU 6 min stale, HR live).
+        if sittingSkipFresh { return false }
+        guard let imuAge, imuAge > AtriaDiagnosisReport.liveStaleSeconds else {
             return false
         }
         return true
@@ -53043,6 +53072,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
             Task { @MainActor in
                 self.protocolNotifyCallbacksThisConnection = count
+                if uuid == Self.UUIDs.strapStream5, self.lastR10ZombieCCCDToggleAt != nil {
+                    self.lastR10ZombieCCCDToggleAt = nil
+                    AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_rearm reason=stream5_traffic action=allow_later_stale_toggle")
+                }
             }
         }
         let isPendingOneShotBatteryResponse = uuid == Self.UUIDs.strapRX
