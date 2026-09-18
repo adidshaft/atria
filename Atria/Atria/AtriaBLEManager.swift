@@ -11793,7 +11793,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             consumeToNow: idleWindowConsumeToNowConsent,
             lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
             chargingOrOffWrist: batteryIsCharging || !hasContact,
-            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            lastAttemptYieldedRows: UserDefaults.standard.object(
+                forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+            ) as? Bool ?? true
         ) else { return false }
         let ingressReplayBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
             orphanReplayInFlight: orphanHistoricalIngressArchiveInFlight,
@@ -17660,7 +17663,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastPendingRecords: consumeLiveTailPending,
                 verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
                 linkStillConnected: peripheral?.state == .connected,
-                consumePauseElapsed: consumeLiveTailPauseElapsed
+                consumePauseElapsed: consumeLiveTailPauseElapsed,
+                lastAttemptYieldedRows: historicalDrainTelemetry.persisted > 0
             )
         let discardConsumeIngressSpool =
             Self.shouldDiscardUnackedConsumeIngressSpool(

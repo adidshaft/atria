@@ -1728,6 +1728,10 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("verifiedEmptyHistoryCursor:"))
         XCTAssertTrue(source.contains("shouldSkipIdleWindowHeartRateReassert("))
         XCTAssertTrue(source.contains("shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry("))
+        XCTAssertTrue(
+            source.contains("lastAttemptYieldedRows: historicalDrainTelemetry.persisted > 0"),
+            "no_rows idle-window finish must restore 2A37 instead of live-tail chaining"
+        )
         XCTAssertTrue(source.contains("scheduleIdleWindowConsumeLiveTailRetryIfNeeded("))
         XCTAssertTrue(source.contains("verified_empty_cursor_restore_2a37"))
         XCTAssertTrue(source.contains("live_tail_keep_2a37_paused"))
@@ -4417,6 +4421,10 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         let eval = String(source[evalStart.lowerBound..<evalEnd.lowerBound])
         XCTAssertTrue(eval.contains("connectedChunkedBackfill: false"))
         XCTAssertTrue(eval.contains("preserveConnectedRealtimeOwner: false"))
+        XCTAssertTrue(
+            eval.contains("lastAttemptYieldedRows: UserDefaults.standard.object("),
+            "a no_rows live tail must feed the 20s HR resume, not the 0.4s re-pause"
+        )
         XCTAssertFalse(eval.contains("preserveConnectedRealtimeOwner: true"))
         XCTAssertFalse(eval.contains("cancelPeripheralConnection("))
         XCTAssertTrue(
@@ -5164,6 +5172,36 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 lastPendingRecords: 2
             )
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 130: no_rows pending=5 must not re-pause 2A37 every 0.4s"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "a dry live tail still retries on the worn 20s HR beat"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.5),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: true
+            ),
+            "a productive live tail still 0x22 before write seals another page"
+        )
         XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailPendingLimit, 16)
         XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailResumeInterval, 2)
         XCTAssertEqual(
@@ -5228,6 +5266,17 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 consumePauseElapsed: 18
             ),
             "18s pause cap restores 2A37 even on a 1-page tail"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 130: no_rows pending=5 must restore 2A37 instead of chaining 0x22"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
