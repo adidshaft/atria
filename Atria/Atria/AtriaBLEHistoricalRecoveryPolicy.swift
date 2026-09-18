@@ -764,12 +764,14 @@ extension AtriaBLEManager {
 
     /// Flag-gated stop-realtime history drain that may pause 2A37 only where
     /// there is no live HR to protect. Unflagged default builds never select a
-    /// window. A healthy attended (foreground) epoch is never selected unless
-    /// the strap itself is charging or off-wrist — those states have no live HR
-    /// to seize. Device soak 2026-08-23: production already sends 0x22 first and
-    /// still yields `stream5_rx=0` then `ble_disconnect` ~13s while 2A37 stays
-    /// subscribed, so this path pauses notify on the same connection instead of
-    /// `cancelPeripheralConnection`.
+    /// window. A healthy worn epoch is never selected unless the strap itself
+    /// is charging or off-wrist — those states have no live HR to seize — or
+    /// an explicit queued gym fill / consume-to-now asked for 0x22. Lock-screen
+    /// Live Activity and widgets are attended surfaces: backgrounding Home must
+    /// not empty them. Device soak 2026-08-23: production already sends 0x22
+    /// first and still yields `stream5_rx=0` then `ble_disconnect` ~13s while
+    /// 2A37 stays subscribed, so this path pauses notify on the same connection
+    /// instead of `cancelPeripheralConnection`.
     nonisolated static let idleWindowHistoryDrainEnableArgument =
         "--atria-idle-window-drain-enable"
 
@@ -817,14 +819,17 @@ extension AtriaBLEManager {
         if consumeToNow || queuedPullIntent {
             return healthyLiveEpochActive ? .appBackgroundIdle : .naturalGapPreHR
         }
-        // Build-5 contract: never cancel a healthy attended epoch.
-        if healthyLiveEpochActive && attendedForeground { return .none }
+        // Build-5 contract: never cancel a healthy worn epoch. Live Activity
+        // and widgets stay current only while 2A37 is subscribed, so locking
+        // the phone is not a drain window. Catch-up waits for charging,
+        // off-wrist, pre-HR reconnect, or an explicit queued gym fill.
+        _ = attendedForeground
+        _ = appBackgrounded
+        if healthyLiveEpochActive { return .none }
         // Pre-HR (didConnect, first-HR race, natural gap): no live pulse yet.
         // 2026-08-23 04:27 recapture never armed because didConnect health is
         // false but this predicate previously required a prior natural drop.
-        if !healthyLiveEpochActive { return .naturalGapPreHR }
-        if appBackgrounded { return .appBackgroundIdle }
-        return .none
+        return .naturalGapPreHR
     }
 
     /// Kill switch for the now-default idle-window drain. The enable
@@ -1663,11 +1668,12 @@ extension AtriaBLEManager {
     /// starvation hole): resume lanes and attended taps could START nothing
     /// when no authority existed — after any process kill that cleared or
     /// resolved the authority, the backlog sat dead until a human tapped Sync
-    /// or relaunched. A BACKGROUND re-arm with a real backlog may create the
-    /// same forward-from-cursor chunked catch-up an attended tap gets, under
-    /// the same proven-live-epoch conditions as the stranded resume plus an
-    /// attempt cooldown. Foreground still defers (that dead-end stays dead);
-    /// the seekless full-flash gap replay stays retired.
+    /// or relaunched.
+    ///
+    /// That background re-arm required a fresh `lastAcceptedHRAt` and then
+    /// paused 2A37 for 0x22, which emptied all-day Live Activity and left
+    /// widgets on a stale beat. Charging / off-wrist / pre-HR idle-window
+    /// drain still catch the bank up. This path stays retired.
     nonisolated static func shouldAdmitAutonomousCursorAnchoredCatchUpStart(
         foregroundInteractive: Bool,
         strapBacklogPending: Bool,
@@ -1683,25 +1689,20 @@ extension AtriaBLEManager {
         acceptedFreshnessWindow: TimeInterval = 45,
         attemptCooldown: TimeInterval = 120
     ) -> Bool {
-        guard !foregroundInteractive,
-              strapBacklogPending,
-              !syncInProgress,
-              linkConnected,
-              !activeExplicitWorkout,
-              !recentDisconnectStorm,
-              let connectedAt,
-              let lastAcceptedHRAt else { return false }
-        let connectionAge = now.timeIntervalSince(connectedAt)
-        let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
-        guard connectionAge >= stableConnectionInterval,
-              acceptedAge >= 0,
-              acceptedAge <= acceptedFreshnessWindow else { return false }
-        if let lastAttemptAt {
-            guard now.timeIntervalSince(lastAttemptAt) >= attemptCooldown else {
-                return false
-            }
-        }
-        return true
+        _ = foregroundInteractive
+        _ = strapBacklogPending
+        _ = syncInProgress
+        _ = linkConnected
+        _ = connectedAt
+        _ = lastAcceptedHRAt
+        _ = lastAttemptAt
+        _ = activeExplicitWorkout
+        _ = recentDisconnectStorm
+        _ = now
+        _ = stableConnectionInterval
+        _ = acceptedFreshnessWindow
+        _ = attemptCooldown
+        return false
     }
 
     /// Mints the process-local proof for one non-destructive raw-history slice
@@ -1712,9 +1713,12 @@ extension AtriaBLEManager {
     /// `CBPeripheral` object/callback epoch and atomically claim that canonical
     /// object before publishing a transport generation.
     ///
-    /// A materially stale foreground may also enter automatically. This does
-    /// not turn lifecycle state or a reason string into authority: the caller
-    /// must still mint the exact callback-source token on an accepted 2A37
+    /// Only an explicit queued pull (gym fill, missed-data Sync) may mint.
+    /// Autonomous background / foreground-automatic slices required a fresh
+    /// 2A37 epoch and then paused notify, which emptied Live Activity and
+    /// left Today on Reading… with a 10s-old beat. This does not turn a
+    /// lifecycle state or a reason string into authority: the caller must
+    /// still mint the exact callback-source token on an accepted 2A37
     /// boundary and win the canonical-object claim synchronously.
     nonisolated static func shouldMintConnectedRawHistoryCatchUpAuthority(
         applicationIsBackground: Bool,
@@ -1735,9 +1739,9 @@ extension AtriaBLEManager {
         acceptedFreshnessWindow: TimeInterval = 45,
         minimumSamples: Int = 10
     ) -> Bool {
-        guard applicationIsBackground
-                || queuedPullIntent
-                || foregroundAutomaticBacklog,
+        _ = applicationIsBackground
+        _ = foregroundAutomaticBacklog
+        guard queuedPullIntent,
               connectedRawHistoryCatchUpHasDrainableWork(
                 queuedPullIntent: queuedPullIntent,
                 strapBacklogPending: strapBacklogPending
