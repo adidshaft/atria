@@ -338,6 +338,10 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertTrue(home.contains("pieces.first == \"live-activity\""))
         XCTAssertTrue(home.contains("AtriaLiveActivityLockPreviewSheet("))
         XCTAssertTrue(home.contains("case .minimize:"))
+        let tabStart = try XCTUnwrap(home.range(of: "guard let tab = HomeTab.deepLinkDestination(for: url) else { return }"))
+        let tabSlice = String(home[tabStart.lowerBound...].prefix(400))
+        XCTAssertTrue(tabSlice.contains("dismissPresentedWorkoutChrome()"),
+                      "Activity/Vitals/Journal deeplinks must drop the lock-preview sheet (device 157)")
     }
 
     func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {
