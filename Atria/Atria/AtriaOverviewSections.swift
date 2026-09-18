@@ -7514,27 +7514,20 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
 
             if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
                 Label(AtriaWorkoutMetricPresentation.compactStatus(workout),
-                      systemImage: "waveform.path.badge.minus")
+                      systemImage: workout.samples > 0 ? "waveform.path.badge.minus" : "heart.slash")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.orange)
-            } else if hasZoneTime {
-                GeometryReader { proxy in
-                    HStack(spacing: 2) {
-                        ForEach(zoneSegments, id: \.key) { segment in
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(segment.tint.opacity(segment.seconds > 0 ? 0.90 : 0.16))
-                                .frame(width: zoneWidth(segment.seconds, totalWidth: proxy.size.width))
-                        }
+            }
+            GeometryReader { proxy in
+                HStack(spacing: 2) {
+                    ForEach(zoneSegments, id: \.key) { segment in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(segment.tint.opacity(segment.seconds > 0 ? 0.90 : (hasZoneTime ? 0.16 : 0.10)))
+                            .frame(width: zoneWidth(segment.seconds, totalWidth: proxy.size.width))
                     }
                 }
-                .frame(height: 8)
-            } else {
-                Label("Zone distribution unavailable for this recording",
-                      systemImage: "waveform.path.ecg.rectangle")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(height: 8)
 
             HStack {
                 Text(heartRateText)
@@ -10139,14 +10132,11 @@ struct AtriaInsightsCard: View, Equatable {
         let tint: Color = up ? Metrics.electricGreen : Metrics.electricRed
         return HStack(spacing: 12) {
             Image(systemName: i.symbolName)
-                .font(.title3.weight(.semibold))
+                .font(.title2.weight(.semibold))
                 .foregroundStyle(tint)
                 .symbolRenderingMode(.hierarchical)
                 .frame(width: 36, height: 36)
                 .accessibilityHidden(true)
-            Text(i.tagLabel)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
             Spacer(minLength: 8)
             Image(systemName: up ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
                 .font(.title3)

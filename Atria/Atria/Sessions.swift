@@ -3382,6 +3382,15 @@ enum SleepStageKind: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    var symbolName: String {
+        switch self {
+        case .awake: return "eye.fill"
+        case .light: return "moon.fill"
+        case .rem: return "moon.stars.fill"
+        case .sws, .deep: return "moon.zzz.fill"
+        }
+    }
+
     /// User-facing stage order: SWS is folded into Deep at the presentation layer
     /// (SWS is N3/deep sleep; the algorithm's separate `.sws`/`.deep` HR-delta bands
     /// are an artifact of stage() thresholds, not two physiologically distinct stages).

@@ -101,8 +101,8 @@ final class AtriaNamingUniformityTests: XCTestCase {
         let overview = try source("AtriaOverviewSections.swift")
         XCTAssertTrue(overview.contains("private var hasZoneTime: Bool"),
                       "the bar must gate on real zone time")
-        XCTAssertTrue(overview.contains("} else if hasZoneTime {"))
-        XCTAssertTrue(overview.contains("\"Zone distribution unavailable for this recording\""))
+        XCTAssertTrue(overview.contains(".fill(segment.tint.opacity(segment.seconds > 0 ? 0.90 : (hasZoneTime ? 0.16 : 0.10)))"))
+        XCTAssertFalse(overview.contains("\"Zone distribution unavailable for this recording\""))
         XCTAssertFalse(overview.contains("\"Zones building\""))
     }
 }

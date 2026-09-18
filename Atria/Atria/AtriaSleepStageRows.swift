@@ -350,3 +350,78 @@ struct AtriaSleepStageRowStrip: View {
         return parts.joined(separator: ", ")
     }
 }
+
+/// Compact Today hypnogram: colored stage bar plus four SF Symbol chips.
+/// Estimated nights keep the mandatory HR-only label next to the bars.
+struct AtriaTodaySleepStageStrip: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+
+    var body: some View {
+        let segments = night.displayStageSegments
+        let rows = AtriaSleepStageRowStripPresentation.rows(
+            for: segments,
+            windowStart: night.start ?? segments.first?.start ?? Date(),
+            windowEnd: night.end ?? segments.last?.end ?? Date(),
+            isEstimated: night.isEstimatedStageDisplay,
+            tier: night.estimateConfidenceTier
+        )
+        VStack(alignment: .leading, spacing: 8) {
+            if night.isEstimatedStageDisplay {
+                Text(AtriaSleepStageEstimateLabel.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            if let start = night.start, let end = night.end, !segments.isEmpty {
+                AtriaSleepStageHypnogram(
+                    segments: segments,
+                    start: start,
+                    end: end,
+                    duration: max(night.duration, end.timeIntervalSince(start))
+                )
+                .frame(height: 36)
+            }
+            HStack(spacing: 8) {
+                ForEach(rows) { row in
+                    VStack(spacing: 4) {
+                        Image(systemName: row.stage.symbolName)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(AtriaSleepStagePalette.color(for: row.stage))
+                            .symbolRenderingMode(.hierarchical)
+                            .accessibilityHidden(true)
+                        Text(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(row.name), \(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))")
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        let rows = AtriaSleepStageRowStripPresentation.rows(
+            for: night.displayStageSegments,
+            windowStart: night.start ?? Date(),
+            windowEnd: night.end ?? Date(),
+            isEstimated: night.isEstimatedStageDisplay
+        )
+        let parts = rows.map {
+            "\($0.name) \(AtriaSleepStageRowStripPresentation.durationText(minutes: $0.minutes))"
+        }
+        let prefix = night.isEstimatedStageDisplay
+            ? AtriaSleepStageEstimateLabel.title
+            : "Sleep stages"
+        return ([prefix] + parts).joined(separator: ". ")
+    }
+}

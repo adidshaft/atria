@@ -53158,7 +53158,12 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     pendingMainActorWork.append(.r10Metadata(payloadLength: payloadLength))
                     continue
                 }
-            } else if !historyPhase.isActive {
+            } else {
+                // Live compact 0x33 is the wrist IMU on stream-5. Leftover
+                // history drain keeps the phase fence active (device 2026-09-18:
+                // 0x31 metadata + advancing 0x33 timestamps while assembled
+                // seconds stayed 11h stale). Flash history is 0x2F/0x31; gating
+                // 0x33 behind that fence freezes Today Steps.
                 for compactSecond in compactIMUSecond(
                     from: completeFrame,
                     receivedAt: receivedAt
