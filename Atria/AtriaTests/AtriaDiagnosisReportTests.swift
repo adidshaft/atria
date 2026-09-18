@@ -562,6 +562,41 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertEqual(snapshot.metrics.todaySteps, 1_901)
     }
 
+    func testDiscrepanciesNameWidgetStrainVersusTodayStrain() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "162",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 32,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 76,
+            liveZone: "Below Z1",
+            widgetHeartRate: 75,
+            widgetSteps: 3867,
+            todaySteps: 3867,
+            widgetStrain: 0,
+            todayStrain: 0.6
+        )
+        XCTAssertTrue(snapshot.discrepancies.contains("widget_strain_0_today_6"))
+        XCTAssertEqual(snapshot.widget.strain, 0)
+        XCTAssertEqual(snapshot.metrics.todayStrain, 0.6)
+    }
+
     func testDiscrepanciesNameStaleCompactAssemblerWhileStream5IsLive() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let snapshot = AtriaDiagnosisReport.make(

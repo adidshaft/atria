@@ -12385,6 +12385,8 @@ final class AtriaHomeModel {
                 widgetSteps: publishedWidget?.steps,
                 todaySteps: core.dailyStepPresentation.count
                     ?? AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count,
+                widgetStrain: publishedWidget?.strain,
+                todayStrain: heroStore.state.strain,
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now

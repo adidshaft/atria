@@ -2902,6 +2902,8 @@ def emit_projection_artifact_revisions():
         print(f"widget_projection_rhr={widget.get('restingHR', 'missing')}")
         print(f"widget_projection_hrv_captured_at={widget.get('hrvCapturedAt', 'missing')}")
         print(f"widget_projection_strain={widget.get('strain', 'missing')}")
+        print(f"widget_projection_strain_detail={widget.get('strainDetail', 'missing')}")
+        print(f"widget_projection_strain_value_text={widget.get('strainValueText', 'missing')}")
         print(f"widget_projection_steps={widget.get('steps', 'missing')}")
         print(f"widget_projection_sleep_hours={widget.get('sleepHours', 'missing')}")
         print(f"widget_projection_storage={widget.get('storage', 'missing')}")
@@ -2972,6 +2974,8 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_widget_live_hr={widget_diag.get('heartRate', 'missing')}")
             print(f"diagnosis_widget_steps={widget_diag.get('steps', 'missing')}")
             print(f"diagnosis_today_steps={metrics.get('todaySteps', 'missing')}")
+            print(f"diagnosis_widget_strain={widget_diag.get('strain', 'missing')}")
+            print(f"diagnosis_today_strain={metrics.get('todayStrain', 'missing')}")
             print(f"diagnosis_widget_hrv_captured_at={widget_diag.get('hrvCapturedAt', 'missing')}")
             print(f"diagnosis_widget_created_at={widget_diag.get('createdAt', 'missing')}")
             workout = diagnosis.get("lastWorkout") if isinstance(diagnosis.get("lastWorkout"), dict) else {}
