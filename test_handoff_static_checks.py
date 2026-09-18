@@ -12195,7 +12195,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var lastLiveWidgetSnapshotHeartRate: Int?",
             "publishLiveWidgetSnapshotIfNeeded()",
             "private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date())",
-            "guard scenePhase == .active else { return }",
             "let heartRate = model.pulseLiveStore.state.heartRate",
             "if heartRate <= 0 {",
             'reason: "live_signal_cleared"',
@@ -12207,6 +12206,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard cadenceReady || changeReady else",
             "lastLiveWidgetSnapshotHeartRate = heartRate",
             "reason: cadenceReady ? \"live_throttled\" : \"live_bpm_delta\"",
+            "private func publishLiveWidgetSnapshot(reason: String)",
+            "scheduleLiveSensorWidgetPatch(reason: \"live_hr_background\")",
         ]:
             assert_contains(self, home, needle)
 
