@@ -75,4 +75,30 @@ final class AtriaOvernightMetricChartSeriesTests: XCTestCase {
         )
         XCTAssertEqual(nights.map(\.value), [49])
     }
+
+    func testHoleyUserAdjustedNightMatchesDiagnosisWeekHRVAndChartDomain() throws {
+        let json = """
+        [
+          {"day":"2026-09-18","tzOffsetMinutes":330,"lnRMSSD":3.970291913552122,"sleepSeconds":24925.55300796032,"recovery":69,"rhr":55},
+          {"day":"2026-09-16","tzOffsetMinutes":330,"lnRMSSD":4.343805421853684,"sleepSeconds":26100,"recovery":75,"rhr":55},
+          {"day":"2026-09-15","tzOffsetMinutes":330,"lnRMSSD":3.6888794541139363,"sleepSeconds":5112,"recovery":29,"rhr":67}
+        ]
+        """
+        let rollups = try JSONDecoder().decode([DailyRollupStoreEntry].self, from: Data(json.utf8))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 18, hour: 13, minute: 21))!
+
+        let windows = AtriaDiagnosisReport.overnightMetricWindows(
+            rollups: rollups,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(windows.hrvWeek.map(\.value), [40, 77, 53])
+        XCTAssertEqual(windows.hrvWeek.map(\.day), ["2026-09-15", "2026-09-16", "2026-09-18"])
+
+        let domain = AtriaTrendChartScale.domain(values: windows.hrvWeek.map { Double($0.value) })
+        XCTAssertLessThanOrEqual(domain.lowerBound, 40)
+        XCTAssertGreaterThanOrEqual(domain.upperBound, 77)
+    }
 }

@@ -456,7 +456,20 @@ struct AtriaTodayScreen: View {
             }
         }
         .sheet(item: $metricSheet) { route in
-            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+            // Do not wrap this in AtriaTodayHeroProjectionHost. That host is
+            // Equatable on HeroStore identity, so an open Week HRV sheet kept
+            // the first rollup snapshot and hid a reminted night (device 141:
+            // diagnosis 15:40,16:77,18:53 vs chart "2 of 7").
+            AtriaTodayMetricDetailSheetHost(
+                identity: AtriaTodayMetricDetailSheetHost.Identity(
+                    routeID: route.id,
+                    rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
+                    sleepHistoryRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision,
+                    confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil
+                        ? sessionProjectionStore.state.confirmedWorkoutsRevision
+                        : 0
+                )
+            ) {
                 AtriaMetricDetailSheet(metric: route.metric,
                                        rollups: highlightRollups,
                                        rollupsRevision: sessionProjectionStore.state.dailyRollupHistoryRevision,
@@ -482,20 +495,15 @@ struct AtriaTodayScreen: View {
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
                                        provenance: provenance(for: route.metric),
-                                       // Cached, not forced: the same value Home
-                                       // hands Settings; refreshed on rollup/session.
                                        maxHRSuggestion: route.metric == .strain
                                            ? strainSheetMaxHRSuggestion
                                            : nil,
                                        onAcceptMaxHRSuggestion: { store.acceptMaxHRSuggestion(observedPeak: $0) },
                                        onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) },
-                                       // Read, not observed: republished in
-                                       // lockstep with dailyRollupHistory, whose
-                                       // revision already invalidates this sheet.
                                        cycleStrainByDisplayDay:
                                         store.physiologicalCycleStrainByDisplayDay,
                                        initialRange: route.range)
-                    .id(route.id)
+                    .id("\(route.id).r\(sessionProjectionStore.state.dailyRollupHistoryRevision)")
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
@@ -3457,11 +3465,32 @@ private final class AtriaTodayGlanceMemo {
     var sleepNeedValue: AtriaTodaySleepNeedSnapshot?
 }
 
+/// Rebuilds an open metric sheet when overnight rollups remint, without
+/// following live HeroStore ticks. Identity is the sheet route plus the
+/// session revisions that actually change plotted nights.
+private struct AtriaTodayMetricDetailSheetHost<Content: View>: View, Equatable {
+    struct Identity: Equatable {
+        let routeID: String
+        let rollupsRevision: Int
+        let sleepHistoryRevision: Int
+        let confirmedWorkoutsRevision: Int
+    }
+
+    let identity: Identity
+    @ViewBuilder let content: () -> Content
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.identity == rhs.identity
+    }
+
+    var body: some View {
+        content()
+    }
+}
+
 /// Live strain/recovery publications terminate here instead of at the large
-/// Today screen. The host's Equatable identity documents that its only durable
-/// owner is HeroStore; the observed object still drives this leaf directly,
-/// while parent reconciliation remains free to replace the content closure when
-/// layout or session inputs actually change.
+/// Today screen. Equatable on HeroStore identity only — never wrap a view that
+/// must rebuild when daily rollups remint (see AtriaTodayMetricDetailSheetHost).
 private struct AtriaTodayHeroProjectionHost<Content: View>: View, Equatable {
     @ObservedObject var heroStore: AtriaHomeModel.HeroStore
     @ViewBuilder let content: (AtriaHomeModel.HeroSnapshot) -> Content
