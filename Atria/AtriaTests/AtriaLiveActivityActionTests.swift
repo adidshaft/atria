@@ -1246,6 +1246,51 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(body.contains("heartRateZoneIndex: zone?.index"))
         XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
         XCTAssertTrue(body.contains("isRecording: workoutActive || livePresence"))
+        XCTAssertTrue(body.contains("idleLivePresenceShouldStayActive"),
+                      "idle Live must not end ActivityKit when pulse freshness zeros BPM")
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 81,
+                presenceAlreadyStarted: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: true
+            ),
+            "device 2026-09-18: keep the island after a 15s HR freshness blip"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: false
+            ),
+            "never start an empty island before the first pulse"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: false,
+                heldHeartRate: 81,
+                presenceAlreadyStarted: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: true,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: true
+            ),
+            "workout recording is not idle presence"
+        )
         XCTAssertTrue(body.contains("showsWorkoutControls: workoutActive"))
         XCTAssertTrue(body.contains("elapsedDuration: workoutActive ? movingDuration : 0"),
                       "all-day Live must not publish a presence timer as workout elapsed")

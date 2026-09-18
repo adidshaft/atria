@@ -2875,6 +2875,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "imu_recovery_action=",
             "imu_recovery_age_s=",
             "imu_recovery_hr_stayed_up=",
+            "imu_recovery_both_live=",
             "live_hr_sample_age_s=",
             "live_imu_frame_age_s=",
             "compact_imu_assembled_age_s=",
