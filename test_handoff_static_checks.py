@@ -11375,12 +11375,13 @@ class HandoffStaticChecks(unittest.TestCase):
         ordered_tokens = [
             "triRingHero",
             "AtriaTodayLiveStatusHost(liveStore: liveStore,",
-            "todaySavedWorkoutRow(workout)",
             "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
         ]
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
+        assert_not_contains(self, body, "todaySavedWorkoutRow(workout)")
+        assert_not_contains(self, body, "recentSavedWorkouts")
 
         day_rollups_start = today.index("private var dayDescendingRollups")
         day_rollups_end = today.index("private var displayRecovery", day_rollups_start)
@@ -11400,14 +11401,14 @@ class HandoffStaticChecks(unittest.TestCase):
         # this migration (AtriaOverviewSections.swift, AtriaCustomizeSheet.swift).
         for needle in [
             "let resolvedSlots = ringSlots.map {",
-            "AtriaTriRing(slots: resolvedSlots,",
+            "AtriaTriRing(slots: ringSlots.map { slot in",
             "accessibilitySummary: accessibilitySummary",
             "actions: ringActions",
-            ".sleep: { metricDetail = .sleep }",
-            ".recovery: { metricDetail = .recovery }",
-            ".strain: { metricDetail = .strain }",
-            ".hrv: { metricDetail = .hrv }",
-            ".rhr: { metricDetail = .restingHeartRate }",
+            ".sleep: { openMetricDetail(.sleep) }",
+            ".recovery: { openMetricDetail(.recovery) }",
+            ".strain: { openMetricDetail(.strain) }",
+            ".hrv: { openMetricDetail(.hrv) }",
+            ".rhr: { openMetricDetail(.restingHeartRate) }",
         ]:
             assert_contains(self, today, needle)
 

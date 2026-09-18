@@ -475,9 +475,11 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(today.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
         XCTAssertTrue(today.contains("Label(\"Today's read\", systemImage: \"text.alignleft\")"),
                       "Today's read stays behind the actions menu, not under the rings")
-        XCTAssertTrue(today.contains("todayFirstScreenSavedWorkouts"))
-        XCTAssertTrue(today.contains("if !recentSavedWorkouts.isEmpty"))
-        XCTAssertTrue(today.contains("AtriaActivityWorkoutDetailSheetHost("))
+        XCTAssertFalse(today.contains("todayFirstScreenSavedWorkouts"),
+                       "saved Strength / Walking belong on Activity, not Today")
+        XCTAssertFalse(today.contains("recentSavedWorkouts"))
+        XCTAssertFalse(today.contains("todaySavedWorkoutRow"))
+        XCTAssertFalse(today.contains("AtriaActivityWorkoutDetailSheetHost("))
         XCTAssertTrue(today.contains("showInsights = true"))
         XCTAssertTrue(today.contains("AtriaLearnedInsightsSheet("))
         XCTAssertTrue(today.contains("ledger: sessionProjectionStore.state.learnedInsightLedger"))
