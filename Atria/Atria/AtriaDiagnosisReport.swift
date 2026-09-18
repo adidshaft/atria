@@ -303,15 +303,30 @@ enum AtriaDiagnosisReport {
            weekLast != day {
             keys.append("recovery_week_last_\(weekLast)_day_\(day)")
         }
+        if let day = metricWindows?.recoveryDay ?? metrics.overnightRecovery,
+           let monthLast = metricWindows?.recoveryMonth.last?.value,
+           monthLast != day {
+            keys.append("recovery_month_last_\(monthLast)_day_\(day)")
+        }
         if let day = metricWindows?.rhrDay ?? metrics.overnightRHR,
            let weekLast = metricWindows?.rhrWeek.last?.value,
            weekLast != day {
             keys.append("rhr_week_last_\(weekLast)_day_\(day)")
         }
+        if let day = metricWindows?.rhrDay ?? metrics.overnightRHR,
+           let monthLast = metricWindows?.rhrMonth.last?.value,
+           monthLast != day {
+            keys.append("rhr_month_last_\(monthLast)_day_\(day)")
+        }
         if let day = metricWindows?.sleepDay,
            let weekLast = metricWindows?.sleepWeek.last?.value,
            weekLast != day {
             keys.append("sleep_week_last_\(weekLast)_day_\(day)")
+        }
+        if let day = metricWindows?.sleepDay,
+           let monthLast = metricWindows?.sleepMonth.last?.value,
+           monthLast != day {
+            keys.append("sleep_month_last_\(monthLast)_day_\(day)")
         }
         if let widget = widgetHRV,
            let settled = metrics.settledHRV,
