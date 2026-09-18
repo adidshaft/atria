@@ -1190,10 +1190,12 @@ struct AtriaHomeView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             drainPendingFileDeepLink()
+            await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: "scene_active")
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))
                 guard !Task.isCancelled, scenePhase == .active else { return }
                 drainPendingFileDeepLink()
+                await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: "scene_active_poll")
             }
         }
         .task(id: pendingWorkoutDeepLink) {

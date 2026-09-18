@@ -183,6 +183,63 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(stillKept.hrvWindowCount, 26)
     }
 
+    func testOvernightHRVRestoreReceiptFillsNilOnlyWhenIdentityMatches() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(7 * 60 * 60 + 40 * 60)
+        var cleared = UserConfirmedSleep(
+            id: "1789408260-1789435909-user_adjusted_sleep",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "user_adjusted_sleep",
+            confidence: "user_adjusted_hr_only",
+            sessions: 1,
+            samples: 5_059,
+            avgHR: 60,
+            peakHR: 90,
+            restingHR: 67,
+            hrv: nil,
+            hrvWindowCount: 0,
+            duration: 5_112.069190979004,
+            span: end.timeIntervalSince(start),
+            reason: "holey overnight",
+            motionSource: "user_adjusted",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let receipt = AtriaOvernightHRVRestoreFile.Receipt(
+            sleepID: cleared.id,
+            hrv: 40,
+            hrvWindowCount: 26,
+            samples: 5_059,
+            duration: 5_112.069190979004
+        )
+        let restored = AtriaOvernightHRVRestoreFile.applying([receipt], to: [cleared])
+        XCTAssertEqual(restored.appliedIDs, [cleared.id])
+        XCTAssertEqual(restored.sleeps.first?.hrv, 40)
+        XCTAssertEqual(restored.sleeps.first?.hrvWindowCount, 26)
+
+        cleared.hrv = 77
+        cleared.hrvWindowCount = 12
+        let skippedExisting = AtriaOvernightHRVRestoreFile.applying([receipt], to: [cleared])
+        XCTAssertTrue(skippedExisting.appliedIDs.isEmpty)
+        XCTAssertEqual(skippedExisting.sleeps.first?.hrv, 77)
+
+        let mismatched = AtriaOvernightHRVRestoreFile.Receipt(
+            sleepID: receipt.sleepID,
+            hrv: 40,
+            hrvWindowCount: 26,
+            samples: 4_000,
+            duration: receipt.duration
+        )
+        cleared.hrv = nil
+        cleared.hrvWindowCount = 0
+        let skippedMismatch = AtriaOvernightHRVRestoreFile.applying([mismatched], to: [cleared])
+        XCTAssertTrue(skippedMismatch.appliedIDs.isEmpty)
+        XCTAssertNil(skippedMismatch.sleeps.first?.hrv)
+    }
+
     func testPersistedConfirmedSleepHRVIsReplacedFromExactQualifiedRRWindow() throws {
         let standard = session(dayOffset: 0,
                                source: .standardHeartRateMeasurement2A37)

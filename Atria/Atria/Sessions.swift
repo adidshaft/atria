@@ -3541,8 +3541,10 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let avgHR: Int
     let peakHR: Int
     let restingHR: Int
-    let hrv: Int?
-    let hrvWindowCount: Int?
+    /// `var` so an identity-gated restore can put back a qualified overnight
+    /// after session compaction cleared it (device 2026-09-18 Sep 15).
+    var hrv: Int?
+    var hrvWindowCount: Int?
     /// Median RSA-derived breaths/minute from continuous, qualified RR runs
     /// wholly inside this confirmed sleep window. Optional for legacy records
     /// and nights without enough continuous RR evidence.
@@ -15493,6 +15495,9 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
+                _ = await self.applyOvernightHRVRestoreReceiptsIfNeeded(
+                    reason: "historical_projection_\(ticket.reason)"
+                )
 
                 if automaticCurrentCycleCutoff == nil,
                    let rebuiltBaseline =
@@ -56194,6 +56199,7 @@ final class SessionStore: ObservableObject {
             merged,
             reason: "deferred_session_load"
         ).changed
+        _ = await applyOvernightHRVRestoreReceiptsIfNeeded(reason: "deferred_session_load")
 
         if finalPreparation.didRebuildBaseline && !didRequalifyConfirmedSleepHRV {
             let preparedBaseline = finalPreparation.baseline
@@ -57220,6 +57226,53 @@ final class SessionStore: ObservableObject {
                       changedDays.count)
         return ConfirmedSleepHRVRequalificationOutcome(changed: true,
                                                         succeeded: true)
+    }
+
+    /// Identity-gated repair for a confirmed overnight whose qualified HRV was
+    /// cleared after session compaction. No-op when the restore file is absent.
+    @discardableResult
+    func applyOvernightHRVRestoreReceiptsIfNeeded(
+        reason: String,
+        calendar: Calendar = .current
+    ) async -> Bool {
+        let receipts = AtriaOvernightHRVRestoreFile.peek()
+        guard !receipts.isEmpty else { return false }
+        let before = cachedConfirmedSleeps
+        let applied = AtriaOvernightHRVRestoreFile.applying(receipts, to: before)
+        guard !applied.appliedIDs.isEmpty, applied.sleeps != before else {
+            AtriaOvernightHRVRestoreFile.remove()
+            AtriaDebugLog("ATRIADBG overnight_hrv_restore status=ignored reason=%@ receipts=%d",
+                          reason,
+                          receipts.count)
+            return false
+        }
+        let changedDays = Set(applied.sleeps.compactMap { sleep -> Date? in
+            guard applied.appliedIDs.contains(sleep.id) else { return nil }
+            return EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+        })
+        let pendingInvalidationDaysBeforeSave = pendingDailyDerivedInvalidationDays
+        pendingDailyDerivedInvalidationDays.formUnion(changedDays)
+        guard await saveConfirmedSleeps(
+            applied.sleeps,
+            recoveredMutationBase: before
+        ) else {
+            pendingDailyDerivedInvalidationDays = pendingInvalidationDaysBeforeSave
+            AtriaDebugLog("ATRIADBG overnight_hrv_restore status=failed reason=%@ applied=%d",
+                          reason,
+                          applied.appliedIDs.count)
+            return false
+        }
+        AtriaOvernightHRVRestoreFile.remove()
+        refreshHistorySnapshotCache(deferred: true)
+        AtriaDebugLog("ATRIADBG overnight_hrv_restore status=applied reason=%@ applied=%d days=%d",
+                      reason,
+                      applied.appliedIDs.count,
+                      changedDays.count)
+        return true
     }
 
     #if DEBUG
