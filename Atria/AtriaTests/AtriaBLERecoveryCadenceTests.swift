@@ -12896,6 +12896,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             abort.contains("queuedConnectedRawHistoryCatchUpIntent = nil"),
             "Start must drop the previous walk's leftover pull so Strength keeps 2A37"
         )
+        XCTAssertTrue(
+            abort.contains("clearIdleWindowAckedHistoryRangePointer()"),
+            "Start must drop leftover pending=5 so the next gym cannot re-pause 2A37"
+        )
     }
 
     func testAcceptedHRDoesNotRetryRetiredRealtimeWorkoutCutover() throws {

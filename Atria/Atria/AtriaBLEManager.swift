@@ -11358,8 +11358,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         idleWindowDrainArmFence.clear()
         cancelIdleWindowHistoryPipeRetry()
         // A previous walk's End leftover pull must not re-pause 2A37 one
-        // second into the next Strength session.
+        // second into the next Strength session. Drop the queued intent and
+        // the stuck 0x22 pending snapshot (device 2026-09-18 pending=5).
         queuedConnectedRawHistoryCatchUpIntent = nil
+        clearIdleWindowAckedHistoryRangePointer()
         AtriaDebugLog(
             "ATRIADBG idle_window_drain status=aborted_for_explicit_workout reason=%@ action=restore_2a37",
             reason
@@ -11374,6 +11376,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let naturalFlag = arguments.contains("--atria-natural-gap-drain-enable")
         guard idleFlag || naturalFlag else { return .none }
         let nowTs = Date()
+        if queuedConnectedRawHistoryCatchUpIntent == nil {
+            retireStuckIdleWindowLeftoverIfNeeded(now: nowTs)
+        }
         let motionOwner = Self.explicitMotionOwnershipBlocksHistory(
             pendingWorkoutIntentActive:
                 AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: nowTs),
@@ -16950,6 +16955,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private func clearIdleWindowAckedHistoryRangePointer() {
+        idleWindowRangeBeforeACK = nil
+        let defaults = UserDefaults.standard
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeWriteCursor
+        )
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeReadCursor
+        )
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangePending
+        )
+    }
+
+    /// Drops a dry leftover 0x22 snapshot once no in-lifetime gym pull still
+    /// needs it. Start abort always clears; this is the connect/restore path
+    /// for a 13h-old Strength that can no longer fill from strap flash.
+    func retireStuckIdleWindowLeftoverIfNeeded(
+        metadataOnlyWorkoutEnds: [Date] = [],
+        now: Date = Date()
+    ) {
+        let pending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        guard Self.shouldRetireStuckIdleWindowLeftover(
+            pendingRecords: pending,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            metadataOnlyWorkoutEnds: metadataOnlyWorkoutEnds,
+            now: now
+        ) else { return }
+        queuedConnectedRawHistoryCatchUpIntent = nil
+        clearIdleWindowAckedHistoryRangePointer()
+        AtriaDebugLog(
+            "ATRIADBG idle_window_drain status=retired_stuck_leftover pending=%u action=keep_2a37",
+            pending ?? 0
+        )
+    }
+
     private func loadIdleWindowAckedHistoryRangePointer()
         -> AtriaWhoop4HistoryRangePointerSnapshot?
     {
@@ -20217,6 +20258,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            ) {
             self.queuedConnectedRawHistoryCatchUpIntent = nil
             queuedIntent = nil
+            retireStuckIdleWindowLeftoverIfNeeded(now: now)
         }
         let queuedPullIntent = queuedIntent != nil
         if Self.shouldDeferRawCatchUpForIdleWindowDrain(
