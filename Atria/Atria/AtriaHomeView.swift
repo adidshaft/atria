@@ -3758,7 +3758,6 @@ struct AtriaHomeView: View {
     }
 
     private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date()) {
-        guard scenePhase == .active else { return }
         let heartRate = model.pulseLiveStore.state.heartRate
         if heartRate <= 0 {
             // A zero is a meaningful transition: publish once so widgets clear
@@ -3766,7 +3765,7 @@ struct AtriaHomeView: View {
             guard lastLiveWidgetSnapshotHeartRate != nil else { return }
             lastLiveWidgetSnapshotAt = now
             lastLiveWidgetSnapshotHeartRate = nil
-            scheduleWidgetSnapshot(reason: "live_signal_cleared")
+            publishLiveWidgetSnapshot(reason: "live_signal_cleared")
             return
         }
         let elapsed = lastLiveWidgetSnapshotAt.map { now.timeIntervalSince($0) }
@@ -3781,7 +3780,20 @@ struct AtriaHomeView: View {
         }
         lastLiveWidgetSnapshotAt = now
         lastLiveWidgetSnapshotHeartRate = heartRate
-        scheduleWidgetSnapshot(reason: cadenceReady ? "live_throttled" : "live_bpm_delta")
+        publishLiveWidgetSnapshot(
+            reason: cadenceReady ? "live_throttled" : "live_bpm_delta"
+        )
+    }
+
+    /// Foreground rebuilds the full snapshot. Background used to no-op, so
+    /// Home widgets froze on the last BPM until the next open (goal Live
+    /// Activity/widgets current). Patch live sensors onto the last payload.
+    private func publishLiveWidgetSnapshot(reason: String) {
+        if scenePhase == .active {
+            scheduleWidgetSnapshot(reason: reason)
+        } else {
+            scheduleLiveSensorWidgetPatch(reason: "live_hr_background")
+        }
     }
 
     private func scheduleWidgetSnapshot(reason: String) {
