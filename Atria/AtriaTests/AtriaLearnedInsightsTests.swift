@@ -376,14 +376,15 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaInsightLookback"))
         XCTAssertTrue(source.contains("case compactBar"))
         XCTAssertTrue(source.contains("private var compactBar"))
-        XCTAssertTrue(source.contains("ringHeroInsights(from: insights)"),
-                      "Today's compact read uses Sleep / Recovery / Strain rings, not wrapping paragraphs")
-        XCTAssertTrue(source.contains("emphasisLabel"))
+        XCTAssertTrue(source.contains("compactReadSummary"),
+                      "Today's compact read is headlines, not a second Sleep / Recovery / Strain ring set")
+        XCTAssertTrue(source.contains("insight.headline"))
+        XCTAssertTrue(source.contains("insight.detail"))
         XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet"))
         XCTAssertTrue(source.contains(".buttonStyle(.glass)"))
-        XCTAssertTrue(source.contains("AtriaInsightPictureRing"))
-        XCTAssertTrue(source.contains("ringHero("))
-        XCTAssertTrue(source.contains("showsRingHero: lookback == .day"))
+        XCTAssertFalse(source.contains("AtriaInsightPictureRing"))
+        XCTAssertFalse(source.contains("showsRingHero"))
+        XCTAssertFalse(source.contains("ringHero("))
         XCTAssertFalse(source.contains("isPositive ? Metrics.electricGreen"))
         XCTAssertFalse(source.contains("featuredCard"))
         XCTAssertFalse(source.contains("railColor(for:"))
@@ -430,6 +431,15 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         let hero = AtriaLearnedInsight.ringHeroInsights(from: [extra, strain, sleep, recovery])
         XCTAssertEqual(hero.map(\.ringFamily), [.recovery, .sleep, .strain])
         XCTAssertEqual(hero.map(\.id), ["rec", "sleep", "strain"])
+        XCTAssertEqual(
+            AtriaLearnedInsight.compactReadSummary(from: [extra, strain, sleep, recovery]),
+            "Bedtime is swinging · Yesterday was a heavy load day"
+        )
+        XCTAssertEqual(
+            AtriaLearnedInsight.compactReadSummary(from: [], fallback: [sleep]),
+            "Last night was short"
+        )
+        XCTAssertNil(AtriaLearnedInsight.compactReadSummary(from: []))
     }
 
     func testTodayPinsCompactReadBarAndInsightsKeepsFullBoard() throws {
