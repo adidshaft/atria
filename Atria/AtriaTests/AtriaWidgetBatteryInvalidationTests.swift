@@ -1931,6 +1931,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("private let atriaLiveActivityStepFreshness: TimeInterval = 15"))
         XCTAssertTrue(widgetSource.contains("age <= freshness"))
         XCTAssertTrue(widgetSource.contains("atriaCurrentStepValue(s, now: now)"))
+        XCTAssertTrue(widgetSource.contains("atriaCumulativeDayStepsAreCurrent(snapshot, now: now)"))
         XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
         XCTAssertTrue(widgetSource.contains("freshness: atriaStaticStepFreshness"))
         XCTAssertTrue(widgetSource.contains("capturedAt: s.heartRateCapturedAt"))
@@ -2526,15 +2527,16 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             of: "let strainIsCredible =\n            !strainConfidence.localizedCaseInsensitiveContains(\"learning\")"
         ))
         let captured = try XCTUnwrap(source.range(
-            of: "strainCapturedAt: strainIsCredible ? now : nil"
+            of: "strainCapturedAt: publishDayStrainClock ? now : nil"
         ))
         XCTAssertLessThan(confidence.lowerBound, resolved.lowerBound)
         XCTAssertLessThan(resolved.lowerBound, gate.lowerBound)
         XCTAssertLessThan(gate.lowerBound, captured.lowerBound)
+        XCTAssertTrue(source.contains("let publishDayStrainClock = strainIsCredible || presentedWidgetStrain > 0"))
         // All three clock fields gate together: the widget's freshness guard
         // requires the full set, so a partial gate would leak a confident 0.0.
-        XCTAssertTrue(source.contains("strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil"))
-        XCTAssertTrue(source.contains("strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil"))
+        XCTAssertTrue(source.contains("strainCycleStart: publishDayStrainClock ? physiologicalCycle.start : nil"))
+        XCTAssertTrue(source.contains("strainCycleExpiresAt: publishDayStrainClock ? strainCycleExpiresAt : nil"))
     }
 
     func testWidgetPreservesDayOneRecoveryMissingHRVDisclosure() throws {

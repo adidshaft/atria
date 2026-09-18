@@ -171,6 +171,19 @@ enum AtriaWidgetDayFence {
 }
 // ATRIA-DAY-FENCE-MIRROR-END
 
+/// Day-scoped step totals are monotonic for the physiological cycle, the same
+/// way cumulative strain is. A 90s WidgetKit miss must not flip Today-matching
+/// 3744 into "Step stale" on the Home Screen (device 2026-09-18 17:55 IST).
+private func atriaCumulativeDayStepsAreCurrent(_ snapshot: AtriaWidgetSnapshot,
+                                               now: Date) -> Bool {
+    guard snapshot.steps.map({ $0 >= 0 }) == true,
+          let cycleStart = snapshot.stepsCycleStart,
+          let cycleExpiresAt = snapshot.stepsCycleExpiresAt,
+          cycleExpiresAt > cycleStart else { return false }
+    return now >= cycleStart.addingTimeInterval(-atriaStaticSensorFutureTolerance)
+        && now < cycleExpiresAt
+}
+
 private func atriaCumulativeDayStrainIsCurrent(_ snapshot: AtriaWidgetSnapshot,
                                                now: Date) -> Bool {
     guard let capturedAt = snapshot.strainCapturedAt,
@@ -207,14 +220,8 @@ private func atriaCurrentStepValue(_ snapshot: AtriaWidgetSnapshot,
             == atriaQualifiedStepAuthorityVersion else {
         return nil
     }
-    if snapshot.stepsSource == "verifiedCanonical" {
-        guard let steps = snapshot.steps,
-              let cycleStart = snapshot.stepsCycleStart,
-              let cycleExpiresAt = snapshot.stepsCycleExpiresAt,
-              cycleExpiresAt > cycleStart,
-              now >= cycleStart.addingTimeInterval(-atriaStaticSensorFutureTolerance),
-              now < cycleExpiresAt else { return nil }
-        return steps
+    if atriaCumulativeDayStepsAreCurrent(snapshot, now: now) {
+        return snapshot.steps
     }
     return atriaFreshStaticSensorValue(snapshot.steps,
                                        capturedAt: snapshot.stepsCapturedAt,
@@ -3536,10 +3543,11 @@ enum AtriaWidgetMetric: String, Identifiable {
             // the derivation below stays as legacy fallback.
             let text = s.stepsValueText ?? atriaStepValueText(s, steps: steps)
             // RC5: a live-source row older than the app's 15s claim window
-            // keeps the 90s delivery slack but wears its capture frontier on
-            // the value line itself, so the value and its status line claim
-            // the same window. Canonical cycle-bound rows are untouched.
+            // and without a cycle fence keeps the capture frontier on the
+            // value line. Cycle-bound day totals stay the plain number —
+            // Today does not append a clock to 3744 either.
             if s.stepsSource != "verifiedCanonical",
+               !atriaCumulativeDayStepsAreCurrent(s, now: now),
                let capturedAt = s.stepsCapturedAt,
                now.timeIntervalSince(capturedAt)
                    > atriaLiveSourceStepValueClaimWindow {
@@ -3625,6 +3633,22 @@ enum AtriaWidgetMetric: String, Identifiable {
                     return "Prior cycle: \(priorSteps) · ended \(atriaCaptureTimeText(priorEndedAt))"
                 }
                 return "Waiting for strap"
+            }
+            if atriaCumulativeDayStepsAreCurrent(snapshot, now: now),
+               let steps = snapshot.steps {
+                if let statusText = atriaPreRenderedStepStatus(snapshot, now: now) {
+                    return statusText
+                }
+                let accuracy = snapshot.stepsAreEstimated == false ? "Confirmed" : "Estimated"
+                let captured = atriaCaptureTimeText(capturedAt)
+                guard let goal = snapshot.dailyStepGoal, goal > 0 else {
+                    return "\(accuracy) · \(captured)"
+                }
+                if steps >= goal, snapshot.stepsAreEstimated == false {
+                    return "Goal ✓ · confirmed · \(captured)"
+                }
+                let percent = min(999, max(0, Int((Double(steps) / Double(goal) * 100).rounded())))
+                return "\(accuracy) · \(percent)% goal · \(captured)"
             }
             guard let steps = atriaFreshStaticSensorValue(snapshot.steps,
                                                            capturedAt: capturedAt,
