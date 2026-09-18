@@ -359,6 +359,29 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             )
         )
         XCTAssertTrue(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 0,
+                pendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "device 2026-09-18 21:17: dry no_rows pending=5 must not survive finish to re-pause 2A37"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 0,
+                pendingRecords: 5,
+                queuedPullIntent: true
+            ),
+            "a queued gym leftover may keep the 0x22 snapshot"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 12,
+                pendingRecords: 5,
+                queuedPullIntent: false
+            )
+        )
+        XCTAssertTrue(
             AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
                 queuedPullIntent: true,
                 idleWindowAdmitted: true,
@@ -1862,6 +1885,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             finishBody.contains("idleWindowDrainArmFence.clear()")
+        )
+        XCTAssertTrue(
+            finishBody.contains("shouldClearIdleWindowPointerAfterDryTerminal"),
+            "dry idle-window no_rows must drop leftover pending=5 so 2A37 stays up"
+        )
+        XCTAssertTrue(
+            finishBody.contains("clearIdleWindowAckedHistoryRangePointer()"),
+            "the dry leftover 0x22 snapshot must leave UserDefaults, not only RAM"
         )
         XCTAssertTrue(
             finishBody.contains("else if deferLiveHeartRateRestoreForConsumeLiveTail {"),

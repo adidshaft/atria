@@ -17861,6 +17861,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         idleWindowServedUnixMin = nil
         idleWindowServedUnixMax = nil
         idleWindowPostACKRangeProbeIssued = false
+        let dryLeftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        if Self.shouldClearIdleWindowPointerAfterDryTerminal(
+            durableRowsThisAttempt: historicalDrainTelemetry.persisted,
+            pendingRecords: dryLeftoverPending,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+        ) {
+            clearIdleWindowAckedHistoryRangePointer()
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=cleared_dry_leftover_pointer pending=%u action=keep_2a37",
+                dryLeftoverPending ?? 0
+            )
+        }
         idleWindowDrainStartedAt = nil
         idleWindowDrainRangeRequestedAt = nil
         idleWindowDrainFirstFrameAt = nil
