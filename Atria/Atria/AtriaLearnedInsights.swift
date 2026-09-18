@@ -121,6 +121,17 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         }
     }
 
+    /// Today already has master rings. The compact read is the sentences.
+    static func compactReadSummary(from insights: [AtriaLearnedInsight],
+                                   fallback: [AtriaLearnedInsight] = [],
+                                   limit: Int = 2) -> String? {
+        let lines = insights.prefix(limit).map(\.headline)
+        if !lines.isEmpty {
+            return lines.joined(separator: " · ")
+        }
+        return fallback.first?.headline
+    }
+
     var emphasisLabel: String {
         switch kind {
         case .sleepDebt: return isPositive ? "Covered" : "Short"
