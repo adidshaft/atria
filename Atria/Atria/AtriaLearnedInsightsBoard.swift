@@ -228,25 +228,29 @@ struct AtriaLearnedInsightsBoard: View {
     }
 
     private func nakedRow(_ insight: AtriaLearnedInsight, compact: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            AtriaInsightPictureRing(insight: insight, size: compact ? 44 : 56)
-            VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: .center, spacing: 12) {
+            AtriaInsightPictureRing(insight: insight, size: compact ? 40 : 48)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(insight.emphasisLabel)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(insight.pictureTint)
                 Text(insight.headline)
-                    .font(compact ? .subheadline.weight(.semibold) : .title3.weight(.semibold))
+                    .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
                     .foregroundStyle(.primary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(insight.detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
                     .lineLimit(2)
+                    .minimumScaleFactor(0.85)
             }
+            Spacer(minLength: 8)
+            Image(systemName: insight.isPositive
+                  ? "arrow.up.circle.fill"
+                  : "arrow.down.circle.fill")
+                .font(.title2)
+                .foregroundStyle(insight.pictureTint)
+                .symbolRenderingMode(.hierarchical)
+                .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, compact ? 8 : 12)
+        .padding(.vertical, compact ? 6 : 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(insight.emphasisLabel). \(insight.headline). \(insight.detail)")
     }

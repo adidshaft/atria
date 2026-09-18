@@ -47,6 +47,7 @@ enum AtriaDiagnosisReport {
         var strain: Double? = nil
         var steps: Int? = nil
         var stepsAreEstimated: Bool? = nil
+        var heartRateLoad: Int? = nil
         var reason: String
     }
 
@@ -159,7 +160,8 @@ enum AtriaDiagnosisReport {
         liveActivityAvailability: String? = nil,
         liveActivityStrain: Double? = nil,
         liveActivitySteps: Int? = nil,
-        liveActivityElapsedSeconds: Int? = nil
+        liveActivityElapsedSeconds: Int? = nil,
+        compactAssembledAgeSeconds: Double? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -218,7 +220,10 @@ enum AtriaDiagnosisReport {
                 lastWorkout: lastWorkout,
                 recentNoHeartRateWorkouts: recentNoHeartRateWorkouts,
                 metricWindows: metricWindows,
-                widgetSteps: widgetSteps
+                widgetSteps: widgetSteps,
+                widgetHRV: widgetHRV,
+                widgetRecovery: widgetRecovery,
+                compactAssembledAgeSeconds: compactAssembledAgeSeconds
             ),
             events: []
         )
@@ -230,7 +235,10 @@ enum AtriaDiagnosisReport {
         lastWorkout: Workout? = nil,
         recentNoHeartRateWorkouts: [Workout] = [],
         metricWindows: MetricWindows? = nil,
-        widgetSteps: Int? = nil
+        widgetSteps: Int? = nil,
+        widgetHRV: Int? = nil,
+        widgetRecovery: Int? = nil,
+        compactAssembledAgeSeconds: Double? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -280,6 +288,31 @@ enum AtriaDiagnosisReport {
            monthLast != settled {
             keys.append("hrv_month_last_\(monthLast)_settled_\(settled)")
         }
+        if let day = metricWindows?.recoveryDay ?? metrics.overnightRecovery,
+           let weekLast = metricWindows?.recoveryWeek.last?.value,
+           weekLast != day {
+            keys.append("recovery_week_last_\(weekLast)_day_\(day)")
+        }
+        if let day = metricWindows?.rhrDay ?? metrics.overnightRHR,
+           let weekLast = metricWindows?.rhrWeek.last?.value,
+           weekLast != day {
+            keys.append("rhr_week_last_\(weekLast)_day_\(day)")
+        }
+        if let day = metricWindows?.sleepDay,
+           let weekLast = metricWindows?.sleepWeek.last?.value,
+           weekLast != day {
+            keys.append("sleep_week_last_\(weekLast)_day_\(day)")
+        }
+        if let widget = widgetHRV,
+           let settled = metrics.settledHRV,
+           widget != settled {
+            keys.append("widget_hrv_\(widget)_settled_\(settled)")
+        }
+        if let widget = widgetRecovery,
+           let overnight = metrics.overnightRecovery,
+           widget != overnight {
+            keys.append("widget_recovery_\(widget)_overnight_\(overnight)")
+        }
         if let widget = widgetSteps,
            let today = metrics.todaySteps,
            abs(widget - today) > AtriaHeldDailyStepFloor.contaminationSlack {
@@ -287,6 +320,12 @@ enum AtriaDiagnosisReport {
         }
         if let workout = lastWorkout, workout.samples > 0, workout.steps == 0 {
             keys.append("workout_zero_steps")
+        }
+        if connection.status == AtriaBLEManager.Status.connected.rawValue,
+           connection.stream5Confirmed,
+           let age = compactAssembledAgeSeconds,
+           age > 60 {
+            keys.append("compact_imu_assembled_stale")
         }
         return keys
     }

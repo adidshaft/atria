@@ -12275,6 +12275,7 @@ final class AtriaHomeModel {
                 strain: workout.strain,
                 steps: workout.workoutSteps,
                 stepsAreEstimated: workout.workoutStepsAreEstimated,
+                heartRateLoad: AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout),
                 reason: workout.reason
             )
         }
@@ -12326,7 +12327,14 @@ final class AtriaHomeModel {
                 liveActivityStrain: liveActivitySnapshot.map(\.workoutStrain),
                 liveActivitySteps: liveActivitySnapshot?.steps,
                 liveActivityElapsedSeconds: liveActivitySnapshot
-                    .map { Int($0.elapsedDuration.rounded()) }
+                    .map { Int($0.elapsedDuration.rounded()) },
+                compactAssembledAgeSeconds: {
+                    let at = UserDefaults.standard.double(
+                        forKey: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAtKey
+                    )
+                    guard at > 0 else { return nil }
+                    return now.timeIntervalSince1970 - at
+                }()
             ),
             reason: reason
         )
