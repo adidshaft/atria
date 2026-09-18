@@ -58,6 +58,51 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(preserved.recoveryConfidence, rebuilt.recoveryConfidence)
     }
 
+    func testHoleyRemintThatScoresRecoveryDoesNotWipeConfirmedOvernightHRV() {
+        let day = Date(timeIntervalSince1970: 1_787_000_000)
+        let existing = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 52,
+            recoveryConfidence: "unverified",
+            hrv: 40,
+            restingHR: 67,
+            respiratoryRate: nil,
+            sleepDuration: 15_693,
+            sleepSpan: 27_648,
+            sleepStart: day.addingTimeInterval(-8 * 3600),
+            sleepEnd: day.addingTimeInterval(-30 * 60),
+            sleepSource: "user_adjusted_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.6
+        )
+        let rebuilt = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 13,
+            recoveryConfidence: "unverified",
+            hrv: nil,
+            restingHR: 67,
+            respiratoryRate: nil,
+            sleepDuration: 5_112,
+            sleepSpan: 27_648,
+            sleepStart: existing.sleepStart,
+            sleepEnd: existing.sleepEnd,
+            sleepSource: "user_adjusted_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.6
+        )
+        let preserved = SessionStore.dailyMetricPreservingFrozenOvernightScore(
+            rebuilt: rebuilt,
+            existing: existing
+        )
+        XCTAssertEqual(preserved.recoveryPercent, 13)
+        XCTAssertEqual(preserved.hrv, 40,
+                       "session compaction must not let a holey remint punch out overnight HRV")
+        XCTAssertEqual(preserved.restingHR, 67)
+        XCTAssertEqual(preserved.sleepDuration, 5_112)
+    }
+
     private func at(_ h: Double) -> Date { Date(timeIntervalSince1970: 1_800_000_000 + h * 3600) }
 
     func testHistoryAndSleepWaitForMatchingMetricRollupPublication() throws {

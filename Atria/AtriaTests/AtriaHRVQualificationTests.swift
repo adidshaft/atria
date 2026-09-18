@@ -130,6 +130,59 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(updated.hrvWindowCount, 0)
     }
 
+    func testQualifiedOvernightHRVSurvivesWhenSessionsNoLongerOverlapTheNight() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(7 * 60 * 60 + 40 * 60)
+        let persisted = UserConfirmedSleep(
+            id: "1789408260-1789435909-user_adjusted_sleep",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "user_adjusted_sleep",
+            confidence: "user_adjusted_hr_only",
+            sessions: 1,
+            samples: 5_059,
+            avgHR: 60,
+            peakHR: 90,
+            restingHR: 67,
+            hrv: 40,
+            hrvWindowCount: 26,
+            duration: 5_112,
+            span: end.timeIntervalSince(start),
+            reason: "holey overnight",
+            motionSource: "user_adjusted",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+
+        let kept = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [persisted],
+                sessions: []
+            ).first
+        )
+        XCTAssertEqual(kept.hrv, 40)
+        XCTAssertEqual(kept.hrvWindowCount, 26)
+
+        let laterWear = session(dayOffset: 1, source: .standardHeartRateMeasurement2A37)
+        XCTAssertFalse(
+            SessionStore.sessionsOverlapConfirmedSleep(
+                [laterWear],
+                start: persisted.start,
+                end: persisted.end
+            )
+        )
+        let stillKept = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [persisted],
+                sessions: [laterWear]
+            ).first
+        )
+        XCTAssertEqual(stillKept.hrv, 40)
+        XCTAssertEqual(stillKept.hrvWindowCount, 26)
+    }
+
     func testPersistedConfirmedSleepHRVIsReplacedFromExactQualifiedRRWindow() throws {
         let standard = session(dayOffset: 0,
                                source: .standardHeartRateMeasurement2A37)

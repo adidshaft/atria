@@ -3013,7 +3013,11 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     let day: Date
     let recoveryPercent: Int?
     let recoveryConfidence: String
-    let hrv: Int?
+    /// `var` only so a rebuild that scored Recovery without HRV can keep the
+    /// confirmed overnight measurement — see
+    /// `dailyMetricPreservingFrozenOvernightScore`. Same reason `restingHR` is
+    /// a var: a 20-field copy constructor would drift.
+    var hrv: Int?
     /// `var` only so a rebuild that could not observe this day's resting HR can
     /// carry forward the measured one instead of asserting nil — see
     /// `dailyMetricPreservingMeasuredFacts`. Writing a 20-field copy
@@ -22854,6 +22858,11 @@ final class SessionStore: ObservableObject {
             // percent and take the rebuilt HRV/RHR/sleep (device 2026-09-18:
             // Sep 15 coverage dropped to 1h 25m, HRV 40, Recovery stayed 52).
             if rebuilt.recoveryPercent != nil || existing.recoveryPercent == nil {
+                if rebuiltWithMeasuredRHR.hrv == nil, existing.hrv != nil {
+                    var preserved = rebuiltWithMeasuredRHR
+                    preserved.hrv = existing.hrv
+                    return preserved
+                }
                 return rebuiltWithMeasuredRHR
             }
             return SavedDailyMetric(
@@ -43637,10 +43646,39 @@ final class SessionStore: ObservableObject {
     /// Re-derives persisted sleep HRV from exact-window, transport-verified RR
     /// evidence available today. Older confirmed records may carry a scalar
     /// HRV written before provenance was persisted; retaining that scalar after
-    /// the current trust gate rejects its source would make historical recovery
-    /// look more certain than the underlying record. Keep the user's sleep
-    /// boundary and every non-HRV field, but clear or replace HRV strictly from
-    /// reproducible raw evidence. (2026-07-18 truth migration)
+    /// overlapping sessions fail the trust gate would make historical recovery
+    /// look more certain than the underlying record.
+    ///
+    /// Session compaction is different: if no remaining session overlaps the
+    /// night, clearing a 26-window measurement punches Week HRV down to 2 of 7
+    /// (device 2026-09-18 Sep 15). Keep a previously qualified overnight when
+    /// today's session set simply no longer covers it.
+    nonisolated static func requalifiedConfirmedSleepHRV(
+        existingHRV: Int?,
+        existingWindowCount: Int?,
+        measuredHRV: Int?,
+        measuredWindowCount: Int,
+        sessionsOverlapSleep: Bool
+    ) -> (hrv: Int?, windowCount: Int) {
+        if measuredWindowCount >= 3, let hrv = measuredHRV, hrv > 0 {
+            return (hrv, measuredWindowCount)
+        }
+        if !sessionsOverlapSleep,
+           (existingWindowCount ?? 0) >= 3,
+           let hrv = existingHRV, hrv > 0 {
+            return (hrv, existingWindowCount ?? 0)
+        }
+        return (nil, measuredWindowCount)
+    }
+
+    nonisolated static func sessionsOverlapConfirmedSleep(
+        _ sessions: [SavedSession],
+        start: Date,
+        end: Date
+    ) -> Bool {
+        sessions.contains { $0.start < end && $0.end > start }
+    }
+
     nonisolated static func requalifiedConfirmedSleepHRVRecords(
         _ sleeps: [UserConfirmedSleep],
         sessions: [SavedSession]
@@ -43650,7 +43688,18 @@ final class SessionStore: ObservableObject {
                                                        start: sleep.start,
                                                        end: sleep.end,
                                                        rest: sleep.restingHR)
-            let qualifiedHRV = metrics.hrvWindowCount >= 3 ? metrics.hrv : nil
+            let resolved = requalifiedConfirmedSleepHRV(
+                existingHRV: sleep.hrv,
+                existingWindowCount: sleep.hrvWindowCount,
+                measuredHRV: metrics.hrv,
+                measuredWindowCount: metrics.hrvWindowCount,
+                sessionsOverlapSleep: sessionsOverlapConfirmedSleep(
+                    sessions,
+                    start: sleep.start,
+                    end: sleep.end
+                )
+            )
+            let qualifiedHRV = resolved.hrv
             // HRV's historical migration intentionally clears scalar-only
             // values that cannot be requalified. Respiration is already stored
             // only after the stricter continuous-run gate above; session
@@ -43660,7 +43709,7 @@ final class SessionStore: ObservableObject {
                                                                 end: sleep.end)
                 ?? sleep.respiratoryRate
             guard sleep.hrv != qualifiedHRV
-                    || sleep.hrvWindowCount != metrics.hrvWindowCount
+                    || sleep.hrvWindowCount != resolved.windowCount
                     || sleep.respiratoryRate != respiratoryRate else {
                 return sleep
             }
@@ -43676,7 +43725,7 @@ final class SessionStore: ObservableObject {
                                       peakHR: sleep.peakHR,
                                       restingHR: sleep.restingHR,
                                       hrv: qualifiedHRV,
-                                      hrvWindowCount: metrics.hrvWindowCount,
+                                      hrvWindowCount: resolved.windowCount,
                                       respiratoryRate: respiratoryRate,
                                       duration: sleep.duration,
                                       span: sleep.span,
@@ -43712,8 +43761,18 @@ final class SessionStore: ObservableObject {
                     rest: sleep.restingHR,
                     cooperativeDeadline: deadline
                 )
-                let qualifiedHRV = metrics.hrvWindowCount >= 3
-                    ? metrics.hrv : nil
+                let resolved = requalifiedConfirmedSleepHRV(
+                    existingHRV: sleep.hrv,
+                    existingWindowCount: sleep.hrvWindowCount,
+                    measuredHRV: metrics.hrv,
+                    measuredWindowCount: metrics.hrvWindowCount,
+                    sessionsOverlapSleep: sessionsOverlapConfirmedSleep(
+                        sessions,
+                        start: sleep.start,
+                        end: sleep.end
+                    )
+                )
+                let qualifiedHRV = resolved.hrv
                 let respiratoryRate = try confirmedSleepRespiratoryRate(
                     from: sessions,
                     start: sleep.start,
@@ -43721,7 +43780,7 @@ final class SessionStore: ObservableObject {
                     cooperativeDeadline: deadline
                 ) ?? sleep.respiratoryRate
                 guard sleep.hrv != qualifiedHRV
-                        || sleep.hrvWindowCount != metrics.hrvWindowCount
+                        || sleep.hrvWindowCount != resolved.windowCount
                         || sleep.respiratoryRate != respiratoryRate else {
                     result.append(sleep)
                     continue
@@ -43739,7 +43798,7 @@ final class SessionStore: ObservableObject {
                     peakHR: sleep.peakHR,
                     restingHR: sleep.restingHR,
                     hrv: qualifiedHRV,
-                    hrvWindowCount: metrics.hrvWindowCount,
+                    hrvWindowCount: resolved.windowCount,
                     respiratoryRate: respiratoryRate,
                     duration: sleep.duration,
                     span: sleep.span,
