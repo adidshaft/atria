@@ -1792,6 +1792,28 @@ extension AtriaBLEManager {
         return now.timeIntervalSince(requestedAt) > lifetime
     }
 
+    /// Walking 20:54–21:05 on 2026-09-17 already had 523 live samples. End
+    /// still queued leftover drain, which paused 2A37; Strength started one
+    /// second later and saved 0 HR. A workout that already has samples must
+    /// not seize the radio. Connect/restore may only retry metadata-only
+    /// windows still inside the durable pull lifetime — older gyms are gone
+    /// from strap flash, and re-queuing them is why Today sat on Reading…
+    /// with a 10s-old beat.
+    nonisolated static func shouldQueuePostWorkoutHistoryBackfill(
+        endedWorkoutSampleCount: Int?,
+        metadataOnlyWorkoutEnds: [Date],
+        now: Date,
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        if let samples = endedWorkoutSampleCount {
+            return samples <= 0
+        }
+        return metadataOnlyWorkoutEnds.contains { end in
+            let age = now.timeIntervalSince(end)
+            return age >= 0 && age <= durableLifetime
+        }
+    }
+
     /// A queued gym pull that already selected an idle window must not mint a
     /// keep-2A37 0x22 on the same callback. Device 123 timed out every live
     /// range write while notify stayed on.

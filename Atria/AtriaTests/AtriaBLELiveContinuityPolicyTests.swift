@@ -284,6 +284,39 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 defaultLifetime: 10 * 60
             )
         )
+        let gymEnd = Date(timeIntervalSince1970: 1_789_661_229)
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: 0,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            ),
+            "a just-ended Strength with 0 samples may still pull strap flash"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: 523,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd
+            ),
+            "Walking 20:54–21:05 had live HR; leftover drain must not pause 2A37 before Strength"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: nil,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(2 * 60 * 60)
+            ),
+            "connect/restore may retry a metadata-only gym still inside the 6h pull lifetime"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: nil,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(13 * 60 * 60)
+            ),
+            "a 13h-old gym is gone from strap flash; re-queuing leftover drain is why Today sat on Reading…"
+        )
         XCTAssertTrue(
             AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
                 queuedPullIntent: true,

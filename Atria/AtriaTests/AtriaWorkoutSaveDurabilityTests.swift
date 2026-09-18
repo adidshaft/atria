@@ -2288,9 +2288,17 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(body.contains("notBefore: finalIntent.startedAt"),
                       "The end checkpoint must carry the persisted exact workout start")
         XCTAssertTrue(body.contains("endWorkoutMotionLease(reason: \"workout_end\")"))
-        XCTAssertTrue(body.contains("requestPostWorkoutHistoryBackfill()"))
+        XCTAssertTrue(body.contains("requestPostWorkoutHistoryBackfillIfNeeded("))
         XCTAssertTrue(home.contains("queueConnectedRawHistoryCatchUpIntent(reason: \"post_workout_hr_backfill\")"))
         XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
+        XCTAssertTrue(home.contains("shouldQueuePostWorkoutHistoryBackfill("))
+        let confirm = try XCTUnwrap(body.range(of: "confirmWorkoutWindowForUIAsync("))
+        let backfill = try XCTUnwrap(body.range(of: "requestPostWorkoutHistoryBackfillIfNeeded("))
+        XCTAssertLessThan(
+            confirm.lowerBound,
+            backfill.lowerBound,
+            "only a 0-sample confirm may queue leftover drain, so a walk with HR cannot pause 2A37 before Strength"
+        )
         let manager = try durabilitySource("AtriaBLEManager.swift")
         XCTAssertTrue(manager.contains("connectedRawHistoryCatchUpHasDrainableWork("))
         XCTAssertTrue(manager.contains("shouldDeferRawCatchUpForIdleWindowDrain("))
