@@ -438,8 +438,9 @@ struct AtriaTodayScreen: View {
             // big sections (user feedback 2026-07-07): the major blocks below
             // the ring render in a persisted order and reorder by
             // long-press-drag. Kickers travel with their sections.
-            // learnedRead is pinned under highlights, not in this list —
-            // this phone's CSV starts with weeklyPlan (device 2026-09-14 23:24).
+            // Master rings already own Sleep / Recovery / Strain. Today's read
+            // is sentences behind the actions menu, never a second 3-ring hero
+            // on this stack (device 2026-09-18).
             ForEach(orderedTodaySections.filter { $0 != .learnedRead }) { section in
                 todaySection(section)
                     .onDrag {

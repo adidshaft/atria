@@ -461,6 +461,9 @@ final class AtriaLearnedInsightsTests: XCTestCase {
 
         XCTAssertFalse(today.contains("style: .compactBar"),
                        "Today already has master rings; do not clone Sleep / Recovery / Strain as a compact read")
+        XCTAssertTrue(today.contains("case .learnedRead:\n            EmptyView()"),
+                      "Today's read stays off the first screen; master rings already own those families")
+        XCTAssertTrue(today.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
         XCTAssertTrue(today.contains("Label(\"Today's read\", systemImage: \"text.alignleft\")"),
                       "Today's read stays behind the actions menu, not under the rings")
         XCTAssertTrue(today.contains("todayFirstScreenSavedWorkouts"))
