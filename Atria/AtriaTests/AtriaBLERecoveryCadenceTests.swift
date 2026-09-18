@@ -226,6 +226,54 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "must not toggle stream-5 off while 0x33 callbacks are flowing"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: false,
+                imuAge: 308,
+                sittingSkipFresh: false
+            ),
+            "device 172 22:12: after compact 0x33 dies, allow one stream-5 off/on even though earlier packets were counted"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: false,
+                imuAge: 55,
+                sittingSkipFresh: true
+            ),
+            "sitting compact skip must not look like a dead stream-5"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: true,
+                imuAge: 308,
+                sittingSkipFresh: false
+            ),
+            "stream-5 traffic must rearm the ticket before a second off/on"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: false,
+                imuAge: 8,
+                sittingSkipFresh: false
+            ),
+            "walking compact 8s gaps must not look like a dead stream-5"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -12384,6 +12432,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "zombie stream-5 must toggle while CoreBluetooth is still Connecting with live HR")
         XCTAssertTrue(toggleBody.contains("heartRateNotifying: hrLive"),
                       "zombie toggle must treat a fresh 2A37 sample as notifying")
+        XCTAssertTrue(toggleBody.contains("imuAge: imuAge"),
+                      "device 172: dead compact IMU after traffic must still get one stream-5 off/on")
+        XCTAssertTrue(toggleBody.contains("sittingSkipFresh: sittingSkipFresh"))
+        XCTAssertTrue(source.contains("zombie_cccd_toggle_rearm"),
+                      "compact 0x33 after an empty-pipe toggle must rearm one later stale off/on")
         XCTAssertTrue(toggleBody.contains("discoverServices([Self.UUIDs.strapService])"),
                       "suppressed pure-HR reconnects omit strap service; IMU repair must rediscover it")
         XCTAssertTrue(toggleBody.contains("UUIDs.strapStream5, Self.UUIDs.strapTX"),
