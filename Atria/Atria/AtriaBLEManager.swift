@@ -30379,12 +30379,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Raw 0x33 can trickle while assembled compact seconds stall. Once
     /// that second clock is older than 12s, use it as the motion evidence
     /// so 6A/51 rearms on a live HR epoch instead of `frame_fresh`.
+    /// Sitting skip is the opposite: assembled seconds are *supposed* to
+    /// stall while native packets still arrive (device 2026-09-18 167:
+    /// 6A/51 on a 32–46s sitting skip dropped 2A37).
     nonisolated static func r10LivenessEvidenceAt(
         rawFrameAt: Date?,
         compactSecondAt: Date?,
+        compactPacketAt: Date? = nil,
         now: Date,
-        compactStaleInterval: TimeInterval = r10LivenessCompactStaleInterval
+        compactStaleInterval: TimeInterval = r10LivenessCompactStaleInterval,
+        sittingSkipFresh: Bool = false
     ) -> Date? {
+        if sittingSkipFresh {
+            return [rawFrameAt, compactSecondAt, compactPacketAt]
+                .compactMap { $0 }
+                .max()
+        }
         if let compactSecondAt,
            now.timeIntervalSince(compactSecondAt) >= compactStaleInterval {
             return compactSecondAt
@@ -30416,8 +30426,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         staleInterval: TimeInterval = r10LivenessStaleInterval,
         rearmGraceInterval: TimeInterval = r10LivenessRearmGraceInterval,
         rearmMinimumInterval: TimeInterval = r10LivenessRearmMinimumInterval,
-        rediscoveryMinimumInterval: TimeInterval = r10RecoveryRediscoveryMinimumInterval
+        rediscoveryMinimumInterval: TimeInterval = r10RecoveryRediscoveryMinimumInterval,
+        sittingSkipFresh: Bool = false
     ) -> R10LivenessAction {
+        // Sitting 0x33 is 30–60s apart. The 4s IMU silence gate must not
+        // 6A/51-storm a live 2A37 link between those packets.
+        if sittingSkipFresh { return .none }
         guard eligible, connected, realtimeArmed else { return .none }
         if let lastFrameAt,
            now.timeIntervalSince(lastFrameAt) >= 0,
@@ -31217,6 +31231,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 heartRateAge: recoveryAges.heartRateAge,
                 imuAge: recoveryAges.imuAge
             )
+            self.reassertHeartRateNotificationsIfConnected(
+                reason: "cover_live_51_restore_2a37"
+            )
         }
         return true
     }
@@ -31374,7 +31391,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
             ),
             imuAgeSeconds: imuAge
-        )
+        ) && currentConnectionProprietaryTraffic > 0
+        if sittingSkipFresh {
+            defaults.set("sitting_skip_fresh", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
         let fallbackIMU = Self.shouldRefreshIMUOnLiveHeartRateFallback(
             owner: protectedR10CleanOwner,
             state: protectedR10CleanOwnerState,
@@ -31496,6 +31518,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 heartRateNotifying: recoveryAges.heartRateNotifying,
                 heartRateAge: recoveryAges.heartRateAge,
                 imuAge: recoveryAges.imuAge
+            )
+            self.reassertHeartRateNotificationsIfConnected(
+                reason: "silent_stream_51_restore_2a37"
             )
         }
         return true
@@ -31742,7 +31767,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
             ),
             imuAgeSeconds: imuAge
-        )
+        ) && currentConnectionProprietaryTraffic > 0
         let eligible = r10TransportIsExpected
         let fallbackIMU = connected
             && Self.shouldRefreshIMUOnLiveHeartRateFallback(
@@ -31796,11 +31821,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
             kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
             // Waiting for a notify-state callback or a zombie toggle stranded
-            // 6A/51 while 0x33 still arrived and HR stayed up.
-            requestBoundedR10ActivationForSilentStream(
-                now: now,
-                reason: "\(reason)_unconfirmed_stream5"
-            )
+            // 6A/51 while 0x33 still arrived and HR stayed up. Sitting skip
+            // packets on this connection are not that stall.
+            if !sittingSkipFresh {
+                requestBoundedR10ActivationForSilentStream(
+                    now: now,
+                    reason: "\(reason)_unconfirmed_stream5"
+                )
+            }
             UserDefaults.standard.set("unconfirmed_stream5", forKey: RadioDefaults.liveR10LivenessAction)
             return
         }
@@ -31815,7 +31843,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastFrameAt: currentR10LivenessLastMotionAt(now: now),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
-            now: now
+            now: now,
+            sittingSkipFresh: sittingSkipFresh
         )
         UserDefaults.standard.set(
             "\(action)",
@@ -40467,10 +40496,25 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     }
 
     private func currentR10LivenessEvidenceAt(now: Date) -> Date? {
-        Self.r10LivenessEvidenceAt(
+        let packetAt = AtriaCompactIMULiveDiagnostics.lastPacketAt()
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
             rawFrameAt: currentR10MotionFrameAt(),
             compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: packetAt,
             now: now
+        )
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        ) && currentConnectionProprietaryTraffic > 0
+        return Self.r10LivenessEvidenceAt(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: packetAt,
+            now: now,
+            sittingSkipFresh: sittingSkipFresh
         )
     }
 
