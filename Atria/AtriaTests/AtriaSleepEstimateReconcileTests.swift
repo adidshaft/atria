@@ -268,6 +268,44 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
         XCTAssertNil(legacyWithoutReceipt.displaySleepEfficiency)
     }
 
+    func testOvercalledOnsetAwakeStillRendersLabeledEstimate() {
+        // Last night on device: 39 min onset awake, interior awake that does
+        // not cover the credited-sleep deficit, so the old boundary-only
+        // reconcilation returned [] and Sleep showed no stages.
+        let credited: TimeInterval = 5 * 3600 + 50 * 60
+        let segments = [
+            segment("awake-onset", .awake, date(0), date(0, 40)),
+            segment("light", .light, date(0, 40), date(2)),
+            segment("awake-in", .awake, date(2), date(2, 10)),
+            segment("deep", .deep, date(2, 10), date(6))
+        ]
+        let result = night(segments: segments,
+                           motionValidated: false,
+                           confidence: "user_adjusted_hr_only",
+                           source: "user_adjusted_sleep",
+                           duration: credited)
+
+        XCTAssertEqual(result.stageEvidence, .hrOnlyEstimate)
+        XCTAssertFalse(result.displayStageSegments.isEmpty,
+                       "onset over-call must not blank a credited HR-only hypnogram")
+        XCTAssertTrue(result.isEstimatedStageDisplay)
+        let displayedNonAwake = result.displayStageSegments
+            .filter { $0.stage != .awake }
+            .reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(displayedNonAwake, credited, accuracy: 1)
+        let displayedAwake = result.displayStageSegments
+            .filter { $0.stage == .awake }
+            .reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(displayedAwake, 10 * 60, accuracy: 1)
+        XCTAssertEqual(
+            AtriaSleepHypnogramCard.displayState(segments: result.displayStageSegments,
+                                                 stageEvidence: result.stageEvidence,
+                                                 start: result.start,
+                                                 end: result.end),
+            .estimatedTimeline
+        )
+    }
+
     func testValidatedStagesKeepTheirExistingTimelineEvenWithoutExplicitMotionFlag() {
         let segments = [
             segment("light", .light, date(0), date(2)),

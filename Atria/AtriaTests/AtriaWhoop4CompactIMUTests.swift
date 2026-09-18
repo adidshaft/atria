@@ -307,6 +307,48 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
         XCTAssertLessThan(steps, 30)
     }
 
+    func testOneSecondInterarrivalTenSamplePacketsScoreGyroCadenceSteps() throws {
+        let assembler = AtriaWhoop4CompactIMUAssembler()
+        let pipeline = AtriaR10MotionPipeline(snapshotMinimumInterval: 0.01)
+        _ = pipeline.seedSynchronously(
+            committedRawSteps: 0,
+            lastAcceptedDeviceTimestamp: 32_075_883,
+            committedGyroCadenceResearchSteps: 0
+        )
+        let start = Date(timeIntervalSince1970: 1_800_001_200)
+        var ingested = 0
+        for index in 0..<16 {
+            let packet = walkingCompactPacket(
+                sampleIndex: index,
+                level: 72,
+                swing: 40,
+                packetPeriod: 1.0,
+                cadenceHz: 1.23
+            )
+            let frames = assembler.push(
+                packet,
+                receivedAt: start.addingTimeInterval(Double(index))
+            )
+            for frame in frames {
+                XCTAssertEqual(frame.acceleration.count, AtriaR10MotionDecoder.sampleCount)
+                XCTAssertNotNil(pipeline.ingestSynchronouslyForTesting(frame))
+                ingested += 1
+            }
+        }
+        XCTAssertGreaterThanOrEqual(
+            ingested,
+            12,
+            "1 Hz 10-sample compact packets must emit a scored second each, not wait for ten"
+        )
+        let steps = pipeline.gyroCadenceResearchStepsSynchronously()
+        XCTAssertGreaterThan(
+            steps,
+            8,
+            "a 1 Hz compact stroll (~1.23 Hz, 72 dps) must attach gyro-cadence steps"
+        )
+        XCTAssertLessThan(steps, 30)
+    }
+
     func testCoalescedLockScreenSlowWalkScoresGyroCadenceSteps() throws {
         let assembler = AtriaWhoop4CompactIMUAssembler()
         let pipeline = AtriaR10MotionPipeline(snapshotMinimumInterval: 0.01)

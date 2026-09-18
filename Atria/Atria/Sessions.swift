@@ -58661,21 +58661,9 @@ struct SleepHistorySnapshot: Equatable {
                 segments.reduce(0) { $0 + ($1.stage == .awake ? 0 : $1.duration) }
             }
 
-            var working = folded
-            var deficit = effectiveSleepDuration - nonAwakeTotal(working)
-            // Absorb interior over-called awake (a non-awake neighbor on at
-            // least one side), shortest bout first, splitting the last one
-            // so the displayed non-awake lands exactly on the effective
-            // sleep duration. Boundary awake — falling asleep and waking —
-            // is credible evidence and is left alone.
-            while deficit > 1 {
-                let candidates = working.indices.filter { index in
-                    working[index].stage == .awake
-                        && index > working.startIndex
-                        && index < working.endIndex - 1
-                        && (working[index - 1].stage != .awake || working[index + 1].stage != .awake)
-                }.sorted { working[$0].duration < working[$1].duration }
-                guard let index = candidates.first else { break }
+            func absorbAwake(at index: Int,
+                             intoWorking working: inout [SleepStageSegment],
+                             deficit: inout TimeInterval) {
                 let awake = working[index]
                 let absorbsBackward = working[index - 1].stage != .awake
                 if awake.duration <= deficit + 1 {
@@ -58694,30 +58682,133 @@ struct SleepHistorySnapshot: Equatable {
                                                                stage: neighbor.stage)
                     }
                     working.remove(at: index)
+                } else if absorbsBackward {
+                    let neighbor = working[index - 1]
+                    working[index - 1] = SleepStageSegment(id: neighbor.id,
+                                                           start: neighbor.start,
+                                                           end: neighbor.end.addingTimeInterval(deficit),
+                                                           stage: neighbor.stage)
+                    working[index] = SleepStageSegment(id: awake.id,
+                                                       start: awake.start.addingTimeInterval(deficit),
+                                                       end: awake.end,
+                                                       stage: .awake)
+                    deficit = 0
                 } else {
-                    if absorbsBackward {
-                        let neighbor = working[index - 1]
-                        working[index - 1] = SleepStageSegment(id: neighbor.id,
-                                                               start: neighbor.start,
-                                                               end: neighbor.end.addingTimeInterval(deficit),
-                                                               stage: neighbor.stage)
-                        working[index] = SleepStageSegment(id: awake.id,
-                                                           start: awake.start.addingTimeInterval(deficit),
-                                                           end: awake.end,
-                                                           stage: .awake)
-                    } else {
-                        let neighbor = working[index + 1]
-                        working[index + 1] = SleepStageSegment(id: neighbor.id,
-                                                               start: neighbor.start.addingTimeInterval(-deficit),
-                                                               end: neighbor.end,
-                                                               stage: neighbor.stage)
-                        working[index] = SleepStageSegment(id: awake.id,
-                                                           start: awake.start,
-                                                           end: awake.end.addingTimeInterval(-deficit),
-                                                           stage: .awake)
-                    }
+                    let neighbor = working[index + 1]
+                    working[index + 1] = SleepStageSegment(id: neighbor.id,
+                                                           start: neighbor.start.addingTimeInterval(-deficit),
+                                                           end: neighbor.end,
+                                                           stage: neighbor.stage)
+                    working[index] = SleepStageSegment(id: awake.id,
+                                                       start: awake.start,
+                                                       end: awake.end.addingTimeInterval(-deficit),
+                                                       stage: .awake)
                     deficit = 0
                 }
+            }
+
+            func absorbOnsetAwake(take: TimeInterval,
+                                  intoWorking working: inout [SleepStageSegment],
+                                  deficit: inout TimeInterval) {
+                guard take > 1,
+                      working.count > 1,
+                      working[0].stage == .awake,
+                      working[1].stage != .awake else { return }
+                let awake = working[0]
+                let neighbor = working[1]
+                if awake.duration <= take + 1 {
+                    deficit -= awake.duration
+                    working[1] = SleepStageSegment(id: neighbor.id,
+                                                   start: awake.start,
+                                                   end: neighbor.end,
+                                                   stage: neighbor.stage)
+                    working.remove(at: 0)
+                } else {
+                    working[0] = SleepStageSegment(id: awake.id,
+                                                   start: awake.start,
+                                                   end: awake.end.addingTimeInterval(-take),
+                                                   stage: .awake)
+                    working[1] = SleepStageSegment(id: neighbor.id,
+                                                   start: neighbor.start.addingTimeInterval(-take),
+                                                   end: neighbor.end,
+                                                   stage: neighbor.stage)
+                    deficit -= take
+                }
+            }
+
+            func absorbOffsetAwake(take: TimeInterval,
+                                   intoWorking working: inout [SleepStageSegment],
+                                   deficit: inout TimeInterval) {
+                let last = working.count - 1
+                guard take > 1,
+                      last > 0,
+                      working[last].stage == .awake,
+                      working[last - 1].stage != .awake else { return }
+                let awake = working[last]
+                let neighbor = working[last - 1]
+                if awake.duration <= take + 1 {
+                    deficit -= awake.duration
+                    working[last - 1] = SleepStageSegment(id: neighbor.id,
+                                                          start: neighbor.start,
+                                                          end: awake.end,
+                                                          stage: neighbor.stage)
+                    working.remove(at: last)
+                } else {
+                    working[last - 1] = SleepStageSegment(id: neighbor.id,
+                                                          start: neighbor.start,
+                                                          end: neighbor.end.addingTimeInterval(take),
+                                                          stage: neighbor.stage)
+                    working[last] = SleepStageSegment(id: awake.id,
+                                                      start: awake.start.addingTimeInterval(take),
+                                                      end: awake.end,
+                                                      stage: .awake)
+                    deficit -= take
+                }
+            }
+
+            var working = folded
+            var deficit = effectiveSleepDuration - nonAwakeTotal(working)
+            // Absorb interior over-called awake (a non-awake neighbor on at
+            // least one side), shortest bout first, splitting the last one
+            // so the displayed non-awake lands exactly on the effective
+            // sleep duration. Remaining onset/offset awake is folded next
+            // so a 40-minute falling-asleep band cannot blank the hypnogram.
+            while deficit > 1 {
+                let candidates = working.indices.filter { index in
+                    working[index].stage == .awake
+                        && index > working.startIndex
+                        && index < working.endIndex - 1
+                        && (working[index - 1].stage != .awake || working[index + 1].stage != .awake)
+                }.sorted { working[$0].duration < working[$1].duration }
+                guard let index = candidates.first else { break }
+                absorbAwake(at: index, intoWorking: &working, deficit: &deficit)
+            }
+            // Interior folding leaves last night's 39-minute onset awake
+            // untouched, so displayed sleep still undershoots the credited
+            // 6h55m and the estimate fails closed to a blank hypnogram.
+            // After interior bouts are gone, fold leftover deficit from the
+            // first and last awake, keeping at least span − credited sleep
+            // as wake.
+            let reservedWake = max(0, end.timeIntervalSince(start) - effectiveSleepDuration)
+            while deficit > 1 {
+                let extraWake = working.reduce(0) {
+                    $0 + ($1.stage == .awake ? $1.duration : 0)
+                } - reservedWake
+                guard extraWake > 1 else { break }
+                if working.first?.stage == .awake {
+                    let take = min(deficit, extraWake, working[0].duration)
+                    guard take > 1 else { break }
+                    absorbOnsetAwake(take: take, intoWorking: &working, deficit: &deficit)
+                    continue
+                }
+                if working.last?.stage == .awake {
+                    let last = working.count - 1
+                    let take = min(deficit, extraWake, working[last].duration)
+                    guard take > 1 else { break }
+                    absorbOffsetAwake(take: take, intoWorking: &working, deficit: &deficit)
+                    continue
+                }
+                break
             }
             // Cap: displayed non-awake must never exceed the credited
             // effective sleep. Surplus trims from the end of the timeline —

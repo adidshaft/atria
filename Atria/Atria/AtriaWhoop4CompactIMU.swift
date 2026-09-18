@@ -112,6 +112,12 @@ enum AtriaWhoop4CompactIMUDecoder {
 /// Keep native slices, and admit only about one assembled second per wall
 /// second so cadence stays physical.
 final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
+    /// Live 0x33 on this strap often arrives as one 10-sample packet per
+    /// wall second (~10 Hz), not ten 100 Hz slices. Concatenating ten of
+    /// those into one R10 second time-compresses gait out of band.
+    static let tenHertzPacketMinInterval: TimeInterval = 0.65
+    static let tenHertzPacketMaxInterval: TimeInterval = 1.85
+
     private let lock = NSLock()
     private var outputAccel: [AtriaR10MotionFrame.Vector3] = []
     private var outputGyro: [AtriaR10MotionFrame.Vector3] = []
@@ -119,6 +125,7 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
     private var lastEmittedTimestamp: UInt32 = 0
     private var streamStartedAt: Date?
     private var admittedSampleCount = 0
+    private var consecutiveTenHertzIntervals = 0
 
     func push(_ packet: AtriaWhoop4CompactIMUDecoder.Packet,
               receivedAt: Date) -> [AtriaR10MotionFrame] {
@@ -134,8 +141,40 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             lastPacketAt = nil
             streamStartedAt = nil
             admittedSampleCount = 0
+            consecutiveTenHertzIntervals = 0
             if lastEmittedTimestamp > 0 {
                 lastEmittedTimestamp &+= 2
+            }
+        }
+
+        if let previousPacketAt = lastPacketAt {
+            let interval = receivedAt.timeIntervalSince(previousPacketAt)
+            if interval >= Self.tenHertzPacketMinInterval,
+               interval <= Self.tenHertzPacketMaxInterval {
+                consecutiveTenHertzIntervals += 1
+            } else {
+                consecutiveTenHertzIntervals = 0
+            }
+            // Two 1 Hz arrivals in a row — not a coalesced 100 Hz burst
+            // whose inter-burst gap is also ~1 s.
+            if consecutiveTenHertzIntervals >= 2, sampleCount <= 20 {
+                outputAccel.removeAll(keepingCapacity: true)
+                outputGyro.removeAll(keepingCapacity: true)
+                admittedSampleCount = 0
+                streamStartedAt = receivedAt
+                lastPacketAt = receivedAt
+                let needed = AtriaR10MotionDecoder.sampleCount
+                return [makeFrame(
+                    acceleration: Self.upsample(
+                        Array(packet.acceleration.prefix(sampleCount)),
+                        to: needed
+                    ),
+                    rotationRate: Self.upsample(
+                        Array(packet.rotationRate.prefix(sampleCount)),
+                        to: needed
+                    ),
+                    packetTimestamp: packet.deviceTimestamp
+                )]
             }
         }
 
@@ -170,6 +209,7 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
         lastEmittedTimestamp = 0
         streamStartedAt = nil
         admittedSampleCount = 0
+        consecutiveTenHertzIntervals = 0
     }
 
     /// One assembled R10 second per wall-clock second, plus 1.05 s slack so a
@@ -202,6 +242,39 @@ final class AtriaWhoop4CompactIMUAssembler: @unchecked Sendable {
             rotationRate: rotationRate,
             deviceClock: .compactAssembled
         )
+    }
+
+    /// Stretch a native 10 Hz packet onto the 100-sample R10 second the
+    /// gyro cadence scorer already knows. Holds gait frequency; does not
+    /// invent extra swings.
+    static func upsample(
+        _ samples: [AtriaR10MotionFrame.Vector3],
+        to count: Int
+    ) -> [AtriaR10MotionFrame.Vector3] {
+        guard count > 0 else { return [] }
+        guard samples.count >= 2, count != samples.count else {
+            if samples.count == count { return samples }
+            guard let only = samples.first else { return [] }
+            return Array(repeating: only, count: count)
+        }
+        var output: [AtriaR10MotionFrame.Vector3] = []
+        output.reserveCapacity(count)
+        let lastIndex = samples.count - 1
+        let span = Double(count - 1)
+        for i in 0..<count {
+            let position = Double(i) * Double(lastIndex) / span
+            let left = min(Int(position), lastIndex)
+            let right = min(left + 1, lastIndex)
+            let fraction = position - Double(left)
+            let a = samples[left]
+            let b = samples[right]
+            output.append(.init(
+                x: a.x + (b.x - a.x) * fraction,
+                y: a.y + (b.y - a.y) * fraction,
+                z: a.z + (b.z - a.z) * fraction
+            ))
+        }
+        return output
     }
 }
 

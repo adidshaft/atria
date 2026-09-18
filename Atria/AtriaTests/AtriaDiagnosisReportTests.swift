@@ -417,6 +417,9 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         )
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_week_last_") })
         XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("hrv_month_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("recovery_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("rhr_week_last_") })
+        XCTAssertFalse(snapshot.discrepancies.contains { $0.hasPrefix("sleep_week_last_") })
     }
 
     func testOvernightClockNamesYesterdayMorningNotTheLivePatchTime() {
@@ -447,6 +450,7 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         )
         XCTAssertTrue(home.contains("widgetSteps: publishedWidget?.steps"))
         XCTAssertTrue(home.contains("todaySteps: core.dailyStepPresentation.count"))
+        XCTAssertTrue(home.contains("compactAssembledAgeSeconds:"))
     }
 
     func testDiscrepanciesNameWidgetStepsVersusTodaySteps() {
@@ -480,5 +484,37 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(snapshot.discrepancies.contains("widget_steps_10946_today_1901"))
         XCTAssertEqual(snapshot.widget.steps, 10_946)
         XCTAssertEqual(snapshot.metrics.todaySteps, 1_901)
+    }
+
+    func testDiscrepanciesNameStaleCompactAssemblerWhileStream5IsLive() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = AtriaDiagnosisReport.make(
+            now: now,
+            build: "128",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 43,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 80,
+            liveZone: "Z1",
+            widgetHeartRate: 80,
+            widgetHRV: 53,
+            widgetRecovery: 71,
+            compactAssembledAgeSeconds: 3_600
+        )
+        XCTAssertTrue(snapshot.discrepancies.contains("compact_imu_assembled_stale"))
     }
 }

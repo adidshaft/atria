@@ -2951,7 +2951,9 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_hrv_week={_window_label(windows.get('hrvWeek'))}")
             print(f"diagnosis_hrv_month={_window_label(windows.get('hrvMonth'))}")
             print(f"diagnosis_recovery_week={_window_label(windows.get('recoveryWeek'))}")
+            print(f"diagnosis_recovery_month={_window_label(windows.get('recoveryMonth'))}")
             print(f"diagnosis_rhr_week={_window_label(windows.get('rhrWeek'))}")
+            print(f"diagnosis_rhr_month={_window_label(windows.get('rhrMonth'))}")
             print(f"diagnosis_sleep_week={_window_label(windows.get('sleepWeek'))}")
             print(f"diagnosis_sleep_month={_window_label(windows.get('sleepMonth'))}")
             live_activity = diagnosis.get("liveActivity") if isinstance(diagnosis.get("liveActivity"), dict) else {}
@@ -2979,6 +2981,7 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_last_workout_strain={workout.get('strain', 'missing')}")
             print(f"diagnosis_last_workout_steps={workout.get('steps', 'missing')}")
             print(f"diagnosis_last_workout_steps_estimated={workout.get('stepsAreEstimated', 'missing')}")
+            print(f"diagnosis_last_workout_hr_load={workout.get('heartRateLoad', 'missing')}")
             print(f"diagnosis_last_workout_reason={workout.get('reason', 'missing')}")
             recent_no_hr = diagnosis.get("recentNoHeartRateWorkouts")
             if isinstance(recent_no_hr, list) and recent_no_hr:
