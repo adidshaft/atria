@@ -2604,13 +2604,13 @@ private func liveActivityStepsPresentation(
         return AtriaLiveActivityStepsPresentation(compactText: "--",
                                                   labelText: "Steps reconnecting",
                                                   tint: .orange,
-                                                  accessibilityText: "Strap steps reconnecting")
+                                                  accessibilityText: "Steps reconnecting")
     }
     if sourceAvailability == .unavailable {
         return AtriaLiveActivityStepsPresentation(compactText: "--",
                                                   labelText: "Steps unavailable",
                                                   tint: .secondary,
-                                                  accessibilityText: "Strap steps unavailable")
+                                                  accessibilityText: "Steps unavailable")
     }
     if sourceAvailability == .live, let steps = state.steps {
         let estimated = state.stepsAreEstimated != false
@@ -2620,8 +2620,8 @@ private func liveActivityStepsPresentation(
             labelText: "\(value) steps",
             tint: .mint,
             accessibilityText: estimated
-                ? "Approximately \(steps) strap-derived workout steps"
-                : "\(steps) strap-derived workout steps"
+                ? "Approximately \(steps) workout steps"
+                : "\(steps) workout steps"
         )
     }
     if sourceAvailability == .stale {
@@ -2633,7 +2633,7 @@ private func liveActivityStepsPresentation(
     return AtriaLiveActivityStepsPresentation(compactText: "--",
                                               labelText: "Steps unavailable",
                                               tint: .secondary,
-                                              accessibilityText: "Strap steps unavailable")
+                                              accessibilityText: "Steps unavailable")
 }
 
 private func liveActivityDailyStepGoalPresentation(
@@ -2647,7 +2647,7 @@ private func liveActivityDailyStepGoalPresentation(
         return AtriaLiveActivityGoalPresentation(text: "Step goal --",
                                                  tint: .secondary,
                                                  fraction: nil,
-                                                 accessibilityText: "Daily strap step goal unavailable")
+                                                 accessibilityText: "Daily step goal unavailable")
     }
     guard let capturedAt = state.dailyStepsCapturedAt,
           capturedAt <= now.addingTimeInterval(5),
@@ -2655,7 +2655,7 @@ private func liveActivityDailyStepGoalPresentation(
         return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
                                                  tint: .orange,
                                                  fraction: nil,
-                                                 accessibilityText: "Daily strap step goal stale")
+                                                 accessibilityText: "Daily step goal stale")
     }
     let estimated = state.dailyStepsAreEstimated != false
     // Missing lower-bound provenance belongs to an older activity payload and
@@ -2669,12 +2669,12 @@ private func liveActivityDailyStepGoalPresentation(
         ? "Goal ✓ · \(steps)"
         : "\(prefix)\(steps) / \(goal)"
     let accessibility = lowerBound
-        ? "\(steps) of \(goal) verified daily strap steps so far"
+        ? "\(steps) of \(goal) verified daily steps so far"
         : estimated
-        ? "Approximately \(steps) of \(goal) daily strap steps"
+        ? "Approximately \(steps) of \(goal) daily steps"
         : reached
-            ? "Daily strap step goal reached with \(steps) steps"
-            : "\(steps) of \(goal) daily strap steps"
+            ? "Daily step goal reached with \(steps) steps"
+            : "\(steps) of \(goal) daily steps"
     return AtriaLiveActivityGoalPresentation(text: text,
                                              tint: reached && exact ? .green : .mint,
                                              fraction: min(max(Double(steps) / Double(goal), 0), 1),
@@ -3384,7 +3384,7 @@ enum AtriaWidgetMetric: String, Identifiable {
 
     var title: String {
         switch self {
-        case .steps: return "Strap steps"
+        case .steps: return "Steps"
         case .strain: return "Strain"
         case .hrv: return "HRV"
         case .bpm: return "Last HR"
@@ -3454,7 +3454,7 @@ enum AtriaWidgetMetric: String, Identifiable {
 
     var unit: String {
         switch self {
-        case .steps: return "strap"
+        case .steps: return "steps"
         case .strain: return "day load"
         case .hrv: return "ms"
         case .bpm: return "last reading"
@@ -3833,8 +3833,8 @@ struct AtriaStepsWidget: Widget {
         StaticConfiguration(kind: "AtriaStepsWidget", provider: AtriaWidgetProvider()) { entry in
             AtriaMetricWidgetEntryView(metric: .steps, entry: entry)
         }
-        .configurationDisplayName("Atria Strap Steps")
-        .description("Strap-derived steps on your Home Screen or Lock Screen.")
+        .configurationDisplayName("Atria Steps")
+        .description("Daily steps on your Home Screen or Lock Screen.")
         .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryInline, .accessoryRectangular])
     }
 }

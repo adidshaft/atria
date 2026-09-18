@@ -4324,6 +4324,20 @@ struct AtriaInsight: Identifiable, Equatable {
     /// Rank key: bigger absolute effect first.
     var magnitude: Double { abs(delta) }
 
+    var symbolName: String {
+        let tagRaw = String(id.split(separator: "-").first ?? "")
+        return BehaviorJournalEntry.Tag(rawValue: tagRaw)?.symbolName ?? "tag.fill"
+    }
+
+    var compactDeltaText: String {
+        let n = Int(delta.rounded())
+        switch metric {
+        case .recovery: return String(format: "%+d%%", n)
+        case .hrv: return String(format: "%+d ms", n)
+        case .rhr: return String(format: "%+d bpm", n)
+        }
+    }
+
     /// Assessment P1.9: goodness is metric-aware — a LOWER resting HR on
     /// tagged days is the supportive direction.
     var isPositive: Bool { metric == .rhr ? delta <= 0 : delta >= 0 }
@@ -24355,7 +24369,11 @@ final class SessionStore: ObservableObject {
     }
 
     nonisolated static var journalQuestionLabels: [String: String] {
-        Dictionary(uniqueKeysWithValues: AtriaJournalTypedQuestion.allCases.map { ($0.rawValue, $0.insightLabel) })
+        var labels = Dictionary(uniqueKeysWithValues: AtriaJournalTypedQuestion.allCases.map { ($0.rawValue, $0.insightLabel) })
+        for tag in BehaviorJournalEntry.Tag.allCases {
+            labels[AtriaJournalCheckInProgress.booleanQuestionID(for: tag)] = tag.label
+        }
+        return labels
     }
 
     private enum ConfirmedWorkoutDefaults {

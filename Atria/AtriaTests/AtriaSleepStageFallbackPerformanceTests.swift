@@ -174,6 +174,52 @@ final class AtriaSleepStageFallbackPerformanceTests: XCTestCase {
         XCTAssertTrue(stages.isEmpty)
     }
 
+    func testInteriorHeartRateGapStillStagesHROnlyEstimate() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(2 * 60 * 60)
+        let early = stride(from: 0, through: 40 * 60, by: 5).map {
+            AtriaSleepWakeResearch.HeartSample(
+                t: start.addingTimeInterval(TimeInterval($0)),
+                bpm: 58
+            )
+        }
+        let late = stride(from: 80 * 60, through: 2 * 60 * 60, by: 5).map {
+            AtriaSleepWakeResearch.HeartSample(
+                t: start.addingTimeInterval(TimeInterval($0)),
+                bpm: 56
+            )
+        }
+        let samples = early + late
+
+        let withheld = AtriaSleepWakeResearch.stageSegments(
+            samples: samples,
+            start: start,
+            end: end,
+            restingHR: 55,
+            isNap: false,
+            motionValidated: false,
+            motionEpochs: []
+        )
+        XCTAssertTrue(withheld.isEmpty,
+                      "without the estimate opt-in a gapped HR timeline fails closed")
+
+        let stages = AtriaSleepWakeResearch.stageSegments(
+            samples: samples,
+            start: start,
+            end: end,
+            restingHR: 55,
+            isNap: false,
+            motionValidated: false,
+            motionEpochs: [],
+            allowHROnlyEstimate: true
+        )
+        XCTAssertFalse(stages.isEmpty,
+                       "dense HR on both sides of a live pause must still stage an estimate")
+        XCTAssertTrue(SleepStageSegment.allHREstimateProvenance(stages))
+        XCTAssertLessThanOrEqual(stages.first!.start.timeIntervalSince(start), 90)
+        XCTAssertLessThanOrEqual(end.timeIntervalSince(stages.last!.end), 90)
+    }
+
     func testCheckedStagesExactlyMatchLegacyForDenseMainNapAndIrregularEqualTimestamps()
         throws
     {

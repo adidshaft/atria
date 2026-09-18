@@ -10502,7 +10502,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaExperimentalSensorCopy.skinTemperatureFootnote(",
             "AtriaMetricTile(label: \"Resp rate\"",
             "footnote: respiratory.detail",
-            "AtriaMetricTile(label: \"Strap steps\"",
+            "AtriaMetricTile(label: \"Steps\"",
             "AtriaExperimentalRespiratoryRatePresentation.resolve(",
             "Rows show evidence counts until checked. Skin temperature is only a sleep-baseline change.",
             "private struct AtriaResearchSignalInfoSheet: View",
@@ -10582,9 +10582,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research signals are local",
         ]:
             assert_not_contains(self, research_card, forbidden)
-        assert_contains(self, research_card, "AtriaMetricTile(label: \"Strap steps\"")
+        assert_contains(self, research_card, "AtriaMetricTile(label: \"Steps\"")
         assert_not_contains(self, research_card, "lhs.sleepHistory == rhs.sleepHistory")
-        assert_not_contains(self, imu_audit_card, "AtriaMetricTile(label: \"Strap steps\"")
+        assert_not_contains(self, imu_audit_card, "AtriaMetricTile(label: \"Steps\"")
 
         for forbidden in [
             "title: \"Low radio HR\"",
@@ -12326,7 +12326,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var metricFooterText: String",
             ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metricFooterText)\")",
             ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metric.unit), \\(metricFooterText)\")",
-            ".description(\"Strap-derived steps on your Home Screen or Lock Screen.\")",
+            ".description(\"Daily steps on your Home Screen or Lock Screen.\")",
             ".description(\"Today's strain on your Home Screen or Lock Screen.\")",
             ".description(\"Latest HRV on your Home Screen or Lock Screen.\")",
             ".description(\"Latest heart rate on your Home Screen or Lock Screen.\")",
@@ -13441,10 +13441,10 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, overview, needle)
 
         for needle in [
-            "case .steps: return \"Strap steps\"",
-            "case .steps: return \"strap\"",
-            ".configurationDisplayName(\"Atria Strap Steps\")",
-            ".description(\"Strap-derived steps on your Home Screen or Lock Screen.\")",
+            "case .steps: return \"Steps\"",
+            "case .steps: return \"steps\"",
+            ".configurationDisplayName(\"Atria Steps\")",
+            ".description(\"Daily steps on your Home Screen or Lock Screen.\")",
         ]:
             assert_contains(self, widget, needle)
 

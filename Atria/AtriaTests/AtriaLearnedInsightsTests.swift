@@ -376,8 +376,9 @@ final class AtriaLearnedInsightsTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaInsightLookback"))
         XCTAssertTrue(source.contains("case compactBar"))
         XCTAssertTrue(source.contains("private var compactBar"))
-        XCTAssertTrue(source.contains("if let detail = featured?.detail, !detail.isEmpty"),
-                      "Today's compact read must name the workouts, not only the headline")
+        XCTAssertTrue(source.contains("ringHeroInsights(from: insights)"),
+                      "Today's compact read uses Sleep / Recovery / Strain rings, not wrapping paragraphs")
+        XCTAssertTrue(source.contains("emphasisLabel"))
         XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet"))
         XCTAssertTrue(source.contains(".buttonStyle(.glass)"))
         XCTAssertTrue(source.contains("AtriaInsightPictureRing"))

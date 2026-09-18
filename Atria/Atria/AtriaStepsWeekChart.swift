@@ -243,7 +243,7 @@ struct AtriaStepsWeekChart: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Verified strap-step days will appear here.")
+                Text("Verified step days will appear here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -76,6 +76,24 @@ struct JournalInsight: Identifiable, Equatable {
         }
     }
 
+    var symbolName: String {
+        if questionID.hasPrefix("tag."),
+           let tag = BehaviorJournalEntry.Tag(rawValue: String(questionID.dropFirst(4))) {
+            return tag.symbolName
+        }
+        return AtriaJournalTypedQuestion(rawValue: questionID)?.symbolName ?? "tag.fill"
+    }
+
+    var compactEffectText: String {
+        switch kind {
+        case .booleanImpact(let impact, _, _, _),
+             .thresholdSplit(_, let impact, _, _, _):
+            return String(format: "%+.0f%%", impact)
+        case .rankCorrelation(let rho, _, _):
+            return String(format: "%+.2f", rho)
+        }
+    }
+
     static func timeText(minutes: Int) -> String {
         var components = DateComponents()
         components.hour = minutes / 60
@@ -111,6 +129,22 @@ enum AtriaJournalInsights {
     static let minimumDistinctValues = 3
     static let minimumAbsRho = 0.3
     static let permutationCount = 2000
+
+    /// Human label for a stored question id. Boolean tags are saved as
+    /// `tag.caffeine`; never leak that key into a Pattern sentence.
+    static func displayLabel(for questionID: String) -> String {
+        if questionID.hasPrefix("tag."),
+           let tag = BehaviorJournalEntry.Tag(rawValue: String(questionID.dropFirst(4))) {
+            return tag.label
+        }
+        if let question = AtriaJournalTypedQuestion(rawValue: questionID) {
+            return question.insightLabel
+        }
+        if let last = questionID.split(separator: ".").last {
+            return last.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+        return questionID
+    }
 
     static func insights(questionAnswers: [String: [AnswerDay]],
                          labels: [String: String] = [:],
@@ -170,7 +204,7 @@ enum AtriaJournalInsights {
                 pairs.append((answer.value, recovery))
             }
             guard !pairs.isEmpty else { continue }
-            let label = labels[questionID] ?? questionID
+            let label = labels[questionID] ?? displayLabel(for: questionID)
 
             if let insight = analyze(
                 questionID: questionID,

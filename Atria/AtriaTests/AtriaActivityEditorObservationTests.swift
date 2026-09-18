@@ -29,6 +29,7 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         XCTAssertFalse(detail.contains("AtriaPanelSectionHeader(title: \"Workout\""))
         XCTAssertFalse(detail.contains("Times and stats come straight from the recorded session"))
         XCTAssertTrue(detail.contains("heartRateTraceCard"))
+        XCTAssertTrue(detail.contains("workoutHeartRateLoadCard"))
         XCTAssertTrue(detail.contains("workoutZoneDistributionCard"))
         XCTAssertTrue(detail.contains("recoveryEffectCard"))
         XCTAssertFalse(detail.contains("DisclosureGroup(isExpanded: $showsHeartRateAndRecovery)"))

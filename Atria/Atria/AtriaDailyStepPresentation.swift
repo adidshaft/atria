@@ -87,6 +87,24 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// Keep this aligned with the strap-steps freshness tile.
     static let liveEvidenceMaximumAge: TimeInterval = 15
 
+    /// BLE capture can sit on the prior cycle after a wake while Today still
+    /// has an in-cycle merge. Stamp `now` so resolve can hold that number
+    /// instead of dropping the widget to missing.
+    static func inCycleCaptureClock(
+        liveCapturedAt: Date?,
+        cycleStart: Date,
+        now: Date,
+        presentedCount: Int
+    ) -> Date? {
+        if let liveCapturedAt,
+           liveCapturedAt >= cycleStart.addingTimeInterval(-1),
+           liveCapturedAt <= now.addingTimeInterval(5) {
+            return liveCapturedAt
+        }
+        guard presentedCount > 0 else { return liveCapturedAt }
+        return now
+    }
+
     /// An in-cycle live step estimate may raise the shown total above the
     /// drained verified floor only while verified coverage is below this
     /// fraction — i.e. enough of the day is still undrained that the live

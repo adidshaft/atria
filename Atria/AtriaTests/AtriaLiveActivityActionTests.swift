@@ -1077,7 +1077,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("labelText: \"Steps reconnecting\""))
         XCTAssertTrue(source.contains("labelText: \"Steps stale\""))
         XCTAssertTrue(source.contains("labelText: \"Steps unavailable\""))
-        XCTAssertTrue(source.contains("strap-derived workout steps"))
+        XCTAssertTrue(source.contains("workout steps"))
         XCTAssertTrue(source.contains("liveActivityStrainProgressText(for: state, now: now)"))
         XCTAssertTrue(source.contains("String(format: \"%.1f / %.1f\", strain, target)"))
         XCTAssertTrue(source.contains("String(format: \"Goal ✓ · %.1f\", strain)"))

@@ -1551,7 +1551,7 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
                             detail: batterySaver
-                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
+                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
                                 : "Enables additional proprietary streams for diagnostics. This may be less stable and use more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
@@ -2205,7 +2205,7 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                 DisclosureGroup(isExpanded: targetGroupBinding("Activity")) {
 
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
-                    LabeledContent("Strap steps goal") {
+                    LabeledContent("Steps goal") {
                         Text("\(stepsGoal)")
                             .monospacedDigit()
                     }
