@@ -14,18 +14,26 @@ struct AtriaLiveActivityLockPreview: View {
                     .frame(width: 112, alignment: .leading)
                 zoneSummary
                 Spacer(minLength: 4)
-                Text(elapsedText)
-                    .font(.headline.monospacedDigit().weight(.bold))
-                    .foregroundStyle(snapshot.isPaused ? .orange : .primary)
+                if snapshot.showsWorkoutControls {
+                    Text(elapsedText)
+                        .font(.headline.monospacedDigit().weight(.bold))
+                        .foregroundStyle(snapshot.isPaused ? .orange : .primary)
+                }
             }
             zoneBar
             HStack(spacing: 16) {
-                labeledMetric(snapshot.workoutStrain.formatted(.number.precision(.fractionLength(1))),
-                              systemImage: "bolt.fill",
-                              tint: .yellow)
-                labeledMetric(stepsText,
-                              systemImage: "figure.walk",
-                              tint: .green)
+                if snapshot.showsWorkoutControls {
+                    labeledMetric(snapshot.workoutStrain.formatted(.number.precision(.fractionLength(1))),
+                                  systemImage: "bolt.fill",
+                                  tint: .yellow)
+                    labeledMetric(stepsText,
+                                  systemImage: "figure.walk",
+                                  tint: .green)
+                } else if let daily = snapshot.dailySteps {
+                    labeledMetric("\(daily)",
+                                  systemImage: "figure.walk",
+                                  tint: .green)
+                }
                 Spacer()
                 Text(snapshot.heartRateAvailability.rawValue.capitalized)
                     .font(.caption2.weight(.bold))

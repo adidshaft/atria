@@ -117,6 +117,19 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "a live battery value and state must be spoken when the header displays it")
     }
 
+    func testLockPreviewHidesWorkoutChromeOnAllDayLive() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveActivityLockPreview.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("if snapshot.showsWorkoutControls"),
+                      "the photographable lock preview must match idle Live chrome")
+        XCTAssertTrue(source.contains("snapshot.dailySteps"),
+                      "idle preview should show daily steps, not workout strain --")
+        XCTAssertTrue(source.contains("Text(elapsedText)"),
+                      "explicit workouts still show elapsed time")
+    }
+
     func testLiveActivityAccessibilityIncludesTruthfulElapsedDuration() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory
