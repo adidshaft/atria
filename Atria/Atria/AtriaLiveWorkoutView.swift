@@ -301,7 +301,7 @@ enum AtriaWorkoutMovingDuration {
 }
 
 enum AtriaWorkoutHeartRateHold {
-    /// Pulse zeros after six seconds, on contact loss, on disconnect, and
+    /// Pulse zeros after `liveHeartRateFreshnessInterval`, on contact loss, on disconnect, and
     /// when a workout session-boundary reset clears `session`. Keep the last
     /// accepted BPM on workout surfaces so Start cannot blank the HUD.
     static func displayed(live: Int, lastKnown: Int, retained: Int = 0) -> Int {

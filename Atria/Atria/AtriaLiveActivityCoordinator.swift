@@ -697,7 +697,7 @@ final class AtriaLiveActivityCoordinator {
     /// have independent freshness windows. Ask the system to redraw at the
     /// first source expiry. The widget then evaluates each source clock on its
     /// own, so 15-second motion staleness cannot keep looking live past the
-    /// app's strict six-second HR deadline (or incorrectly make fresh HR stale).
+    /// app's `liveHeartRateFreshnessInterval` HR deadline (or incorrectly make fresh HR stale).
     nonisolated static func sensorStaleDate(heartRateCapturedAt: Date?,
                                             stepsCapturedAt: Date?,
                                             strainCapturedAt: Date? = nil,

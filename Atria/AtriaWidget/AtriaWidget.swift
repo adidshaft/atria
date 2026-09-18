@@ -71,9 +71,10 @@ private func atriaSnapshotIsStale(_ snapshot: AtriaWidgetSnapshot, now: Date = D
 // Home-screen widgets are not a continuous telemetry surface: WidgetKit may
 // coalesce reload requests to the app's bounded one-minute delivery cadence.
 // Keep the exact capture clock and label this as a last reading. Live Activity
-// uses the stricter six-second source window below.
+// uses the same 15s window as Today / diagnosis — idle 2A37 on this strap is
+// often 8–12s, not 1Hz.
 private let atriaStaticHeartRateFreshness: TimeInterval = 65
-private let atriaLiveHeartRateFreshness: TimeInterval = 6
+private let atriaLiveHeartRateFreshness: TimeInterval = 15
 // R10 motion arrives at roughly one accepted frame per second. Fifteen seconds
 // tolerates a short radio hiccup without leaving a frozen step count looking
 // live for the full HR freshness window.
@@ -2506,7 +2507,7 @@ private func liveActivityZoneSegmentColor(zone: Int,
 }
 
 /// Five-segment HR-zone bar for the Dynamic Island and Lock Screen. Last
-/// known zone stays visible when the six-second live window expires; only
+/// known zone stays visible when the live HR window expires; only
 /// the fill is dimmed.
 @ViewBuilder
 private func liveActivityZoneBar(for state: AtriaLiveActivityAttributes.ContentState,
