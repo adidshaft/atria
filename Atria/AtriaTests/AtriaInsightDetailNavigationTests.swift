@@ -129,9 +129,10 @@ final class AtriaInsightDetailNavigationTests: XCTestCase {
 
     // MARK: - Sleep sheet above-fold block budget
 
-    /// Above the fold the sleep sheet is exactly: hero → chart slot →
-    /// hypnogram → neutral 4-up stat row → reveal. The plan card and need
-    /// ledger live behind the reveal; the debt-trend mount stays deleted.
+    /// Above the fold the sleep sheet is: hero → chart slot →
+    /// hypnogram → last-night stage rows → neutral 4-up stat row → reveal.
+    /// The plan card and need ledger live behind the reveal; the debt-trend
+    /// mount stays deleted.
     func testSleepDetailAboveFoldIsFiveBlocks() throws {
         let source = try overviewSource()
         let detailTemplate = try XCTUnwrap(source.range(of: "private var detailTemplate: some View"))
@@ -151,6 +152,8 @@ final class AtriaInsightDetailNavigationTests: XCTestCase {
         let revealed = String(sleepDetail[contributorsStart.lowerBound..<chartStart.lowerBound])
 
         XCTAssertTrue(aboveFold.contains("AtriaSleepHypnogramCard(night: latest"))
+        XCTAssertTrue(aboveFold.contains("AtriaSleepStageRowStrip("))
+        XCTAssertTrue(aboveFold.contains("segments: latest.displayStageSegments"))
         XCTAssertTrue(aboveFold.contains("sleepStatSummaryRow"))
         for heavy in ["AtriaSleepPlanCard(", "sleepNeedLedgerCard("] {
             XCTAssertFalse(aboveFold.contains(heavy),

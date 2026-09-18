@@ -351,10 +351,12 @@ struct AtriaSleepStageRowStrip: View {
     }
 }
 
-/// Compact Today hypnogram: colored stage bar plus four SF Symbol chips.
-/// Estimated nights keep the mandatory HR-only label next to the bars.
-struct AtriaTodaySleepStageStrip: View, Equatable {
+/// Compact hypnogram + four stage chips for one recorded night. Activity
+/// mounts this under that night's row; the Sleep detail sheet uses the
+/// full row strip. Today does not.
+struct AtriaSleepStageCompactStrip: View, Equatable {
     let night: SleepHistorySnapshot.Night
+    var usesOwnCard: Bool = true
 
     var body: some View {
         let segments = night.displayStageSegments
@@ -403,9 +405,9 @@ struct AtriaTodaySleepStageStrip: View, Equatable {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .atriaInsetCard(tint: Metrics.electricSleep)
+        .padding(.horizontal, usesOwnCard ? 12 : 0)
+        .padding(.vertical, usesOwnCard ? 10 : 4)
+        .modifier(AtriaSleepStageCompactStripCard(enabled: usesOwnCard))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
     }
@@ -424,5 +426,17 @@ struct AtriaTodaySleepStageStrip: View, Equatable {
             ? AtriaSleepStageEstimateLabel.title
             : "Sleep stages"
         return ([prefix] + parts).joined(separator: ". ")
+    }
+}
+
+private struct AtriaSleepStageCompactStripCard: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.atriaInsetCard(tint: Metrics.electricSleep)
+        } else {
+            content
+        }
     }
 }

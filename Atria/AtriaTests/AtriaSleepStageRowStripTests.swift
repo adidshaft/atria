@@ -253,7 +253,7 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
                        "raw engine segments never reach the review sheet's strip")
     }
 
-    func testTodayMountsTheCompactStageStripOnDisplaySegments() throws {
+    func testTodayDoesNotMountSleepStages() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let today = try String(
             contentsOf: testsDirectory
@@ -261,20 +261,61 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
                 .appendingPathComponent("Atria/AtriaTodayScreen.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(today.contains("AtriaTodaySleepStageStrip(night: night)"))
-        XCTAssertTrue(today.contains("!night.displayStageSegments.isEmpty"))
+        XCTAssertFalse(today.contains("AtriaSleepStageCompactStrip"))
+        XCTAssertFalse(today.contains("AtriaTodaySleepStageStrip"))
+        XCTAssertFalse(today.contains("AtriaSleepStageRowStrip("))
+        XCTAssertFalse(today.contains("AtriaSleepHypnogramCard("))
+    }
+
+    func testActivityMountsTheCompactStageStripOnSleepRows() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let activity = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(activity.range(of: "private func sleepRow(_ night: SleepHistorySnapshot.Night)"))
+        let end = try XCTUnwrap(activity.range(of: "private func workoutRow",
+                                               range: start.lowerBound..<activity.endIndex))
+        let sleepRow = String(activity[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(sleepRow.contains("AtriaSleepStageCompactStrip(night: night, usesOwnCard: false)"))
+        XCTAssertTrue(sleepRow.contains("!night.displayStageSegments.isEmpty"))
         let strip = try String(
             contentsOf: testsDirectory
                 .deletingLastPathComponent()
                 .appendingPathComponent("Atria/AtriaSleepStageRows.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(strip.contains("struct AtriaTodaySleepStageStrip"))
+        XCTAssertTrue(strip.contains("struct AtriaSleepStageCompactStrip"))
         XCTAssertTrue(strip.contains("AtriaSleepStageEstimateLabel.title"))
         XCTAssertTrue(strip.contains("row.stage.symbolName"))
         XCTAssertTrue(strip.contains("isEstimate: night.isEstimatedStageDisplay"))
         XCTAssertTrue(strip.contains("displayMarkBudget(isEstimate:")
                          || strip.contains("isEstimate: night.isEstimatedStageDisplay"))
+    }
+
+    func testSleepMetricDetailMountsTheStageRowStripForLastNight() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let overview = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaOverviewSections.swift"),
+            encoding: .utf8
+        )
+        let detailTemplate = try XCTUnwrap(overview.range(of: "private var detailTemplate: some View"))
+        let start = try XCTUnwrap(
+            overview.range(of: "case .sleep:", range: detailTemplate.upperBound..<overview.endIndex)
+        )
+        let end = try XCTUnwrap(
+            overview.range(of: "case .strain:", range: start.upperBound..<overview.endIndex)
+        )
+        let sleepDetail = String(overview[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(sleepDetail.contains("AtriaSleepHypnogramCard(night: latest"))
+        XCTAssertTrue(sleepDetail.contains("AtriaSleepStageRowStrip("))
+        XCTAssertTrue(sleepDetail.contains("segments: latest.displayStageSegments"))
+        XCTAssertTrue(sleepDetail.contains("isEstimated: latest.isEstimatedStageDisplay"))
+        XCTAssertTrue(sleepDetail.contains("sleepHistory.latestMainSleep"))
     }
 
     // MARK: - Container pin: inset card + design tokens only
