@@ -1190,6 +1190,10 @@ struct AtriaHomeView: View {
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             drainPendingFileDeepLink()
+            // Device 2026-09-18: leftover pending=5 kept pausing 2A37 while
+            // Recovery Week was already foreground and the link stayed
+            // connected, so handleStatusChange(.connected) never re-fired.
+            requestPostWorkoutHistoryBackfillIfNeeded()
             await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: "scene_active")
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))

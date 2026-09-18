@@ -2293,6 +2293,10 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
         XCTAssertTrue(home.contains("shouldQueuePostWorkoutHistoryBackfill("))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
+        XCTAssertTrue(
+            home.contains("requestPostWorkoutHistoryBackfillIfNeeded()\n            await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: \"scene_active\")"),
+            "already-connected Recovery must retire leftover pending without waiting for a reconnect"
+        )
         let confirm = try XCTUnwrap(body.range(of: "confirmWorkoutWindowForUIAsync("))
         let backfill = try XCTUnwrap(body.range(of: "requestPostWorkoutHistoryBackfillIfNeeded("))
         XCTAssertLessThan(
