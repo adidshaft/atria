@@ -8683,6 +8683,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active_workout_fast")
             return
         }
+        // Device 207: glance/history first-refusal occupied stream-5 before
+        // the compact abort. Empty stale IMU on live 2A37 recovers first.
+        let deferHistoryForLiveIMU = emptyStreamNeedsLiveCompactIMURecovery(now: now)
+        if deferHistoryForLiveIMU {
+            reissueAllDayCompactAbortOnForegroundIfNeeded(
+                reason: "scene_active_before_history"
+            )
+            evaluateR10Liveness(now: now, reason: "scene_active_compact_before_history")
+        }
         // Give a glance-eligible compact motion bank first refusal before any
         // deferred whole-archive consumer work can set the global
         // materialization-in-flight gate. Closing is only a scheduling edge;
@@ -8690,7 +8699,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // pass atomic canonical admission. Heavy terminal projection stays
         // durable for its ordinary safe-background lane.
         let motionBankGlanceCheckpointStarted =
-            checkpointHistoricalMotionBankOnGlanceIfNeeded(
+            deferHistoryForLiveIMU
+            ? false
+            : checkpointHistoricalMotionBankOnGlanceIfNeeded(
                 at: now,
                 reason: "scene_active"
             )
@@ -8734,7 +8745,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reassertHeartRateNotificationsIfConnected(reason: "scene_active")
         reassertR10NotificationIfConnected(reason: "scene_active")
         elevateLongWearRadioForInteractiveForegroundIfNeeded(reason: "scene_active_interactive")
-        reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active")
+        if !deferHistoryForLiveIMU {
+            reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active")
+        }
         if foregroundInteractiveMode {
             return
         }
@@ -15677,6 +15690,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) {
             AtriaDebugLog(
                 "ATRIADBG idle_window_drain status=suppress_competing_history reason=%@ action=keep_2a37_until_idle_window_pipe_settled",
+                reason
+            )
+            return false
+        }
+        if !explicitRequest,
+           emptyStreamNeedsLiveCompactIMURecovery(now: attemptAt) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: explicitRequest,
+                explicitPostWorkoutBankRequest:
+                    explicitPostWorkoutBankRequest,
+                preserveConnectedRealtimeOwner:
+                    preserveConnectedRealtimeOwner
+            )
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=deferred_live_compact_imu_recovery reason=%@ action=keep_stream5_for_526a14_no_history_command",
                 reason
             )
             return false
@@ -30908,6 +30938,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Device 207: after a power-cycle reconnect, `history_probe` /
+    /// `offline_sync` marked the proprietary pipe owned while stream-5
+    /// callbacks stayed 0. That made `shouldRefreshIMUOnLiveHeartRateFallback`
+    /// return false, so the 180s `526a14` retry never ran. An empty stale
+    /// IMU pipe on live 2A37 is compact recovery's job; history waits.
+    nonisolated static func shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+        heartRateEpochLive: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        compactIMUStale: Bool
+    ) -> Bool {
+        heartRateEpochLive
+            && stream5NotifyCallbacksThisConnection == 0
+            && compactIMUStale
+    }
+
     nonisolated static func historyOwnsTransportForCompactIMURecovery(
         historyOwnsTransport: Bool,
         stream5NotifyCallbacksThisConnection: Int,
@@ -30915,11 +30960,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastNotifyTypeHex: String?
     ) -> Bool {
         guard historyOwnsTransport else { return false }
+        if shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+            heartRateEpochLive: true,
+            stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
+            compactIMUStale: compactIMUStale
+        ) {
+            return false
+        }
         return !stream5IsLiveWithoutCompactIMU(
             stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
             compactIMUStale: compactIMUStale,
             lastNotifyTypeHex: lastNotifyTypeHex
         )
+    }
+
+    /// `wait_stream5` is a no-op. Stamping the 45s activation lease for it
+    /// blocked the 180s abort retry until the app thawed (device 207 Home).
+    nonisolated static func shouldStampAllDayCompactIMUActivation(
+        command: String
+    ) -> Bool {
+        command != "wait_stream5"
     }
 
     /// Device 201: `52` then `6A` ACK'd on stream-4 (`24…6a…`) and still
@@ -31629,6 +31689,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private func emptyStreamNeedsLiveCompactIMURecovery(now: Date = Date()) -> Bool {
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+        return Self.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+            heartRateEpochLive: hrLive,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true
+        )
+    }
+
     /// Cover-live compact IMU on the current connected HR link. No disconnect,
     /// no v9 proof, no history owner. Frames are admitted by clearing
     /// stream suppression before the write.
@@ -31952,23 +32031,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
 
-        defaults.set(now.timeIntervalSince1970,
-                     forKey: Self.protectedR10ActivationSentAtKey)
-        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
-                     forKey: Self.protectedR10ActivationCountKey)
         defaults.set("qualified_silent_stream_refresh",
                      forKey: RadioDefaults.passiveR10Status)
         let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
-        persistLastIMURecovery(
-            command: "526a14",
-            action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
-            now: now,
-            defaults: defaults,
-            heartRateNotifying: recoveryAges.heartRateNotifying,
-            heartRateAge: recoveryAges.heartRateAge,
-            imuAge: recoveryAges.imuAge
-        )
-        lastR10RecoveryRearmAt = now
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
             defer { self?.protectedR10CommandSequenceTask = nil }
             guard let self, let peripheral, !Task.isCancelled,
@@ -32006,6 +32071,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason,
                           command,
                           companions)
+            if Self.shouldStampAllDayCompactIMUActivation(command: command) {
+                let stampAt = Date()
+                UserDefaults.standard.set(
+                    stampAt.timeIntervalSince1970,
+                    forKey: Self.protectedR10ActivationSentAtKey
+                )
+                UserDefaults.standard.set(
+                    UserDefaults.standard.integer(
+                        forKey: Self.protectedR10ActivationCountKey
+                    ) + 1,
+                    forKey: Self.protectedR10ActivationCountKey
+                )
+                self.lastR10RecoveryRearmAt = stampAt
+            }
             self.persistLastIMURecovery(
                 command: command,
                 action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
@@ -33671,6 +33750,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         at date: Date,
         reason: String
     ) -> Bool {
+        if emptyStreamNeedsLiveCompactIMURecovery(now: date) {
+            AtriaDebugLog("ATRIADBG workout_motion_bank status=glance_deferred_live_compact_imu reason=%@ action=keep_stream5_for_526a14",
+                          reason)
+            return false
+        }
         let calibrationHoldActive =
             workoutMotionCalibrationHoldUntil.map { date < $0 } == true
         let historySyncInProgress =

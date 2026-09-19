@@ -3987,6 +3987,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertLessThan(retryArm.lowerBound, heavy.lowerBound)
         XCTAssertTrue(method.contains("reissueAllDayCompactAbortOnForegroundIfNeeded"),
                       "device 206: empty stream-5 after background abort must re-arm 0x14 on Today")
+        XCTAssertTrue(method.contains("scene_active_before_history"),
+                      "device 207: compact abort must run before glance history on empty stream-5")
+        XCTAssertTrue(method.contains("emptyStreamNeedsLiveCompactIMURecovery"))
+        let abortBeforeHistory = try XCTUnwrap(method.range(
+            of: "scene_active_before_history"
+        ))
+        XCTAssertLessThan(abortBeforeHistory.lowerBound, glance.lowerBound)
+        XCTAssertTrue(source.contains("glance_deferred_live_compact_imu"))
         XCTAssertTrue(method.contains("if !motionBankGlanceCheckpointStarted"))
         XCTAssertTrue(method.contains(
             "!foregroundGlanceCheckpointRetryGate.isAwaitingFreshHeartRate"
