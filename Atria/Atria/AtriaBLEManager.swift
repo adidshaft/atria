@@ -4851,7 +4851,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// `pure_hr_v10` fallback keeps 2A37 by suppressing R10. Compact 0x33 then
     /// idles off and nothing writes 6A/51 (device 2026-09-18: packets stopped
     /// 14:01 IST, HR age 0.02s, `liveR10Eligible=false`, IMU 37 min stale).
-    /// Same-link 6A/51 on a live HR epoch, 45s paced, no reconnect / 0x3F.
+    /// Device 211: a fresh install sat in `protected_redp_v9` /
+    /// `protected_launch_pending` and skipped the 12s 6A the same way.
+    /// Same-link abort+6A on a live HR epoch, 45s paced, no reconnect / 0x3F.
     nonisolated static func shouldRefreshIMUOnLiveHeartRateFallback(
         owner: ProtectedR10CleanOwner,
         state: ProtectedR10CleanOwnerState,
@@ -4867,7 +4869,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> Bool {
         let fallbackOwner = owner == .pureHRV10 || owner == .pureHRV8
         let fallbackState = state == .fallbackActive || state == .fallbackPending
-        guard fallbackOwner || fallbackState else { return false }
+        let launchPending = owner == .protectedV9 && state == .protectedLaunchPending
+        guard fallbackOwner || fallbackState || launchPending else { return false }
         guard connected, !historyOwnsTransport, heartRateNotifying else { return false }
         if sittingSkipFresh { return false }
         let stale = imuAge.map { $0 > staleInterval } ?? true
