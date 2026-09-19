@@ -31259,8 +31259,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         catchUpAlreadyRequested: Bool,
         stream5NotifyCallbacksThisConnection: Int,
         catchUpRetryAge: TimeInterval? = nil,
-        catchUpRetryInterval: TimeInterval = 60
+        catchUpRetryInterval: TimeInterval = 60,
+        postSubscribe6ADue: Bool = false
     ) -> Bool {
+        // Device 225: 0x69 retry every 60s kept history in-flight, which
+        // blocked the post-subscribe 6A that actually arms live 0x33.
+        guard !postSubscribe6ADue else { return false }
         guard stream5NotifyCallbacksThisConnection == 0 else { return false }
         guard shouldYieldConnectedHistoryAfterLiveCompactAttempt(
             followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
@@ -31426,7 +31430,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if followUp6AAlreadySentThisConnection,
            stream5SubscribeConfirmed,
            !live6AAfterSubscribeAlreadySent,
-           !historyCatchUpInProgress,
            let subscribeAge,
            subscribeAge >= live6AAfterSubscribeDelay {
             return .toggleIMUOn
@@ -32731,7 +32734,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
                 catchUpRetryAge: lastAllDayCompactHistoryCatchUpAt.map {
                     now.timeIntervalSince($0)
-                }
+                },
+                postSubscribe6ADue: strapStream5NotifyConfirmed
+                    && !Self.allDayCompactLive6AAfterSubscribeAlreadySent(
+                        live6AAfterSubscribeAt: lastAllDayCompactLive6AAfterSubscribeAt,
+                        subscribedAt: (defaults.object(
+                            forKey: RadioDefaults.passiveR10SubscribedAt
+                        ) as? Double).map { Date(timeIntervalSince1970: $0) }
+                    )
             ) {
                 persistAllDayCompactHistoryCatchUp(at: now)
                 _ = requestOfflineHistoricalSyncIfNeeded(
