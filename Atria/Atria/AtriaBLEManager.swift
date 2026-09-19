@@ -8841,9 +8841,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ensureR10LivenessWatchdog(reason: "\(reason)_stream5_active")
             let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
             let lastRefreshAge = lastR10ZombieCCCDRefreshAt.map { now.timeIntervalSince($0) }
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                    .map { now.timeIntervalSince($0) }
+            )
             if Self.shouldRefreshZombieProprietaryCCCD(
                 connected: true,
-                heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+                heartRateNotifying: hrEpochLive,
                 packetsThisConnection: Self.proprietaryTrafficThisConnection(
                     protocolPackets: protocolPacketsThisConnection,
                     notifyCallbacks: protocolNotifyCallbacksThisConnection
@@ -8881,13 +8886,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason)
     }
 
-    /// One stream-5 off/on per ticket when this connection has HR but the
-    /// proprietary pipe is empty *or* compact 0x33 flowed and then died.
-    /// Stream-5 traffic rearms the ticket. Never touches 2A37.
-    /// `setNotify(true)` on the restored zombie CCCD did not resume IMU
-    /// (device 2026-09-14 23:54). Device 172 22:12: compact 0x33 for 132s
-    /// after install, then silence; packets>0 skipped the toggle so 6A/51
-    /// could not revive stream-5.
+    /// Stream-5 off/on when this connection has HR but the proprietary pipe
+    /// is empty *or* compact 0x33 flowed and then died. Stream-5 traffic
+    /// rearms the ticket; an empty pipe after 45s gets a paced retoggle.
+    /// Never touches 2A37. Device 184 10:18: toggle-on aborted on the 2A37
+    /// CCCD flag while samples were still arriving, so stream-5 stayed off.
     private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
         let hrLive = Self.heartRateEpochAllowsIMURefresh(
             characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
@@ -8926,7 +8929,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedAge: connectedAge,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             imuAge: imuAge,
-            sittingSkipFresh: sittingSkipFresh
+            sittingSkipFresh: sittingSkipFresh,
+            lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) }
         ) else { return }
         guard let strapService = peripheral.services?.first(where: {
             $0.uuid == Self.UUIDs.strapService
@@ -8958,10 +8962,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason)
         Task { @MainActor [weak self, weak peripheral] in
             try? await Task.sleep(for: .milliseconds(400))
-            guard let self, let peripheral, !Task.isCancelled,
-                  peripheral.state == .connected,
-                  self.currentConnectionProprietaryTraffic == 0,
-                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            guard let self, let peripheral, !Task.isCancelled else { return }
+            let onAt = Date()
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { onAt.timeIntervalSince($0) }
+            )
+            guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: peripheral.state == .connected,
+                packetsThisConnection: self.currentConnectionProprietaryTraffic,
+                heartRateEpochLive: hrEpochLive
+            ) else { return }
             guard let stream5 = peripheral.services?
                 .first(where: { $0.uuid == Self.UUIDs.strapService })?
                 .characteristics?
@@ -8979,11 +8991,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey: Self.protectedR10ActivationSentAtKey
             )
             try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled, peripheral.state == .connected,
-                  self.currentConnectionProprietaryTraffic == 0,
-                  self.heartRateCharacteristic?.isNotifying == true else { return }
+            guard !Task.isCancelled else { return }
+            let afterAt = Date()
+            let afterHRLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { afterAt.timeIntervalSince($0) }
+            )
+            guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: peripheral.state == .connected,
+                packetsThisConnection: self.currentConnectionProprietaryTraffic,
+                heartRateEpochLive: afterHRLive
+            ) else { return }
             _ = self.refreshProtectedBoundedRawCaptureIfNeeded(
-                now: Date(),
+                now: afterAt,
                 reason: "\(reason)_after_zombie_toggle"
             )
         }
@@ -8996,9 +9017,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         peripheral: CBPeripheral,
         reason: String
     ) {
+        let rediscoverNow = Date()
+        let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { rediscoverNow.timeIntervalSince($0) }
+        )
         guard Self.shouldRediscoverZombieProprietaryTransport(
             connected: peripheral.state == .connected,
-            heartRateNotifying: heartRateCharacteristic?.isNotifying == true,
+            heartRateNotifying: hrEpochLive,
             packetsThisConnection: currentConnectionProprietaryTraffic,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil
@@ -30608,8 +30635,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     /// `setNotify(true)` on an already-notifying zombie CCCD produced no
-    /// packets (device 2026-09-14 23:54). One stream-5 off/on per epoch, never
-    /// 2A37, never 0x3F, never a standing reconnect.
+    /// packets (device 2026-09-14 23:54). One stream-5 off/on per ticket,
+    /// then a 45s retoggle if the pipe is still empty / IMU still stale.
+    /// Never 2A37, never 0x3F, never a standing reconnect.
     nonisolated static func shouldToggleZombieProprietaryCCCD(
         connected: Bool,
         heartRateNotifying: Bool,
@@ -30618,22 +30646,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         alreadyToggledThisConnection: Bool,
         minimumConnectedAge: TimeInterval = 20,
         imuAge: TimeInterval? = nil,
-        sittingSkipFresh: Bool = false
+        sittingSkipFresh: Bool = false,
+        lastToggleAge: TimeInterval? = nil,
+        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval
     ) -> Bool {
         guard connected, heartRateNotifying else { return false }
-        guard !alreadyToggledThisConnection, connectedAge >= minimumConnectedAge else {
-            return false
-        }
-        if packetsThisConnection == 0 { return true }
-        // Device 172 22:12: compact 0x33 flowed 132s after install, then
-        // died. packetsThisConnection>0 blocked the once-per-epoch stream-5
-        // off/on, so 6A/51 setNotify(true) on the zombie CCCD restored
-        // nothing (`stream5` callbacks stayed 0, IMU 6 min stale, HR live).
+        guard connectedAge >= minimumConnectedAge else { return false }
         if sittingSkipFresh { return false }
-        guard let imuAge, imuAge > AtriaDiagnosisReport.liveStaleSeconds else {
-            return false
-        }
-        return true
+        let emptyPipe = packetsThisConnection == 0
+        let stale = imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? false
+        guard emptyPipe || stale else { return false }
+        if !alreadyToggledThisConnection { return true }
+        // Device 184 10:18: the first stream-5 off never came back on because
+        // toggle-on required 2A37 `isNotifying`. Empty pipe / stale IMU after
+        // that ticket must get another paced off/on while HR stays up.
+        guard let lastToggleAge, lastToggleAge >= 0 else { return false }
+        return lastToggleAge >= minimumRetoggleInterval
+    }
+
+    /// Completing stream-5 `setNotify(true)` after the off half must not wait
+    /// on CoreBluetooth's 2A37 CCCD flag. Device 184 10:18: HR samples were
+    /// 0.03s fresh with `live_hr_notifying=1`, but `isNotifying` was enough
+    /// to abort the on-half and leave `packets_this_connection=0`.
+    nonisolated static func shouldCompleteZombieProprietaryCCCDToggleOn(
+        connected: Bool,
+        packetsThisConnection: Int,
+        heartRateEpochLive: Bool
+    ) -> Bool {
+        connected && packetsThisConnection == 0 && heartRateEpochLive
     }
 
     /// Stream-5 off/on still left `packetsThisConnection=0` (device 2026-09-14
@@ -31575,9 +31615,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let lastRefreshAge = self.lastR10ZombieCCCDRefreshAt.map {
                 writeAt.timeIntervalSince($0)
             }
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { writeAt.timeIntervalSince($0) }
+            )
             let zombie = Self.shouldRefreshZombieProprietaryCCCD(
                 connected: true,
-                heartRateNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                heartRateNotifying: hrEpochLive,
                 packetsThisConnection: self.currentConnectionProprietaryTraffic,
                 connectedAge: connectedAge,
                 lastRefreshAge: lastRefreshAge
