@@ -5545,6 +5545,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastR10ZombieCCCDRefreshAt = nil
         lastR10ZombieCCCDToggleAt = nil
         lastR10ZombieTxRediscoverAt = nil
+        UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieCCCDToggleAt)
+        UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieKickSkipReason)
         proprietaryWWRGate.reset()
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
         UserDefaults.standard.set(0, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
@@ -8878,10 +8880,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if Self.shouldRefreshZombieProprietaryCCCD(
                 connected: true,
                 heartRateNotifying: hrEpochLive,
-                packetsThisConnection: Self.proprietaryTrafficThisConnection(
-                    protocolPackets: protocolPacketsThisConnection,
-                    notifyCallbacks: protocolNotifyCallbacksThisConnection
-                ),
+                packetsThisConnection: protocolStream5NotifyCallbacksThisConnection,
                 connectedAge: connectedAge,
                 lastRefreshAge: lastRefreshAge
             ) {
@@ -8920,22 +8919,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// rearms the ticket; an empty pipe after 45s gets a paced retoggle.
     /// Never touches 2A37. Device 184 10:18: toggle-on aborted on the 2A37
     /// CCCD flag while samples were still arriving, so stream-5 stayed off.
+    /// Device 198: `standardHROnlyMode` is the production HR+R10 profile.
+    /// Skipping the toggle there left 6A/51 napping the strap while stream-4
+    /// type-24 still counted as proprietary traffic.
     private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
         let hrLive = Self.heartRateEpochAllowsIMURefresh(
             characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
             lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
                 .map { now.timeIntervalSince($0) }
         )
-        guard !standardHROnlyMode,
-              !readOnlyHistoryCaptureRequested,
+        let connected = peripheral?.state == .connected && Self.liveHeartRateEpochOwnsRadio(
+            status: status,
+            peripheralConnected: peripheral?.state == .connected,
+            heartRateEpochLive: hrLive
+        )
+        func persistSkip(_ skip: String) {
+            UserDefaults.standard.set(skip, forKey: RadioDefaults.zombieKickSkipReason)
+        }
+        guard !readOnlyHistoryCaptureRequested,
               let peripheral,
-              peripheral.state == .connected,
-              Self.liveHeartRateEpochOwnsRadio(
-                  status: status,
-                  peripheralConnected: true,
-                  heartRateEpochLive: hrLive
-              ) else { return }
-        let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
+              connected else {
+            if readOnlyHistoryCaptureRequested {
+                persistSkip("read_only_history")
+            } else if peripheral?.state != .connected {
+                persistSkip("not_connected")
+            } else if !hrLive {
+                persistSkip("hr_not_live")
+            } else {
+                persistSkip("radio_not_owned")
+            }
+            return
+        }
+        let connectedAge = connectedAt.map { now.timeIntervalSince($0) }
+            ?? (lastAcceptedHRAt ?? lastRawHRNotificationAt).map { now.timeIntervalSince($0) }
+            ?? 0
         let imuAge = Self.liveIMUEvidenceAgeSeconds(
             rawFrameAt: currentR10MotionFrameAt(),
             compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
@@ -8948,22 +8965,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ),
             imuAgeSeconds: imuAge
         ) && currentConnectionProprietaryTraffic > 0
-        guard Self.shouldToggleZombieProprietaryCCCD(
+        let shouldToggle = Self.shouldToggleZombieProprietaryCCCD(
             connected: true,
             heartRateNotifying: hrLive,
-            packetsThisConnection: Self.proprietaryTrafficThisConnection(
-                protocolPackets: protocolPacketsThisConnection,
-                notifyCallbacks: protocolNotifyCallbacksThisConnection
-            ),
+            packetsThisConnection: protocolStream5NotifyCallbacksThisConnection,
             connectedAge: connectedAge,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             imuAge: imuAge,
             sittingSkipFresh: sittingSkipFresh,
             lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) }
-        ) else { return }
+        )
+        guard shouldToggle else {
+            persistSkip("should_not_toggle")
+            return
+        }
         guard let strapService = peripheral.services?.first(where: {
             $0.uuid == Self.UUIDs.strapService
         }) else {
+            persistSkip("missing_strap_service")
             peripheral.discoverServices([Self.UUIDs.strapService])
             AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_service reason=%@ action=no_2a37_no_3f_no_reconnect",
                           reason)
@@ -8972,6 +8991,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard let stream5 = strapService.characteristics?
             .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
               stream5.properties.contains(.notify) else {
+            persistSkip("missing_stream5")
             peripheral.discoverCharacteristics(
                 [Self.UUIDs.strapStream5, Self.UUIDs.strapTX],
                 for: strapService
@@ -8981,9 +9001,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         lastR10ZombieCCCDToggleAt = now
+        persistSkip("toggled")
         UserDefaults.standard.set(
             now.timeIntervalSince1970,
-            forKey: "atria.r10.zombieCCCDToggleAt"
+            forKey: RadioDefaults.zombieCCCDToggleAt
         )
         strapStream5NotifyConfirmed = false
         peripheral.setNotifyValue(false, for: stream5)
@@ -30724,6 +30745,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return alreadyToggledThisConnection && !alreadyRediscoveredThisConnection
     }
 
+    /// Device 198: `live_r10_eligible=0` while 2A37 was live and 6A/51 still
+    /// wrote. Persist the actual blockers so the next pull can tell rollback
+    /// / probe / battery / HR-only apart from "IMU just died".
+    nonisolated static func liveR10EligibilityBlockers(
+        streamSuppressed: Bool,
+        standardHROnlyMode: Bool,
+        historyOnlyProbeEnabled: Bool,
+        historyOnlyProbeMode: Bool,
+        offlineHistoricalSyncInProgress: Bool,
+        rollbackEnabled: Bool,
+        motionBatteryEligible: Bool
+    ) -> String {
+        let r10 = !streamSuppressed
+            && !standardHROnlyMode
+            && !historyOnlyProbeEnabled
+            && motionBatteryEligible
+        let protected = standardHROnlyMode
+            && !historyOnlyProbeEnabled
+            && !historyOnlyProbeMode
+            && !offlineHistoricalSyncInProgress
+            && !streamSuppressed
+            && !rollbackEnabled
+            && motionBatteryEligible
+        if r10 || protected { return "none" }
+        var parts: [String] = []
+        if streamSuppressed { parts.append("stream_suppressed") }
+        if historyOnlyProbeEnabled { parts.append("history_probe") }
+        if !motionBatteryEligible { parts.append("battery") }
+        if standardHROnlyMode {
+            if historyOnlyProbeMode { parts.append("history_probe_mode") }
+            if offlineHistoricalSyncInProgress { parts.append("offline_sync") }
+            if rollbackEnabled { parts.append("rollback") }
+        }
+        return parts.isEmpty ? "unknown" : parts.joined(separator: ",")
+    }
+
     /// Device 192 15:34: stream-5 delivered ASCII
     /// `ing sleep mode for 30 seconds` as type 0x32. That is a firmware
     /// log, not compact IMU. 6A/51 every ~33s retriggers the nap.
@@ -31535,6 +31592,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set(imuAt.timeIntervalSince1970, forKey: RadioDefaults.liveIMUFrameAt)
         }
         defaults.set(r10TransportIsExpected, forKey: RadioDefaults.liveR10Eligible)
+        defaults.set(
+            Self.liveR10EligibilityBlockers(
+                streamSuppressed: protectedR10StreamSuppressed,
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeEnabled: historyOnlyProbeEnabled,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                offlineHistoricalSyncInProgress: offlineHistoricalSyncInProgress,
+                rollbackEnabled: protectedR10RollbackEnabled,
+                motionBatteryEligible: Self.shouldArmHighFrequencyMotion(
+                    batteryLevel: motionEligibilityBatteryLevel(now: now),
+                    isCharging: motionEligibilityIsCharging,
+                    calibrationActive: stepCalibrationCaptureIsActive
+                )
+            ),
+            forKey: RadioDefaults.liveR10EligibleBlockers
+        )
         defaults.set(strapStream5NotifyConfirmed, forKey: RadioDefaults.liveStream5Confirmed)
         defaults.set(realtimeArmed, forKey: RadioDefaults.liveRealtimeArmed)
     }
@@ -32018,6 +32091,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     now: now
                 )
             )
+        if connected, hrLive, !strapStream5NotifyConfirmed, !sittingSkipFresh {
+            kickZombieProprietaryStreamIfNeeded(
+                now: now,
+                reason: "\(reason)_stream5_unconfirmed_before_6a51"
+            )
+        }
         if sendCoverLiveBoundedRawCaptureIfNeeded(
             now: now,
             reason: "\(reason)_cover_live_51"
@@ -32053,7 +32132,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "\(reason)_r10_transport_unavailable"
             )
         }
-        if eligible, connected, !strapStream5NotifyConfirmed {
+        if connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
             kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
             // Waiting for a notify-state callback or a zombie toggle stranded
