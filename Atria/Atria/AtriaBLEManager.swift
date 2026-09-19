@@ -5490,7 +5490,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if standardHROnlyMode, !historyOnlyProbeMode {
             return Self.protectedStandardHRServices(
-                streamSuppressed: protectedR10StreamSuppressed
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
             )
         }
         return Self.UUIDs.discoveryServices
@@ -5781,7 +5782,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 Self.protectedStandardHRCharacteristics(
                     for: Self.UUIDs.strapService,
                     streamSuppressed: protectedR10StreamSuppressed,
-                    cleanOwner: protectedR10CleanOwner
+                    cleanOwner: protectedR10CleanOwner,
+                    compactIMURecoveryActive: compactIMURecoveryIsActive()
                 ),
                 for: service
             )
@@ -6156,9 +6158,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// changing the standard 2A37 heart-rate subscription.
     nonisolated static func protectedStandardHRStrapCharacteristics(
         streamSuppressed: Bool,
-        cleanOwner: ProtectedR10CleanOwner = .legacy
+        cleanOwner: ProtectedR10CleanOwner = .legacy,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID]? {
-        guard !streamSuppressed else { return nil }
+        guard !streamSuppressed || compactIMURecoveryActive else { return nil }
         if cleanOwner == .protectedV9 {
             return protectedR10ResponseEventDataNotifyOrder + [UUIDs.strapTX]
         }
@@ -6169,11 +6172,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// available independently of the proprietary R10 rollback. 2A19 remains
     /// notification-only; 2A1B may use one bounded standard read outside
     /// history ownership. Neither path authorizes a custom command.
+    /// Compact IMU recovery still needs the strap service so stream-5 CCCD
+    /// can be established on the initial profile (device 216: 6A ACK'd,
+    /// stream-5 stayed 0 because discovery returned nil while suppressed).
     nonisolated static func protectedStandardHRServices(
-        streamSuppressed: Bool
+        streamSuppressed: Bool,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID] {
         var services = [UUIDs.heartRateService, UUIDs.batteryService]
-        if !streamSuppressed {
+        if !streamSuppressed || compactIMURecoveryActive {
             services.append(UUIDs.strapService)
         }
         return services
@@ -6188,7 +6195,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func protectedStandardHRCharacteristics(
         for service: CBUUID,
         streamSuppressed: Bool,
-        cleanOwner: ProtectedR10CleanOwner = .legacy
+        cleanOwner: ProtectedR10CleanOwner = .legacy,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID]? {
         switch service {
         case UUIDs.heartRateService:
@@ -6198,7 +6206,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case UUIDs.strapService:
             return protectedStandardHRStrapCharacteristics(
                 streamSuppressed: streamSuppressed,
-                cleanOwner: cleanOwner
+                cleanOwner: cleanOwner,
+                compactIMURecoveryActive: compactIMURecoveryActive
             )
         default:
             return nil
@@ -6213,10 +6222,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         characteristicUUID: CBUUID,
         streamSuppressed: Bool,
         pendingOneShotBatteryResponse: Bool,
-        historyRecoveryActive: Bool = false
+        historyRecoveryActive: Bool = false,
+        compactIMURecoveryActive: Bool = false,
+        stream5NotifyCallbacksThisConnection: Int = 0
     ) -> Bool {
         historyRecoveryActive
-            || (characteristicUUID == UUIDs.strapStream5 && !streamSuppressed)
+            || (characteristicUUID == UUIDs.strapStream5
+                && (!streamSuppressed
+                    || compactIMURecoveryActive
+                    || stream5NotifyCallbacksThisConnection > 1))
             || pendingOneShotBatteryResponse
     }
 
@@ -15154,7 +15168,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) {
         guard standardHROnlyMode,
               !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed,
+              !protectedR10StreamSuppressed || compactIMURecoveryIsActive(),
               characteristic.uuid == Self.UUIDs.strapStream5,
               characteristic.properties.contains(.notify),
               !characteristic.isNotifying else { return }
@@ -15202,7 +15216,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func resumeProtectedR10FromRestoredCache(_ peripheral: CBPeripheral) {
         guard standardHROnlyMode,
               !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed,
+              !protectedR10StreamSuppressed || compactIMURecoveryIsActive(),
               peripheral.state == .connected else { return }
 
         var cachedHR: CBCharacteristic?
@@ -30550,6 +30564,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastAllDayCompactAbortAt: Date?
     private var lastAllDayCompactFollowUp6AAt: Date?
     private var lastAllDayCompactHistoryCatchUpAt: Date?
+    private var lastAllDayCompactLive6AAfterCatchUpAt: Date?
     private var protectedR10CommandSequenceStartedAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
@@ -30989,6 +31004,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// waited another 20s after 6A; catch-up should start as soon as live
     /// 0x33 has had a beat to arrive.
     nonisolated static let allDayCompactIMUHistoryCatchUpAfterFollowUp: TimeInterval = 2
+    /// Device 216 catch-up finished empty. One live 6A after that drain,
+    /// with stream-5 subscribed, without a 6A storm (device 204).
+    nonisolated static let allDayCompactIMULive6AAfterCatchUpDelay: TimeInterval = 15
 
     nonisolated static func shouldYieldConnectedHistoryAfterLiveCompactAttempt(
         followUp6AAlreadySentThisConnection: Bool,
@@ -31139,7 +31157,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         abortAge: TimeInterval? = nil,
         followUp6AAlreadySentThisConnection: Bool = false,
         followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
-        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false,
+        live6AAfterCatchUpDelay: TimeInterval = allDayCompactIMULive6AAfterCatchUpDelay
     ) -> AllDayCompactIMURecoveryStep {
         if stream5LiveWithoutCompactIMU { return .toggleIMUOn }
         guard stream5NotifyCallbacksThisConnection == 0 else {
@@ -31157,6 +31180,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            let abortAge, abortAge >= followUp6ADelay {
             return .toggleIMUOn
         }
+        if followUp6AAlreadySentThisConnection,
+           !live6AAfterCatchUpAlreadySent,
+           !historyCatchUpInProgress,
+           catchUpAlreadyRequested,
+           let catchUpAge,
+           catchUpAge >= live6AAfterCatchUpDelay {
+            return .toggleIMUOn
+        }
         return .waitStream5
     }
 
@@ -31166,11 +31197,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         abortAge: TimeInterval? = nil,
         abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval,
         followUp6AAlreadySentThisConnection: Bool = false,
-        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false
     ) -> Bool {
         // Stream-5 already has traffic (device 202 type-32, or live 0x33):
         // that is not the empty-pipe wait. Empty pipe after abort waits
-        // until the 12s 6A or the 180s 0x14 retry.
+        // until the 12s 6A, the post-catch-up 6A, or the 180s 0x14 retry.
         guard stream5NotifyCallbacksThisConnection == 0 else { return false }
         return allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: false,
@@ -31179,7 +31214,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             abortAge: abortAge,
             followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
             followUp6ADelay: followUp6ADelay,
-            abortRetryInterval: abortRetryInterval
+            abortRetryInterval: abortRetryInterval,
+            catchUpAlreadyRequested: catchUpAlreadyRequested,
+            live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress
         ) == .waitStream5
     }
 
@@ -31187,14 +31226,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         stream5LiveWithoutCompactIMU: Bool = false,
         abortAlreadySentThisConnection: Bool = false,
         abortAge: TimeInterval? = nil,
-        followUp6AAlreadySentThisConnection: Bool = false
+        followUp6AAlreadySentThisConnection: Bool = false,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false
     ) -> [[UInt8]] {
         switch allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: stream5LiveWithoutCompactIMU,
             stream5NotifyCallbacksThisConnection: stream5LiveWithoutCompactIMU ? 214 : 0,
             abortAlreadySentThisConnection: abortAlreadySentThisConnection,
             abortAge: abortAge,
-            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            catchUpAlreadyRequested: catchUpAlreadyRequested,
+            live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress
         ) {
         case .waitStream5:
             return []
@@ -31814,9 +31861,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func persistAllDayCompactAbort(at date: Date) {
         lastAllDayCompactAbortAt = date
         lastAllDayCompactFollowUp6AAt = nil
+        lastAllDayCompactHistoryCatchUpAt = nil
+        lastAllDayCompactLive6AAfterCatchUpAt = nil
         let defaults = UserDefaults.standard
         defaults.set(date.timeIntervalSince1970, forKey: RadioDefaults.allDayCompactAbortAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
     }
 
     private func persistAllDayCompactFollowUp6A(at date: Date) {
@@ -31824,6 +31875,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         UserDefaults.standard.set(
             date.timeIntervalSince1970,
             forKey: RadioDefaults.allDayCompactFollowUp6AAt
+        )
+    }
+
+    private func persistAllDayCompactHistoryCatchUp(at date: Date) {
+        lastAllDayCompactHistoryCatchUpAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactHistoryCatchUpAt
+        )
+    }
+
+    private func persistAllDayCompactLive6AAfterCatchUp(at date: Date) {
+        lastAllDayCompactLive6AAfterCatchUpAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt
         )
     }
 
@@ -31837,19 +31904,39 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             memory: lastAllDayCompactFollowUp6AAt,
             persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactFollowUp6AAt) as? Double
         )
+        lastAllDayCompactHistoryCatchUpAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactHistoryCatchUpAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt) as? Double
+        )
+        lastAllDayCompactLive6AAfterCatchUpAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactLive6AAfterCatchUpAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt) as? Double
+        )
     }
 
     private func clearAllDayCompactIMURecoveryLease() {
         lastAllDayCompactAbortAt = nil
         lastAllDayCompactFollowUp6AAt = nil
+        lastAllDayCompactHistoryCatchUpAt = nil
+        lastAllDayCompactLive6AAfterCatchUpAt = nil
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: RadioDefaults.allDayCompactAbortAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
     }
 
     private func compactIMUEvidenceAge(now: Date) -> TimeInterval? {
         Self.liveIMUEvidenceAgeSeconds(
             rawFrameAt: nil,
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+    }
+
+    nonisolated private func compactIMURecoveryIsActive(now: Date = Date()) -> Bool {
+        Self.compactIMUEvidenceIsStale(
             compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
             compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
             now: now
@@ -31879,18 +31966,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let abortAlready = lastAllDayCompactAbortAt != nil
         let abortAge = lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
         let followUpAlready = lastAllDayCompactFollowUp6AAt != nil
+        let catchUpAlready = lastAllDayCompactHistoryCatchUpAt != nil
+        let live6AAlready = lastAllDayCompactLive6AAfterCatchUpAt != nil
+        let catchUpAge = lastAllDayCompactHistoryCatchUpAt.map { Date().timeIntervalSince($0) }
+        let historyCatchUpInProgress = offlineHistoricalSyncInProgress || historyOnlyProbeMode
         let step = Self.allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
             abortAlreadySentThisConnection: abortAlready,
             abortAge: abortAge,
-            followUp6AAlreadySentThisConnection: followUpAlready
+            followUp6AAlreadySentThisConnection: followUpAlready,
+            catchUpAlreadyRequested: catchUpAlready,
+            live6AAfterCatchUpAlreadySent: live6AAlready,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress
         )
         if step == .waitStream5 {
             return AllDayCompactIMURecoveryStep.waitStream5.rawValue
         }
         // Device 209: abort ACK'd and stream-5 stayed 0. Empty pipe is 0x14,
         // then one 6A after 12s, never 52 and never a 45s 6A storm.
+        // Device 216: after catch-up finishes empty, one more live 6A.
         let command = step.rawValue
         switch step {
         case .waitStream5:
@@ -31898,13 +31994,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .abortHistorical:
             persistAllDayCompactAbort(at: Date())
         case .toggleIMUOn:
-            persistAllDayCompactFollowUp6A(at: Date())
+            if followUpAlready {
+                persistAllDayCompactLive6AAfterCatchUp(at: Date())
+            } else {
+                persistAllDayCompactFollowUp6A(at: Date())
+            }
         }
         for (index, body) in Self.allDayCompactIMURecoveryCommandBodies(
             stream5LiveWithoutCompactIMU: liveWithout,
             abortAlreadySentThisConnection: abortAlready,
             abortAge: abortAge,
-            followUp6AAlreadySentThisConnection: followUpAlready
+            followUp6AAlreadySentThisConnection: followUpAlready,
+            catchUpAlreadyRequested: catchUpAlready,
+            live6AAfterCatchUpAlreadySent: live6AAlready,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress
         ).enumerated() {
             if index > 0 {
                 try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
@@ -32286,7 +32390,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             abortAlreadySentThisConnection: abortAlready,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
             abortAge: abortAge,
-            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            catchUpAlreadyRequested: lastAllDayCompactHistoryCatchUpAt != nil,
+            live6AAfterCatchUpAlreadySent: lastAllDayCompactLive6AAfterCatchUpAt != nil,
+            catchUpAge: lastAllDayCompactHistoryCatchUpAt.map {
+                now.timeIntervalSince($0)
+            },
+            historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode
            ) {
             let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
             persistLastIMURecovery(
@@ -32307,7 +32417,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     now.timeIntervalSince($0)
                 }
             ) {
-                lastAllDayCompactHistoryCatchUpAt = now
+                persistAllDayCompactHistoryCatchUp(at: now)
                 _ = requestOfflineHistoricalSyncIfNeeded(
                     reason: "live_compact_yield_catch_up",
                     allowConnectedAutomaticHandoff: true,
@@ -52623,6 +52733,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             ) else { return }
             self.recordProtectedV9BringUpEdge(resolvedServiceOwnerEdge)
         }
+        let compactIMURecoveryActive = compactIMURecoveryIsActive()
         for service in peripheral.services ?? [] {
             let characteristics: [CBUUID]?
             if motionHandshakeDiagnostic != nil {
@@ -52678,14 +52789,16 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                         ? Self.protectedStandardHRCharacteristics(
                             for: service.uuid,
                             streamSuppressed: protectedR10StreamSuppressed,
-                            cleanOwner: protectedR10CleanOwner
+                            cleanOwner: protectedR10CleanOwner,
+                            compactIMURecoveryActive: compactIMURecoveryActive
                         )
                         : nil
                 } else if callbackPolicy.protectedStandardDiscoveryStarted {
                     characteristics = Self.protectedStandardHRCharacteristics(
                         for: service.uuid,
                         streamSuppressed: protectedR10StreamSuppressed,
-                        cleanOwner: protectedR10CleanOwner
+                        cleanOwner: protectedR10CleanOwner,
+                        compactIMURecoveryActive: compactIMURecoveryActive
                     )
                 } else {
                     characteristics = nil
@@ -52695,7 +52808,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 var requested = Self.protectedStandardHRCharacteristics(
                     for: service.uuid,
                     streamSuppressed: protectedR10StreamSuppressed,
-                    cleanOwner: protectedR10CleanOwner
+                    cleanOwner: protectedR10CleanOwner,
+                    compactIMURecoveryActive: compactIMURecoveryActive
                 ) ?? []
                 if !requested.contains(Self.UUIDs.strapTX) {
                     requested.append(Self.UUIDs.strapTX)
@@ -52709,7 +52823,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     characteristics = Self.protectedStandardHRCharacteristics(
                         for: service.uuid,
                         streamSuppressed: protectedR10StreamSuppressed,
-                        cleanOwner: protectedR10CleanOwner
+                        cleanOwner: protectedR10CleanOwner,
+                        compactIMURecoveryActive: compactIMURecoveryActive
                     )
                 }
             } else {
@@ -52916,6 +53031,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             standardSnapshot: callbackPolicy.standardHROnly,
             historyOnlyProbeMode: historyOnlyProbeMode
         )
+        let compactIMURecoveryActive = compactIMURecoveryIsActive()
         let alreadyActiveProprietaryNotifications = discoveryUsesProtectedStandardHR
             ? Set<CBUUID>()
             : Self.alreadyActiveProprietaryNotifications(
@@ -53008,6 +53124,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             case UUIDs.strapTX:
                 if discoveryUsesProtectedStandardHR,
                    !protectedR10StreamSuppressed
+                    || compactIMURecoveryActive
                     || gate4HistoricalIMUWindowProbeRequested
                     || workoutBankTransportRequested {
                     foundTX = ch
@@ -53020,7 +53137,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
             default:
                 if discoveryUsesProtectedStandardHR,
-                   !protectedR10StreamSuppressed,
+                   (!protectedR10StreamSuppressed || compactIMURecoveryActive),
                    ch.uuid == Self.UUIDs.strapStream5,
                    ch.properties.contains(.notify) {
                     if !ch.isNotifying {
@@ -53912,7 +54029,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             characteristicUUID: uuid,
             streamSuppressed: protectedR10StreamSuppressed,
             pendingOneShotBatteryResponse: isPendingOneShotBatteryResponse,
-            historyRecoveryActive: historyPhase.isActive
+            historyRecoveryActive: historyPhase.isActive,
+            compactIMURecoveryActive: compactIMURecoveryIsActive(now: receivedAt),
+            stream5NotifyCallbacksThisConnection: UserDefaults.standard.integer(
+                forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+            )
            ) {
             // A restored legacy subscription may briefly deliver after an app
             // update. Ignore it completely; never decode it into steps or let

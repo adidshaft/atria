@@ -265,6 +265,8 @@ extension AtriaBLEManager {
         /// restart the 12s live attempt or block historical IMU catch-up.
         static let allDayCompactAbortAt = "atria.radio.allDayCompactAbortAt"
         static let allDayCompactFollowUp6AAt = "atria.radio.allDayCompactFollowUp6AAt"
+        static let allDayCompactHistoryCatchUpAt = "atria.radio.allDayCompactHistoryCatchUpAt"
+        static let allDayCompactLive6AAfterCatchUpAt = "atria.radio.allDayCompactLive6AAfterCatchUpAt"
         static let liveHRNotifying = "atria.radio.liveHRNotifying"
         static let liveHRSampleAt = "atria.radio.liveHRSampleAt"
         static let liveIMUFrameAt = "atria.radio.liveIMUFrameAt"
