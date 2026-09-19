@@ -431,6 +431,46 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ],
             "device 201: 52/6A ACK'd on stream-4 with 0x33 still missing; add official 0x14 abort, never 0x51"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
+                stream5LiveWithoutCompactIMU: true
+            ),
+            [
+                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+            ],
+            "device 202: stream-5 type-32 logs with no 0x33 follow up 6A on only, do not abort history again"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.stream5IsLiveWithoutCompactIMU(
+                stream5NotifyCallbacksThisConnection: 214,
+                compactIMUStale: true,
+                lastNotifyTypeHex: "32"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.stream5IsLiveWithoutCompactIMU(
+                stream5NotifyCallbacksThisConnection: 214,
+                compactIMUStale: true,
+                lastNotifyTypeHex: "33"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historyOwnsTransportForCompactIMURecovery(
+                historyOwnsTransport: true,
+                stream5NotifyCallbacksThisConnection: 214,
+                compactIMUStale: true,
+                lastNotifyTypeHex: "32"
+            ),
+            "device 202: history_transport_owned after type-32 logs must not block compact 6A"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historyOwnsTransportForCompactIMURecovery(
+                historyOwnsTransport: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true,
+                lastNotifyTypeHex: "32"
+            )
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -12606,7 +12646,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(coverBody.contains("Cmd.startRawData"),
                        "device 199: Labs 0x51 ACK'd on stream-4 and never produced compact 0x33")
         XCTAssertTrue(coverBody.contains("writeAllDayCompactIMURecovery"))
-        XCTAssertTrue(coverBody.contains("cmds=5201,6a01,1400"))
+        XCTAssertTrue(coverBody.contains("cmds=5201,6a01,1400_or_6a"))
         XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(coverBody.contains("cover_live_compact_restore_2a37"),
                       "compact IMU recovery must reassert 2A37 (device 2026-09-18 167)")
