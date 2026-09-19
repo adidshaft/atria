@@ -2826,6 +2826,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protocolPacketCount = 0
     private var protocolPacketsThisConnection = 0
     private var protocolNotifyCallbacksThisConnection = 0
+    private var protocolStream5NotifyCallbacksThisConnection = 0
+    private var lastStrapSleepModeAt: Date?
     private var currentConnectionProprietaryTraffic: Int {
         Self.proprietaryTrafficThisConnection(
             protocolPackets: protocolPacketsThisConnection,
@@ -4860,7 +4862,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastActivationAge: TimeInterval?,
         staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds,
         minimumActivationInterval: TimeInterval = r10LivenessRearmMinimumInterval,
-        sittingSkipFresh: Bool = false
+        sittingSkipFresh: Bool = false,
+        sleepModeHoldActive: Bool = false
     ) -> Bool {
         let fallbackOwner = owner == .pureHRV10 || owner == .pureHRV8
         let fallbackState = state == .fallbackActive || state == .fallbackPending
@@ -4869,6 +4872,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if sittingSkipFresh { return false }
         let stale = imuAge.map { $0 > staleInterval } ?? true
         guard stale else { return false }
+        if sleepModeHoldActive { return false }
         if let lastActivationAge, lastActivationAge >= 0,
            lastActivationAge < minimumActivationInterval {
             return false
@@ -5536,6 +5540,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedAt = now
         protocolPacketsThisConnection = 0
         protocolNotifyCallbacksThisConnection = 0
+        protocolStream5NotifyCallbacksThisConnection = 0
+        lastStrapSleepModeAt = nil
         lastR10ZombieCCCDRefreshAt = nil
         lastR10ZombieCCCDToggleAt = nil
         lastR10ZombieTxRediscoverAt = nil
@@ -8994,7 +9000,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
                 connected: peripheral.state == .connected,
-                packetsThisConnection: self.currentConnectionProprietaryTraffic,
                 heartRateEpochLive: hrEpochLive
             ) else { return }
             guard let stream5 = peripheral.services?
@@ -9023,7 +9028,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
                 connected: peripheral.state == .connected,
-                packetsThisConnection: self.currentConnectionProprietaryTraffic,
                 heartRateEpochLive: afterHRLive
             ) else { return }
             _ = self.refreshProtectedBoundedRawCaptureIfNeeded(
@@ -9049,7 +9053,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard Self.shouldRediscoverZombieProprietaryTransport(
             connected: peripheral.state == .connected,
             heartRateNotifying: hrEpochLive,
-            packetsThisConnection: currentConnectionProprietaryTraffic,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil
         ) else { return }
@@ -30691,27 +30695,51 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// on CoreBluetooth's 2A37 CCCD flag. Device 184 10:18: HR samples were
     /// 0.03s fresh with `live_hr_notifying=1`, but `isNotifying` was enough
     /// to abort the on-half and leave `packets_this_connection=0`.
+    /// Device 192 15:56: stream-4 type-24 notifies made
+    /// `packetsThisConnection=23` while stream-5 callbacks stayed 0, so the
+    /// on-half aborted and left IMU 34 min stale. Stream-4 is not compact
+    /// 0x33; after we turned stream-5 off we must turn it back on while HR
+    /// stays up.
     nonisolated static func shouldCompleteZombieProprietaryCCCDToggleOn(
         connected: Bool,
-        packetsThisConnection: Int,
         heartRateEpochLive: Bool
     ) -> Bool {
-        connected && packetsThisConnection == 0 && heartRateEpochLive
+        connected && heartRateEpochLive
     }
 
-    /// Stream-5 off/on still left `packetsThisConnection=0` (device 2026-09-14
+    /// Stream-5 off/on still left stream-5 empty (device 2026-09-14
     /// 23:56). Rediscover strap TX/notify once after that toggle.
+    /// Stream-4 history/debug notifies must not look like a live IMU pipe.
     nonisolated static func shouldRediscoverZombieProprietaryTransport(
         connected: Bool,
         heartRateNotifying: Bool,
-        packetsThisConnection: Int,
+        stream5NotifyCallbacksThisConnection: Int,
         alreadyToggledThisConnection: Bool,
         alreadyRediscoveredThisConnection: Bool
     ) -> Bool {
-        guard connected, heartRateNotifying, packetsThisConnection == 0 else {
+        guard connected, heartRateNotifying,
+              stream5NotifyCallbacksThisConnection == 0 else {
             return false
         }
         return alreadyToggledThisConnection && !alreadyRediscoveredThisConnection
+    }
+
+    /// Device 192 15:34: stream-5 delivered ASCII
+    /// `ing sleep mode for 30 seconds` as type 0x32. That is a firmware
+    /// log, not compact IMU. 6A/51 every ~33s retriggers the nap.
+    nonisolated static let strapSleepModeHold: TimeInterval = 35
+
+    nonisolated static func proprietaryNotifyLooksLikeSleepModeLog(_ data: Data) -> Bool {
+        guard data.count >= 5, data[0] == 0xAA, data[4] == 0x32 else { return false }
+        return data.range(of: Data("sleep mode".utf8)) != nil
+    }
+
+    nonisolated static func shouldHoldIMURefreshAfterSleepModeLog(
+        lastSleepModeAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard let lastSleepModeAt, now >= lastSleepModeAt else { return false }
+        return now.timeIntervalSince(lastSleepModeAt) < strapSleepModeHold
     }
 
     nonisolated static func stream5CountsAsNotifying(
@@ -31581,6 +31609,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
             return false
         }
+        if Self.shouldHoldIMURefreshAfterSleepModeLog(
+            lastSleepModeAt: lastStrapSleepModeAt,
+            now: now
+        ) {
+            defaults.set("strap_sleep_mode_hold", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
         let fallbackIMU = Self.shouldRefreshIMUOnLiveHeartRateFallback(
             owner: protectedR10CleanOwner,
             state: protectedR10CleanOwnerState,
@@ -31589,7 +31625,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             heartRateNotifying: hrLive,
             imuAge: imuAge,
             lastActivationAge: lastActivationAge,
-            sittingSkipFresh: sittingSkipFresh
+            sittingSkipFresh: sittingSkipFresh,
+            sleepModeHoldActive: Self.shouldHoldIMURefreshAfterSleepModeLog(
+                lastSleepModeAt: lastStrapSleepModeAt,
+                now: now
+            )
         )
         if let blocker = Self.protectedBoundedRawCaptureRefreshBlocker(
             standardHROnlyMode: standardHROnlyMode,
@@ -31972,7 +32012,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastActivationAge: (UserDefaults.standard.object(
                     forKey: Self.protectedR10ActivationSentAtKey
                 ) as? Double).map { now.timeIntervalSince(Date(timeIntervalSince1970: $0)) },
-                sittingSkipFresh: sittingSkipFresh
+                sittingSkipFresh: sittingSkipFresh,
+                sleepModeHoldActive: Self.shouldHoldIMURefreshAfterSleepModeLog(
+                    lastSleepModeAt: lastStrapSleepModeAt,
+                    now: now
+                )
             )
         if sendCoverLiveBoundedRawCaptureIfNeeded(
             now: now,
@@ -53168,9 +53212,16 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
             Task { @MainActor in
                 self.protocolNotifyCallbacksThisConnection = count
-                if uuid == Self.UUIDs.strapStream5, self.lastR10ZombieCCCDToggleAt != nil {
-                    self.lastR10ZombieCCCDToggleAt = nil
-                    AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_rearm reason=stream5_traffic action=allow_later_stale_toggle")
+                if uuid == Self.UUIDs.strapStream5 {
+                    self.protocolStream5NotifyCallbacksThisConnection = defaults.integer(
+                        forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+                    )
+                    if Self.proprietaryNotifyLooksLikeSleepModeLog(data) {
+                        self.lastStrapSleepModeAt = receivedAt
+                    } else if self.lastR10ZombieCCCDToggleAt != nil {
+                        self.lastR10ZombieCCCDToggleAt = nil
+                        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_rearm reason=stream5_traffic action=allow_later_stale_toggle")
+                    }
                 }
             }
         }

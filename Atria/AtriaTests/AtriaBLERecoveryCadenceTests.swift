@@ -317,7 +317,6 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(
             AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
                 connected: true,
-                packetsThisConnection: 0,
                 heartRateEpochLive: true
             ),
             "toggle-on must complete when 2A37 samples are fresh even if isNotifying is false"
@@ -325,17 +324,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(
             AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
                 connected: true,
-                packetsThisConnection: 0,
                 heartRateEpochLive: false
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
                 connected: true,
-                packetsThisConnection: 12,
                 heartRateEpochLive: true
             ),
-            "do not re-enable stream-5 off/on if compact 0x33 resumed during the 400ms wait"
+            "device 192 15:56: stream-4 type-24 notifies must not abort stream-5 toggle-on"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
@@ -371,7 +368,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
                 connected: true,
                 heartRateNotifying: true,
-                packetsThisConnection: 0,
+                stream5NotifyCallbacksThisConnection: 0,
                 alreadyToggledThisConnection: true,
                 alreadyRediscoveredThisConnection: false
             )
@@ -380,7 +377,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
                 connected: true,
                 heartRateNotifying: true,
-                packetsThisConnection: 0,
+                stream5NotifyCallbacksThisConnection: 0,
                 alreadyToggledThisConnection: false,
                 alreadyRediscoveredThisConnection: false
             )
@@ -389,7 +386,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
                 connected: true,
                 heartRateNotifying: true,
-                packetsThisConnection: 0,
+                stream5NotifyCallbacksThisConnection: 0,
                 alreadyToggledThisConnection: true,
                 alreadyRediscoveredThisConnection: true
             )
@@ -398,10 +395,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
                 connected: true,
                 heartRateNotifying: true,
-                packetsThisConnection: 4,
+                stream5NotifyCallbacksThisConnection: 4,
                 alreadyToggledThisConnection: true,
                 alreadyRediscoveredThisConnection: false
             )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: false
+            ),
+            "device 192 15:56: stream-4 callbacks must not look like a live stream-5 pipe"
         )
         XCTAssertTrue(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: true))
         XCTAssertFalse(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: false))
@@ -432,8 +439,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 pendingCount: 1
             )
         )
+        let sleepModeHex = "aa44000f32590200b099ad6a7014340001696e6720736c656570206d6f646520666f72203330207365636f6e64730a2034342c203430373830373033363a205255473a00e90abe84"
+        let sleepModeData = Data(stride(from: 0, to: sleepModeHex.count, by: 2).compactMap { start -> UInt8? in
+            let i = sleepModeHex.index(sleepModeHex.startIndex, offsetBy: start)
+            let j = sleepModeHex.index(i, offsetBy: 2)
+            return UInt8(sleepModeHex[i..<j], radix: 16)
+        })
         XCTAssertTrue(
-            AtriaBLEManager.stream5CountsAsNotifying(
+            AtriaBLEManager.proprietaryNotifyLooksLikeSleepModeLog(sleepModeData),
+            "device 192 15:34: stream-5 type 0x32 ASCII sleep-mode log is not compact IMU"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.proprietaryNotifyLooksLikeSleepModeLog(Data([0xAA, 0x05, 0x00, 0x00, 0x33, 0x00]))
+        )
+        let sleepNow = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldIMURefreshAfterSleepModeLog(
+                lastSleepModeAt: sleepNow.addingTimeInterval(-10),
+                now: sleepNow
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldHoldIMURefreshAfterSleepModeLog(
+                lastSleepModeAt: sleepNow.addingTimeInterval(-40),
+                now: sleepNow
+            )
+        )
+        XCTAssertTrue(AtriaBLEManager.stream5CountsAsNotifying(
                 confirmed: true,
                 characteristicNotifying: false
             ),
@@ -12334,6 +12366,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 connected: true,
                 historyOwnsTransport: false,
                 heartRateNotifying: true,
+                imuAge: 37 * 60,
+                lastActivationAge: 11 * 60,
+                sleepModeHoldActive: true
+            ),
+            "device 192 15:34: 6A/51 must not retrigger strap sleep mode for 30 seconds"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .pureHRV10,
+                state: .fallbackActive,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
                 imuAge: 90,
                 lastActivationAge: 20
             ),
@@ -12543,8 +12588,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 184: toggle-on must use the HR epoch, not 2A37 isNotifying")
         XCTAssertFalse(toggleBody.contains("heartRateCharacteristic?.isNotifying == true else { return }"),
                        "device 184: toggle-on must not abort while 2A37 samples are still arriving")
+        XCTAssertFalse(toggleBody.contains("packetsThisConnection: self.currentConnectionProprietaryTraffic"),
+                       "device 192 15:56: stream-4 type-24 notifies must not abort stream-5 toggle-on")
+        XCTAssertTrue(toggleBody.contains("protocolStream5NotifyCallbacksThisConnection"),
+                      "TX rediscover empty-pipe must be stream-5, not stream-4 history")
+        XCTAssertFalse(toggleBody.contains("proprietaryNotifyLooksLikeSleepModeLog"),
+                       "sleep-mode ASCII is classified on notify, not inside the CCCD toggle")
         XCTAssertTrue(source.contains("zombie_cccd_toggle_rearm"),
                       "compact 0x33 after an empty-pipe toggle must rearm one later stale off/on")
+        XCTAssertTrue(source.contains("proprietaryNotifyLooksLikeSleepModeLog"),
+                      "device 192 15:34: type 0x32 sleep-mode ASCII must not rearm as compact IMU")
+        XCTAssertTrue(source.contains("strap_sleep_mode_hold"),
+                      "6A/51 must wait out the strap's 30s sleep-mode log")
         XCTAssertTrue(toggleBody.contains("discoverServices([Self.UUIDs.strapService])"),
                       "suppressed pure-HR reconnects omit strap service; IMU repair must rediscover it")
         XCTAssertTrue(toggleBody.contains("UUIDs.strapStream5, Self.UUIDs.strapTX"),
