@@ -324,6 +324,19 @@ final class AtriaLiveActivityCoordinator {
         // The merged live publisher fires frequently even when no workout is
         // active. After adoption, idle calls must not enumerate ActivityKit.
         if !snapshot.isRecording {
+            let ownedControls: Bool?
+            if activity != nil {
+                ownedControls = activity?.content.state.showsWorkoutControls
+            } else {
+                ownedControls = lastSnapshot?.showsWorkoutControls
+            }
+            if !Self.shouldEndOwnedActivity(
+                snapshotIsRecording: snapshot.isRecording,
+                ownedShowsWorkoutControls: ownedControls
+            ) {
+                lastSnapshot = snapshot
+                return
+            }
             guard activity != nil, !isEndingActivity else {
                 lastSnapshot = snapshot
                 return
@@ -458,6 +471,21 @@ final class AtriaLiveActivityCoordinator {
         existingShowsWorkoutControls: Bool?
     ) -> Bool {
         !snapshotIsRecording && existingShowsWorkoutControls == false
+    }
+
+    /// Device 186: leaving Atria for Telegram published `isRecording=false`
+    /// (linkUsable dropped for one tick) and `update` ended the owned idle
+    /// island. Workout terminals still end. Idle presence must survive a
+    /// non-recording tick until the wearer dismisses it or a workout adopts.
+    nonisolated static func shouldEndOwnedActivity(
+        snapshotIsRecording: Bool,
+        ownedShowsWorkoutControls: Bool?
+    ) -> Bool {
+        guard !snapshotIsRecording else { return false }
+        return !shouldPreserveUnownedIdleActivity(
+            snapshotIsRecording: snapshotIsRecording,
+            existingShowsWorkoutControls: ownedShowsWorkoutControls
+        )
     }
 
     nonisolated static func shouldRetryIdleStart(

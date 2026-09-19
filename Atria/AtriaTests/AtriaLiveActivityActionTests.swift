@@ -600,6 +600,33 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                 existingShowsWorkoutControls: false
             )
         )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: false
+            ),
+            "device 2026-09-19: a Telegram/X background tick must not empty the idle island"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: true
+            ),
+            "ending a workout still dismisses the Lock Screen session"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: nil
+            ),
+            "legacy ActivityKit content without the idle flag is still a workout terminal"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: true,
+                ownedShowsWorkoutControls: false
+            )
+        )
     }
 
     func testIdleStartRetryThrottlesBackgroundAttemptsAndForcesOnForeground() {
@@ -1671,5 +1698,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
         XCTAssertTrue(coordinator.contains("AtriaIdleLiveActivityStart.lastStartErrorKey"))
+        XCTAssertTrue(coordinator.contains("shouldEndOwnedActivity("),
+                      "owned idle presence must consult the preserve gate before endActivity")
     }
 }
