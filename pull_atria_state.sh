@@ -2936,6 +2936,8 @@ def emit_projection_artifact_revisions():
             print(f"diagnosis_hr_age_s={connection.get('hrAgeSeconds', 'missing')}")
             print(f"diagnosis_imu_age_s={connection.get('imuAgeSeconds', 'missing')}")
             print(f"diagnosis_stream5={connection.get('stream5Confirmed', 'missing')}")
+            print(f"diagnosis_wwr_pending={connection.get('wwrPendingCount', 'missing')}")
+            print(f"diagnosis_last_wwr_allowed={connection.get('lastWWRAllowed', 'missing')}")
             metrics = diagnosis.get("metrics") if isinstance(diagnosis.get("metrics"), dict) else {}
             print(f"diagnosis_overnight_recovery={metrics.get('overnightRecovery', 'missing')}")
             print(f"diagnosis_today_recovery={metrics.get('todayRecovery', 'missing')}")

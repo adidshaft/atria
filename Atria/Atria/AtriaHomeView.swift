@@ -12519,6 +12519,24 @@ final class AtriaHomeModel {
                         forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
                     )
                 }(),
+                wwrPendingCount: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.RadioDefaults.wwrPendingCount
+                    ) != nil else { return nil }
+                    return defaults.integer(
+                        forKey: AtriaBLEManager.RadioDefaults.wwrPendingCount
+                    )
+                }(),
+                lastWWRAllowed: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.RadioDefaults.lastWWRAllowed
+                    ) != nil else { return nil }
+                    return defaults.bool(
+                        forKey: AtriaBLEManager.RadioDefaults.lastWWRAllowed
+                    )
+                }(),
                 compactSittingSkip: UserDefaults.standard.bool(
                     forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
                 ),
