@@ -30936,6 +30936,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// `history_transport_owned`, so compact `0x33` still never started.
     /// Follow-up on that live empty IMU pipe is 6A on only — do not abort
     /// history again. Never 0x51/0x3F.
+    /// Device 212: stream-5 type-32 ("T1 Quiet Mode") must not look live
+    /// just because some other motion clock is newer than compact 0x33.
+    nonisolated static func compactIMUEvidenceIsStale(
+        compactSecondAt: Date?,
+        compactPacketAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds
+    ) -> Bool {
+        let age = liveIMUEvidenceAgeSeconds(
+            rawFrameAt: nil,
+            compactSecondAt: compactSecondAt,
+            compactPacketAt: compactPacketAt,
+            now: now
+        )
+        return age.map { $0 > staleInterval } ?? true
+    }
+
     nonisolated static func stream5IsLiveWithoutCompactIMU(
         stream5NotifyCallbacksThisConnection: Int,
         compactIMUStale: Bool,
@@ -31727,7 +31744,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: Date()
+            ),
             lastNotifyTypeHex: typeHex
         )
         let abortAlready = lastAllDayCompactAbortAt != nil
@@ -32060,6 +32081,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
             now: now
         )
+        let typeHex = UserDefaults.standard.string(
+            forKey: ProtocolDefaults.lastNotifyCallbackType
+        )
+        let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: now
+            ),
+            lastNotifyTypeHex: typeHex
+        )
         let lastActivationAge = lastActivationAt.map { now.timeIntervalSince($0) }
         let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
             skippedSitting: UserDefaults.standard.bool(
@@ -32067,7 +32100,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ),
             imuAgeSeconds: imuAge
         ) && currentConnectionProprietaryTraffic > 0
-        if sittingSkipFresh {
+        if sittingSkipFresh, !liveWithout {
             defaults.set("sitting_skip_fresh", forKey: RadioDefaults.lastIMURecoverySkipReason)
             defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
             return false
@@ -32105,14 +32138,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: peripheral?.state == .connected,
             stream5Notifying: stream5Live,
             heartRateNotifying: hrLive,
-            lastFrameAge: fallbackIMU
+            lastFrameAge: fallbackIMU || liveWithout
                 ? imuAge
                 : currentR10LivenessLastMotionAt(now: now).map {
                     now.timeIntervalSince($0)
                 },
             lastActivationAge: lastActivationAge
         ) {
-            if fallbackIMU,
+            if fallbackIMU || liveWithout,
                blocker == "stream_suppressed"
                 || blocker.hasPrefix("owner_")
                 || blocker.hasPrefix("state_") {
@@ -32123,14 +32156,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return false
             }
         }
-        let typeHex = UserDefaults.standard.string(
-            forKey: ProtocolDefaults.lastNotifyCallbackType
-        )
-        let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
-            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
-            lastNotifyTypeHex: typeHex
-        )
         let abortAlready = lastAllDayCompactAbortAt != nil
         let abortAge = lastAllDayCompactAbortAt.map { now.timeIntervalSince($0) }
         if !liveWithout,

@@ -603,6 +603,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 lastNotifyTypeHex: "32"
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.compactIMUEvidenceIsStale(
+                compactSecondAt: Date().addingTimeInterval(-100),
+                compactPacketAt: Date().addingTimeInterval(-100),
+                now: Date()
+            ),
+            "device 212: type-32 logs must not hide a 7h-stale compact 0x33 clock"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.compactIMUEvidenceIsStale(
+                compactSecondAt: Date().addingTimeInterval(-1),
+                compactPacketAt: Date().addingTimeInterval(-1),
+                now: Date()
+            )
+        )
         XCTAssertFalse(
             AtriaBLEManager.stream5IsLiveWithoutCompactIMU(
                 stream5NotifyCallbacksThisConnection: 214,
@@ -12913,6 +12928,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             writeBody.contains("followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt"),
             "device 210: live abort+6A must yield historical IMU catch-up after the follow-up"
         )
+        XCTAssertTrue(writeBody.contains("compactIMUEvidenceIsStale"),
+                      "device 212: 6A on type-32 must use the compact 0x33 clock, not a mixed R10 age")
         XCTAssertFalse(writeBody.contains("skipAbort"),
                        "device 204: abortAlready must not skip to 6A on an empty stream-5")
 
@@ -12962,6 +12979,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("allDayCompactIMURecoveryShouldWaitForStream5"),
                       "device 208: wait_stream5 must not occupy the command task with a no-op zombie dance")
         XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
+        XCTAssertTrue(refreshBody.contains("compactIMUEvidenceIsStale"),
+                      "device 212: type-32 stream-5 must 6A using compact stale, not mixed IMU age")
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
         XCTAssertTrue(refreshBody.contains("imuRecoveryTriggerSnapshot"),
