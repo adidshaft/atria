@@ -1251,19 +1251,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("omitRestoreIdentifier: false"))
         XCTAssertTrue(source.contains("skip_scan_saved_or_restore_slot_drain"))
         XCTAssertTrue(source.contains("Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))"))
-        XCTAssertEqual(AtriaBLEManager.stuckRestoredConnectingUnstickSeconds, 3)
+        XCTAssertEqual(AtriaBLEManager.stuckRestoredConnectingUnstickSeconds, 20)
         XCTAssertEqual(
             AtriaBLEManager.reconnectWatchdogDelaySeconds(
                 reconnectWatchdogSeconds: 20,
-                unstickSeconds: 3,
+                unstickSeconds: 20,
                 shouldUnstickStuckRestore: true
             ),
-            3
+            20
         )
         XCTAssertEqual(
             AtriaBLEManager.reconnectWatchdogDelaySeconds(
                 reconnectWatchdogSeconds: 20,
-                unstickSeconds: 3,
+                unstickSeconds: 20,
                 shouldUnstickStuckRestore: false
             ),
             20

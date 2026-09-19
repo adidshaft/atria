@@ -26957,9 +26957,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         !drainDeferred && !hasSavedStrap
     }
 
-    /// Restored `.connecting` never completed on this phone today. Unstick in
-    /// 3s instead of waiting a full 20s watchdog while the user is in range.
-    nonisolated static var stuckRestoredConnectingUnstickSeconds: TimeInterval { 3 }
+    /// Restored `.connecting` never completed on this phone today. Wait a
+    /// full standing interval before unstick: device 222 cancelled at 3s and
+    /// the replacement pending connect never reached didConnect.
+    nonisolated static var stuckRestoredConnectingUnstickSeconds: TimeInterval { 20 }
 
     nonisolated static func reconnectWatchdogDelaySeconds(
         reconnectWatchdogSeconds: TimeInterval,
