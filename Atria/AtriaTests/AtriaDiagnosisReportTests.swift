@@ -530,6 +530,7 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("liveActivityKitCount: lastActivityKitCount"))
         XCTAssertTrue(home.contains("activityKitCount: liveActivityCoordinator.activityKitCount"))
         XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"))
+        XCTAssertTrue(home.contains("liveActivityStartError:"))
         XCTAssertTrue(home.contains("diagnosisDisplayedHeartRate("))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
         let diagnosisStart = try XCTUnwrap(home.range(of: "func publishDiagnosisReport("))
@@ -790,6 +791,33 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         )
         XCTAssertTrue(empty.discrepancies.contains("live_activity_kit_empty"))
         XCTAssertEqual(empty.liveActivity.activityKitCount, 0)
+        let visibility = AtriaDiagnosisReport.make(
+            now: now,
+            build: "186",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 0.2,
+            imuAgeSeconds: 0.2,
+            stream5Confirmed: true,
+            batteryPercent: 85,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 53,
+            liveHRV: 53,
+            overnightRHR: 55,
+            daytimeRHR: nil,
+            overnightRecovery: 71,
+            todayRecovery: 71,
+            lastWorkout: nil,
+            liveHeartRate: 81,
+            liveZone: "Z1",
+            widgetHeartRate: 81,
+            liveActivityKitCount: 0,
+            liveActivityStartError: "ActivityAuthorizationError.visibility"
+        )
+        XCTAssertTrue(visibility.discrepancies.contains("live_activity_start_visibility"))
 
         let present = AtriaDiagnosisReport.make(
             now: now,

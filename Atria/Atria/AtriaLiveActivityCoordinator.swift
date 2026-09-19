@@ -290,6 +290,7 @@ final class AtriaLiveActivityCoordinator {
     /// ActivityKit write for every 1 Hz sensor publication.
     private let minimumActivityUpdateInterval: TimeInterval = 5
     static let idleStartRetryInterval: TimeInterval = 20
+    nonisolated static let lastStartErrorKey = "atria.liveActivity.lastStartError"
 
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
         let snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)
@@ -438,6 +439,18 @@ final class AtriaLiveActivityCoordinator {
         return !existingIsWorkout
     }
 
+    /// Idle presence used to require CoreBluetooth `.connected`/`.connecting`.
+    /// After a --no-launch bounce, `status` can still be scanning while 2A37
+    /// samples are live, so the frozen-scene lane never even called
+    /// `Activity.request` (device 185 kit=0, HR 0.3s, diagnosis Connected).
+    nonisolated static func idleLiveLinkIsUsable(
+        status: AtriaBLEManager.Status,
+        heartRate: Int
+    ) -> Bool {
+        if status == .connected || status == .connecting { return true }
+        return heartRate > 0
+    }
+
     /// First publisher after install/jetsam is often !isRecording. Ending
     /// idle islands there emptied ActivityKit (device 175, kit=0 with HR 75).
     nonisolated static func shouldPreserveUnownedIdleActivity(
@@ -565,13 +578,16 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: staleDate(for: snapshot)),
                                             pushType: nil)
+            UserDefaults.standard.removeObject(forKey: Self.lastStartErrorKey)
             AtriaDebugLog("ATRIADBG live_activity status=started bpm=%d strain=%.1f readings=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
                           snapshot.readingCount)
         } catch {
+            let message = String(describing: error)
+            UserDefaults.standard.set(message, forKey: Self.lastStartErrorKey)
             AtriaDebugLog("ATRIADBG live_activity status=start_failed error=%@ local_only=1",
-                          String(describing: error))
+                          message)
         }
         lastActivitySnapshot = snapshot
         lastActivityUpdateAt = Date()
