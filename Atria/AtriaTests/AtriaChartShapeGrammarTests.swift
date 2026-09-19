@@ -69,4 +69,39 @@ final class AtriaChartShapeGrammarTests: XCTestCase {
         XCTAssertFalse(AtriaTrendMetric.restingHR.chartAnchorsAtZero)
         XCTAssertTrue(AtriaTrendMetric.strain.chartAnchorsAtZero)
     }
+
+    func testDailyAndTracePlotsShareOneWell() throws {
+        XCTAssertEqual(AtriaChartVisualGrammar.plotCornerRadius, 7)
+        XCTAssertEqual(AtriaChartVisualGrammar.plotFillOpacity, 0.035, accuracy: 0.0001)
+        for name in [
+            "AtriaGraphGrammar.swift",
+            "AtriaVitalsCollectionSections.swift",
+            "AtriaStressDetailView.swift",
+        ] {
+            let text = try String(
+                contentsOf: URL(fileURLWithPath: #filePath)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("Atria/\(name)"),
+                encoding: .utf8
+            )
+            if name == "AtriaGraphGrammar.swift" {
+                XCTAssertTrue(text.contains("plotCornerRadius"))
+                XCTAssertTrue(text.contains("plotFillOpacity"))
+            } else {
+                XCTAssertTrue(
+                    text.contains(".atriaGraphPlotSurface()"),
+                    "\(name) must use the shared plot well"
+                )
+                XCTAssertFalse(
+                    text.contains("cornerRadius: 10, style: .continuous"),
+                    "\(name) must not keep a private 10pt plot well"
+                )
+                XCTAssertFalse(
+                    text.contains(".background(.secondary.opacity(0.035))"),
+                    "\(name) must not keep a secondary-fill plot well"
+                )
+            }
+        }
+    }
 }

@@ -4854,14 +4854,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 }
             }
         }
-        .chartPlotStyle { plotArea in
-            plotArea
-                .contentShape(Rectangle())
-                .background(Color.primary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .clipped()
-        }
-        .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .atriaGraphPlotSurface()
     }
 
     /// Ticks span whichever series actually plots (buckets when smoothing).
@@ -4967,7 +4960,10 @@ private extension View {
             transaction.animation = nil
         }
         .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(
+            cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+            style: .continuous
+        ))
         .clipped()
     }
 }
