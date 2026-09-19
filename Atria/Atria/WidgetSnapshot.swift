@@ -1294,15 +1294,16 @@ enum WidgetSnapshotPublisher {
     /// A reconnect / learning-zero pulse must not wipe a still-current cycle
     /// load. Device 2026-09-18: Today showed 0.6 of 17 while the Home Screen
     /// widget stayed on 0 / Learning after install restarted the live session.
+    /// Device 2026-09-19: a thermal journal restart recomputed 0.2 Partial
+    /// while `atria.strain.heldDayValue` still held 1.15 from morning walking.
+    /// Day strain is cumulative for the cycle, so any drop inside the cycle
+    /// is a lost session, not a real lower load.
     nonisolated static func mergedLiveStrainValue(
         previous: Double,
         next: Double,
         nextDetail: String?
     ) -> Double {
-        let nextIsLearning =
-            nextDetail?.localizedCaseInsensitiveContains("learning") == true
-            || nextDetail?.localizedCaseInsensitiveContains("standby") == true
-        if previous > 0, next + 0.05 < previous, nextIsLearning || next <= 0 {
+        if previous > 0, next + 0.05 < previous {
             return previous
         }
         return next
@@ -1356,6 +1357,15 @@ enum WidgetSnapshotPublisher {
             }
         } else {
             previousDetail = computedDetail
+        }
+        if (heroStrain ?? 0) > 0,
+           abs(value - (heroStrain ?? 0)) <= 0.000_000_001,
+           computed + 0.05 < (heroStrain ?? 0) {
+            var heldDetail = previousDetail
+            if value > 0, heldDetail == nil || heroIsLearning {
+                heldDetail = "Current cycle"
+            }
+            return (value, heldDetail)
         }
         var detail = mergedLiveStrainDetail(
             previous: previousDetail,
