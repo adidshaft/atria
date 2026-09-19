@@ -1350,8 +1350,41 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(body.contains("isRecording: workoutActive || livePresence"))
         XCTAssertTrue(body.contains("idleLivePresenceShouldStayActive"),
                       "idle Live must not end ActivityKit when pulse freshness zeros BPM")
+        XCTAssertTrue(body.contains("idleLiveLinkIsUsable"),
+                      "idle Live must treat a live 2A37 sample as a usable link")
         XCTAssertTrue(body.contains("liveActivityCoordinator.activityKitCount > 0"),
                       "an existing idle island counts as presence already started after relaunch")
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .connected,
+                heartRate: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .connecting,
+                heartRate: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .scanning,
+                heartRate: 71
+            ),
+            "device 185: 2A37 samples keep idle Live eligible while status is still Scanning"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .scanning,
+                heartRate: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .poweredOff,
+                heartRate: 0
+            )
+        )
         XCTAssertTrue(
             AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
                 workoutActive: false,
@@ -1400,6 +1433,10 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "idle Live must use BLE status, not frozen CoreLive, after background install")
         XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"),
                       "widgets and idle Live must patch from BLE while Home stores are frozen")
+        XCTAssertTrue(home.contains("phase == .inactive"),
+                      "device 185: --no-launch bounce must retry idle start on inactive, not wait for active")
+        XCTAssertTrue(home.contains("lastStartErrorKey"),
+                      "diagnosis must record Activity.request visibility failures")
         XCTAssertTrue(home.contains("let liveActivityCoordinator = AtriaLiveActivityCoordinator()"))
         XCTAssertTrue(body.contains("elapsedDuration: workoutActive ? movingDuration : 0"),
                       "all-day Live must not publish a presence timer as workout elapsed")

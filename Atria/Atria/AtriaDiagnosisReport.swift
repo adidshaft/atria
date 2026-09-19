@@ -191,7 +191,8 @@ enum AtriaDiagnosisReport {
         compactAssembledAgeSeconds: Double? = nil,
         idleWindowPending: Int? = nil,
         compactSittingSkip: Bool = false,
-        liveActivityKitCount: Int? = nil
+        liveActivityKitCount: Int? = nil,
+        liveActivityStartError: String? = nil
     ) -> Snapshot {
         let metrics = Metrics(
             settledHRV: settledHRV,
@@ -265,7 +266,8 @@ enum AtriaDiagnosisReport {
                 widgetStrain: widgetStrain,
                 compactSittingSkip: compactSittingSkip,
                 liveHeartRate: liveHeartRate,
-                liveActivityKitCount: liveActivityKitCount
+                liveActivityKitCount: liveActivityKitCount,
+                liveActivityStartError: liveActivityStartError
             ),
             events: []
         )
@@ -284,7 +286,8 @@ enum AtriaDiagnosisReport {
         widgetStrain: Double? = nil,
         compactSittingSkip: Bool = false,
         liveHeartRate: Int = 0,
-        liveActivityKitCount: Int? = nil
+        liveActivityKitCount: Int? = nil,
+        liveActivityStartError: String? = nil
     ) -> [String] {
         var keys: [String] = []
         if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
@@ -397,6 +400,10 @@ enum AtriaDiagnosisReport {
         }
         if liveHeartRate > 0, let count = liveActivityKitCount, count == 0 {
             keys.append("live_activity_kit_empty")
+            if let liveActivityStartError,
+               liveActivityStartError.localizedCaseInsensitiveContains("visibility") {
+                keys.append("live_activity_start_visibility")
+            }
         }
         if connection.status == AtriaBLEManager.Status.connected.rawValue,
            let age = compactAssembledAgeSeconds,

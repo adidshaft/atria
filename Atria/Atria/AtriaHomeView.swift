@@ -3579,7 +3579,10 @@ struct AtriaHomeView: View {
             )
         } ?? 0
         let status = ble.status
-        let linkUsable = status == .connected || status == .connecting
+        let linkUsable = AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+            status: status,
+            heartRate: heldHeartRate
+        )
         let workoutActive = session != nil
         let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
             workoutActive: workoutActive,
@@ -4788,6 +4791,15 @@ struct AtriaHomeView: View {
         // by their independent bounded lanes below.
         model.setScenePresentationActive(phase == .active)
         updateMediaRefreshLoop()
+        if phase == .inactive {
+            // Device 185: --no-launch bounce never becomes `.active`, but the
+            // new process does get `.inactive` while `applicationState` is
+            // still inactive (not background). Force only while kit is empty
+            // so app-switcher peeks cannot spam Activity.request after start.
+            updateLiveActivity(
+                forceActivityWrite: liveActivityCoordinator.activityKitCount == 0
+            )
+        }
         guard phase == .active else {
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
@@ -11881,14 +11893,15 @@ final class AtriaHomeModel {
         throttledCoreLiveChanges
             .sink { [weak self] (_: Void) in
                 self?.publishCoreLive()
+                // Pulse/Core stores stay frozen while inactive, so HomeView's
+                // live widget/LA publishers never fire. BLE is still live —
+                // patch widgets and retry idle presence from this lane before
+                // diagnosis reads kit count / start error.
+                self?.publishFrozenSceneLiveSurfaces()
                 // CoreLive presentation stays frozen while inactive. Diagnosis
                 // must still age HR/IMU from the live BLE clocks so a
                 // background install (device 2026-09-17 115) is pullable.
                 self?.publishDiagnosisReport(reason: "core_live")
-                // Pulse/Core stores stay frozen while inactive, so HomeView's
-                // live widget/LA publishers never fire. BLE is still live —
-                // patch widgets and retry idle presence from this lane.
-                self?.publishFrozenSceneLiveSurfaces()
             }
             .store(in: &cancellables)
 
@@ -12494,7 +12507,10 @@ final class AtriaHomeModel {
                 compactSittingSkip: UserDefaults.standard.bool(
                     forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
                 ),
-                liveActivityKitCount: lastActivityKitCount
+                liveActivityKitCount: lastActivityKitCount,
+                liveActivityStartError: UserDefaults.standard.string(
+                    forKey: AtriaLiveActivityCoordinator.lastStartErrorKey
+                )
             ),
             reason: reason
         )
@@ -13889,7 +13905,10 @@ final class AtriaHomeModel {
         guard !liveWorkoutIsActive else { return }
         let heartRate = Self.liveHeartRate(ble: ble)
         let status = ble.status
-        let linkUsable = status == .connected || status == .connecting
+        let linkUsable = AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+            status: status,
+            heartRate: heartRate
+        )
         let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
             workoutActive: false,
             linkUsable: linkUsable,
