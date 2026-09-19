@@ -1371,7 +1371,30 @@ extension AtriaBLEManager {
             return false
         }
         let pending = leftoverPendingRecords ?? 0
-        return pending <= idleWindowConsumeLiveTailPendingLimit
+        return pending > 0 && pending <= idleWindowConsumeLiveTailPendingLimit
+    }
+
+    /// Pull-to-refresh and the missed-data banner queue a short-lived catch-up
+    /// that `shouldDeferRawCatchUpForIdleWindowDrain` always prefers as an
+    /// idle-window 0x22. Combined with leftover pending=5 / no_rows, that
+    /// re-pauses 2A37 while Today is already Live (device 2026-09-19 09:27).
+    /// A durable gym fill (`post_workout_hr_backfill`) still keeps the snapshot.
+    nonisolated static func shouldDropShortLivedCatchUpToRetireDryLeftover(
+        queuedReason: String?,
+        lastAttemptYieldedRows: Bool,
+        leftoverPendingRecords: UInt32?,
+        chargingOrOffWrist: Bool
+    ) -> Bool {
+        guard let reason = queuedReason,
+              !queuedRawCatchUpIntentSurvivesLifetime(reason: reason) else {
+            return false
+        }
+        return shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: leftoverPendingRecords,
+            queuedPullIntent: false
+        )
     }
 
     /// Workout Start may disconnect a history owner, but the replacement

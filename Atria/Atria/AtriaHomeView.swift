@@ -12342,6 +12342,19 @@ final class AtriaHomeModel {
         liveActivity: AtriaLiveActivityCoordinator.Snapshot? = nil,
         activityKitCount: Int? = nil
     ) {
+        // Device 2026-09-19 09:27: leftover idle-window pending=5 was still
+        // in UserDefaults after Today was already Live (HR 3.5s, IMU 0.4s,
+        // kit=1). Scene-active retire can miss a session that never left
+        // .active; diagnosis is the loop that still runs. Drop the dry
+        // 0x22 snapshot before this report reads it, so the next background
+        // tick cannot re-pause 2A37.
+        ble.retireStuckIdleWindowLeftoverIfNeeded(
+            metadataOnlyWorkoutEnds: store.confirmedWorkouts.compactMap { workout -> Date? in
+                guard workout.confidence == "user_confirmed_no_hr",
+                      workout.samples == 0 else { return nil }
+                return workout.end
+            }
+        )
         if let liveActivity {
             lastLiveActivityDiagnosis = liveActivity
         }

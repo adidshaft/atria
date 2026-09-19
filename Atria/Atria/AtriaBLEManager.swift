@@ -11434,7 +11434,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let naturalFlag = arguments.contains("--atria-natural-gap-drain-enable")
         guard idleFlag || naturalFlag else { return .none }
         let nowTs = Date()
-        if queuedConnectedRawHistoryCatchUpIntent == nil {
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        if let queued = queuedConnectedRawHistoryCatchUpIntent,
+           Self.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: queued.reason,
+                lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
+                leftoverPendingRecords: leftoverPending,
+                chargingOrOffWrist: batteryIsCharging || !hasContact
+           ) {
+            queuedConnectedRawHistoryCatchUpIntent = nil
+            retireStuckIdleWindowLeftoverIfNeeded(now: nowTs)
+        } else if queuedConnectedRawHistoryCatchUpIntent == nil {
             retireStuckIdleWindowLeftoverIfNeeded(now: nowTs)
         }
         let motionOwner = Self.explicitMotionOwnershipBlocksHistory(
