@@ -32036,13 +32036,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let live6AAlready = lastAllDayCompactLive6AAfterCatchUpAt != nil
         let catchUpAge = lastAllDayCompactHistoryCatchUpAt.map { Date().timeIntervalSince($0) }
         let historyCatchUpInProgress = offlineHistoricalSyncInProgress || historyOnlyProbeMode
-        let subscribeConfirmed = strapStream5NotifyConfirmed
-            || (UserDefaults.standard.string(forKey: RadioDefaults.passiveR10Status) ?? "")
-                .hasPrefix("subscribed")
         let afterSubscribeAlready = lastAllDayCompactLive6AAfterSubscribeAt != nil
         let subscribeAge = (UserDefaults.standard.object(
             forKey: RadioDefaults.passiveR10SubscribedAt
         ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
+        let subscribeConfirmed = strapStream5NotifyConfirmed
+            || (subscribeAge ?? .infinity) < 600
         let step = Self.allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
@@ -32480,8 +32479,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             },
             historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
             stream5SubscribeConfirmed: strapStream5NotifyConfirmed
-                || (defaults.string(forKey: RadioDefaults.passiveR10Status) ?? "")
-                    .hasPrefix("subscribed"),
+                || ((defaults.object(forKey: RadioDefaults.passiveR10SubscribedAt) as? Double).map {
+                    now.timeIntervalSince(Date(timeIntervalSince1970: $0))
+                } ?? .infinity) < 600,
             live6AAfterSubscribeAlreadySent: lastAllDayCompactLive6AAfterSubscribeAt != nil,
             subscribeAge: (defaults.object(
                 forKey: RadioDefaults.passiveR10SubscribedAt
@@ -42084,6 +42084,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         protectedR10InitialProfilePeripheralID = nil
         protectedR10InitialProfileNotificationRequested = false
         ensureR10LivenessWatchdog(reason: "protected_stream5_subscribed")
+        strapStream5NotifyConfirmed = true
         let defaults = UserDefaults.standard
         defaults.set("subscribed_waiting_for_crc_valid_frame",
                      forKey: RadioDefaults.passiveR10Status)
