@@ -59,6 +59,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 alreadyReissued: false
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: .connected,
+                hasCurrentConnectionEpoch: false
+            ),
+            "device 220: Connecting UI with CoreBluetooth already connected must adopt"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: .connected,
+                hasCurrentConnectionEpoch: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: .connecting,
+                hasCurrentConnectionEpoch: false
+            )
+        )
     }
 
     func testStuckRestoredConnectingRediscoverAfterReissue() {
@@ -1095,6 +1114,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             watchdog.contains("beginStuckRestoredConnectingRediscovery("),
             "the first stuck-restore tick must unstick, not standing-connect the zombie"
         )
+        XCTAssertTrue(watchdog.contains("didConnectThisProcess: didConnectThisProcess"))
+        XCTAssertTrue(watchdog.contains("didConnectThisProcess: self.didConnectThisProcess"))
+        XCTAssertFalse(
+            watchdog.contains("didConnectThisProcess: connectedAt != nil"),
+            "device 220: a live didConnect must survive disconnect or the 3s unstick cancels reconnect"
+        )
+        XCTAssertFalse(
+            watchdog.contains("didConnectThisProcess: self.connectedAt != nil"),
+            "device 220: a live didConnect must survive disconnect or the 3s unstick cancels reconnect"
+        )
+        XCTAssertTrue(watchdog.contains("shouldAdoptAlreadyConnectedPeripheralWhileConnecting"))
+        XCTAssertTrue(watchdog.contains("adopt_already_connected"))
 
         let rebuildStart = try XCTUnwrap(source.range(
             of: "private func rebuildCentralForWedgedSessionOnce("
@@ -13142,6 +13173,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 216: one live 6A after catch-up finishes empty")
         XCTAssertTrue(writeBody.contains("persistAllDayCompactLive6AAfterSubscribe"),
                       "device 218: one 6A after stream-5 CCCD is actually on")
+        XCTAssertTrue(writeBody.contains("let subscribeConfirmed = strapStream5NotifyConfirmed"),
+                      "device 221: only this process's CCCD confirm may fire the post-subscribe 6A")
+        XCTAssertFalse(
+            writeBody.contains("< 600"),
+            "device 221: a previous-process subscribe stamp is not CCCD-on"
+        )
         XCTAssertTrue(writeBody.contains("catchUpAlreadyRequested: catchUpAlready"),
                       "device 216: recovery step must see persisted catch-up before a second 6A")
         XCTAssertTrue(source.contains("RadioDefaults.allDayCompactAbortAt"),
@@ -13213,6 +13250,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 216: persist catch-up so a relaunch can send the post-drain 6A")
         XCTAssertTrue(refreshBody.contains("live6AAfterCatchUpAlreadySent"),
                       "device 216: wait_stream5 must expire after catch-up so one live 6A can run")
+        XCTAssertTrue(
+            refreshBody.contains("stream5SubscribeConfirmed: strapStream5NotifyConfirmed"),
+            "device 221: wait_stream5 must not treat a previous-process subscribe stamp as CCCD-on"
+        )
+        XCTAssertFalse(
+            refreshBody.contains("< 600"),
+            "device 221: a previous-process subscribe stamp is not CCCD-on"
+        )
         XCTAssertTrue(refreshBody.contains("finishProtectedR10CommandSequence"))
         XCTAssertTrue(refreshBody.contains("loadAllDayCompactIMURecoveryLease"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
