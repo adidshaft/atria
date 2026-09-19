@@ -1019,6 +1019,8 @@ struct AtriaHomeView: View {
     @State private var lastLiveWidgetSnapshotAt: Date?
     @State private var lastLiveWidgetSnapshotHeartRate: Int?
     @State private var workoutDetectionPrompt: AtriaWorkoutDetectionPrompt?
+    @State private var heldSustainedWorkoutPrompt: AtriaWorkoutDetectionPrompt?
+    @State private var heldSustainedWorkoutPromptAt: Date?
     @State private var workoutPromptDismissedUntil: Date?
     @State private var workoutPromptSuppressedForCurrentEpisode = false
     @State private var workoutPromptRecoveryStartedAt: Date?
@@ -3940,6 +3942,8 @@ struct AtriaHomeView: View {
         }
         if workoutPromptSuppressedForCurrentEpisode
             || AtriaWorkoutPromptEvaluator.isInCooldown(dismissedUntil: workoutPromptDismissedUntil, now: now) {
+            heldSustainedWorkoutPrompt = nil
+            heldSustainedWorkoutPromptAt = nil
             setWorkoutDetectionPromptIfChanged(nil)
             return
         }
@@ -3947,11 +3951,23 @@ struct AtriaHomeView: View {
         // the workout prompt never disagrees with the number on the main screen.
         let strain = model.heroStore.state.strain
         let bpmOverRest = max(0, heartRate - rest)
+        let recoveredForFiveMinutes = heartRate - rest < 15
+            && workoutPromptRecoveryStartedAt.map { now.timeIntervalSince($0) >= 5 * 60 } == true
         let motionDecision = AtriaMotionActivityGate.evaluate(motionActivityMonitor.context,
                                                               now: now)
         motionActivityMonitor.recordGateDecision(motionDecision, now: now)
-        guard !motionDecision.vetoesWorkoutPrompt else {
-            setWorkoutDetectionPromptIfChanged(nil)
+        if motionDecision.vetoesWorkoutPrompt {
+            if AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: heldSustainedWorkoutPrompt != nil,
+                recoveredForFiveMinutes: recoveredForFiveMinutes,
+                lastQualifiedAt: heldSustainedWorkoutPromptAt,
+                now: now
+            ), let held = heldSustainedWorkoutPrompt {
+                setWorkoutDetectionPromptIfChanged(held)
+            } else {
+                setWorkoutDetectionPromptIfChanged(nil)
+            }
             return
         }
         let evaluation = AtriaWorkoutPromptEvaluator.evaluate(samples: ble.session,
@@ -3962,16 +3978,36 @@ struct AtriaHomeView: View {
                                                              signalQuality: ble.workoutPromptSignalQuality(now: now),
                                                              now: now)
         let detectedSamples = max(evaluation.longestElevatedBout, evaluation.longestZoneBout)
-        let nextPrompt = evaluation.shouldPrompt
-            ? AtriaWorkoutDetectionPrompt(heartRate: heartRate,
+        if evaluation.shouldPrompt {
+            let nextPrompt = AtriaWorkoutDetectionPrompt(heartRate: heartRate,
                                           strain: strain,
                                           samples: detectedSamples,
                                           bpmOverRest: bpmOverRest,
                                           restingHeartRate: rest,
                                           maxHeartRate: store.profile.maxHR,
                                           motionSuggestedActivityType: motionDecision.suggestedActivityType)
-            : nil
-        setWorkoutDetectionPromptIfChanged(nextPrompt)
+            if evaluation.sustainedPath {
+                heldSustainedWorkoutPrompt = nextPrompt
+                heldSustainedWorkoutPromptAt = now
+            }
+            setWorkoutDetectionPromptIfChanged(nextPrompt)
+            return
+        }
+        if AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+            liveShouldPrompt: evaluation.shouldPrompt,
+            lastPromptWasSustained: heldSustainedWorkoutPrompt != nil,
+            recoveredForFiveMinutes: recoveredForFiveMinutes,
+            lastQualifiedAt: heldSustainedWorkoutPromptAt,
+            now: now
+        ), let held = heldSustainedWorkoutPrompt {
+            setWorkoutDetectionPromptIfChanged(held)
+            return
+        }
+        if recoveredForFiveMinutes {
+            heldSustainedWorkoutPrompt = nil
+            heldSustainedWorkoutPromptAt = nil
+        }
+        setWorkoutDetectionPromptIfChanged(nil)
     }
 
     private func setWorkoutDetectionPromptIfChanged(_ nextPrompt: AtriaWorkoutDetectionPrompt?) {
@@ -4478,6 +4514,8 @@ struct AtriaHomeView: View {
     private func presentWorkoutReview(prompt: AtriaWorkoutDetectionPrompt, now: Date = Date()) {
         let observedSeconds = TimeInterval(max(60, prompt.evidenceMinutes * 60))
         workoutDetectionPrompt = nil
+        heldSustainedWorkoutPrompt = nil
+        heldSustainedWorkoutPromptAt = nil
         workoutReviewHoldState = nil
         workoutReviewDraft = AtriaWorkoutReviewDraft(prompt: prompt,
                                                      suggestedStart: now.addingTimeInterval(-observedSeconds),
@@ -4495,6 +4533,8 @@ struct AtriaHomeView: View {
                                                  maxHeartRate: store.profile.maxHR)
         savedWorkoutReviewCandidate = nil
         workoutDetectionPrompt = nil
+        heldSustainedWorkoutPrompt = nil
+        heldSustainedWorkoutPromptAt = nil
         workoutReviewHoldState = nil
         workoutReviewDraft = AtriaWorkoutReviewDraft(prompt: prompt,
                                                      suggestedStart: candidate.start,
@@ -5820,6 +5860,8 @@ struct AtriaHomeView: View {
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
                     workoutDetectionPrompt = nil
+                    heldSustainedWorkoutPrompt = nil
+                    heldSustainedWorkoutPromptAt = nil
                     workoutPromptSuppressedForCurrentEpisode = true
                     workoutPromptRecoveryStartedAt = nil
                     workoutPromptDismissedUntil = Date().addingTimeInterval(Self.workoutPromptCooldown)
