@@ -2422,6 +2422,73 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(wiped.strainValueText, "0.6")
     }
 
+    func testStaticWidgetHeartRateHoldsAcrossFifteenSecondPublishGap() {
+        XCTAssertEqual(WidgetSnapshotPublisher.staticWidgetHeartRateHold, 65)
+        let captured = Date(timeIntervalSince1970: 90_000)
+        let held = WidgetSnapshotPublisher.mergedStaticWidgetHeartRate(
+            previous: 81,
+            previousCapturedAt: captured,
+            previousZoneIndex: 1,
+            previousZoneName: "Easy",
+            next: nil,
+            nextCapturedAt: nil,
+            now: captured.addingTimeInterval(20)
+        )
+        XCTAssertEqual(held.heartRate, 81)
+        XCTAssertEqual(held.capturedAt, captured)
+        XCTAssertEqual(held.zoneIndex, 1)
+        XCTAssertEqual(held.zoneName, "Easy")
+
+        let expired = WidgetSnapshotPublisher.mergedStaticWidgetHeartRate(
+            previous: 81,
+            previousCapturedAt: captured,
+            next: nil,
+            nextCapturedAt: nil,
+            now: captured.addingTimeInterval(66)
+        )
+        XCTAssertNil(expired.heartRate)
+        XCTAssertNil(expired.capturedAt)
+
+        let live = WidgetSnapshotPublisher.mergedStaticWidgetHeartRate(
+            previous: 81,
+            previousCapturedAt: captured,
+            next: 84,
+            nextCapturedAt: captured.addingTimeInterval(5),
+            nextZoneIndex: 2,
+            nextZoneName: "Fat burn",
+            now: captured.addingTimeInterval(5)
+        )
+        XCTAssertEqual(live.heartRate, 84)
+        XCTAssertEqual(live.capturedAt, captured.addingTimeInterval(5))
+        XCTAssertEqual(live.zoneIndex, 2)
+
+        var current = deliverySnapshot(
+            steps: nil,
+            stepsCapturedAt: nil,
+            heartRate: 81,
+            heartRateCapturedAt: captured
+        )
+        current.heartRateZoneIndex = 1
+        current.heartRateZoneName = "Easy"
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: current,
+            createdAt: captured.addingTimeInterval(20),
+            heartRate: nil,
+            heartRateCapturedAt: nil,
+            steps: nil,
+            stepsAreEstimated: true,
+            stepsCapturedAt: nil,
+            strain: current.strain,
+            batteryLevel: current.batteryLevel,
+            batteryChargeStatus: current.batteryChargeStatus ?? "levelOnly",
+            batteryChargeText: current.batteryChargeText ?? "Unavailable"
+        )
+        XCTAssertEqual(patched.heartRate, 81)
+        XCTAssertEqual(patched.heartRateCapturedAt, captured)
+        XCTAssertEqual(patched.heartRateZoneIndex, 1)
+        XCTAssertEqual(patched.heartRateZoneName, "Easy")
+    }
+
     func testHeroDayStrainWinsOverReconnectLearningZero() {
         let held = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
             computed: 0,
@@ -3265,6 +3332,18 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains("AtriaHeldDayStrainFloor.load("))
         XCTAssertTrue(source.contains("AtriaHeldDayStrainFloor.persist("))
         XCTAssertTrue(source.contains("resolvedPresentedWidgetStrain("))
+        XCTAssertTrue(source.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
+    }
+
+    func testFullWidgetPublishHoldsHeartRateForStaticFreshnessWindow() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("static let staticWidgetHeartRateHold: TimeInterval = 65"))
+        XCTAssertTrue(source.contains("mergedStaticWidgetHeartRate("))
+        XCTAssertTrue(source.contains("heartRate: heldHeartRate.heartRate"))
         XCTAssertTrue(source.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
     }
 
