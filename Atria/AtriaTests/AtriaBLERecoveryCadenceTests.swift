@@ -431,6 +431,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ],
             "device 201: 52/6A ACK'd on stream-4 with 0x33 still missing; add official 0x14 abort, never 0x51"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0
+            ),
+            "device 204: after one abort, do not 6A into empty stream-5"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 214
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: false,
+                stream5NotifyCallbacksThisConnection: 0
+            )
+        )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
                 abortAlreadySentThisConnection: true
