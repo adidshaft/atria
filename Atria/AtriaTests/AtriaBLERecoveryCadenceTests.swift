@@ -548,6 +548,69 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 5
+            ),
+            "device 213: reconnect/launch must not reset a pending 12s 6A"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 12
+            ),
+            "device 213: once abort is 12s old, send 6A instead of another 0x14"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldResetAllDayCompactIMURecoveryOnConnect()
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearStuckIMUCommandTask(
+                commandTaskOutstanding: true,
+                commandTaskAge: 15
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearStuckIMUCommandTask(
+                commandTaskOutstanding: true,
+                commandTaskAge: nil
+            ),
+            "device 213: a leaked command task with no start stamp must not block 6A"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearStuckIMUCommandTask(
+                commandTaskOutstanding: true,
+                commandTaskAge: 5
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearStuckIMUCommandTask(
+                commandTaskOutstanding: false,
+                commandTaskAge: 40
+            )
+        )
+        let persistOlder = Date(timeIntervalSince1970: 1_800_000_000)
+        let persistNewer = persistOlder.addingTimeInterval(12)
+        XCTAssertEqual(
+            AtriaBLEManager.resolvedAllDayCompactTimestamp(
+                memory: persistOlder,
+                persistedUnix: persistNewer.timeIntervalSince1970
+            ),
+            persistNewer
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact(
+                lastNotifyTypeHex: "33"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact(
+                lastNotifyTypeHex: "32"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
                 stream5NotifyCallbacksThisConnection: 214,
                 abortAlreadySentThisConnection: true
             )
@@ -667,9 +730,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 stream5NotifyCallbacksThisConnection: 0,
                 compactIMUStale: true,
                 followUp6AAlreadySentThisConnection: true,
-                abortAge: 20
+                abortAge: 13
             ),
-            "give stream-5 ~20s after 6A before yielding the pipe"
+            "give stream-5 ~2s after 6A before yielding the pipe"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
@@ -677,9 +740,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 stream5NotifyCallbacksThisConnection: 0,
                 compactIMUStale: true,
                 followUp6AAlreadySentThisConnection: true,
-                abortAge: 32
+                abortAge: 14
             ),
-            "device 210: after abort+6A with stream-5 still 0, drain stored IMU at full quality"
+            "device 213: after abort+6A with stream-5 still 0, drain stored IMU at full quality"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true,
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 20
+            ),
+            "device 210: do not wait 20s of empty stream-5 before historical catch-up"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldYieldConnectedHistoryAfterLiveCompactAttempt(
@@ -12892,9 +12965,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"))
 
         let liveStart = try XCTUnwrap(source.range(of: "private func noteLiveIMULiveness(receivedAt: Date)"))
-        let liveBody = String(source[liveStart.lowerBound...].prefix(700))
+        let liveBody = String(source[liveStart.lowerBound...].prefix(1100))
         XCTAssertTrue(liveBody.contains("strapStream5NotifyConfirmed = true"),
                       "a live 0x33 frame is stream-5 proof even when isNotifying is false")
+        XCTAssertTrue(liveBody.contains("clearAllDayCompactIMURecoveryLease"),
+                      "device 213: live 0x33 must release the abort+6A lease so a later drop can recover")
     }
 
     func testHRContinuityWatchdogRunsInFullProtocolAndCoverLiveOmitsRealtime() throws {
@@ -12928,6 +13003,13 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             writeBody.contains("followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt"),
             "device 210: live abort+6A must yield historical IMU catch-up after the follow-up"
         )
+        XCTAssertTrue(writeBody.contains("persistAllDayCompactFollowUp6A"),
+                      "device 213: stamp follow-up 6A even on type-32 so history can catch up")
+        XCTAssertTrue(source.contains("RadioDefaults.allDayCompactAbortAt"),
+                      "device 213: persist abort across reconnects or the 12s 6A never fires")
+        XCTAssertTrue(source.contains("shouldResetAllDayCompactIMURecoveryOnConnect"))
+        XCTAssertTrue(source.contains("shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact"))
+        XCTAssertTrue(writeBody.contains("loadAllDayCompactIMURecoveryLease"))
         XCTAssertTrue(writeBody.contains("compactIMUEvidenceIsStale"),
                       "device 212: 6A on type-32 must use the compact 0x33 clock, not a mixed R10 age")
         XCTAssertFalse(writeBody.contains("skipAbort"),
@@ -12981,6 +13063,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
         XCTAssertTrue(refreshBody.contains("compactIMUEvidenceIsStale"),
                       "device 212: type-32 stream-5 must 6A using compact stale, not mixed IMU age")
+        XCTAssertTrue(refreshBody.contains("compactIMUEvidenceAge"),
+                      "device 213: sitting skip and fallback 6A must use compact 0x33 age")
+        XCTAssertTrue(refreshBody.contains("shouldClearStuckIMUCommandTask"),
+                      "device 213: leaked command task blocked the 12s 6A with tx_or_command_task")
+        XCTAssertTrue(refreshBody.contains("finishProtectedR10CommandSequence"))
+        XCTAssertTrue(refreshBody.contains("loadAllDayCompactIMURecoveryLease"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
         XCTAssertTrue(refreshBody.contains("imuRecoveryTriggerSnapshot"),
@@ -13071,6 +13159,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: liveStart.upperBound..<source.endIndex
         ))
         let liveBody = String(source[liveStart.lowerBound..<liveEnd.lowerBound])
+        XCTAssertTrue(liveBody.contains("compactIMUEvidenceAge"),
+                      "device 213: mixed R10 age must not sitting-skip an 8h-stale compact 0x33")
         XCTAssertTrue(liveBody.contains("flushPendingProprietaryWWRIfNeeded"),
                       "a leftover queued 6A/51 must flush on the liveness tick")
         XCTAssertTrue(liveBody.contains("persistLiveMotionEpoch"))
