@@ -31437,6 +31437,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .waitStream5
     }
 
+    /// Device 224/226: state-restore subscribed stream-5, then zombie
+    /// CCCD repair and `shouldConfirmStream5FromCCCDState` (callbacks > 0)
+    /// cleared the in-memory flag. A subscribe stamp on this connection
+    /// is CCCD-on. A previous-process stamp is not.
+    nonisolated static func allDayCompactStream5SubscribeConfirmed(
+        inMemoryConfirmed: Bool,
+        subscribedAt: Date?,
+        connectionEpochAt: Date?
+    ) -> Bool {
+        if inMemoryConfirmed { return true }
+        guard let subscribed = subscribedAt, let epoch = connectionEpochAt else {
+            return false
+        }
+        return subscribed >= epoch
+    }
+
     /// Device 224 restored a live HR link and subscribed stream-5, then
     /// waited forever because 223's post-subscribe 6A stamp survived the
     /// new CCCD. A 6A older than this subscribe is not this pipe's 6A.
@@ -32266,8 +32282,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forKey: RadioDefaults.passiveR10SubscribedAt
         ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
         // Device 220 treated a previous-process subscribe stamp as CCCD-on
-        // and fired 6A before this connection subscribed.
-        let subscribeConfirmed = strapStream5NotifyConfirmed
+        // and fired 6A before this connection subscribed. Device 226 still
+        // missed 6A when in-memory confirm was cleared at 0 callbacks.
+        let subscribeConfirmed = Self.allDayCompactStream5SubscribeConfirmed(
+            inMemoryConfirmed: strapStream5NotifyConfirmed,
+            subscribedAt: (UserDefaults.standard.object(
+                forKey: RadioDefaults.passiveR10SubscribedAt
+            ) as? Double).map { Date(timeIntervalSince1970: $0) },
+            connectionEpochAt: connectedAt
+        )
         let step = Self.allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
@@ -32704,7 +32727,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 now.timeIntervalSince($0)
             },
             historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
-            stream5SubscribeConfirmed: strapStream5NotifyConfirmed,
+            stream5SubscribeConfirmed: Self.allDayCompactStream5SubscribeConfirmed(
+                inMemoryConfirmed: strapStream5NotifyConfirmed,
+                subscribedAt: (defaults.object(
+                    forKey: RadioDefaults.passiveR10SubscribedAt
+                ) as? Double).map { Date(timeIntervalSince1970: $0) },
+                connectionEpochAt: connectedAt
+            ),
             live6AAfterSubscribeAlreadySent: Self.allDayCompactLive6AAfterSubscribeAlreadySent(
                 live6AAfterSubscribeAt: lastAllDayCompactLive6AAfterSubscribeAt,
                 subscribedAt: (defaults.object(
@@ -32735,7 +32764,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 catchUpRetryAge: lastAllDayCompactHistoryCatchUpAt.map {
                     now.timeIntervalSince($0)
                 },
-                postSubscribe6ADue: strapStream5NotifyConfirmed
+                postSubscribe6ADue: Self.allDayCompactStream5SubscribeConfirmed(
+                    inMemoryConfirmed: strapStream5NotifyConfirmed,
+                    subscribedAt: (defaults.object(
+                        forKey: RadioDefaults.passiveR10SubscribedAt
+                    ) as? Double).map { Date(timeIntervalSince1970: $0) },
+                    connectionEpochAt: connectedAt
+                )
                     && !Self.allDayCompactLive6AAfterSubscribeAlreadySent(
                         live6AAfterSubscribeAt: lastAllDayCompactLive6AAfterSubscribeAt,
                         subscribedAt: (defaults.object(
@@ -53587,9 +53622,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.activeProprietaryNotifyUUIDs.formUnion(alreadyActiveProprietaryNotifications)
                     self.strapStream5NotifyConfirmed =
                         alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
-                        && Self.shouldConfirmStream5FromCCCDState(
-                            stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
-                        )
                     AtriaDebugLog("ATRIADBG ble_restore_notifications status=seeded active=%d stream5=%d",
                                   self.activeProprietaryNotifyUUIDs.count,
                                   self.strapStream5NotifyConfirmed ? 1 : 0)
@@ -53597,11 +53629,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if passiveR10AlreadyNotifying {
                     self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
-                    if Self.shouldConfirmStream5FromCCCDState(
-                        stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
-                    ) {
-                        self.strapStream5NotifyConfirmed = true
-                    }
+                    self.strapStream5NotifyConfirmed = true
                     self.markPassiveR10SubscriptionConfirmed()
                 }
                 for counter in radioCounters {
