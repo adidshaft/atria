@@ -66,5 +66,13 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
             implementation.contains("shouldHoldCompletedSustainedReview("),
             "device 2026-09-19 15:37: a qualified 8-min strap bout must stay reviewable after HR returns to rest"
         )
+        XCTAssertTrue(
+            implementation.contains("lastCompletedSustainedBout("),
+            "device 2026-09-19 15:37: journal reconstruction must keep Review this workout after HR lookback slides off"
+        )
+        XCTAssertTrue(
+            implementation.contains("episodeStart") && implementation.contains("episodeEnd"),
+            "Review this workout must open the completed bout window, not now"
+        )
     }
 }

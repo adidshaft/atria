@@ -501,10 +501,14 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(home.contains("presentedDailyStrapStepCount("))
         XCTAssertTrue(home.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
         XCTAssertTrue(home.contains("liveGyroToday:"))
+        XCTAssertTrue(home.contains("persistLiveGyroToday("),
+                      "device 2026-09-19: live gyro today stayed frozen at 13:13 because persist was test-only")
         XCTAssertTrue(home.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
         XCTAssertTrue(widget.contains("presentedDailyStrapStepCount("))
         XCTAssertTrue(widget.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
         XCTAssertTrue(widget.contains("liveGyroToday:"))
+        XCTAssertTrue(widget.contains("persistLiveGyroToday("),
+                      "widget publication must keep the same-day gyro floor")
         XCTAssertTrue(widget.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
         XCTAssertTrue(ble.contains("publishedLiveStrapStepTodayCount("))
         XCTAssertTrue(ble.contains("cycleBaselinePreservingRestoredToday("))

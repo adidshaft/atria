@@ -211,7 +211,7 @@ struct AtriaHomeContainer: View, Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
+    fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     let heartRate: Int
     let strain: Double
     let samples: Int
@@ -219,6 +219,8 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     let restingHeartRate: Int
     let maxHeartRate: Int
     let motionSuggestedActivityType: AtriaWorkoutActivityType?
+    let episodeStart: Date?
+    let episodeEnd: Date?
 
     init(heartRate: Int,
          strain: Double,
@@ -226,7 +228,9 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
          bpmOverRest: Int,
          restingHeartRate: Int,
          maxHeartRate: Int,
-         motionSuggestedActivityType: AtriaWorkoutActivityType? = nil) {
+         motionSuggestedActivityType: AtriaWorkoutActivityType? = nil,
+         episodeStart: Date? = nil,
+         episodeEnd: Date? = nil) {
         self.heartRate = heartRate
         self.strain = strain
         self.samples = samples
@@ -234,6 +238,8 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
         self.restingHeartRate = restingHeartRate
         self.maxHeartRate = maxHeartRate
         self.motionSuggestedActivityType = motionSuggestedActivityType
+        self.episodeStart = episodeStart
+        self.episodeEnd = episodeEnd
     }
 
     var heartRateZone: Metrics.HeartRateZone? {
@@ -289,9 +295,8 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "h:mm a"
-        let approximateStart = formatter.string(
-            from: Date().addingTimeInterval(-Double(samples))
-        )
+        let startDate = episodeStart ?? Date().addingTimeInterval(-Double(samples))
+        let approximateStart = formatter.string(from: startDate)
         var parts = ["Since ≈\(approximateStart)", "\(evidenceMinutes) min elevated"]
         if let motionSuggestedActivityType {
             parts.append("looks like \(motionSuggestedActivityType.rawValue.lowercased())")
@@ -3979,13 +3984,17 @@ struct AtriaHomeView: View {
                                                              now: now)
         let detectedSamples = max(evaluation.longestElevatedBout, evaluation.longestZoneBout)
         if evaluation.shouldPrompt {
+            let episodeEnd = now
+            let episodeStart = now.addingTimeInterval(-TimeInterval(detectedSamples))
             let nextPrompt = AtriaWorkoutDetectionPrompt(heartRate: heartRate,
                                           strain: strain,
                                           samples: detectedSamples,
                                           bpmOverRest: bpmOverRest,
                                           restingHeartRate: rest,
                                           maxHeartRate: store.profile.maxHR,
-                                          motionSuggestedActivityType: motionDecision.suggestedActivityType)
+                                          motionSuggestedActivityType: motionDecision.suggestedActivityType,
+                                          episodeStart: episodeStart,
+                                          episodeEnd: episodeEnd)
             if evaluation.sustainedPath {
                 heldSustainedWorkoutPrompt = nextPrompt
                 heldSustainedWorkoutPromptAt = now
@@ -4006,6 +4015,25 @@ struct AtriaHomeView: View {
         if recoveredForFiveMinutes {
             heldSustainedWorkoutPrompt = nil
             heldSustainedWorkoutPromptAt = nil
+        }
+        if let bout = AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
+            samples: ble.session,
+            restingHeartRate: rest,
+            now: now
+        ), !completedSustainedBoutOverlapsConfirmedWorkout(bout) {
+            let reconstructed = AtriaWorkoutDetectionPrompt(
+                heartRate: bout.averageBPM,
+                strain: strain,
+                samples: bout.durationSeconds,
+                bpmOverRest: max(0, bout.averageBPM - rest),
+                restingHeartRate: rest,
+                maxHeartRate: store.profile.maxHR,
+                motionSuggestedActivityType: motionDecision.suggestedActivityType,
+                episodeStart: bout.start,
+                episodeEnd: bout.end
+            )
+            setWorkoutDetectionPromptIfChanged(reconstructed)
+            return
         }
         setWorkoutDetectionPromptIfChanged(nil)
     }
@@ -4513,14 +4541,25 @@ struct AtriaHomeView: View {
 
     private func presentWorkoutReview(prompt: AtriaWorkoutDetectionPrompt, now: Date = Date()) {
         let observedSeconds = TimeInterval(max(60, prompt.evidenceMinutes * 60))
+        let suggestedEnd = prompt.episodeEnd ?? now
+        let suggestedStart = prompt.episodeStart
+            ?? suggestedEnd.addingTimeInterval(-observedSeconds)
         workoutDetectionPrompt = nil
         heldSustainedWorkoutPrompt = nil
         heldSustainedWorkoutPromptAt = nil
         workoutReviewHoldState = nil
         workoutReviewDraft = AtriaWorkoutReviewDraft(prompt: prompt,
-                                                     suggestedStart: now.addingTimeInterval(-observedSeconds),
-                                                     suggestedEnd: now,
+                                                     suggestedStart: suggestedStart,
+                                                     suggestedEnd: suggestedEnd,
                                                      strengthHistory: AtriaStrengthLog.historyProjection(in: store.sessions))
+    }
+
+    private func completedSustainedBoutOverlapsConfirmedWorkout(
+        _ bout: AtriaWorkoutPromptEvaluator.CompletedSustainedBout
+    ) -> Bool {
+        store.confirmedWorkouts.contains { workout in
+            max(workout.start, bout.start) < min(workout.end, bout.end)
+        }
     }
 
     private func presentWorkoutReview(candidate: WorkoutReviewCandidate) {
@@ -13760,6 +13799,12 @@ final class AtriaHomeModel {
                 cycleStart: savedAggregate.cycleStart,
                 capturedAt: dailyStepPresentation.capturedAt
             )
+            if let capturedAt = dailyStepPresentation.capturedAt {
+                AtriaHeldDailyStepFloor.persistLiveGyroToday(
+                    count: count,
+                    capturedAt: capturedAt
+                )
+            }
         }
         // Classify strap-motion availability so the step copy stops promising an
         // endless sync when the transport is a terminal pure-HR fallback (while

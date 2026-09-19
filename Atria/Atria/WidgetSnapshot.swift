@@ -2402,6 +2402,12 @@ enum WidgetSnapshotPublisher {
                 cycleStart: cycleStart,
                 capturedAt: presentation.capturedAt
             )
+            if let capturedAt = presentation.capturedAt {
+                AtriaHeldDailyStepFloor.persistLiveGyroToday(
+                    count: count,
+                    capturedAt: capturedAt
+                )
+            }
         }
         return presentation
     }
