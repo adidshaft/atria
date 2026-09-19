@@ -406,6 +406,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: true))
         XCTAssertFalse(AtriaBLEManager.shouldSendWriteWithoutResponseNow(canSend: false))
         XCTAssertTrue(
+            AtriaBLEManager.shouldKickstartWriteWithoutResponse(
+                canSend: false,
+                pendingCount: 0
+            ),
+            "device 192: first 6A/51 after launch must write even when canSend is false"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKickstartWriteWithoutResponse(
+                canSend: false,
+                pendingCount: 1
+            ),
+            "a truly full WWR buffer still queues"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldForceFlushQueuedWriteWithoutResponse(
+                canSend: false,
+                pendingCount: 1
+            ),
+            "liveness must submit the leftover queued 6A/51 or peripheralIsReady never runs"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldForceFlushQueuedWriteWithoutResponse(
+                canSend: true,
+                pendingCount: 1
+            )
+        )
+        XCTAssertTrue(
             AtriaBLEManager.stream5CountsAsNotifying(
                 confirmed: true,
                 characteristicNotifying: false
