@@ -1167,6 +1167,17 @@ enum WidgetSnapshotPublisher {
             next: strain,
             nextDetail: strainDetail
         )
+        let heldHeartRate = mergedStaticWidgetHeartRate(
+            previous: current.heartRate,
+            previousCapturedAt: current.heartRateCapturedAt,
+            previousZoneIndex: current.heartRateZoneIndex,
+            previousZoneName: current.heartRateZoneName,
+            next: heartRate,
+            nextCapturedAt: heartRateCapturedAt,
+            nextZoneIndex: heartRateZoneIndex,
+            nextZoneName: heartRateZoneName,
+            now: createdAt
+        )
         let patchedSteps = acceptsIncomingSteps ? steps : current.steps
         let patchedStepsAreEstimated = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAreEstimated)
@@ -1247,10 +1258,10 @@ enum WidgetSnapshotPublisher {
             stepsPriorCycleEndedAt: patchedSteps == nil
                 ? current.stepsPriorCycleEndedAt : nil,
             dailyStepGoal: current.dailyStepGoal,
-            heartRate: heartRate,
-            heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
-            heartRateZoneIndex: heartRate == nil ? nil : heartRateZoneIndex,
-            heartRateZoneName: heartRate == nil ? nil : heartRateZoneName,
+            heartRate: heldHeartRate.heartRate,
+            heartRateCapturedAt: heldHeartRate.heartRate == nil ? nil : heldHeartRate.capturedAt,
+            heartRateZoneIndex: heldHeartRate.heartRate == nil ? nil : heldHeartRate.zoneIndex,
+            heartRateZoneName: heldHeartRate.heartRate == nil ? nil : heldHeartRate.zoneName,
             batteryLevel: batteryLevel,
             batteryCapturedAt: batteryLevel == nil ? nil : batteryCapturedAt,
             batteryCorroboratedAt: batteryLevel == nil ? nil : batteryCorroboratedAt,
@@ -1307,6 +1318,37 @@ enum WidgetSnapshotPublisher {
             return previous
         }
         return next
+    }
+
+    /// Static Home widgets keep a 65s capture window so WidgetKit's one-minute
+    /// coalesced reload does not flicker to `--`. A 15s 2A37 gap (device
+    /// 2026-09-19, HR 20s stale, IMU live) used to publish `heartRate: nil`
+    /// and wipe that window before the extension could apply it.
+    nonisolated static let staticWidgetHeartRateHold: TimeInterval = 65
+
+    nonisolated static func mergedStaticWidgetHeartRate(
+        previous: Int?,
+        previousCapturedAt: Date?,
+        previousZoneIndex: Int? = nil,
+        previousZoneName: String? = nil,
+        next: Int?,
+        nextCapturedAt: Date?,
+        nextZoneIndex: Int? = nil,
+        nextZoneName: String? = nil,
+        now: Date,
+        hold: TimeInterval = staticWidgetHeartRateHold
+    ) -> (heartRate: Int?, capturedAt: Date?, zoneIndex: Int?, zoneName: String?) {
+        if let next, next > 0 {
+            return (next, nextCapturedAt, nextZoneIndex, nextZoneName)
+        }
+        guard let previous, previous > 0, let previousCapturedAt else {
+            return (nil, nil, nil, nil)
+        }
+        guard previousCapturedAt <= now.addingTimeInterval(5),
+              now.timeIntervalSince(previousCapturedAt) <= hold else {
+            return (nil, nil, nil, nil)
+        }
+        return (previous, previousCapturedAt, previousZoneIndex, previousZoneName)
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1817,6 +1859,18 @@ enum WidgetSnapshotPublisher {
                           maxHR: store.profile.maxHR,
                           restingHR: rest)
             : nil
+        let previousPublishedHeartRate = AtriaIntentSnapshotStore.loadPublishedPayload()
+        let heldHeartRate = mergedStaticWidgetHeartRate(
+            previous: previousPublishedHeartRate?.heartRate,
+            previousCapturedAt: previousPublishedHeartRate?.heartRateCapturedAt,
+            previousZoneIndex: previousPublishedHeartRate?.heartRateZoneIndex,
+            previousZoneName: previousPublishedHeartRate?.heartRateZoneName,
+            next: liveHeartRate > 0 ? liveHeartRate : nil,
+            nextCapturedAt: liveHeartRateCapturedAt,
+            nextZoneIndex: liveHeartRateZone?.rawValue,
+            nextZoneName: liveHeartRateZone?.name,
+            now: now
+        )
         let publishedSteps = dailySteps.count
         let stepsAreValidated = dailySteps.isValidated
         let stepsCapturedAt = dailySteps.capturedAt
@@ -2025,10 +2079,13 @@ enum WidgetSnapshotPublisher {
                                       stepsPriorCycleEndedAt: dailySteps
                                         .priorCycleReceipt?.endedAt,
                                       dailyStepGoal: dailyStepGoal,
-                                      heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
-                                      heartRateCapturedAt: liveHeartRateCapturedAt,
-                                      heartRateZoneIndex: liveHeartRateZone?.rawValue,
-                                      heartRateZoneName: liveHeartRateZone?.name,
+                                      heartRate: heldHeartRate.heartRate,
+                                      heartRateCapturedAt: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.capturedAt,
+                                      heartRateZoneIndex: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.zoneIndex,
+                                      heartRateZoneName: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.zoneName,
                                       batteryLevel: displayableBatteryLevel,
                                       batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
                                       batteryCorroboratedAt: displayableBatteryLevel == nil
