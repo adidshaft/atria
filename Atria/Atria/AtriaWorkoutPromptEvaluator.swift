@@ -275,4 +275,26 @@ enum AtriaWorkoutPromptEvaluator {
         guard let dismissedUntil else { return false }
         return dismissedUntil > now
     }
+
+    /// Device 2026-09-19 15:31: an 8-minute strap-elevated bout (705 samples,
+    /// avg 108) vanished from Today as soon as HR returned to 88. Live
+    /// `shouldPrompt` requires current elevation inside an 8-minute lookback,
+    /// so a completed effort is exactly when the banner disappears. Keep that
+    /// sustained snapshot until rest recovers or the hold ceiling elapses.
+    /// Zone-only prompts stay ephemeral (stair / stress must not linger).
+    static let completedSustainedReviewHold: TimeInterval = 15 * 60
+
+    static func shouldHoldCompletedSustainedReview(
+        liveShouldPrompt: Bool,
+        lastPromptWasSustained: Bool,
+        recoveredForFiveMinutes: Bool,
+        lastQualifiedAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard lastPromptWasSustained, !liveShouldPrompt, !recoveredForFiveMinutes else {
+            return false
+        }
+        guard let lastQualifiedAt, now >= lastQualifiedAt else { return false }
+        return now.timeIntervalSince(lastQualifiedAt) <= completedSustainedReviewHold
+    }
 }

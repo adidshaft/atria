@@ -3125,6 +3125,49 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertFalse(result.shouldPrompt)
     }
 
+    func testCompletedSustainedReviewHoldsAfterHeartRateReturnsToRest() {
+        let now = Date(timeIntervalSince1970: 1_800_000_480)
+        XCTAssertTrue(
+            AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: true,
+                recoveredForFiveMinutes: false,
+                lastQualifiedAt: now.addingTimeInterval(-6 * 60),
+                now: now
+            ),
+            "device 2026-09-19 15:37: 8 min elevated then 88 bpm must keep Review this workout"
+        )
+        XCTAssertFalse(
+            AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: false,
+                recoveredForFiveMinutes: false,
+                lastQualifiedAt: now.addingTimeInterval(-6 * 60),
+                now: now
+            ),
+            "zone-only / stress spikes must not linger after current HR leaves the zone"
+        )
+        XCTAssertFalse(
+            AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: true,
+                recoveredForFiveMinutes: true,
+                lastQualifiedAt: now.addingTimeInterval(-6 * 60),
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: true,
+                recoveredForFiveMinutes: false,
+                lastQualifiedAt: now.addingTimeInterval(-16 * 60),
+                now: now
+            ),
+            "hold ceiling is 15 minutes after the last qualified live prompt"
+        )
+    }
+
     func testWorkoutPromptEvaluatorRequiresCurrentStrapContact() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let samples = syntheticHeartSamples(start: start, count: 480, bpm: 151)

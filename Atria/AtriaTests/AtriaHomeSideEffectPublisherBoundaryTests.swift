@@ -62,5 +62,9 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
                       "This remains foreground-only: background execution cannot be represented as continuous automatic detection.")
         XCTAssertTrue(implementation.contains("guard workoutSession == nil else"),
                       "An explicit live workout must remain the sole owner of its session.")
+        XCTAssertTrue(
+            implementation.contains("shouldHoldCompletedSustainedReview("),
+            "device 2026-09-19 15:37: a qualified 8-min strap bout must stay reviewable after HR returns to rest"
+        )
     }
 }
