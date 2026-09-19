@@ -290,7 +290,7 @@ final class AtriaLiveActivityCoordinator {
     /// ActivityKit write for every 1 Hz sensor publication.
     private let minimumActivityUpdateInterval: TimeInterval = 5
     static let idleStartRetryInterval: TimeInterval = 20
-    nonisolated static let lastStartErrorKey = "atria.liveActivity.lastStartError"
+    nonisolated static let lastStartErrorKey = AtriaIdleLiveActivityStart.lastStartErrorKey
 
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
         let snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)

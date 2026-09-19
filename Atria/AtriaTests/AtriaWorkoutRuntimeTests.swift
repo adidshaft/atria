@@ -588,6 +588,9 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
 
         XCTAssertFalse(shared.contains("openAppWhenRun = true"))
+        XCTAssertTrue(shared.contains("static var openAppWhenRun = false"))
+        XCTAssertTrue(shared.contains("struct AtriaStartIdleLiveActivityIntent: LiveActivityIntent"))
+        XCTAssertTrue(shared.contains("AtriaIdleLiveActivityStart.startIfNeeded"))
         XCTAssertTrue(shared.contains("@Dependency(default: AtriaLiveWorkoutCommandHandler.unavailable)"))
         XCTAssertTrue(shared.contains("guard let canonicalState = await commandHandler.apply"))
         let appSourcesStart = try XCTUnwrap(project.range(

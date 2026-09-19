@@ -290,8 +290,13 @@ enum AtriaDiagnosisReport {
         liveActivityStartError: String? = nil
     ) -> [String] {
         var keys: [String] = []
-        if let settled = metrics.settledHRV, let live = metrics.liveHRV, abs(settled - live) >= 8 {
-            keys.append("hrv_today_settled_\(settled)_live_\(live)")
+        // Today/Day/Week/Month and the widget pin overnight settled HRV.
+        // Live strap RMSSD during the day is expected to differ and is not
+        // a tile split. Flag the widget when it disagrees with settled.
+        if let settled = metrics.settledHRV,
+           let widget = widgetHRV,
+           abs(settled - widget) >= 8 {
+            keys.append("hrv_widget_\(widget)_settled_\(settled)")
         }
         if let overnight = metrics.overnightRHR, let daytime = metrics.daytimeRHR, overnight != daytime {
             keys.append("rhr_overnight_\(overnight)_daytime_\(daytime)")
