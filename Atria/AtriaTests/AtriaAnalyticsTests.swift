@@ -3168,6 +3168,55 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
     }
 
+    func testLastCompletedSustainedBoutSurvivesHeartRateReturningToRest() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let elevated = syntheticHeartSamples(start: start, count: 480, bpm: 108)
+        let settled = syntheticHeartSamples(start: start.addingTimeInterval(480), count: 120, bpm: 88)
+        let now = settled.last!.t
+
+        let bout = AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
+            samples: elevated + settled,
+            restingHeartRate: 66,
+            now: now
+        )
+        XCTAssertNotNil(bout)
+        XCTAssertGreaterThanOrEqual(bout?.durationSeconds ?? 0, 5 * 60)
+        XCTAssertEqual(bout?.averageBPM, 108)
+        XCTAssertEqual(bout?.peakBPM, 108)
+        XCTAssertEqual(bout?.start.timeIntervalSince1970 ?? 0,
+                       start.timeIntervalSince1970,
+                       accuracy: 1)
+        XCTAssertEqual(bout?.end.timeIntervalSince1970 ?? 0,
+                       start.addingTimeInterval(480).timeIntervalSince1970,
+                       accuracy: 2)
+    }
+
+    func testLastCompletedSustainedBoutIgnoresZoneOnlySpikes() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = syntheticHeartSamples(start: start, count: 90, bpm: 90)
+            + syntheticHeartSamples(start: start.addingTimeInterval(90), count: 60, bpm: 66)
+        XCTAssertNil(
+            AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
+                samples: samples,
+                restingHeartRate: 66,
+                now: samples.last!.t
+            )
+        )
+    }
+
+    func testLastCompletedSustainedBoutIgnoresEffortsOutsideLookback() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let elevated = syntheticHeartSamples(start: start, count: 480, bpm: 108)
+        let now = start.addingTimeInterval(3 * 60 * 60)
+        XCTAssertNil(
+            AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
+                samples: elevated,
+                restingHeartRate: 66,
+                now: now
+            )
+        )
+    }
+
     func testWorkoutPromptEvaluatorRequiresCurrentStrapContact() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let samples = syntheticHeartSamples(start: start, count: 480, bpm: 151)

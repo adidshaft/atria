@@ -297,4 +297,79 @@ enum AtriaWorkoutPromptEvaluator {
         guard let lastQualifiedAt, now >= lastQualifiedAt else { return false }
         return now.timeIntervalSince(lastQualifiedAt) <= completedSustainedReviewHold
     }
+
+    struct CompletedSustainedBout: Equatable {
+        let start: Date
+        let end: Date
+        let durationSeconds: Int
+        let averageBPM: Int
+        let peakBPM: Int
+    }
+
+    /// Device 2026-09-19 15:31: 8 min elevated vanished from Today once HR
+    /// returned to 88 because live `shouldPrompt` requires current elevation.
+    /// Rebuild that completed window from the journal for two hours so Review
+    /// can still save the real start/end instead of "now".
+    static let completedSustainedReviewLookback: TimeInterval = 2 * 60 * 60
+
+    static func lastCompletedSustainedBout(
+        samples: [HRSample],
+        restingHeartRate: Int,
+        now: Date,
+        lookback: TimeInterval = completedSustainedReviewLookback
+    ) -> CompletedSustainedBout? {
+        let windowStart = now.addingTimeInterval(-lookback)
+        let ordered = samples
+            .filter { $0.t >= windowStart && $0.t <= now }
+            .sorted { $0.t < $1.t }
+        guard ordered.count >= 2 else { return nil }
+
+        var lastQualified: CompletedSustainedBout?
+        var boutStart: Date?
+        var boutBPMs: [Int] = []
+        var lastAccepted: Date?
+
+        func finishBout(endingAt end: Date) {
+            defer {
+                boutStart = nil
+                boutBPMs = []
+            }
+            guard let start = boutStart, end > start, !boutBPMs.isEmpty else { return }
+            let duration = end.timeIntervalSince(start)
+            guard duration >= TimeInterval(minimumContinuousElevatedSamples) else { return }
+            let peak = boutBPMs.max() ?? 0
+            let average = Int((Double(boutBPMs.reduce(0, +)) / Double(boutBPMs.count)).rounded())
+            lastQualified = CompletedSustainedBout(
+                start: start,
+                end: end,
+                durationSeconds: wholeSeconds(duration),
+                averageBPM: average,
+                peakBPM: peak
+            )
+        }
+
+        for sample in ordered {
+            if let last = lastAccepted, sample.t.timeIntervalSince(last) > maximumPacketGap {
+                finishBout(endingAt: last)
+            }
+            let elevated = sample.bpm - restingHeartRate >= minimumBPMOverRest
+            if elevated {
+                if boutStart == nil {
+                    boutStart = lastAccepted ?? sample.t
+                }
+                boutBPMs.append(sample.bpm)
+            } else {
+                finishBout(endingAt: lastAccepted ?? sample.t)
+            }
+            lastAccepted = sample.t
+        }
+        if boutStart != nil, let last = lastAccepted {
+            let lastElevated = ordered.last.map { $0.bpm - restingHeartRate >= minimumBPMOverRest } ?? false
+            let agedOut = now.timeIntervalSince(last) > maximumSampleAge
+            if !lastElevated || agedOut {
+                finishBout(endingAt: last)
+            }
+        }
+        return lastQualified
+    }
 }
