@@ -8778,7 +8778,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil
         ) else { return }
         lastAllDayCompactAbortAt = nil
-        AtriaDebugLog("ATRIADBG imu_recovery status=foreground_reissue_abort reason=%@ action=526a14_on_empty_stream5",
+        AtriaDebugLog("ATRIADBG imu_recovery status=foreground_reissue_abort reason=%@ action=14_on_empty_stream5",
                       reason)
         evaluateR10Liveness(now: Date(), reason: "\(reason)_compact_abort_reissue")
     }
@@ -30985,14 +30985,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Device 201: `52` then `6A` ACK'd on stream-4 (`24…6a…`) and still
     /// produced 0 stream-5 `0x33`. Official Gen4 compact is 6A on then
     /// abort-historical (`0x14`); 0x03 realtime-HR stays off because 2A37
-    /// is already live. Still stop leftover Labs raw first. Never 0x51/0x3F.
-    /// Device 202: once stream-5 is live with type-32 logs and no `0x33`,
-    /// send 6A on only.
+    /// is already live. Never 0x51/0x3F.
+    /// Device 202: a single 0x14 while Today was in front restored stream-5
+    /// as type-32 logs. Follow-up on that live empty IMU pipe is 6A on only.
     /// Device 204: abort once, then 6A every 45s while stream-5 stayed 0.
-    /// Device 202: a single 0x14 later produced stream-5 type-32 logs.
-    /// Do not 6A into an empty stream-5 after abort; wait for the pipe.
-    /// Device 204 hold: waiting forever after one abort also left stream-5
-    /// at 0. Retry 0x14 on a 3-minute cadence, never the 45s 6A/14 storm.
+    /// Device 208 Today: `52`/`6A`/`14` ACK'd `0x14` on stream-4 and stream-5
+    /// stayed 0. 6A before abort is an empty-pipe write; empty recovery is
+    /// abort only. Retry 0x14 on a 3-minute cadence, never 52/6A on empty.
     nonisolated static let allDayCompactIMUAbortRetryInterval: TimeInterval = 180
 
     nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
@@ -31017,8 +31016,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return [[Cmd.toggleIMUMode, 0x01]]
         }
         return [
-            [Cmd.stopRawData, 0x01],
-            [Cmd.toggleIMUMode, 0x01],
             [Cmd.abortHistoricalTransmits, 0x00],
         ]
     }
@@ -31655,8 +31652,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return "wait_stream5"
         }
         // 6A only after stream-5 is live without compact 0x33. Empty pipe
-        // gets 52/6A/14 (first time or 3-minute retry), never another 6A ACK.
-        let command = liveWithout ? "6a" : "526a14"
+        // gets 0x14 (first time or 3-minute retry), never 52/6A into silence.
+        let command = liveWithout ? "6a" : "14"
         if !liveWithout {
             lastAllDayCompactAbortAt = Date()
         }
@@ -31772,7 +31769,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
             let command = await self.writeAllDayCompactIMURecovery(reason: "cover_live")
-            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_compact_sent reason=%@ cmds=%@ cmds=5201,6a01,1400_or_6a action=same_link_no_disconnect_no_proof_no_3f_no_51",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_compact_sent reason=%@ cmds=%@ cmds=14_or_6a action=same_link_no_disconnect_no_proof_no_3f_no_51",
                           reason,
                           command)
             self.persistLastIMURecovery(
@@ -32019,6 +32016,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
                 return false
             }
+        }
+        let typeHex = UserDefaults.standard.string(
+            forKey: ProtocolDefaults.lastNotifyCallbackType
+        )
+        let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
+            lastNotifyTypeHex: typeHex
+        )
+        let abortAlready = lastAllDayCompactAbortAt != nil
+        let abortAge = lastAllDayCompactAbortAt.map { now.timeIntervalSince($0) }
+        if !liveWithout,
+           Self.allDayCompactIMURecoveryShouldWaitForStream5(
+            abortAlreadySentThisConnection: abortAlready,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAge: abortAge
+           ) {
+            let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
+            persistLastIMURecovery(
+                command: "wait_stream5",
+                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
+                now: now,
+                defaults: defaults,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
+            )
+            return true
         }
         guard let peripheral,
            peripheral.state == .connected,
