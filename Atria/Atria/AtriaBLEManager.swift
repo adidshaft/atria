@@ -434,7 +434,16 @@ private final class AtriaProprietaryWWRGate: @unchecked Sendable {
         guard characteristic.properties.contains(.writeWithoutResponse) else {
             return false
         }
-        if peripheral.canSendWriteWithoutResponse {
+        let pendingCount = lock.withLock { pending.count }
+        // Device 192 13:15: `canSendWriteWithoutResponse` was false on the
+        // first post-launch 6A/51, so the gate queued locally and never
+        // submitted a CoreBluetooth write. `peripheralIsReady` never fires
+        // unless a write was issued, so IMU stayed 343s stale while 2A37
+        // stayed live (`packets_this_connection=0`, `wwr_pending=1`).
+        if AtriaBLEManager.shouldKickstartWriteWithoutResponse(
+            canSend: peripheral.canSendWriteWithoutResponse,
+            pendingCount: pendingCount
+        ) {
             peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
             return true
         }
@@ -464,6 +473,20 @@ private final class AtriaProprietaryWWRGate: @unchecked Sendable {
             guard let frame else { break }
             peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
             sent += 1
+        }
+        if sent == 0,
+           AtriaBLEManager.shouldForceFlushQueuedWriteWithoutResponse(
+            canSend: peripheral.canSendWriteWithoutResponse,
+            pendingCount: pendingCount()
+           ) {
+            let frame: Data? = lock.withLock {
+                guard !pending.isEmpty else { return nil }
+                return pending.removeFirst()
+            }
+            if let frame {
+                peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+                sent = 1
+            }
         }
         return sent
     }
@@ -30700,6 +30723,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
         canSend
+    }
+
+    /// A new process often reports `canSendWriteWithoutResponse == false`
+    /// before any proprietary write has been submitted. Queueing in that
+    /// state never produces `peripheralIsReady`, so 6A/51 stays pending
+    /// while 2A37 is live (device 192).
+    nonisolated static func shouldKickstartWriteWithoutResponse(
+        canSend: Bool,
+        pendingCount: Int
+    ) -> Bool {
+        canSend || pendingCount == 0
+    }
+
+    nonisolated static func shouldForceFlushQueuedWriteWithoutResponse(
+        canSend: Bool,
+        pendingCount: Int
+    ) -> Bool {
+        !canSend && pendingCount > 0
     }
 
     nonisolated static func strapWriteCharacteristic(
