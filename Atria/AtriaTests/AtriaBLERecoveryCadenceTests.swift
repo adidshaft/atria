@@ -422,6 +422,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "should_not_toggle:paced"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(),
+            [
+                [AtriaBLEManager.Cmd.stopRawData, 0x01],
+                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+            ],
+            "device 199: stop leftover Labs raw, then compact IMU on, never 0x51"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -12594,10 +12602,13 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let coverBody = String(source[coverStart.lowerBound..<coverEnd.lowerBound])
         XCTAssertFalse(coverBody.contains("Cmd.sendR10R11Realtime"),
                        "cover-live IMU recovery must not write 0x3F")
-        XCTAssertTrue(coverBody.contains("cmds=6a01,51_duration_le"))
+        XCTAssertFalse(coverBody.contains("Cmd.startRawData"),
+                       "device 199: Labs 0x51 ACK'd on stream-4 and never produced compact 0x33")
+        XCTAssertTrue(coverBody.contains("writeAllDayCompactIMURecovery"))
+        XCTAssertTrue(coverBody.contains("cmds=5201,6a01"))
         XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
-        XCTAssertTrue(coverBody.contains("cover_live_51_restore_2a37"),
-                      "6A/51 that still runs must reassert 2A37 (device 2026-09-18 167)")
+        XCTAssertTrue(coverBody.contains("cover_live_compact_restore_2a37"),
+                      "compact IMU recovery must reassert 2A37 (device 2026-09-18 167)")
 
         let refreshStart = try XCTUnwrap(source.range(
             of: "private func refreshProtectedBoundedRawCaptureIfNeeded"
@@ -12610,17 +12621,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("enableMissingProtectedCompanionNotifications"))
         XCTAssertTrue(refreshBody.contains("shouldRefreshZombieProprietaryCCCD"))
         XCTAssertTrue(refreshBody.contains("refreshEvenIfNotifying: zombie"))
-        XCTAssertTrue(refreshBody.contains("writeProprietaryWithoutResponse"),
-                      "silent 6A/51 must wait for the CoreBluetooth WWR queue")
+        XCTAssertTrue(refreshBody.contains("packetsThisConnection: self.protocolStream5NotifyCallbacksThisConnection"),
+                      "device 199: stream-4 6A ACKs must not look like a live IMU pipe")
         XCTAssertFalse(refreshBody.contains("Cmd.sendR10R11Realtime"),
                        "silent IMU refresh must not write 0x3F")
+        XCTAssertFalse(refreshBody.contains("Cmd.startRawData"),
+                       "device 199: all-day recovery must stop leftover 0x51 instead of sending another")
         XCTAssertFalse(refreshBody.contains("cancelPeripheralConnection"))
         XCTAssertTrue(refreshBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(refreshBody.contains("sitting_skip_fresh"),
                       "sitting compact 0x33 on this connection must not silent-refresh 6A/51")
-        XCTAssertTrue(refreshBody.contains("silent_stream_51_restore_2a37"),
-                      "a 6A/51 that still queues must reassert 2A37")
-        XCTAssertTrue(refreshBody.contains("6a51"))
+        XCTAssertTrue(refreshBody.contains("silent_stream_compact_restore_2a37"),
+                      "a compact IMU write that still queues must reassert 2A37")
+        XCTAssertTrue(refreshBody.contains("526a"))
+        XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
         XCTAssertTrue(refreshBody.contains("imuRecoveryTriggerSnapshot"),
