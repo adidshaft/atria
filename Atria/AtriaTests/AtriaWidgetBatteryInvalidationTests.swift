@@ -2383,6 +2383,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             "install/reconnect must not wipe Today's 0.6 with a learning zero"
         )
         XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainValue(
+                previous: 1.15,
+                next: 0.18,
+                nextDetail: "Partial · 91% tracked"
+            ),
+            1.15,
+            "a thermal journal restart must not replace morning walking load with the new journal's fragment"
+        )
+        XCTAssertEqual(
             WidgetSnapshotPublisher.mergedLiveStrainDetail(
                 previous: "Current cycle",
                 next: "learning"
@@ -2431,6 +2440,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         )
         XCTAssertEqual(computedWins.value, 0.8, accuracy: 0.000_000_001)
         XCTAssertEqual(computedWins.detail, "Current cycle")
+
+        let journalRestartKeepsMorningLoad = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: 0.18,
+            computedDetail: "Partial · 91% tracked",
+            heroStrain: 1.15,
+            heroDetail: "local"
+        )
+        XCTAssertEqual(journalRestartKeepsMorningLoad.value, 1.15, accuracy: 0.000_000_001)
+        XCTAssertEqual(journalRestartKeepsMorningLoad.detail, "local")
 
         let empty = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
             computed: 0,
