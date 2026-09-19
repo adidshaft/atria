@@ -5545,6 +5545,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastR10ZombieCCCDRefreshAt = nil
         lastR10ZombieCCCDToggleAt = nil
         lastR10ZombieTxRediscoverAt = nil
+        lastAllDayCompactAbortAt = nil
         UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieCCCDToggleAt)
         UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieKickSkipReason)
         proprietaryWWRGate.reset()
@@ -30469,6 +30470,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieCCCDRefreshAt: Date?
     private var lastR10ZombieCCCDToggleAt: Date?
     private var lastR10ZombieTxRediscoverAt: Date?
+    private var lastAllDayCompactAbortAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
     /// to wait through a MainActor-stale live stream.
@@ -30892,9 +30894,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Device 202: once stream-5 is live with type-32 logs and no `0x33`,
     /// send 6A on only.
     nonisolated static func allDayCompactIMURecoveryCommandBodies(
-        stream5LiveWithoutCompactIMU: Bool = false
+        stream5LiveWithoutCompactIMU: Bool = false,
+        abortAlreadySentThisConnection: Bool = false
     ) -> [[UInt8]] {
-        if stream5LiveWithoutCompactIMU {
+        if stream5LiveWithoutCompactIMU || abortAlreadySentThisConnection {
             return [[Cmd.toggleIMUMode, 0x01]]
         }
         return [
@@ -31526,9 +31529,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
             lastNotifyTypeHex: typeHex
         )
-        let command = liveWithout ? "6a" : "526a14"
+        let abortAlready = lastAllDayCompactAbortAt != nil
+        let skipAbort = liveWithout || abortAlready
+        let command = skipAbort ? "6a" : "526a14"
+        if !skipAbort {
+            lastAllDayCompactAbortAt = Date()
+        }
         for (index, body) in Self.allDayCompactIMURecoveryCommandBodies(
-            stream5LiveWithoutCompactIMU: liveWithout
+            stream5LiveWithoutCompactIMU: liveWithout,
+            abortAlreadySentThisConnection: abortAlready
         ).enumerated() {
             if index > 0 {
                 try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
