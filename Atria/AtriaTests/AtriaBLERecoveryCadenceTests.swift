@@ -425,11 +425,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(),
             [
-                [AtriaBLEManager.Cmd.stopRawData, 0x01],
-                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
                 [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 201: 52/6A ACK'd on stream-4 with 0x33 still missing; add official 0x14 abort, never 0x51"
+            "device 208: 52/6A/14 ACK'd abort on stream-4 with stream-5 still 0; empty pipe is 0x14 only"
         )
         XCTAssertTrue(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
@@ -490,11 +488,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 abortAlreadySentThisConnection: true
             ),
             [
-                [AtriaBLEManager.Cmd.stopRawData, 0x01],
-                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
                 [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 204: abortAlready on an empty stream-5 retries 52/6A/14, never 6A-only"
+            "device 208: abortAlready on an empty stream-5 retries 0x14, never 52/6A"
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
@@ -563,7 +559,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "device 207: wait_stream5 must not start the 45s activation lease"
         )
         XCTAssertTrue(
-            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "526a14")
+            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "14")
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "6a")
@@ -12765,8 +12761,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let writeBody = String(source[writeStart.lowerBound..<writeEnd.lowerBound])
         XCTAssertTrue(writeBody.contains("abortAge"),
                       "device 204: wait-for-stream5 must expire so 0x14 can retry")
-        XCTAssertTrue(writeBody.contains("liveWithout ? \"6a\" : \"526a14\""),
-                      "device 204: 6A only after stream-5 is live without compact IMU")
+        XCTAssertTrue(writeBody.contains("liveWithout ? \"6a\" : \"14\""),
+                      "device 208: empty pipe is 0x14 only; 6A only after stream-5 is live without compact IMU")
         XCTAssertFalse(writeBody.contains("skipAbort"),
                        "device 204: abortAlready must not skip to 6A on an empty stream-5")
 
@@ -12783,7 +12779,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(coverBody.contains("Cmd.startRawData"),
                        "device 199: Labs 0x51 ACK'd on stream-4 and never produced compact 0x33")
         XCTAssertTrue(coverBody.contains("writeAllDayCompactIMURecovery"))
-        XCTAssertTrue(coverBody.contains("cmds=5201,6a01,1400_or_6a"))
+        XCTAssertTrue(coverBody.contains("cmds=14_or_6a"))
         XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(coverBody.contains("cover_live_compact_restore_2a37"),
                       "compact IMU recovery must reassert 2A37 (device 2026-09-18 167)")
@@ -12813,6 +12809,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "a compact IMU write that still queues must reassert 2A37")
         XCTAssertTrue(refreshBody.contains("shouldStampAllDayCompactIMUActivation"),
                       "device 207: wait_stream5 must not stamp the 45s activation lease")
+        XCTAssertTrue(refreshBody.contains("allDayCompactIMURecoveryShouldWaitForStream5"),
+                      "device 208: wait_stream5 must not occupy the command task with a no-op zombie dance")
         XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
