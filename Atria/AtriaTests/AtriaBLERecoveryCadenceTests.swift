@@ -683,6 +683,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 abortAge: 180,
                 followUp6AAlreadySentThisConnection: true,
                 catchUpAlreadyRequested: true,
+                live6AAfterCatchUpAlreadySent: true,
+                catchUpAge: 40,
+                historyCatchUpInProgress: true,
+                stream5SubscribeConfirmed: true,
+                live6AAfterSubscribeAlreadySent: false,
+                subscribeAge: 2
+            ),
+            .toggleIMUOn,
+            "device 225: 0x69 catch-up must not block 6A after a new stream-5 CCCD"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 180,
+                catchUpAlreadyRequested: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                catchUpRetryAge: 60,
+                postSubscribe6ADue: true
+            ),
+            "device 225: do not 0x69-retry while the post-subscribe 6A is still due"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
                 catchUpAge: 15,
                 historyCatchUpInProgress: true
             ),
