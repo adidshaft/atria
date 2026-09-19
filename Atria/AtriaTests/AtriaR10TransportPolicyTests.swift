@@ -184,6 +184,39 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
         ), "WHOOP command responses must reach the history state machine in protected mode")
     }
 
+    func testCompactIMURecoveryArmsStream5InitialProfileWhileSuppressed() {
+        XCTAssertFalse(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: false
+        ), "pure_hr_v10 suppression must not subscribe stream-5 when compact IMU is already live")
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ), "device 217: suppressed launch must still take the one initial stream-5 CCCD")
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: false,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: true,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: false,
+            compactIMURecoveryActive: false
+        ))
+    }
+
     func testEveryDecodedR10PathRecordsSourceFreshness() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory
