@@ -5576,6 +5576,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         callbackPolicyState.update {
             $0.skipStandingReconnectOnce = false
             $0.deferStandingConnectForRestoreSlotDrain = false
+            $0.identifiedStandingConnectIssued = false
         }
         connectedEpochAcceptedHeartRateSamples = 0
         invalidateConnectedRawHistoryCatchUpPublicationYield(
@@ -22672,6 +22673,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
+        callbackPolicyState.update { $0.identifiedStandingConnectIssued = true }
         callbackCentral.connect(target, options: nil)
         return true
     }
@@ -26980,11 +26982,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         identifiedCentralRebuilt: Bool,
         alreadyReissuedIdentified: Bool,
         didConnectThisProcess: Bool,
-        peripheralState: CBPeripheralState
+        peripheralState: CBPeripheralState,
+        standingConnectIssued: Bool = false
     ) -> Bool {
         identifiedCentralRebuilt
             && !alreadyReissuedIdentified
             && !didConnectThisProcess
+            && !standingConnectIssued
             && peripheralState != .connected
     }
 
@@ -27017,7 +27021,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 identifiedCentralRebuilt: identifiedCentralRebuiltAfterRestoreSlotDrain,
                 alreadyReissuedIdentified: reissuedIdentifiedStandingConnectAfterDrain,
                 didConnectThisProcess: didConnectThisProcess,
-                peripheralState: peripheral.state
+                peripheralState: peripheral.state,
+                standingConnectIssued: callbackPolicyState.snapshot()
+                    .identifiedStandingConnectIssued
             )
         )
         reconnectWatchdogTask = Task { @MainActor in
@@ -27085,7 +27091,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     identifiedCentralRebuilt: self.identifiedCentralRebuiltAfterRestoreSlotDrain,
                     alreadyReissuedIdentified: self.reissuedIdentifiedStandingConnectAfterDrain,
                     didConnectThisProcess: self.didConnectThisProcess,
-                    peripheralState: peripheral.state
+                    peripheralState: peripheral.state,
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued
                 ) {
                     self.reissuedIdentifiedStandingConnectAfterDrain = true
                     AtriaDebugLog(
@@ -27835,6 +27843,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 : "repair_central_rebuild",
             detail: trigger
         )
+        callbackPolicyState.update { $0.identifiedStandingConnectIssued = false }
         // A replacement is a new CoreBluetooth-state episode even when both
         // managers report the same raw unavailable value. Retire A's timer and
         // observation before B can callback; otherwise B sees the non-nil A

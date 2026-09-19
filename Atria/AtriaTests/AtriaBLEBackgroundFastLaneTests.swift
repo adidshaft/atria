@@ -14,7 +14,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 protectedProfileIsEmpty: true,
                 protectedStandardDiscoveryStarted: false,
                 skipStandingReconnectOnce: false,
-                deferStandingConnectForRestoreSlotDrain: false
+                deferStandingConnectForRestoreSlotDrain: false,
+                identifiedStandingConnectIssued: false
             )
         )
 
@@ -35,7 +36,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 protectedProfileIsEmpty: false,
                 protectedStandardDiscoveryStarted: true,
                 skipStandingReconnectOnce: false,
-                deferStandingConnectForRestoreSlotDrain: false
+                deferStandingConnectForRestoreSlotDrain: false,
+                identifiedStandingConnectIssued: false
             )
         )
     }

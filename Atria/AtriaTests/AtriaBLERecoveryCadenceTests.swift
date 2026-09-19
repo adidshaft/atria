@@ -1295,8 +1295,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 peripheralState: .connecting
             )
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueIdentifiedStandingConnectAfterDrain(
+                identifiedCentralRebuilt: true,
+                alreadyReissuedIdentified: false,
+                didConnectThisProcess: false,
+                peripheralState: .connecting,
+                standingConnectIssued: true
+            ),
+            "device 221: an issued pending connect must be observed, not cancelled at 8s"
+        )
         XCTAssertTrue(source.contains("repair_identified_standing_connect_reissue"))
         XCTAssertTrue(source.contains("completeConnectRequest(peripheral)"))
+        XCTAssertTrue(source.contains("identifiedStandingConnectIssued"))
+        XCTAssertTrue(source.contains("standingConnectIssued: callbackPolicyState.snapshot()"))
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
