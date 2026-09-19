@@ -355,6 +355,44 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 alreadyToggledThisConnection: true
             )
         )
+        XCTAssertEqual(
+            AtriaBLEManager.liveR10EligibilityBlockers(
+                streamSuppressed: false,
+                standardHROnlyMode: true,
+                historyOnlyProbeEnabled: false,
+                historyOnlyProbeMode: false,
+                offlineHistoricalSyncInProgress: false,
+                rollbackEnabled: true,
+                motionBatteryEligible: true
+            ),
+            "rollback",
+            "device 198: protected rollback must show up when live_r10_eligible is 0"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.liveR10EligibilityBlockers(
+                streamSuppressed: false,
+                standardHROnlyMode: false,
+                historyOnlyProbeEnabled: false,
+                historyOnlyProbeMode: false,
+                offlineHistoricalSyncInProgress: false,
+                rollbackEnabled: true,
+                motionBatteryEligible: true
+            ),
+            "none",
+            "full-protocol IMU repair must not wait on a protected rollback latch"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 120,
+                alreadyToggledThisConnection: false,
+                imuAge: 4544,
+                sittingSkipFresh: false
+            ),
+            "device 198: stream-4 type-24 must not count as stream-5; empty stream-5 + stale IMU toggles"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -12588,10 +12626,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 184: toggle-on must use the HR epoch, not 2A37 isNotifying")
         XCTAssertFalse(toggleBody.contains("heartRateCharacteristic?.isNotifying == true else { return }"),
                        "device 184: toggle-on must not abort while 2A37 samples are still arriving")
+        XCTAssertFalse(toggleBody.contains("guard !standardHROnlyMode"),
+                       "device 198: protected HR+R10 must still toggle zombie stream-5")
         XCTAssertFalse(toggleBody.contains("packetsThisConnection: self.currentConnectionProprietaryTraffic"),
                        "device 192 15:56: stream-4 type-24 notifies must not abort stream-5 toggle-on")
+        XCTAssertTrue(toggleBody.contains("packetsThisConnection: protocolStream5NotifyCallbacksThisConnection"),
+                      "device 198: empty-pipe must ignore stream-4 type-24 and use stream-5 callbacks")
         XCTAssertTrue(toggleBody.contains("protocolStream5NotifyCallbacksThisConnection"),
                       "TX rediscover empty-pipe must be stream-5, not stream-4 history")
+        XCTAssertTrue(toggleBody.contains("zombieKickSkipReason"),
+                      "device 198: persist why stream-5 off/on did not fire")
+        XCTAssertTrue(toggleBody.contains("lastAcceptedHRAt ?? lastRawHRNotificationAt"),
+                      "restored connections with nil connectedAt must still pass the 20s toggle gate")
         XCTAssertFalse(toggleBody.contains("proprietaryNotifyLooksLikeSleepModeLog"),
                        "sleep-mode ASCII is classified on notify, not inside the CCCD toggle")
         XCTAssertTrue(source.contains("zombie_cccd_toggle_rearm"),
@@ -12650,6 +12696,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             liveBody.contains("kickZombieProprietaryStreamIfNeeded(now: now, reason: \"\\(reason)_pure_hr_imu\")"),
             "pure-HR IMU repair must toggle zombie stream-5 before 6A/51"
         )
+        XCTAssertTrue(
+            liveBody.contains("_stream5_unconfirmed_before_6a51"),
+            "device 198: stream-5 CCCD repair must run before cover-live 6A/51"
+        )
+        XCTAssertTrue(source.contains("liveR10EligibilityBlockers"),
+                      "device 198: persist why live_r10_eligible stayed 0")
+        XCTAssertFalse(liveBody.contains("if eligible, connected, !strapStream5NotifyConfirmed"),
+                       "device 198: unconfirmed stream-5 must repair even when r10TransportIsExpected is false")
         XCTAssertTrue(liveBody.contains("r10LivenessRealtimeArmed"),
                       "full_protocol IMU recovery must not wait on protected-only eligibility")
         XCTAssertTrue(liveBody.contains("currentR10LivenessLastMotionAt"),
