@@ -649,6 +649,32 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             .waitStream5,
             "device 204: the post-subscribe 6A is still only once"
         )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactLive6AAfterSubscribeAlreadySent(
+                live6AAfterSubscribeAt: Date(timeIntervalSince1970: 100),
+                subscribedAt: Date(timeIntervalSince1970: 200)
+            ),
+            "device 224: a previous-connection 6A must not skip 6A after a new CCCD"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactLive6AAfterSubscribeAlreadySent(
+                live6AAfterSubscribeAt: Date(timeIntervalSince1970: 200),
+                subscribedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactLive6AAfterSubscribeAlreadySent(
+                live6AAfterSubscribeAt: nil,
+                subscribedAt: Date(timeIntervalSince1970: 100)
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactLive6AAfterSubscribeAlreadySent(
+                live6AAfterSubscribeAt: Date(timeIntervalSince1970: 100),
+                subscribedAt: nil
+            ),
+            "without this-process subscribe, do not treat the stamp as a missing 6A"
+        )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryStep(
                 stream5LiveWithoutCompactIMU: false,
@@ -13250,6 +13276,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             writeBody.contains("< 600"),
             "device 221: a previous-process subscribe stamp is not CCCD-on"
         )
+        XCTAssertTrue(writeBody.contains("allDayCompactLive6AAfterSubscribeAlreadySent"),
+                      "device 224: a previous-connection 6A must not skip 6A after a new CCCD")
         XCTAssertTrue(writeBody.contains("catchUpAlreadyRequested: catchUpAlready"),
                       "device 216: recovery step must see persisted catch-up before a second 6A")
         XCTAssertTrue(source.contains("RadioDefaults.allDayCompactAbortAt"),
