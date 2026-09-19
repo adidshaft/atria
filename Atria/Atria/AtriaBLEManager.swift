@@ -12350,6 +12350,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             attendedRequest: attendedHistoricalRequest,
             nonDestructiveConnectedHistoryAllowed:
                 exactConnectedRealtimePreservingRequest
+                || transientConnectedRealtimeOwnerPreservation
         ) {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
