@@ -78,6 +78,57 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 hasCurrentConnectionEpoch: false
             )
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: false,
+                standingConnectIssued: true
+            ),
+            "device 223: an issued pending connect is not leftover restored connecting"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRecoverHungIssuedStandingConnect(
+                standingConnectIssued: true,
+                didConnectThisProcess: false,
+                alreadyRecovered: false,
+                peripheralState: .connecting
+            ),
+            "device 223: observe an issued connect, then recover once"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRecoverHungIssuedStandingConnect(
+                standingConnectIssued: true,
+                didConnectThisProcess: true,
+                alreadyRecovered: false,
+                peripheralState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRecoverHungIssuedStandingConnect(
+                standingConnectIssued: true,
+                didConnectThisProcess: false,
+                alreadyRecovered: true,
+                peripheralState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRecoverHungIssuedStandingConnect(
+                standingConnectIssued: false,
+                didConnectThisProcess: false,
+                alreadyRecovered: false,
+                peripheralState: .connecting
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRecoverHungIssuedStandingConnect(
+                standingConnectIssued: true,
+                didConnectThisProcess: false,
+                alreadyRecovered: false,
+                peripheralState: .connected
+            ),
+            "a system-connected strap is adopted, not cancelled"
+        )
     }
 
     func testStuckRestoredConnectingRediscoverAfterReissue() {
@@ -1126,6 +1177,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(watchdog.contains("shouldAdoptAlreadyConnectedPeripheralWhileConnecting"))
         XCTAssertTrue(watchdog.contains("adopt_already_connected"))
+        XCTAssertTrue(watchdog.contains("adopt_system_connected"))
+        XCTAssertTrue(watchdog.contains("shouldRecoverHungIssuedStandingConnect"))
+        XCTAssertTrue(watchdog.contains("recoverHungIssuedStandingConnect("))
+        XCTAssertTrue(source.contains("did_disconnect_force_connect_after_drain"))
+        XCTAssertTrue(source.contains("retrieveConnectedPeripherals("))
+        XCTAssertTrue(source.contains("adopt_system_connected_epoch"))
 
         let rebuildStart = try XCTUnwrap(source.range(
             of: "private func rebuildCentralForWedgedSessionOnce("
@@ -1309,6 +1366,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("completeConnectRequest(peripheral)"))
         XCTAssertTrue(source.contains("identifiedStandingConnectIssued"))
         XCTAssertTrue(source.contains("standingConnectIssued: callbackPolicyState.snapshot()"))
+        XCTAssertTrue(source.contains("repair_hung_issued_standing_connect"))
+        XCTAssertTrue(source.contains("hung_issued_standing_connect"))
     }
 
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
