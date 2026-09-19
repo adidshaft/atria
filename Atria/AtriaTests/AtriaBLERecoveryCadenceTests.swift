@@ -938,6 +938,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ],
             "device 202: stream-5 type-32 logs with no 0x33 follow up 6A on only, do not abort history again"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: true,
+                stream5NotifyCallbacksThisConnection: 68,
+                abortAlreadySentThisConnection: true,
+                followUp6AAlreadySentThisConnection: true,
+                live6AAfterCatchUpAlreadySent: true,
+                stream5SubscribeConfirmed: true,
+                live6AAfterSubscribeAlreadySent: true,
+                subscribeAge: 20
+            ),
+            .waitStream5,
+            "device 227: after this-CCCD 6A, type-30/32 stream-5 must not 6A-storm"
+        )
         XCTAssertTrue(
             AtriaBLEManager.stream5IsLiveWithoutCompactIMU(
                 stream5NotifyCallbacksThisConnection: 214,

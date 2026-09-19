@@ -31403,7 +31403,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         subscribeAge: TimeInterval? = nil,
         live6AAfterSubscribeDelay: TimeInterval = allDayCompactIMULive6AAfterSubscribeDelay
     ) -> AllDayCompactIMURecoveryStep {
-        if stream5LiveWithoutCompactIMU { return .toggleIMUOn }
+        if stream5LiveWithoutCompactIMU {
+            // Device 227: 6A ACK'd after this CCCD, stream-5 delivered
+            // type-30/32, compact stayed stale. Repeating 6A is the
+            // device-204 storm; wait instead of napping the strap.
+            if live6AAfterSubscribeAlreadySent { return .waitStream5 }
+            return .toggleIMUOn
+        }
         guard stream5NotifyCallbacksThisConnection == 0 else {
             return .waitStream5
         }
