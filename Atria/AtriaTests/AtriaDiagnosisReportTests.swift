@@ -532,6 +532,23 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"))
         XCTAssertTrue(home.contains("diagnosisDisplayedHeartRate("))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
+        let diagnosisStart = try XCTUnwrap(home.range(of: "func publishDiagnosisReport("))
+        let diagnosisEnd = try XCTUnwrap(home.range(
+            of: "func refreshDurableStepReceipt()",
+            range: diagnosisStart.upperBound..<home.endIndex
+        ))
+        let diagnosis = String(home[diagnosisStart.lowerBound..<diagnosisEnd.lowerBound])
+        XCTAssertTrue(
+            diagnosis.contains("retireStuckIdleWindowLeftoverIfNeeded("),
+            "device 2026-09-19 09:27: diagnosis must drop leftover pending=5 while Today stays Live"
+        )
+        let retire = try XCTUnwrap(diagnosis.range(of: "retireStuckIdleWindowLeftoverIfNeeded("))
+        let pending = try XCTUnwrap(diagnosis.range(of: "idleWindowPending:"))
+        XCTAssertLessThan(
+            retire.lowerBound,
+            pending.lowerBound,
+            "the report must read leftover pending after retirement so idle_window_pending_5 cannot linger"
+        )
     }
 
     func testDiscrepanciesNameWidgetStepsVersusTodaySteps() {

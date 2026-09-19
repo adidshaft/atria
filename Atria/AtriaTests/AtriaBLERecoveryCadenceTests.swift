@@ -13121,6 +13121,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             retire.contains("retired_stuck_leftover_restore_2a37"),
             "attended leftover retirement must restore live HR notify"
         )
+        let drainStart = try XCTUnwrap(source.range(
+            of: "private func currentIdleWindowHistoryDrainWindow("
+        ))
+        let drain = String(source[drainStart.lowerBound...].prefix(2_400))
+        XCTAssertTrue(
+            drain.contains("shouldDropShortLivedCatchUpToRetireDryLeftover("),
+            "pull-to-refresh must drop leftover pending=5 before selecting a 0x22 window"
+        )
+        XCTAssertTrue(
+            drain.contains("queuedConnectedRawHistoryCatchUpIntent = nil"),
+            "the short-lived catch-up must leave so retirement can clear the 0x22 snapshot"
+        )
     }
 
     func testAcceptedHRDoesNotRetryRetiredRealtimeWorkoutCutover() throws {

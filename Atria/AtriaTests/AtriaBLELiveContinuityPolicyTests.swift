@@ -359,6 +359,41 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             )
         )
         XCTAssertTrue(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "pull_to_refresh",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            ),
+            "device 2026-09-19 09:27: pull-to-refresh must not keep leftover pending=5 as a 2A37 pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "home_missed_data_banner",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "post_workout_hr_backfill",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            ),
+            "a durable gym fill still owns leftover drain"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "pull_to_refresh",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: true
+            ),
+            "charger / off-wrist may still drain a dry leftover"
+        )
+        XCTAssertTrue(
             AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
                 durableRowsThisAttempt: 0,
                 pendingRecords: 5,
