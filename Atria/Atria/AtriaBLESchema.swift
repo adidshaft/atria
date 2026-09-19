@@ -261,6 +261,10 @@ extension AtriaBLEManager {
         static let lastIMURecoveryIMUAge = "atria.radio.lastIMURecoveryIMUAge"
         static let lastIMURecoverySkipReason = "atria.radio.lastIMURecoverySkipReason"
         static let lastIMURecoverySkipAt = "atria.radio.lastIMURecoverySkipAt"
+        /// Wall-clock abort `0x14` / follow-up `6A` so a reconnect does not
+        /// restart the 12s live attempt or block historical IMU catch-up.
+        static let allDayCompactAbortAt = "atria.radio.allDayCompactAbortAt"
+        static let allDayCompactFollowUp6AAt = "atria.radio.allDayCompactFollowUp6AAt"
         static let liveHRNotifying = "atria.radio.liveHRNotifying"
         static let liveHRSampleAt = "atria.radio.liveHRSampleAt"
         static let liveIMUFrameAt = "atria.radio.liveIMUFrameAt"
