@@ -267,6 +267,7 @@ extension AtriaBLEManager {
         static let allDayCompactFollowUp6AAt = "atria.radio.allDayCompactFollowUp6AAt"
         static let allDayCompactHistoryCatchUpAt = "atria.radio.allDayCompactHistoryCatchUpAt"
         static let allDayCompactLive6AAfterCatchUpAt = "atria.radio.allDayCompactLive6AAfterCatchUpAt"
+        static let allDayCompactLive6AAfterSubscribeAt = "atria.radio.allDayCompactLive6AAfterSubscribeAt"
         static let liveHRNotifying = "atria.radio.liveHRNotifying"
         static let liveHRSampleAt = "atria.radio.liveHRSampleAt"
         static let liveIMUFrameAt = "atria.radio.liveIMUFrameAt"

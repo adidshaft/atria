@@ -554,6 +554,39 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 abortAge: 180,
                 followUp6AAlreadySentThisConnection: true,
                 catchUpAlreadyRequested: true,
+                live6AAfterCatchUpAlreadySent: true,
+                catchUpAge: 40,
+                stream5SubscribeConfirmed: true,
+                subscribeAge: 2
+            ),
+            .toggleIMUOn,
+            "device 218: one 6A after stream-5 CCCD is actually on"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                live6AAfterCatchUpAlreadySent: true,
+                catchUpAge: 40,
+                stream5SubscribeConfirmed: true,
+                live6AAfterSubscribeAlreadySent: true,
+                subscribeAge: 20
+            ),
+            .waitStream5,
+            "device 204: the post-subscribe 6A is still only once"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
                 catchUpAge: 15,
                 historyCatchUpInProgress: true
             ),
@@ -13107,6 +13140,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 213: stamp follow-up 6A even on type-32 so history can catch up")
         XCTAssertTrue(writeBody.contains("persistAllDayCompactLive6AAfterCatchUp"),
                       "device 216: one live 6A after catch-up finishes empty")
+        XCTAssertTrue(writeBody.contains("persistAllDayCompactLive6AAfterSubscribe"),
+                      "device 218: one 6A after stream-5 CCCD is actually on")
         XCTAssertTrue(writeBody.contains("catchUpAlreadyRequested: catchUpAlready"),
                       "device 216: recovery step must see persisted catch-up before a second 6A")
         XCTAssertTrue(source.contains("RadioDefaults.allDayCompactAbortAt"),
