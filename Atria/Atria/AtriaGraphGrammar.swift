@@ -196,6 +196,11 @@ enum AtriaChartVisualGrammar {
     static let dailyBarCornerRadius: CGFloat = 4
     static let dailyBarWidthRatio: CGFloat = 0.58
     static let inlinePlotHeight: CGFloat = 196
+    /// Shared plot well. Overnight bars, Vitals HR, and Stress used to pick
+    /// 7 / 10 / 12 pt corners and primary vs secondary fills, so the same
+    /// data looked like three products.
+    static let plotCornerRadius: CGFloat = 7
+    static let plotFillOpacity: Double = 0.035
 
     /// Magnitude bars (recovery %, sleep hours, strain) grow from zero so
     /// height is the value. Level bars (HRV, RHR, respiration) keep the
@@ -370,9 +375,13 @@ extension View {
     func atriaGraphPlotSurface() -> some View {
         chartPlotStyle { plotArea in
             plotArea
-                .background(Color.primary.opacity(0.035))
+                .contentShape(Rectangle())
+                .background(Color.primary.opacity(AtriaChartVisualGrammar.plotFillOpacity))
                 .clipShape(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(
+                        cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+                        style: .continuous
+                    )
                 )
         }
     }
@@ -436,9 +445,12 @@ extension View {
     func atriaDailyChartPlotChrome() -> some View {
         chartPlotStyle { plot in
             plot
-                .background(Color.primary.opacity(0.035))
+                .background(Color.primary.opacity(AtriaChartVisualGrammar.plotFillOpacity))
                 .clipShape(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(
+                        cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+                        style: .continuous
+                    )
                 )
                 .padding(.top, 8)
         }

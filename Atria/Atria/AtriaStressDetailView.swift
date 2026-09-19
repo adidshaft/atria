@@ -1564,11 +1564,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
                     .foregroundStyle(.secondary)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
+        .atriaGraphPlotSurface()
         .simultaneousGesture(
             MagnifyGesture()
                 .updating($pinchBase) { _, base, _ in
@@ -1693,11 +1689,7 @@ private struct AtriaStressHeartRateTimelineChart: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
+        .atriaGraphPlotSurface()
         .chartOverlay { proxy in
             GeometryReader { geometry in
                 AtriaChartScrubOverlay(proxy: proxy,
@@ -1804,11 +1796,7 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                     .foregroundStyle(.secondary)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
+        .atriaGraphPlotSurface()
         .accessibilityLabel(accessibilitySummary)
     }
 
