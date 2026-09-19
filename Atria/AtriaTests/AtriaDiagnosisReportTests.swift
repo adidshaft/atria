@@ -530,6 +530,8 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("compactAssembledAgeSeconds:"))
         XCTAssertTrue(home.contains("compactSittingSkip:"))
         XCTAssertTrue(home.contains("idleWindowPending:"))
+        XCTAssertTrue(home.contains("wwrPendingCount:"))
+        XCTAssertTrue(home.contains("lastWWRAllowed:"))
         XCTAssertTrue(home.contains("liveActivityKitCount: lastActivityKitCount"))
         XCTAssertTrue(home.contains("activityKitCount: liveActivityCoordinator.activityKitCount"))
         XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"))
@@ -796,6 +798,60 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             idleWindowPending: 0
         )
         XCTAssertFalse(clear.discrepancies.contains { $0.hasPrefix("idle_window_pending_") })
+    }
+
+    func testDiscrepanciesNameIMUStaleWWRPendingQueue() {
+        XCTAssertTrue(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWWRPending(
+                imuStaleWhileConnected: true,
+                wwrPendingCount: 1
+            ),
+            "device 192 13:15: leftover 6A/51 in the WWR queue must name itself"
+        )
+        XCTAssertFalse(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWWRPending(
+                imuStaleWhileConnected: false,
+                wwrPendingCount: 1
+            )
+        )
+        XCTAssertFalse(
+            AtriaDiagnosisReport.shouldFlagIMUStaleWWRPending(
+                imuStaleWhileConnected: true,
+                wwrPendingCount: 0
+            )
+        )
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let stuck = AtriaDiagnosisReport.make(
+            now: now,
+            build: "193",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 0.08,
+            imuAgeSeconds: 343,
+            stream5Confirmed: true,
+            batteryPercent: 72,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 64,
+            liveHRV: 34,
+            overnightRHR: 66,
+            daytimeRHR: nil,
+            overnightRecovery: 56,
+            todayRecovery: 56,
+            lastWorkout: nil,
+            liveHeartRate: 73,
+            liveZone: "Rest",
+            widgetHeartRate: 73,
+            wwrPendingCount: 1,
+            lastWWRAllowed: false
+        )
+        XCTAssertEqual(stuck.connection.wwrPendingCount, 1)
+        XCTAssertEqual(stuck.connection.lastWWRAllowed, false)
+        XCTAssertTrue(stuck.discrepancies.contains("imu_stale_while_connected"))
+        XCTAssertTrue(stuck.discrepancies.contains("imu_stale_wwr_pending_1"))
     }
 
     func testDiscrepanciesNameEmptyActivityKitWhileHeartRateIsLive() {

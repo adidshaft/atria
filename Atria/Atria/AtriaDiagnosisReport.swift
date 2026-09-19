@@ -30,6 +30,8 @@ enum AtriaDiagnosisReport {
         var officialAppRisk: String
         var workoutRecording: Bool
         var idleWindowPending: Int?
+        var wwrPendingCount: Int? = nil
+        var lastWWRAllowed: Bool? = nil
     }
 
     struct Metrics: Equatable, Codable {
@@ -192,6 +194,8 @@ enum AtriaDiagnosisReport {
         liveActivityElapsedSeconds: Int? = nil,
         compactAssembledAgeSeconds: Double? = nil,
         idleWindowPending: Int? = nil,
+        wwrPendingCount: Int? = nil,
+        lastWWRAllowed: Bool? = nil,
         compactSittingSkip: Bool = false,
         liveActivityKitCount: Int? = nil,
         liveActivityStartError: String? = nil
@@ -218,7 +222,9 @@ enum AtriaDiagnosisReport {
             batteryPercent: batteryPercent,
             officialAppRisk: officialAppRisk,
             workoutRecording: workoutRecording,
-            idleWindowPending: idleWindowPending
+            idleWindowPending: idleWindowPending,
+            wwrPendingCount: wwrPendingCount,
+            lastWWRAllowed: lastWWRAllowed
         )
         return Snapshot(
             schema: schema,
@@ -316,6 +322,12 @@ enum AtriaDiagnosisReport {
                 skippedSitting: compactSittingSkip
             ) {
                 keys.append("imu_stale_while_connected")
+                if shouldFlagIMUStaleWWRPending(
+                    imuStaleWhileConnected: true,
+                    wwrPendingCount: connection.wwrPendingCount
+                ), let pending = connection.wwrPendingCount {
+                    keys.append("imu_stale_wwr_pending_\(pending)")
+                }
             }
         }
         if connection.recovering {
@@ -448,6 +460,17 @@ enum AtriaDiagnosisReport {
             skippedSitting: skippedSitting,
             imuAgeSeconds: age
         )
+    }
+
+    /// Device 192 13:15: IMU 343s stale, `wwr_pending=1`, `last_wwr_allowed=False`.
+    /// `imu_stale_while_connected` alone hid that 6A/51 never left the local
+    /// WWR queue, so recovery looked like a radio death instead of a stuck write.
+    static func shouldFlagIMUStaleWWRPending(
+        imuStaleWhileConnected: Bool,
+        wwrPendingCount: Int?
+    ) -> Bool {
+        guard imuStaleWhileConnected, let pending = wwrPendingCount else { return false }
+        return pending > 0
     }
 
     /// Sleep-backed Day/Week/Month values for the same overnight numbers Today
