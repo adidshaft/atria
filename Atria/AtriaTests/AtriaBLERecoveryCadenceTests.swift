@@ -466,6 +466,25 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 stream5NotifyCallbacksThisConnection: 0
             )
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true
+            ),
+            "device 206: wait_stream5 in Today after a background abort did not open stream-5; re-arm 0x14 on scene-active"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 214,
+                abortAlreadySentThisConnection: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: false
+            )
+        )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
                 abortAlreadySentThisConnection: true

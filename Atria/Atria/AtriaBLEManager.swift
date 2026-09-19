@@ -8680,6 +8680,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             updateDutyCycleState(reason: "scene_active_workout_fast", now: now)
             AtriaDebugLog("ATRIADBG foreground_resume path=workout_fast samples=%d connected=1 action=preserve_live_pipeline",
                           session.count)
+            reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active_workout_fast")
             return
         }
         // Give a glance-eligible compact motion bank first refusal before any
@@ -8733,6 +8734,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reassertHeartRateNotificationsIfConnected(reason: "scene_active")
         reassertR10NotificationIfConnected(reason: "scene_active")
         elevateLongWearRadioForInteractiveForegroundIfNeeded(reason: "scene_active_interactive")
+        reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active")
         if foregroundInteractiveMode {
             return
         }
@@ -8743,6 +8745,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=1 action=keep_supervisor_and_keepalive_armed rest_hr=%d max_hr=%d",
               rest,
               maxHR)
+    }
+
+    /// Device 206 Today 19:19: abort ran in the background, then
+    /// `wait_stream5` held in the foreground with stream-5 still 0.
+    /// Device 202: a single 0x14 while Today was in front restored
+    /// stream-5 type-32 logs. Re-arm that one abort on a real scene-active
+    /// (not the <1s UIKit/SwiftUI coalesced duplicate).
+    nonisolated static func shouldReissueAllDayCompactAbortOnForeground(
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAlreadySentThisConnection: Bool
+    ) -> Bool {
+        abortAlreadySentThisConnection && stream5NotifyCallbacksThisConnection == 0
+    }
+
+    private func reissueAllDayCompactAbortOnForegroundIfNeeded(reason: String) {
+        guard Self.shouldReissueAllDayCompactAbortOnForeground(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil
+        ) else { return }
+        lastAllDayCompactAbortAt = nil
+        AtriaDebugLog("ATRIADBG imu_recovery status=foreground_reissue_abort reason=%@ action=526a14_on_empty_stream5",
+                      reason)
+        evaluateR10Liveness(now: Date(), reason: "\(reason)_compact_abort_reissue")
     }
 
     private func reassertHeartRateNotificationsIfConnected(reason: String) {
