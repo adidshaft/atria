@@ -1117,7 +1117,7 @@ struct AtriaOnboardingFlow: View {
     private var behaviorsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
-            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime in Settings.")
+            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime from Journal or Settings.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             ForEach(behaviorGroups, id: \.title) { group in
@@ -1143,18 +1143,7 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var behaviorGroups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
-        [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
-                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
-                                  .coldExposure, .massage, .stretching, .soreness]),
-            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
-                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
-                                      .supplements, .medication]),
-            ("Substances", [.alcohol, .nicotine, .cannabis]),
-            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
-                                  .morningLight, .outdoors, .travel, .unwell]),
-            ("Intimacy", [.sexualActivity, .selfPleasure])
-        ]
+        AtriaTrackedBehaviors.groups
     }
 
     private var behaviorGridColumns: [GridItem] {
@@ -1174,11 +1163,15 @@ struct AtriaOnboardingFlow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(selected ? .cyan : .secondary)
                     .frame(width: 18)
-                Text(tag.label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tag.label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(selected ? .primary : .secondary)
+                    Text(tag.prompt)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 0)
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.caption)
@@ -1197,7 +1190,7 @@ struct AtriaOnboardingFlow: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tag.label)
         .accessibilityValue(selected ? "Tracked" : "Not tracked")
-        .accessibilityHint(selected ? "Double tap to stop tracking" : "Double tap to track")
+        .accessibilityHint(tag.prompt)
     }
 
     private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {

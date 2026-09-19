@@ -2514,24 +2514,13 @@ struct AtriaTrackedBehaviorsSettingsView: View {
     }
 
     private var groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
-        [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
-                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
-                                  .coldExposure, .massage, .stretching, .soreness]),
-            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
-                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
-                                      .supplements, .medication]),
-            ("Substances", [.alcohol, .nicotine, .cannabis]),
-            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
-                                  .morningLight, .outdoors, .travel, .unwell]),
-            ("Intimacy", [.sexualActivity, .selfPleasure])
-        ]
+        AtriaTrackedBehaviors.groups
     }
 
     var body: some View {
         Form {
             Section {
-                Text("Choose the behaviors you want to log each morning. Your daily check-in shows only these — add or remove them anytime.")
+                Text("Choose the behaviors you want to log each morning. Your check-in shows only these — add or remove them anytime from Journal or here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -2539,7 +2528,13 @@ struct AtriaTrackedBehaviorsSettingsView: View {
                 Section(group.title) {
                     ForEach(group.tags) { tag in
                         Toggle(isOn: binding(for: tag)) {
-                            Label(tag.label, systemImage: tag.symbolName)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(tag.label, systemImage: tag.symbolName)
+                                Text(tag.prompt)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }

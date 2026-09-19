@@ -53,6 +53,68 @@ enum AtriaTrackedBehaviors {
     static func serialize(_ tags: [BehaviorJournalEntry.Tag]) -> String {
         tags.map(\.rawValue).joined(separator: ",")
     }
+
+    static let groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] = [
+        ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
+                              .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
+                              .coldExposure, .massage, .stretching, .soreness]),
+        ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
+                                  .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
+                                  .supplements, .medication]),
+        ("Substances", [.alcohol, .nicotine, .cannabis]),
+        ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
+                              .morningLight, .outdoors, .travel, .unwell]),
+        ("Intimacy", [.sexualActivity, .selfPleasure])
+    ]
+}
+
+extension BehaviorJournalEntry.Tag {
+    /// The yes/no sentence on the morning card. `label` is the noun; this is
+    /// what the wearer is actually answering.
+    var prompt: String {
+        switch self {
+        case .sleep: return "Did you get to bed on time last night?"
+        case .alcohol: return "Any alcohol yesterday?"
+        case .caffeine: return "Coffee, tea, or caffeine after mid-afternoon?"
+        case .protein: return "Did you hit your protein target yesterday?"
+        case .training: return "Did you train yesterday?"
+        case .stress: return "Was yesterday unusually stressful?"
+        case .hydration: return "Did you stay well hydrated yesterday?"
+        case .lateMeal: return "Did you eat within two hours of bed?"
+        case .morningLight: return "Did you get outdoor light yesterday morning?"
+        case .meditation: return "Did you meditate or do breathwork yesterday?"
+        case .nicotine: return "Any nicotine yesterday?"
+        case .cannabis: return "Any cannabis yesterday?"
+        case .bigMeal: return "A large or heavy meal yesterday?"
+        case .addedSugar: return "A lot of added sugar yesterday?"
+        case .vegetables: return "Plenty of vegetables yesterday?"
+        case .fasted: return "Did you fast for a long stretch yesterday?"
+        case .supplements: return "Took your supplements yesterday?"
+        case .melatonin: return "Melatonin or a sleep aid last night?"
+        case .magnesium: return "Magnesium before bed last night?"
+        case .medication: return "Took your medication yesterday?"
+        case .sauna: return "Sauna or heat session yesterday?"
+        case .coldExposure: return "Cold plunge or cold shower yesterday?"
+        case .stretching: return "Did you stretch or do mobility yesterday?"
+        case .massage: return "Massage or bodywork yesterday?"
+        case .soreness: return "Waking up sore today?"
+        case .activeDay: return "Were you active on your feet yesterday?"
+        case .nap: return "Did you nap yesterday?"
+        case .screenInBed: return "Screens in bed last night?"
+        case .readBeforeBed: return "Did you read before bed?"
+        case .sharedBed: return "Shared your bed (partner or pet) last night?"
+        case .warmRoom: return "Was your room too warm last night?"
+        case .consistentBedtime: return "A consistent bedtime last night?"
+        case .socialTime: return "Meaningful social time yesterday?"
+        case .anxious: return "Feeling anxious yesterday?"
+        case .gratitude: return "Practice gratitude or journaling yesterday?"
+        case .outdoors: return "Time outdoors in nature yesterday?"
+        case .travel: return "Travel or a time-zone change yesterday?"
+        case .unwell: return "Feeling unwell or run down today?"
+        case .sexualActivity: return "Sexual activity yesterday?"
+        case .selfPleasure: return "Self-pleasure yesterday?"
+        }
+    }
 }
 
 /// Day-scoped progress shared by Journal's deck and Today's Daily Brief.
@@ -613,6 +675,7 @@ private struct AtriaJournalCheckInDeck: View {
     /// amount needs a calm, large-target interaction that cannot fight the
     /// deck's drag gesture.
     @State private var followUpQuestion: AtriaJournalTypedQuestion?
+    @State private var showTrackedBehaviors = false
     // Tinder-style swipe deck: live drag offset for the top card, plus a
     // dedicated haptic tick that fires on every committed swipe (yes or no),
     // independent of the existing deckIndex-driven selection tick.
@@ -693,6 +756,15 @@ private struct AtriaJournalCheckInDeck: View {
                 }
             }
 
+            Button {
+                showTrackedBehaviors = true
+            } label: {
+                Label("Choose what you track", systemImage: "checklist")
+                    .font(.caption.weight(.semibold))
+            }
+            .atriaCardAction(prominent: false, tint: .cyan)
+            .accessibilityHint("Add or remove behaviors from this morning check-in")
+
             if deckComplete {
                 completedCard
             } else {
@@ -736,6 +808,16 @@ private struct AtriaJournalCheckInDeck: View {
                     advance()
                 }
             )
+        }
+        .sheet(isPresented: $showTrackedBehaviors) {
+            NavigationStack {
+                AtriaTrackedBehaviorsSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showTrackedBehaviors = false }
+                        }
+                    }
+            }
         }
         .onAppear {
             // Completion is persisted state, not transient UI state: resume at
@@ -1010,10 +1092,15 @@ private struct AtriaJournalCheckInDeck: View {
                 .accessibilityHidden(true)
 
             Text(tag.label)
-                .font(.title2.weight(.bold))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .tracking(0.6)
+
+            Text(tag.prompt)
+                .font(.title3.weight(.semibold))
                 .multilineTextAlignment(.center)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .fixedSize(horizontal: false, vertical: true)
 
             if isAutoTag {
                 AtriaStatusChip(text: "from Health", systemImage: "heart.fill", tint: .pink)
@@ -1030,10 +1117,9 @@ private struct AtriaJournalCheckInDeck: View {
                         presentFollowUp(followUp)
                     }
                 } label: {
-                    Image(systemName: "checkmark")
-                        .font(.title3.weight(.bold))
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .accessibilityLabel("Yes")
+                    Label("Yes", systemImage: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 // Equal visual weight with No (2026-08-04): a filled Yes
                 // beside a pale No nudged the answer, and journal answers
@@ -1046,10 +1132,9 @@ private struct AtriaJournalCheckInDeck: View {
                     recordNo(tag: tag, followUp: followUp)
                     advance()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.title3.weight(.bold))
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .accessibilityLabel("No")
+                    Label("No", systemImage: "xmark")
+                        .font(.body.weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .atriaCardAction(prominent: false, tint: .accentColor)
             }
@@ -1075,7 +1160,7 @@ private struct AtriaJournalCheckInDeck: View {
         .padding(.vertical, 26)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(tag.label). \(question(for: tag))")
+        .accessibilityLabel(tag.prompt)
     }
 
     private static let scaleEmoji = ["😖", "😕", "😐", "🙂", "😄"]
@@ -1153,51 +1238,6 @@ private struct AtriaJournalCheckInDeck: View {
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
-    }
-
-    private func question(for tag: BehaviorJournalEntry.Tag) -> String {
-        switch tag {
-        case .sleep: return "Did you get to bed on time last night?"
-        case .alcohol: return "Any alcohol yesterday?"
-        case .caffeine: return "Caffeine after mid-afternoon yesterday?"
-        case .protein: return "Did you hit your protein target yesterday?"
-        case .training: return "Did you train yesterday?"
-        case .stress: return "Was yesterday unusually stressful?"
-        case .hydration: return "Did you stay well hydrated yesterday?"
-        case .lateMeal: return "Did you eat within two hours of bed?"
-        case .morningLight: return "Did you get outdoor light yesterday morning?"
-        case .meditation: return "Did you meditate or do breathwork yesterday?"
-        case .nicotine: return "Any nicotine yesterday?"
-        case .cannabis: return "Any cannabis yesterday?"
-        case .bigMeal: return "A large or heavy meal yesterday?"
-        case .addedSugar: return "A lot of added sugar yesterday?"
-        case .vegetables: return "Plenty of vegetables yesterday?"
-        case .fasted: return "Did you fast for a long stretch yesterday?"
-        case .supplements: return "Took your supplements yesterday?"
-        case .melatonin: return "Melatonin or a sleep aid last night?"
-        case .magnesium: return "Magnesium before bed last night?"
-        case .medication: return "Took your medication yesterday?"
-        case .sauna: return "Sauna or heat session yesterday?"
-        case .coldExposure: return "Cold plunge or cold shower yesterday?"
-        case .stretching: return "Did you stretch or do mobility yesterday?"
-        case .massage: return "Massage or bodywork yesterday?"
-        case .soreness: return "Waking up sore today?"
-        case .activeDay: return "Were you active on your feet yesterday?"
-        case .nap: return "Did you nap yesterday?"
-        case .screenInBed: return "Screens in bed last night?"
-        case .readBeforeBed: return "Did you read before bed?"
-        case .sharedBed: return "Shared your bed (partner or pet) last night?"
-        case .warmRoom: return "Was your room too warm last night?"
-        case .consistentBedtime: return "A consistent bedtime last night?"
-        case .socialTime: return "Meaningful social time yesterday?"
-        case .anxious: return "Feeling anxious yesterday?"
-        case .gratitude: return "Practice gratitude or journaling yesterday?"
-        case .outdoors: return "Time outdoors in nature yesterday?"
-        case .travel: return "Travel or a time-zone change yesterday?"
-        case .unwell: return "Feeling unwell or run down today?"
-        case .sexualActivity: return "Sexual activity yesterday?"
-        case .selfPleasure: return "Self-pleasure yesterday?"
-        }
     }
 
     private func advance() {
