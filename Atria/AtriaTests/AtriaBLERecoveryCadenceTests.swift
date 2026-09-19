@@ -427,22 +427,80 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             [
                 [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 208: 52/6A/14 ACK'd abort on stream-4 with stream-5 still 0; empty pipe is 0x14 only"
+            "device 208: 52/6A/14 ACK'd abort on stream-4 with stream-5 still 0; empty pipe starts with 0x14"
         )
-        XCTAssertTrue(
-            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
-                abortAlreadySentThisConnection: true,
-                stream5NotifyCallbacksThisConnection: 0
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: false
             ),
-            "device 204: after one abort, do not 6A into empty stream-5"
+            .abortHistorical
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 5
+            ),
+            .waitStream5,
+            "too soon after abort to 6A"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 12
+            ),
+            .toggleIMUOn,
+            "device 209: one 6A 12s after abort when stream-5 stayed 0"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 42,
+                followUp6AAlreadySentThisConnection: true
+            ),
+            .waitStream5,
+            "device 204: after that one 6A, do not 6A every 45s"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true
+            ),
+            .abortHistorical,
+            "device 204: after 3 min of empty stream-5, retry 0x14 once"
         )
         XCTAssertTrue(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
                 abortAlreadySentThisConnection: true,
                 stream5NotifyCallbacksThisConnection: 0,
-                abortAge: 42
+                abortAge: 5
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 12
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 42,
+                followUp6AAlreadySentThisConnection: true
             ),
-            "device 204: 6A 42s after abort is still an empty-pipe write"
+            "device 204: 6A 42s after the follow-up would be the empty-pipe storm"
         )
         XCTAssertFalse(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
@@ -485,12 +543,23 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
-                abortAlreadySentThisConnection: true
+                abortAlreadySentThisConnection: true,
+                abortAge: 180
             ),
             [
                 [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 208: abortAlready on an empty stream-5 retries 0x14, never 52/6A"
+            "device 209: 3-minute empty-pipe retry is 0x14, never 52/6A"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
+                abortAlreadySentThisConnection: true,
+                abortAge: 12
+            ),
+            [
+                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+            ],
+            "device 209: one 6A after abort when stream-5 stayed 0"
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
@@ -12761,8 +12830,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let writeBody = String(source[writeStart.lowerBound..<writeEnd.lowerBound])
         XCTAssertTrue(writeBody.contains("abortAge"),
                       "device 204: wait-for-stream5 must expire so 0x14 can retry")
-        XCTAssertTrue(writeBody.contains("liveWithout ? \"6a\" : \"14\""),
-                      "device 208: empty pipe is 0x14 only; 6A only after stream-5 is live without compact IMU")
+        XCTAssertTrue(writeBody.contains("allDayCompactIMURecoveryStep"),
+                      "device 209: writeAllDayCompactIMURecovery must use the abort-then-one-6A step, not a hardcoded 14-only command")
+        XCTAssertTrue(writeBody.contains("lastAllDayCompactFollowUp6AAt"))
         XCTAssertFalse(writeBody.contains("skipAbort"),
                        "device 204: abortAlready must not skip to 6A on an empty stream-5")
 

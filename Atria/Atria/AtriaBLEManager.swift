@@ -5546,6 +5546,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastR10ZombieCCCDToggleAt = nil
         lastR10ZombieTxRediscoverAt = nil
         lastAllDayCompactAbortAt = nil
+        lastAllDayCompactFollowUp6AAt = nil
         UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieCCCDToggleAt)
         UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieKickSkipReason)
         proprietaryWWRGate.reset()
@@ -8778,6 +8779,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil
         ) else { return }
         lastAllDayCompactAbortAt = nil
+        lastAllDayCompactFollowUp6AAt = nil
         AtriaDebugLog("ATRIADBG imu_recovery status=foreground_reissue_abort reason=%@ action=14_on_empty_stream5",
                       reason)
         evaluateR10Liveness(now: Date(), reason: "\(reason)_compact_abort_reissue")
@@ -30529,6 +30531,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieCCCDToggleAt: Date?
     private var lastR10ZombieTxRediscoverAt: Date?
     private var lastAllDayCompactAbortAt: Date?
+    private var lastAllDayCompactFollowUp6AAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
     /// to wait through a MainActor-stale live stream.
@@ -30982,42 +30985,85 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         command != "wait_stream5"
     }
 
-    /// Device 201: `52` then `6A` ACK'd on stream-4 (`24…6a…`) and still
-    /// produced 0 stream-5 `0x33`. Official Gen4 compact is 6A on then
-    /// abort-historical (`0x14`); 0x03 realtime-HR stays off because 2A37
-    /// is already live. Never 0x51/0x3F.
-    /// Device 202: a single 0x14 while Today was in front restored stream-5
-    /// as type-32 logs. Follow-up on that live empty IMU pipe is 6A on only.
-    /// Device 204: abort once, then 6A every 45s while stream-5 stayed 0.
-    /// Device 208 Today: `52`/`6A`/`14` ACK'd `0x14` on stream-4 and stream-5
-    /// stayed 0. 6A before abort is an empty-pipe write; empty recovery is
-    /// abort only. Retry 0x14 on a 3-minute cadence, never 52/6A on empty.
+    /// Device 209 Today: 0x14 ACK'd on stream-4 (`241714`) and stream-5 stayed
+    /// 0. Official compact is 6A on after history is clear. One 6A 12s after
+    /// abort, never a 45s 6A storm (device 204). Retry 0x14 at 3 minutes.
     nonisolated static let allDayCompactIMUAbortRetryInterval: TimeInterval = 180
+    nonisolated static let allDayCompactIMUFollowUp6ADelay: TimeInterval = 12
+
+    enum AllDayCompactIMURecoveryStep: String, Equatable {
+        case waitStream5 = "wait_stream5"
+        case abortHistorical = "14"
+        case toggleIMUOn = "6a"
+    }
+
+    nonisolated static func allDayCompactIMURecoveryStep(
+        stream5LiveWithoutCompactIMU: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval? = nil,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval
+    ) -> AllDayCompactIMURecoveryStep {
+        if stream5LiveWithoutCompactIMU { return .toggleIMUOn }
+        guard stream5NotifyCallbacksThisConnection == 0 else {
+            return .waitStream5
+        }
+        if !abortAlreadySentThisConnection { return .abortHistorical }
+        if let abortAge, abortAge >= abortRetryInterval {
+            return .abortHistorical
+        }
+        if !followUp6AAlreadySentThisConnection,
+           let abortAge, abortAge >= followUp6ADelay {
+            return .toggleIMUOn
+        }
+        return .waitStream5
+    }
 
     nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
         abortAlreadySentThisConnection: Bool,
         stream5NotifyCallbacksThisConnection: Int,
         abortAge: TimeInterval? = nil,
-        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay
     ) -> Bool {
-        guard abortAlreadySentThisConnection,
-              stream5NotifyCallbacksThisConnection == 0 else {
-            return false
-        }
-        if let abortAge, abortAge >= abortRetryInterval { return false }
-        return true
+        // Stream-5 already has traffic (device 202 type-32, or live 0x33):
+        // that is not the empty-pipe wait. Empty pipe after abort waits
+        // until the 12s 6A or the 180s 0x14 retry.
+        guard stream5NotifyCallbacksThisConnection == 0 else { return false }
+        return allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: false,
+            stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
+            abortAlreadySentThisConnection: abortAlreadySentThisConnection,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            followUp6ADelay: followUp6ADelay,
+            abortRetryInterval: abortRetryInterval
+        ) == .waitStream5
     }
 
     nonisolated static func allDayCompactIMURecoveryCommandBodies(
         stream5LiveWithoutCompactIMU: Bool = false,
-        abortAlreadySentThisConnection _: Bool = false
+        abortAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil,
+        followUp6AAlreadySentThisConnection: Bool = false
     ) -> [[UInt8]] {
-        if stream5LiveWithoutCompactIMU {
+        switch allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: stream5LiveWithoutCompactIMU,
+            stream5NotifyCallbacksThisConnection: stream5LiveWithoutCompactIMU ? 214 : 0,
+            abortAlreadySentThisConnection: abortAlreadySentThisConnection,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection
+        ) {
+        case .waitStream5:
+            return []
+        case .abortHistorical:
+            return [[Cmd.abortHistoricalTransmits, 0x00]]
+        case .toggleIMUOn:
             return [[Cmd.toggleIMUMode, 0x01]]
         }
-        return [
-            [Cmd.abortHistoricalTransmits, 0x00],
-        ]
     }
 
     nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
@@ -31644,22 +31690,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         let abortAlready = lastAllDayCompactAbortAt != nil
         let abortAge = lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
-        if Self.allDayCompactIMURecoveryShouldWaitForStream5(
-            abortAlreadySentThisConnection: abortAlready,
+        let followUpAlready = lastAllDayCompactFollowUp6AAt != nil
+        let step = Self.allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            abortAge: abortAge
-        ) {
-            return "wait_stream5"
+            abortAlreadySentThisConnection: abortAlready,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUpAlready
+        )
+        if step == .waitStream5 {
+            return AllDayCompactIMURecoveryStep.waitStream5.rawValue
         }
-        // 6A only after stream-5 is live without compact 0x33. Empty pipe
-        // gets 0x14 (first time or 3-minute retry), never 52/6A into silence.
-        let command = liveWithout ? "6a" : "14"
-        if !liveWithout {
+        // Device 209: abort ACK'd and stream-5 stayed 0. Empty pipe is 0x14,
+        // then one 6A after 12s, never 52 and never a 45s 6A storm.
+        let command = step.rawValue
+        switch step {
+        case .waitStream5:
+            break
+        case .abortHistorical:
             lastAllDayCompactAbortAt = Date()
+            lastAllDayCompactFollowUp6AAt = nil
+        case .toggleIMUOn:
+            if !liveWithout {
+                lastAllDayCompactFollowUp6AAt = Date()
+            }
         }
         for (index, body) in Self.allDayCompactIMURecoveryCommandBodies(
             stream5LiveWithoutCompactIMU: liveWithout,
-            abortAlreadySentThisConnection: abortAlready
+            abortAlreadySentThisConnection: abortAlready,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUpAlready
         ).enumerated() {
             if index > 0 {
                 try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
@@ -32031,7 +32091,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            Self.allDayCompactIMURecoveryShouldWaitForStream5(
             abortAlreadySentThisConnection: abortAlready,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            abortAge: abortAge
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil
            ) {
             let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
             persistLastIMURecovery(
