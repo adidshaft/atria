@@ -30587,6 +30587,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastAllDayCompactFollowUp6AAt: Date?
     private var lastAllDayCompactHistoryCatchUpAt: Date?
     private var lastAllDayCompactLive6AAfterCatchUpAt: Date?
+    private var lastAllDayCompactLive6AAfterSubscribeAt: Date?
     private var protectedR10CommandSequenceStartedAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
@@ -31029,6 +31030,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Device 216 catch-up finished empty. One live 6A after that drain,
     /// with stream-5 subscribed, without a 6A storm (device 204).
     nonisolated static let allDayCompactIMULive6AAfterCatchUpDelay: TimeInterval = 15
+    /// Device 218 subscribed stream-5 after the post-catch-up 6A, so the
+    /// strap never saw compact-on with CCCD live. One 6A after subscribe.
+    nonisolated static let allDayCompactIMULive6AAfterSubscribeDelay: TimeInterval = 2
 
     nonisolated static func shouldYieldConnectedHistoryAfterLiveCompactAttempt(
         followUp6AAlreadySentThisConnection: Bool,
@@ -31184,7 +31188,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         live6AAfterCatchUpAlreadySent: Bool = false,
         catchUpAge: TimeInterval? = nil,
         historyCatchUpInProgress: Bool = false,
-        live6AAfterCatchUpDelay: TimeInterval = allDayCompactIMULive6AAfterCatchUpDelay
+        live6AAfterCatchUpDelay: TimeInterval = allDayCompactIMULive6AAfterCatchUpDelay,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil,
+        live6AAfterSubscribeDelay: TimeInterval = allDayCompactIMULive6AAfterSubscribeDelay
     ) -> AllDayCompactIMURecoveryStep {
         if stream5LiveWithoutCompactIMU { return .toggleIMUOn }
         guard stream5NotifyCallbacksThisConnection == 0 else {
@@ -31210,6 +31218,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            catchUpAge >= live6AAfterCatchUpDelay {
             return .toggleIMUOn
         }
+        if followUp6AAlreadySentThisConnection,
+           stream5SubscribeConfirmed,
+           !live6AAfterSubscribeAlreadySent,
+           !historyCatchUpInProgress,
+           let subscribeAge,
+           subscribeAge >= live6AAfterSubscribeDelay {
+            return .toggleIMUOn
+        }
         return .waitStream5
     }
 
@@ -31223,7 +31239,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         catchUpAlreadyRequested: Bool = false,
         live6AAfterCatchUpAlreadySent: Bool = false,
         catchUpAge: TimeInterval? = nil,
-        historyCatchUpInProgress: Bool = false
+        historyCatchUpInProgress: Bool = false,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil
     ) -> Bool {
         // Stream-5 already has traffic (device 202 type-32, or live 0x33):
         // that is not the empty-pipe wait. Empty pipe after abort waits
@@ -31240,7 +31259,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             catchUpAlreadyRequested: catchUpAlreadyRequested,
             live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
             catchUpAge: catchUpAge,
-            historyCatchUpInProgress: historyCatchUpInProgress
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: stream5SubscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: live6AAfterSubscribeAlreadySent,
+            subscribeAge: subscribeAge
         ) == .waitStream5
     }
 
@@ -31252,7 +31274,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         catchUpAlreadyRequested: Bool = false,
         live6AAfterCatchUpAlreadySent: Bool = false,
         catchUpAge: TimeInterval? = nil,
-        historyCatchUpInProgress: Bool = false
+        historyCatchUpInProgress: Bool = false,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil
     ) -> [[UInt8]] {
         switch allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: stream5LiveWithoutCompactIMU,
@@ -31263,7 +31288,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             catchUpAlreadyRequested: catchUpAlreadyRequested,
             live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
             catchUpAge: catchUpAge,
-            historyCatchUpInProgress: historyCatchUpInProgress
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: stream5SubscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: live6AAfterSubscribeAlreadySent,
+            subscribeAge: subscribeAge
         ) {
         case .waitStream5:
             return []
@@ -31885,11 +31913,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastAllDayCompactFollowUp6AAt = nil
         lastAllDayCompactHistoryCatchUpAt = nil
         lastAllDayCompactLive6AAfterCatchUpAt = nil
+        lastAllDayCompactLive6AAfterSubscribeAt = nil
         let defaults = UserDefaults.standard
         defaults.set(date.timeIntervalSince1970, forKey: RadioDefaults.allDayCompactAbortAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt)
     }
 
     private func persistAllDayCompactFollowUp6A(at date: Date) {
@@ -31916,6 +31946,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private func persistAllDayCompactLive6AAfterSubscribe(at date: Date) {
+        lastAllDayCompactLive6AAfterSubscribeAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt
+        )
+    }
+
     private func loadAllDayCompactIMURecoveryLease() {
         let defaults = UserDefaults.standard
         lastAllDayCompactAbortAt = Self.resolvedAllDayCompactTimestamp(
@@ -31934,6 +31972,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             memory: lastAllDayCompactLive6AAfterCatchUpAt,
             persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt) as? Double
         )
+        lastAllDayCompactLive6AAfterSubscribeAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactLive6AAfterSubscribeAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt) as? Double
+        )
     }
 
     private func clearAllDayCompactIMURecoveryLease() {
@@ -31941,11 +31983,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastAllDayCompactFollowUp6AAt = nil
         lastAllDayCompactHistoryCatchUpAt = nil
         lastAllDayCompactLive6AAfterCatchUpAt = nil
+        lastAllDayCompactLive6AAfterSubscribeAt = nil
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: RadioDefaults.allDayCompactAbortAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
         defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt)
     }
 
     private func compactIMUEvidenceAge(now: Date) -> TimeInterval? {
@@ -31992,6 +32036,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let live6AAlready = lastAllDayCompactLive6AAfterCatchUpAt != nil
         let catchUpAge = lastAllDayCompactHistoryCatchUpAt.map { Date().timeIntervalSince($0) }
         let historyCatchUpInProgress = offlineHistoricalSyncInProgress || historyOnlyProbeMode
+        let subscribeConfirmed = strapStream5NotifyConfirmed
+            || (UserDefaults.standard.string(forKey: RadioDefaults.passiveR10Status) ?? "")
+                .hasPrefix("subscribed")
+        let afterSubscribeAlready = lastAllDayCompactLive6AAfterSubscribeAt != nil
+        let subscribeAge = (UserDefaults.standard.object(
+            forKey: RadioDefaults.passiveR10SubscribedAt
+        ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
         let step = Self.allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
@@ -32001,7 +32052,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             catchUpAlreadyRequested: catchUpAlready,
             live6AAfterCatchUpAlreadySent: live6AAlready,
             catchUpAge: catchUpAge,
-            historyCatchUpInProgress: historyCatchUpInProgress
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: subscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: afterSubscribeAlready,
+            subscribeAge: subscribeAge
         )
         if step == .waitStream5 {
             return AllDayCompactIMURecoveryStep.waitStream5.rawValue
@@ -32009,6 +32063,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Device 209: abort ACK'd and stream-5 stayed 0. Empty pipe is 0x14,
         // then one 6A after 12s, never 52 and never a 45s 6A storm.
         // Device 216: after catch-up finishes empty, one more live 6A.
+        // Device 218: one 6A after stream-5 CCCD is actually on.
         let command = step.rawValue
         switch step {
         case .waitStream5:
@@ -32016,7 +32071,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case .abortHistorical:
             persistAllDayCompactAbort(at: Date())
         case .toggleIMUOn:
-            if followUpAlready {
+            if live6AAlready {
+                persistAllDayCompactLive6AAfterSubscribe(at: Date())
+            } else if followUpAlready {
                 persistAllDayCompactLive6AAfterCatchUp(at: Date())
             } else {
                 persistAllDayCompactFollowUp6A(at: Date())
@@ -32030,7 +32087,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             catchUpAlreadyRequested: catchUpAlready,
             live6AAfterCatchUpAlreadySent: live6AAlready,
             catchUpAge: catchUpAge,
-            historyCatchUpInProgress: historyCatchUpInProgress
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: subscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: afterSubscribeAlready,
+            subscribeAge: subscribeAge
         ).enumerated() {
             if index > 0 {
                 try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
@@ -32418,7 +32478,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             catchUpAge: lastAllDayCompactHistoryCatchUpAt.map {
                 now.timeIntervalSince($0)
             },
-            historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode
+            historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+            stream5SubscribeConfirmed: strapStream5NotifyConfirmed
+                || (defaults.string(forKey: RadioDefaults.passiveR10Status) ?? "")
+                    .hasPrefix("subscribed"),
+            live6AAfterSubscribeAlreadySent: lastAllDayCompactLive6AAfterSubscribeAt != nil,
+            subscribeAge: (defaults.object(
+                forKey: RadioDefaults.passiveR10SubscribedAt
+            ) as? Double).map {
+                now.timeIntervalSince(Date(timeIntervalSince1970: $0))
+            }
            ) {
             let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
             persistLastIMURecovery(
