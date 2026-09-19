@@ -12763,6 +12763,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "qualified v9 stays on the existing silent-stream refresh"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: .protectedV9,
+                state: .protectedLaunchPending,
+                connected: true,
+                historyOwnsTransport: false,
+                heartRateNotifying: true,
+                imuAge: 90,
+                lastActivationAge: 11 * 60
+            ),
+            "device 211: protected_launch_pending skipped the 12s 6A while IMU stayed stale"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
                 owner: .pureHRV10,
