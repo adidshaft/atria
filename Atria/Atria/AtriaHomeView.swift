@@ -12475,6 +12475,13 @@ final class AtriaHomeModel {
                     ?? AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count,
                 widgetStrain: publishedWidget?.strain,
                 todayStrain: heroStore.state.strain,
+                heldStrain: AtriaHeldDayStrainFloor.load(
+                    cycleStart: AtriaPhysiologicalCycle.current(
+                        now: now,
+                        confirmedSleeps: store.confirmedSleeps
+                    ).start,
+                    now: now
+                )?.value,
                 metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
                     rollups: rollups,
                     now: now

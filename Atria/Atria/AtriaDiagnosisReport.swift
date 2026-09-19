@@ -41,6 +41,7 @@ enum AtriaDiagnosisReport {
         var todayRecovery: Int?
         var todaySteps: Int?
         var todayStrain: Double? = nil
+        var heldStrain: Double? = nil
     }
 
     struct Workout: Equatable, Codable {
@@ -182,6 +183,7 @@ enum AtriaDiagnosisReport {
         todaySteps: Int? = nil,
         widgetStrain: Double? = nil,
         todayStrain: Double? = nil,
+        heldStrain: Double? = nil,
         metricWindows: MetricWindows? = nil,
         liveActivityName: String? = nil,
         liveActivityAvailability: String? = nil,
@@ -202,7 +204,8 @@ enum AtriaDiagnosisReport {
             overnightRecovery: overnightRecovery,
             todayRecovery: todayRecovery,
             todaySteps: todaySteps,
-            todayStrain: todayStrain
+            todayStrain: todayStrain,
+            heldStrain: heldStrain
         )
         let connection = Connection(
             status: status.rawValue,
@@ -399,6 +402,13 @@ enum AtriaDiagnosisReport {
             let widgetTenths = Int((widget * 10).rounded())
             let todayTenths = Int((today * 10).rounded())
             keys.append("widget_strain_\(widgetTenths)_today_\(todayTenths)")
+        }
+        if let held = metrics.heldStrain,
+           let today = metrics.todayStrain,
+           held - today >= 0.2 {
+            let heldTenths = Int((held * 10).rounded())
+            let todayTenths = Int((today * 10).rounded())
+            keys.append("strain_held_\(heldTenths)_today_\(todayTenths)")
         }
         if let workout = lastWorkout, workout.samples > 0, workout.steps == 0 {
             keys.append("workout_zero_steps")

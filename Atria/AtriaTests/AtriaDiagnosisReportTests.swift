@@ -534,6 +534,8 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("activityKitCount: liveActivityCoordinator.activityKitCount"))
         XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"))
         XCTAssertTrue(home.contains("liveActivityStartError:"))
+        XCTAssertTrue(home.contains("heldStrain: AtriaHeldDayStrainFloor.load("),
+                      "diagnosis must name a cycle floor the live recompute dropped")
         XCTAssertTrue(home.contains("diagnosisDisplayedHeartRate("))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
         let diagnosisStart = try XCTUnwrap(home.range(of: "func publishDiagnosisReport("))
@@ -621,6 +623,37 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(snapshot.discrepancies.contains("widget_strain_0_today_6"))
         XCTAssertEqual(snapshot.widget.strain, 0)
         XCTAssertEqual(snapshot.metrics.todayStrain, 0.6)
+
+        let heldDrop = AtriaDiagnosisReport.make(
+            now: now,
+            build: "189",
+            status: .connected,
+            recovering: false,
+            reconnectAgeSeconds: nil,
+            reconnectReason: "",
+            hrAgeSeconds: 1,
+            imuAgeSeconds: 1,
+            stream5Confirmed: true,
+            batteryPercent: 41,
+            officialAppRisk: "cleared",
+            workoutRecording: false,
+            settledHRV: 64,
+            liveHRV: 64,
+            overnightRHR: 66,
+            daytimeRHR: nil,
+            overnightRecovery: 56,
+            todayRecovery: 56,
+            lastWorkout: nil,
+            liveHeartRate: 82,
+            liveZone: "Below Z1",
+            widgetHeartRate: 82,
+            widgetStrain: 0.18,
+            todayStrain: 0.18,
+            heldStrain: 1.15
+        )
+        XCTAssertTrue(heldDrop.discrepancies.contains("strain_held_12_today_2"),
+                      "a journal restart must name the cycle floor it dropped")
+        XCTAssertEqual(heldDrop.metrics.heldStrain, 1.15)
     }
 
     func testFreshHeartRateReportsConnectedInsteadOfLaggingConnecting() {
