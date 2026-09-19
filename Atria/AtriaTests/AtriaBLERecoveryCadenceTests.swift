@@ -433,6 +433,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
+                abortAlreadySentThisConnection: true
+            ),
+            [
+                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+            ],
+            "device 203: repeating 0x14 every 45s left stream-5 at 0; abort once per connection"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
                 stream5LiveWithoutCompactIMU: true
             ),
             [
