@@ -9087,7 +9087,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             heartRateNotifying: hrEpochLive,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
-            alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil
+            alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil,
+            lastRediscoverAge: lastR10ZombieTxRediscoverAt.map {
+                rediscoverNow.timeIntervalSince($0)
+            }
         ) else { return }
         guard let strapService = peripheral.services?.first(where: {
             $0.uuid == Self.UUIDs.strapService
@@ -30752,20 +30755,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     /// Stream-5 off/on still left stream-5 empty (device 2026-09-14
-    /// 23:56). Rediscover strap TX/notify once after that toggle.
-    /// Stream-4 history/debug notifies must not look like a live IMU pipe.
+    /// 23:56). Rediscover strap TX/notify after that toggle.
+    /// Device 204 18:54: rediscover ran once, then 18 min of 6A ACKs on
+    /// stream-4 with `stream5=0`. Pace another rediscover while the pipe
+    /// stays empty. Stream-4 history/debug notifies are not IMU.
     nonisolated static func shouldRediscoverZombieProprietaryTransport(
         connected: Bool,
         heartRateNotifying: Bool,
         stream5NotifyCallbacksThisConnection: Int,
         alreadyToggledThisConnection: Bool,
-        alreadyRediscoveredThisConnection: Bool
+        alreadyRediscoveredThisConnection: Bool,
+        lastRediscoverAge: TimeInterval? = nil,
+        minimumRediscoverInterval: TimeInterval = r10LivenessRearmMinimumInterval
     ) -> Bool {
         guard connected, heartRateNotifying,
               stream5NotifyCallbacksThisConnection == 0 else {
             return false
         }
-        return alreadyToggledThisConnection && !alreadyRediscoveredThisConnection
+        guard alreadyToggledThisConnection else { return false }
+        if !alreadyRediscoveredThisConnection { return true }
+        guard let lastRediscoverAge, lastRediscoverAge >= 0 else { return false }
+        return lastRediscoverAge >= minimumRediscoverInterval
     }
 
     /// Device 198: `live_r10_eligible=0` while 2A37 was live and 6A/51 still
@@ -30896,18 +30906,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Device 204: abort once, then 6A every 45s while stream-5 stayed 0.
     /// Device 202: a single 0x14 later produced stream-5 type-32 logs.
     /// Do not 6A into an empty stream-5 after abort; wait for the pipe.
+    /// Device 204 hold: waiting forever after one abort also left stream-5
+    /// at 0. Retry 0x14 on a 3-minute cadence, never the 45s 6A/14 storm.
+    nonisolated static let allDayCompactIMUAbortRetryInterval: TimeInterval = 180
+
     nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
         abortAlreadySentThisConnection: Bool,
-        stream5NotifyCallbacksThisConnection: Int
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAge: TimeInterval? = nil,
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval
     ) -> Bool {
-        abortAlreadySentThisConnection && stream5NotifyCallbacksThisConnection == 0
+        guard abortAlreadySentThisConnection,
+              stream5NotifyCallbacksThisConnection == 0 else {
+            return false
+        }
+        if let abortAge, abortAge >= abortRetryInterval { return false }
+        return true
     }
 
     nonisolated static func allDayCompactIMURecoveryCommandBodies(
         stream5LiveWithoutCompactIMU: Bool = false,
-        abortAlreadySentThisConnection: Bool = false
+        abortAlreadySentThisConnection _: Bool = false
     ) -> [[UInt8]] {
-        if stream5LiveWithoutCompactIMU || abortAlreadySentThisConnection {
+        if stream5LiveWithoutCompactIMU {
             return [[Cmd.toggleIMUMode, 0x01]]
         }
         return [
@@ -31540,15 +31561,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastNotifyTypeHex: typeHex
         )
         let abortAlready = lastAllDayCompactAbortAt != nil
+        let abortAge = lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
         if Self.allDayCompactIMURecoveryShouldWaitForStream5(
             abortAlreadySentThisConnection: abortAlready,
-            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAge: abortAge
         ) {
             return "wait_stream5"
         }
-        let skipAbort = liveWithout || abortAlready
-        let command = skipAbort ? "6a" : "526a14"
-        if !skipAbort {
+        // 6A only after stream-5 is live without compact 0x33. Empty pipe
+        // gets 52/6A/14 (first time or 3-minute retry), never another 6A ACK.
+        let command = liveWithout ? "6a" : "526a14"
+        if !liveWithout {
             lastAllDayCompactAbortAt = Date()
         }
         for (index, body) in Self.allDayCompactIMURecoveryCommandBodies(

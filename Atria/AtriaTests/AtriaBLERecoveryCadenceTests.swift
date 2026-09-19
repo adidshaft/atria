@@ -438,6 +438,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "device 204: after one abort, do not 6A into empty stream-5"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 42
+            ),
+            "device 204: 6A 42s after abort is still an empty-pipe write"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 180
+            ),
+            "device 204: after 3 min of empty stream-5, retry 0x14 once, not 6A"
+        )
         XCTAssertFalse(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
                 abortAlreadySentThisConnection: true,
@@ -455,9 +471,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 abortAlreadySentThisConnection: true
             ),
             [
+                [AtriaBLEManager.Cmd.stopRawData, 0x01],
                 [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+                [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 203: repeating 0x14 every 45s left stream-5 at 0; abort once per connection"
+            "device 204: abortAlready on an empty stream-5 retries 52/6A/14, never 6A-only"
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
@@ -533,7 +551,30 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 stream5NotifyCallbacksThisConnection: 0,
                 alreadyToggledThisConnection: true,
                 alreadyRediscoveredThisConnection: true
-            )
+            ),
+            "a rediscover with no age yet must not storm TX discovery"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: true,
+                lastRediscoverAge: 20
+            ),
+            "device 203: do not rediscover on the 45s 6A/14 storm cadence"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
+                connected: true,
+                heartRateNotifying: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                alreadyToggledThisConnection: true,
+                alreadyRediscoveredThisConnection: true,
+                lastRediscoverAge: 45
+            ),
+            "device 204: one rediscover left stream-5 at 0 for 18 min; pace another"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldRediscoverZombieProprietaryTransport(
@@ -12661,6 +12702,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "2A37 reassert must run in full_protocol, not only HR-only radio")
         XCTAssertTrue(hrBody.contains("guard longWearModeEnabled else { continue }"))
 
+        let writeStart = try XCTUnwrap(source.range(
+            of: "private func writeAllDayCompactIMURecovery"
+        ))
+        let writeEnd = try XCTUnwrap(source.range(
+            of: "private func sendCoverLiveBoundedRawCaptureIfNeeded",
+            range: writeStart.upperBound..<source.endIndex
+        ))
+        let writeBody = String(source[writeStart.lowerBound..<writeEnd.lowerBound])
+        XCTAssertTrue(writeBody.contains("abortAge"),
+                      "device 204: wait-for-stream5 must expire so 0x14 can retry")
+        XCTAssertTrue(writeBody.contains("liveWithout ? \"6a\" : \"526a14\""),
+                      "device 204: 6A only after stream-5 is live without compact IMU")
+        XCTAssertFalse(writeBody.contains("skipAbort"),
+                       "device 204: abortAlready must not skip to 6A on an empty stream-5")
+
         let coverStart = try XCTUnwrap(source.range(
             of: "private func sendCoverLiveBoundedRawCaptureIfNeeded"
         ))
@@ -12727,6 +12783,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(toggleBody.contains("zombieToggleSkipDetail"),
                       "device 199: paced vs connected-age skip must be diagnosable")
         XCTAssertTrue(toggleBody.contains("rediscoverZombieProprietaryTransportIfNeeded"))
+        XCTAssertTrue(toggleBody.contains("lastRediscoverAge:"),
+                      "device 204: empty stream-5 after the first rediscover must pace another")
         XCTAssertTrue(toggleBody.contains("after_zombie_toggle"))
         XCTAssertTrue(toggleBody.contains("liveHeartRateEpochOwnsRadio"),
                       "zombie stream-5 must toggle while CoreBluetooth is still Connecting with live HR")
