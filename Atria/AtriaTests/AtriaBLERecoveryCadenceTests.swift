@@ -704,6 +704,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "device 225: do not 0x69-retry while the post-subscribe 6A is still due"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactStream5SubscribeConfirmed(
+                inMemoryConfirmed: false,
+                subscribedAt: Date(timeIntervalSince1970: 200),
+                connectionEpochAt: Date(timeIntervalSince1970: 100)
+            ),
+            "device 226: a subscribe stamp on this connection is CCCD-on"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactStream5SubscribeConfirmed(
+                inMemoryConfirmed: false,
+                subscribedAt: Date(timeIntervalSince1970: 50),
+                connectionEpochAt: Date(timeIntervalSince1970: 100)
+            ),
+            "device 221: a previous-process subscribe stamp is not CCCD-on"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactStream5SubscribeConfirmed(
+                inMemoryConfirmed: true,
+                subscribedAt: nil,
+                connectionEpochAt: Date(timeIntervalSince1970: 100)
+            )
+        )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryStep(
                 stream5LiveWithoutCompactIMU: false,
@@ -13299,8 +13322,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 216: one live 6A after catch-up finishes empty")
         XCTAssertTrue(writeBody.contains("persistAllDayCompactLive6AAfterSubscribe"),
                       "device 218: one 6A after stream-5 CCCD is actually on")
-        XCTAssertTrue(writeBody.contains("let subscribeConfirmed = strapStream5NotifyConfirmed"),
-                      "device 221: only this process's CCCD confirm may fire the post-subscribe 6A")
+        XCTAssertTrue(writeBody.contains("allDayCompactStream5SubscribeConfirmed"),
+                      "device 226: this-connection subscribe stamp is CCCD-on even at 0 callbacks")
         XCTAssertFalse(
             writeBody.contains("< 600"),
             "device 221: a previous-process subscribe stamp is not CCCD-on"
@@ -13379,8 +13402,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("live6AAfterCatchUpAlreadySent"),
                       "device 216: wait_stream5 must expire after catch-up so one live 6A can run")
         XCTAssertTrue(
-            refreshBody.contains("stream5SubscribeConfirmed: strapStream5NotifyConfirmed"),
-            "device 221: wait_stream5 must not treat a previous-process subscribe stamp as CCCD-on"
+            refreshBody.contains("allDayCompactStream5SubscribeConfirmed"),
+            "device 226: this-connection subscribe stamp is CCCD-on even at 0 callbacks"
         )
         XCTAssertFalse(
             refreshBody.contains("< 600"),
