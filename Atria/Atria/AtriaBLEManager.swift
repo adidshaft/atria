@@ -5572,6 +5572,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rediscoveredStuckRestoredConnecting = false
         identifiedCentralRebuiltAfterRestoreSlotDrain = false
         reissuedIdentifiedStandingConnectAfterDrain = false
+        recoveredHungIssuedStandingConnect = false
         skipStandingReconnectOnce = false
         callbackPolicyState.update {
             $0.skipStandingReconnectOnce = false
@@ -5817,6 +5818,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// rebuild after drain restores the session type that produced 9315 links.
     private var identifiedCentralRebuiltAfterRestoreSlotDrain = false
     private var reissuedIdentifiedStandingConnectAfterDrain = false
+    /// One-shot after an issued standing `connect` never delivers
+    /// `didConnect` (device 223 bedtime launch).
+    private var recoveredHungIssuedStandingConnect = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -26364,8 +26368,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let defaults = UserDefaults.standard
         guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
-              let uuid = UUID(uuidString: uuidString),
-              let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+              let uuid = UUID(uuidString: uuidString) else {
+            return false
+        }
+        // Device 223 hung on `pending_connect` after retrievePeripherals
+        // returned a `.connecting` twin while bluetoothd already had the
+        // strap. Prefer the system-connected object so `connect` / adopt
+        // run on the live radio edge.
+        let systemConnected = central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+        guard let saved = systemConnected
+                ?? central.retrievePeripherals(withIdentifiers: [uuid]).first else {
             return false
         }
         // Restoration claims the exact CoreBluetooth object synchronously on
@@ -26859,13 +26873,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Process-kill mid-connect (devicectl --terminate-existing) can leave
     /// CoreBluetooth's saved peripheral in `.connecting` forever. One
     /// cancel/reissue unsticks that; later out-of-range waits stay standing.
+    /// An issued standing connect is a real radio wait — cancelling it at
+    /// the leftover-restore unstick (device 223) left a replacement
+    /// `pending_connect` that never reached didConnect.
     nonisolated static func shouldReissueStuckRestoredConnecting(
         peripheralState: CBPeripheralState,
         didConnectThisProcess: Bool,
-        alreadyReissued: Bool
+        alreadyReissued: Bool,
+        standingConnectIssued: Bool = false
     ) -> Bool {
         !alreadyReissued
             && !didConnectThisProcess
+            && !standingConnectIssued
             && peripheralState == .connecting
     }
 
@@ -26932,6 +26951,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         hasCurrentConnectionEpoch: Bool
     ) -> Bool {
         peripheralState == .connected && !hasCurrentConnectionEpoch
+    }
+
+    /// Device 223: identified rebuild issued `pending_connect` and the
+    /// watchdog observed forever. After that standing interval, either
+    /// adopt a system-connected strap (CoreBluetooth often skips
+    /// `didConnect` on an already-live object) or cancel once and
+    /// reinstall the standing request.
+    nonisolated static func shouldRecoverHungIssuedStandingConnect(
+        standingConnectIssued: Bool,
+        didConnectThisProcess: Bool,
+        alreadyRecovered: Bool,
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        standingConnectIssued
+            && !didConnectThisProcess
+            && !alreadyRecovered
+            && peripheralState != .connected
     }
 
     /// Empty restore-slot cleaners used to finish in 0.5s and issue `connect`
@@ -27015,7 +27051,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             shouldUnstickStuckRestore: Self.shouldReissueStuckRestoredConnecting(
                 peripheralState: peripheral.state,
                 didConnectThisProcess: didConnectThisProcess,
-                alreadyReissued: reissuedStuckRestoredConnecting
+                alreadyReissued: reissuedStuckRestoredConnecting,
+                standingConnectIssued: callbackPolicyState.snapshot()
+                    .identifiedStandingConnectIssued
             ),
             identifiedReissueSeconds: Self.identifiedStandingConnectReissueSeconds,
             shouldReissueIdentified: Self.shouldReissueIdentifiedStandingConnectAfterDrain(
@@ -27036,10 +27074,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 peripheralState: peripheral.state,
                 hasCurrentConnectionEpoch: self.connectedAt != nil
             ) {
+                if self.adoptSystemConnectedEpochIfNeeded(
+                    peripheral: peripheral,
+                    reason: "\(reason)_adopt_already_connected"
+                ) {
+                    return
+                }
                 _ = self.reconnectToSavedPeripheralIfPossible(
                     reason: "\(reason)_adopt_already_connected"
                 )
                 return
+            }
+            if let systemConnected = self.systemConnectedSavedPeripheral(),
+               Self.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: systemConnected.state,
+                hasCurrentConnectionEpoch: self.connectedAt != nil
+               ) {
+                _ = self.connectedPeripheralRetainer.completeConnectRequest(peripheral)
+                if self.adoptSystemConnectedEpochIfNeeded(
+                    peripheral: systemConnected,
+                    reason: "\(reason)_adopt_system_connected"
+                ) {
+                    return
+                }
             }
             guard peripheral.state != .connected else { return }
             switch Self.reconnectWatchdogDisposition(
@@ -27051,7 +27108,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 if Self.shouldReissueStuckRestoredConnecting(
                     peripheralState: peripheral.state,
                     didConnectThisProcess: self.didConnectThisProcess,
-                    alreadyReissued: self.reissuedStuckRestoredConnecting
+                    alreadyReissued: self.reissuedStuckRestoredConnecting,
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued
                 ) {
                     // Cancel/reissue on the restored object just standing-
                     // connected the same zombie (device 2026-09-14). Skip
@@ -27103,6 +27162,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         peripheral.state.rawValue
                     )
                     self.reissueIdentifiedStandingConnectAfterDrain(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
+                if Self.shouldRecoverHungIssuedStandingConnect(
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued,
+                    didConnectThisProcess: self.didConnectThisProcess,
+                    alreadyRecovered: self.recoveredHungIssuedStandingConnect,
+                    peripheralState: peripheral.state
+                ) {
+                    self.recoverHungIssuedStandingConnect(
                         peripheral: peripheral,
                         reason: reason
                     )
@@ -27168,6 +27240,100 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason,
             peripheral.state.rawValue
         )
+    }
+
+    /// Device 223: `standing_connect_issued|pending_connect` never produced
+    /// `didConnect`. Cancel the hung request and install one fresh standing
+    /// connect on a disconnected or system-connected object.
+    private func recoverHungIssuedStandingConnect(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        recoveredHungIssuedStandingConnect = true
+        recordReconnectLeaseStage(
+            "repair_hung_issued_standing_connect",
+            detail: reason
+        )
+        if let systemConnected = systemConnectedSavedPeripheral(),
+           adoptSystemConnectedEpochIfNeeded(
+            peripheral: systemConnected,
+            reason: "\(reason)_hung_issued_adopt_system_connected"
+           ) {
+            return
+        }
+        _ = connectedPeripheralRetainer.completeConnectRequest(peripheral)
+        awaitingDidDisconnectToForceConnectAfterDrain = true
+        recordReconnectLeaseStage(
+            "app_cancel_wrapper",
+            detail: "hung_issued_standing_connect"
+        )
+        central.cancelPeripheralConnection(peripheral)
+        startReconnectWatchdog(
+            reason: "hung_issued_standing_connect",
+            peripheral: peripheral
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+            self.awaitingDidDisconnectToForceConnectAfterDrain = false
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            self.forceStandingConnectAfterRestoreSlotDrain(
+                reason: "hung_issued_standing_connect_timeout",
+                allowCancelConnecting: false
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=recover_hung_issued_standing_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
+    }
+
+    private func systemConnectedSavedPeripheral() -> CBPeripheral? {
+        guard let uuidString = UserDefaults.standard.string(
+            forKey: LinkDefaults.savedPeripheralUUID
+        ),
+              let uuid = UUID(uuidString: uuidString) else { return nil }
+        return central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+    }
+
+    /// CoreBluetooth restoration and system-connected retrieve often skip
+    /// `didConnect`. After an issued standing connect has already waited,
+    /// synthesize that callback so HR/IMU discovery can start.
+    @discardableResult
+    private func adoptSystemConnectedEpochIfNeeded(
+        peripheral: CBPeripheral,
+        reason: String
+    ) -> Bool {
+        guard peripheral.state == .connected, connectedAt == nil else {
+            return false
+        }
+        recordReconnectLeaseStage(
+            "adopt_system_connected_epoch",
+            detail: reason
+        )
+        if bleCallbackEpochFence.captureIfAccepted(
+            peripheralID: peripheral.identifier,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            peripheralConnected: true
+        ) != nil {
+            _ = bleCallbackEpochFence.invalidate(
+                ifMatching: peripheral.identifier,
+                peripheralObjectID: ObjectIdentifier(peripheral)
+            )
+        }
+        peripheral.delegate = self
+        self.peripheral = peripheral
+        centralManager(central, didConnect: peripheral)
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=adopt_system_connected_epoch_without_did_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
+        return true
     }
 
     /// Cancel the zombie restored connect, then replace the wedged
@@ -28136,6 +28302,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
         markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
+        if adoptSystemConnectedEpochIfNeeded(
+            peripheral: target,
+            reason: "\(reason)_force_standing_adopt"
+        ) {
+            return
+        }
         if allowCancelConnecting,
            Self.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
             peripheralState: target.state
@@ -51809,6 +51981,14 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             }
             if self.awaitingDidDisconnectToForceConnectAfterDrain {
                 self.awaitingDidDisconnectToForceConnectAfterDrain = false
+                let skipStandingReconnect = self.skipStandingReconnectOnce
+                    || self.callbackPolicyState.snapshot().skipStandingReconnectOnce
+                if !skipStandingReconnect {
+                    self.forceStandingConnectAfterRestoreSlotDrain(
+                        reason: "did_disconnect_force_connect_after_drain",
+                        allowCancelConnecting: false
+                    )
+                }
             }
             self.releaseConnectedMotionBankPreFreshHRFirstRefusal(
                 reason: "did_disconnect"
