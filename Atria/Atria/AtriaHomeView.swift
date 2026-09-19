@@ -4800,6 +4800,14 @@ struct AtriaHomeView: View {
                 forceActivityWrite: liveActivityCoordinator.activityKitCount == 0
             )
         }
+        if phase == .active,
+           liveActivityCoordinator.activityKitCount == 0 {
+            // Device 186 12:40 IST: Today was Live 72 bpm with kit still 0.
+            // Inactive bounce retries consume `lastIdleStartAttemptAt`, and
+            // pulse updates honor the 20s throttle without `force`. Start
+            // immediately while the scene is actually visible.
+            updateLiveActivity(forceActivityWrite: true)
+        }
         guard phase == .active else {
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil

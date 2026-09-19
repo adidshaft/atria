@@ -1462,6 +1462,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "widgets and idle Live must patch from BLE while Home stores are frozen")
         XCTAssertTrue(home.contains("phase == .inactive"),
                       "device 185: --no-launch bounce must retry idle start on inactive, not wait for active")
+        XCTAssertTrue(home.contains("if phase == .active,"),
+                      "device 186: opening Today with an empty island must force Activity.request")
+        XCTAssertTrue(
+            home.contains("liveActivityCoordinator.activityKitCount == 0"),
+            "foreground idle start is only forced while ActivityKit is empty"
+        )
         XCTAssertTrue(home.contains("lastStartErrorKey"),
                       "diagnosis must record Activity.request visibility failures")
         XCTAssertTrue(home.contains("let liveActivityCoordinator = AtriaLiveActivityCoordinator()"))
