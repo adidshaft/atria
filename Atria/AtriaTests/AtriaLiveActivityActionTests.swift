@@ -1395,7 +1395,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             ),
             "workout recording is not idle presence"
         )
-        XCTAssertTrue(body.contains("showsWorkoutControls: workoutActive"))
+        XCTAssertTrue(body.contains("AtriaHomeModel.resolvedLiveHeartRate("))
+        XCTAssertTrue(body.contains("let status = ble.status"),
+                      "idle Live must use BLE status, not frozen CoreLive, after background install")
+        XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"),
+                      "widgets and idle Live must patch from BLE while Home stores are frozen")
+        XCTAssertTrue(home.contains("let liveActivityCoordinator = AtriaLiveActivityCoordinator()"))
         XCTAssertTrue(body.contains("elapsedDuration: workoutActive ? movingDuration : 0"),
                       "all-day Live must not publish a presence timer as workout elapsed")
         XCTAssertTrue(body.contains("activityName: workoutActive"))

@@ -12208,6 +12208,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "reason: cadenceReady ? \"live_throttled\" : \"live_bpm_delta\"",
             "private func publishLiveWidgetSnapshot(reason: String)",
             "scheduleLiveSensorWidgetPatch(reason: \"live_hr_background\")",
+            "publishFrozenSceneLiveSurfaces()",
+            "reason: \"live_hr_frozen_scene\"",
         ]:
             assert_contains(self, home, needle)
 
