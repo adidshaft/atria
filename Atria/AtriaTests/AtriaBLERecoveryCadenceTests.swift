@@ -476,8 +476,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 abortAge: 180,
                 followUp6AAlreadySentThisConnection: true
             ),
-            .abortHistorical,
-            "device 204: after 3 min of empty stream-5, retry 0x14 once"
+            .waitStream5,
+            "device 210: after one 6A, do not abort historical IMU catch-up"
         )
         XCTAssertTrue(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
@@ -508,7 +508,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 stream5NotifyCallbacksThisConnection: 0,
                 abortAge: 180
             ),
-            "device 204: after 3 min of empty stream-5, retry 0x14 once, not 6A"
+            "device 204: 6A never went out — retry 0x14, not wait forever"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true
+            ),
+            "device 210: after one 6A, wait so historical IMU can catch up"
         )
         XCTAssertFalse(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
@@ -531,6 +540,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                followUp6AAlreadySentThisConnection: true
+            ),
+            "device 210: after the follow-up 6A, do not abort historical IMU catch-up on launch"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueAllDayCompactAbortOnForeground(
                 stream5NotifyCallbacksThisConnection: 214,
                 abortAlreadySentThisConnection: true
             )
@@ -549,7 +566,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             [
                 [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 209: 3-minute empty-pipe retry is 0x14, never 52/6A"
+            "device 209: 6A never went out — 3-minute retry is 0x14, never 52/6A"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true
+            ),
+            [],
+            "device 210: after one 6A, do not abort stored IMU catch-up"
         )
         XCTAssertEqual(
             AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
@@ -603,10 +629,47 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "device 207: empty stream-5 on live 2A37 must not let history block 526a14"
         )
         XCTAssertTrue(
+            AtriaBLEManager.historyOwnsTransportForCompactIMURecovery(
+                historyOwnsTransport: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true,
+                lastNotifyTypeHex: "32",
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 32
+            ),
+            "device 210: after abort+6A, history may own the pipe to drain stored IMU"
+        )
+        XCTAssertTrue(
             AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
                 heartRateEpochLive: true,
                 stream5NotifyCallbacksThisConnection: 0,
                 compactIMUStale: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true,
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 20
+            ),
+            "give stream-5 ~20s after 6A before yielding the pipe"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true,
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 32
+            ),
+            "device 210: after abort+6A with stream-5 still 0, drain stored IMU at full quality"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 32
             )
         )
         XCTAssertFalse(
@@ -627,8 +690,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "wait_stream5"),
             "device 207: wait_stream5 must not start the 45s activation lease"
         )
-        XCTAssertTrue(
-            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "14")
+        XCTAssertFalse(
+            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "14"),
+            "device 210: abort lease blocked the 12s 6A via owner_pure_hr_v10"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "6a")
@@ -12833,6 +12897,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(writeBody.contains("allDayCompactIMURecoveryStep"),
                       "device 209: writeAllDayCompactIMURecovery must use the abort-then-one-6A step, not a hardcoded 14-only command")
         XCTAssertTrue(writeBody.contains("lastAllDayCompactFollowUp6AAt"))
+        XCTAssertTrue(
+            writeBody.contains("followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt"),
+            "device 210: live abort+6A must yield historical IMU catch-up after the follow-up"
+        )
         XCTAssertFalse(writeBody.contains("skipAbort"),
                        "device 204: abortAlready must not skip to 6A on an empty stream-5")
 

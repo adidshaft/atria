@@ -8768,15 +8768,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// (not the <1s UIKit/SwiftUI coalesced duplicate).
     nonisolated static func shouldReissueAllDayCompactAbortOnForeground(
         stream5NotifyCallbacksThisConnection: Int,
-        abortAlreadySentThisConnection: Bool
+        abortAlreadySentThisConnection: Bool,
+        followUp6AAlreadySentThisConnection: Bool = false
     ) -> Bool {
-        abortAlreadySentThisConnection && stream5NotifyCallbacksThisConnection == 0
+        abortAlreadySentThisConnection
+            && stream5NotifyCallbacksThisConnection == 0
+            && !followUp6AAlreadySentThisConnection
     }
 
     private func reissueAllDayCompactAbortOnForegroundIfNeeded(reason: String) {
         guard Self.shouldReissueAllDayCompactAbortOnForeground(
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil
+            abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil,
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil
         ) else { return }
         lastAllDayCompactAbortAt = nil
         lastAllDayCompactFollowUp6AAt = nil
@@ -30945,28 +30949,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// `offline_sync` marked the proprietary pipe owned while stream-5
     /// callbacks stayed 0. That made `shouldRefreshIMUOnLiveHeartRateFallback`
     /// return false, so the 180s `526a14` retry never ran. An empty stale
-    /// IMU pipe on live 2A37 is compact recovery's job; history waits.
+    /// IMU pipe on live 2A37 is compact recovery's job; history waits —
+    /// but only until one abort+6A has had a chance. Device 210 ACK'd 6A
+    /// on stream-4 and stream-5 stayed 0 for 17+ min while this defer
+    /// also blocked historical IMU catch-up. After the follow-up 6A,
+    /// yield the pipe so stored IMU drains at full quality.
+    nonisolated static let allDayCompactIMUHistoryCatchUpAfterFollowUp: TimeInterval = 20
+
+    nonisolated static func shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+        followUp6AAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval?,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        catchUpDelay: TimeInterval = allDayCompactIMUHistoryCatchUpAfterFollowUp
+    ) -> Bool {
+        guard followUp6AAlreadySentThisConnection else { return false }
+        guard let abortAge else { return true }
+        return abortAge >= followUp6ADelay + catchUpDelay
+    }
+
     nonisolated static func shouldDeferConnectedHistoryForLiveCompactIMURecovery(
         heartRateEpochLive: Bool,
         stream5NotifyCallbacksThisConnection: Int,
-        compactIMUStale: Bool
+        compactIMUStale: Bool,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil
     ) -> Bool {
-        heartRateEpochLive
-            && stream5NotifyCallbacksThisConnection == 0
-            && compactIMUStale
+        guard heartRateEpochLive,
+              stream5NotifyCallbacksThisConnection == 0,
+              compactIMUStale else { return false }
+        if shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
+        ) {
+            return false
+        }
+        return true
     }
 
     nonisolated static func historyOwnsTransportForCompactIMURecovery(
         historyOwnsTransport: Bool,
         stream5NotifyCallbacksThisConnection: Int,
         compactIMUStale: Bool,
-        lastNotifyTypeHex: String?
+        lastNotifyTypeHex: String?,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil
     ) -> Bool {
         guard historyOwnsTransport else { return false }
         if shouldDeferConnectedHistoryForLiveCompactIMURecovery(
             heartRateEpochLive: true,
             stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
-            compactIMUStale: compactIMUStale
+            compactIMUStale: compactIMUStale,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
         ) {
             return false
         }
@@ -30977,12 +31011,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
-    /// `wait_stream5` is a no-op. Stamping the 45s activation lease for it
-    /// blocked the 180s abort retry until the app thawed (device 207 Home).
+    /// `wait_stream5` is a no-op. Abort `0x14` must not stamp the 45s
+    /// lease either: device 210's follow-up 6A was skipped
+    /// `owner_pure_hr_v10` until that lease expired. Only 6A starts it.
     nonisolated static func shouldStampAllDayCompactIMUActivation(
         command: String
     ) -> Bool {
-        command != "wait_stream5"
+        command == "6a"
     }
 
     /// Device 209 Today: 0x14 ACK'd on stream-4 (`241714`) and stream-5 stayed
@@ -31011,7 +31046,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .waitStream5
         }
         if !abortAlreadySentThisConnection { return .abortHistorical }
-        if let abortAge, abortAge >= abortRetryInterval {
+        // Retry abort only if 6A never went out. After the follow-up 6A,
+        // aborting again kills historical IMU catch-up (device 210 17 min
+        // of wait_stream5 + 0x14 retries with stream-5 still 0).
+        if let abortAge, abortAge >= abortRetryInterval,
+           !followUp6AAlreadySentThisConnection {
             return .abortHistorical
         }
         if !followUp6AAlreadySentThisConnection,
@@ -31742,7 +31781,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
             lastNotifyTypeHex: UserDefaults.standard.string(
                 forKey: ProtocolDefaults.lastNotifyCallbackType
-            )
+            ),
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            abortAge: lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
         )
     }
 
@@ -31761,7 +31802,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return Self.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
             heartRateEpochLive: hrLive,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
-            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true
+            compactIMUStale: imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? true,
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            abortAge: lastAllDayCompactAbortAt.map { now.timeIntervalSince($0) }
         )
     }
 
