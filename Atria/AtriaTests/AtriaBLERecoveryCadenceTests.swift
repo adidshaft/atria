@@ -262,6 +262,81 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "stream-5 traffic must rearm the ticket before a second off/on"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 172,
+                alreadyToggledThisConnection: true,
+                imuAge: 187,
+                sittingSkipFresh: false,
+                lastToggleAge: 50
+            ),
+            "device 184 10:18: empty pipe after the first stream-5 off must get a paced retoggle while 2A37 stays up"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 0,
+                connectedAge: 172,
+                alreadyToggledThisConnection: true,
+                imuAge: 187,
+                sittingSkipFresh: false,
+                lastToggleAge: 10
+            ),
+            "paced retoggle must wait 45s so stream-5 off/on is not a storm"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: true,
+                imuAge: 308,
+                sittingSkipFresh: false,
+                lastToggleAge: 50
+            ),
+            "device 172 leftover: paced retoggle after compact 0x33 dies and the first ticket did not restore packets"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: true,
+                packetsThisConnection: 865,
+                connectedAge: 447,
+                alreadyToggledThisConnection: true,
+                imuAge: 308,
+                sittingSkipFresh: true,
+                lastToggleAge: 50
+            ),
+            "sitting compact skip must not retoggle stream-5"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: true,
+                packetsThisConnection: 0,
+                heartRateEpochLive: true
+            ),
+            "toggle-on must complete when 2A37 samples are fresh even if isNotifying is false"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: true,
+                packetsThisConnection: 0,
+                heartRateEpochLive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: true,
+                packetsThisConnection: 12,
+                heartRateEpochLive: true
+            ),
+            "do not re-enable stream-5 off/on if compact 0x33 resumed during the 400ms wait"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
@@ -12435,6 +12510,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(toggleBody.contains("imuAge: imuAge"),
                       "device 172: dead compact IMU after traffic must still get one stream-5 off/on")
         XCTAssertTrue(toggleBody.contains("sittingSkipFresh: sittingSkipFresh"))
+        XCTAssertTrue(toggleBody.contains("lastToggleAge:"),
+                      "device 184: empty pipe after the first stream-5 off must pace a retoggle")
+        XCTAssertTrue(toggleBody.contains("shouldCompleteZombieProprietaryCCCDToggleOn"),
+                      "device 184: toggle-on must use the HR epoch, not 2A37 isNotifying")
+        XCTAssertFalse(toggleBody.contains("heartRateCharacteristic?.isNotifying == true else { return }"),
+                       "device 184: toggle-on must not abort while 2A37 samples are still arriving")
         XCTAssertTrue(source.contains("zombie_cccd_toggle_rearm"),
                       "compact 0x33 after an empty-pipe toggle must rearm one later stale off/on")
         XCTAssertTrue(toggleBody.contains("discoverServices([Self.UUIDs.strapService])"),
