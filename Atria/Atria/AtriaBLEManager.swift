@@ -5542,6 +5542,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastSilentStreamRepairSpentAt = nil
         }
         connectedAt = now
+        didConnectThisProcess = true
         protocolPacketsThisConnection = 0
         protocolNotifyCallbacksThisConnection = 0
         protocolStream5NotifyCallbacksThisConnection = 0
@@ -6028,6 +6029,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 #endif
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
+    /// Survives disconnect so a live `didConnect` this process is not treated
+    /// as a restored `.connecting` zombie. Device 220 cancelled the reconnect
+    /// 3s after the first drop because `connectedAt` had been cleared.
+    private var didConnectThisProcess = false
     /// Accepted standard-HR samples in this exact connection epoch. The live
     /// session can span reconnects, so `session.count` is not sufficient proof
     /// that the current CBPeripheral object has delivered ten healthy samples.
@@ -9768,7 +9773,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if Self.shouldKeepaliveDeferToActiveScan(
                 isActivelyScanning: isActivelyScanning,
                 rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
-                connectedThisProcess: connectedAt != nil,
+                connectedThisProcess: didConnectThisProcess,
                 skipStandingReconnectOnce: skipStandingReconnectOnce
                     || callbackPolicyState.snapshot().skipStandingReconnectOnce,
                 restoreSlotDrainDeferred: callbackPolicyState.snapshot()
@@ -9800,7 +9805,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if Self.shouldKeepaliveDeferToActiveScan(
             isActivelyScanning: isActivelyScanning,
             rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
-            connectedThisProcess: connectedAt != nil,
+            connectedThisProcess: didConnectThisProcess,
             skipStandingReconnectOnce: skipStandingReconnectOnce
                 || callbackPolicyState.snapshot().skipStandingReconnectOnce,
             restoreSlotDrainDeferred: callbackPolicyState.snapshot()
@@ -26918,6 +26923,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && (peripheralState == .disconnected || peripheralState == .connected)
     }
 
+    /// Device 220 hung with UI Connecting while CoreBluetooth still had
+    /// `.connected`: the reconnect watchdog returned without adopting.
+    nonisolated static func shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+        peripheralState: CBPeripheralState,
+        hasCurrentConnectionEpoch: Bool
+    ) -> Bool {
+        peripheralState == .connected && !hasCurrentConnectionEpoch
+    }
+
     /// Empty restore-slot cleaners used to finish in 0.5s and issue `connect`
     /// in the same second bluetoothd still owned the WHOOP (device 2026-09-14
     /// 17:53 and 18:29). Wait out the cleaner release (0.5s empty / 2s with
@@ -26995,14 +27009,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             unstickSeconds: Self.stuckRestoredConnectingUnstickSeconds,
             shouldUnstickStuckRestore: Self.shouldReissueStuckRestoredConnecting(
                 peripheralState: peripheral.state,
-                didConnectThisProcess: connectedAt != nil,
+                didConnectThisProcess: didConnectThisProcess,
                 alreadyReissued: reissuedStuckRestoredConnecting
             ),
             identifiedReissueSeconds: Self.identifiedStandingConnectReissueSeconds,
             shouldReissueIdentified: Self.shouldReissueIdentifiedStandingConnectAfterDrain(
                 identifiedCentralRebuilt: identifiedCentralRebuiltAfterRestoreSlotDrain,
                 alreadyReissuedIdentified: reissuedIdentifiedStandingConnectAfterDrain,
-                didConnectThisProcess: connectedAt != nil,
+                didConnectThisProcess: didConnectThisProcess,
                 peripheralState: peripheral.state
             )
         )
@@ -27010,8 +27024,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             guard self.peripheral === peripheral,
-                  self.status == .connecting,
-                  peripheral.state != .connected else { return }
+                  self.status == .connecting else { return }
+            if Self.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: peripheral.state,
+                hasCurrentConnectionEpoch: self.connectedAt != nil
+            ) {
+                _ = self.reconnectToSavedPeripheralIfPossible(
+                    reason: "\(reason)_adopt_already_connected"
+                )
+                return
+            }
+            guard peripheral.state != .connected else { return }
             switch Self.reconnectWatchdogDisposition(
                 elapsed: self.reconnectWatchdogSeconds,
                 hasSavedStrap: self.hasSavedStrap,
@@ -27020,7 +27043,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             case .observeSavedStandingRequest:
                 if Self.shouldReissueStuckRestoredConnecting(
                     peripheralState: peripheral.state,
-                    didConnectThisProcess: self.connectedAt != nil,
+                    didConnectThisProcess: self.didConnectThisProcess,
                     alreadyReissued: self.reissuedStuckRestoredConnecting
                 ) {
                     // Cancel/reissue on the restored object just standing-
@@ -27042,7 +27065,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 if Self.shouldRediscoverStuckRestoredConnecting(
                     peripheralState: peripheral.state,
-                    didConnectThisProcess: self.connectedAt != nil,
+                    didConnectThisProcess: self.didConnectThisProcess,
                     alreadyReissued: self.reissuedStuckRestoredConnecting,
                     alreadyRediscovered: self.rediscoveredStuckRestoredConnecting
                 ) {
@@ -27061,7 +27084,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 if Self.shouldReissueIdentifiedStandingConnectAfterDrain(
                     identifiedCentralRebuilt: self.identifiedCentralRebuiltAfterRestoreSlotDrain,
                     alreadyReissuedIdentified: self.reissuedIdentifiedStandingConnectAfterDrain,
-                    didConnectThisProcess: self.connectedAt != nil,
+                    didConnectThisProcess: self.didConnectThisProcess,
                     peripheralState: peripheral.state
                 ) {
                     self.reissuedIdentifiedStandingConnectAfterDrain = true
@@ -28060,7 +28083,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         if Self.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
             alreadyRebuiltIdentified: identifiedCentralRebuiltAfterRestoreSlotDrain,
-            didConnectThisProcess: connectedAt != nil
+            didConnectThisProcess: didConnectThisProcess
         ) {
             identifiedCentralRebuiltAfterRestoreSlotDrain = true
             recordReconnectLeaseStage(
@@ -28144,7 +28167,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         if Self.shouldForceStandingConnectAfterRestoreSlotDrain(
-            didConnectThisProcess: connectedAt != nil,
+            didConnectThisProcess: didConnectThisProcess,
             peripheralState: target.state
         ) {
             issueSingleFlightConnect(
@@ -32040,8 +32063,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let subscribeAge = (UserDefaults.standard.object(
             forKey: RadioDefaults.passiveR10SubscribedAt
         ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
+        // Device 220 treated a previous-process subscribe stamp as CCCD-on
+        // and fired 6A before this connection subscribed.
         let subscribeConfirmed = strapStream5NotifyConfirmed
-            || (subscribeAge ?? .infinity) < 600
         let step = Self.allDayCompactIMURecoveryStep(
             stream5LiveWithoutCompactIMU: liveWithout,
             stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
@@ -32478,10 +32502,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 now.timeIntervalSince($0)
             },
             historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
-            stream5SubscribeConfirmed: strapStream5NotifyConfirmed
-                || ((defaults.object(forKey: RadioDefaults.passiveR10SubscribedAt) as? Double).map {
-                    now.timeIntervalSince(Date(timeIntervalSince1970: $0))
-                } ?? .infinity) < 600,
+            stream5SubscribeConfirmed: strapStream5NotifyConfirmed,
             live6AAfterSubscribeAlreadySent: lastAllDayCompactLive6AAfterSubscribeAt != nil,
             subscribeAge: (defaults.object(
                 forKey: RadioDefaults.passiveR10SubscribedAt
