@@ -30893,6 +30893,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// is already live. Still stop leftover Labs raw first. Never 0x51/0x3F.
     /// Device 202: once stream-5 is live with type-32 logs and no `0x33`,
     /// send 6A on only.
+    /// Device 204: abort once, then 6A every 45s while stream-5 stayed 0.
+    /// Device 202: a single 0x14 later produced stream-5 type-32 logs.
+    /// Do not 6A into an empty stream-5 after abort; wait for the pipe.
+    nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
+        abortAlreadySentThisConnection: Bool,
+        stream5NotifyCallbacksThisConnection: Int
+    ) -> Bool {
+        abortAlreadySentThisConnection && stream5NotifyCallbacksThisConnection == 0
+    }
+
     nonisolated static func allDayCompactIMURecoveryCommandBodies(
         stream5LiveWithoutCompactIMU: Bool = false,
         abortAlreadySentThisConnection: Bool = false
@@ -31530,6 +31540,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastNotifyTypeHex: typeHex
         )
         let abortAlready = lastAllDayCompactAbortAt != nil
+        if Self.allDayCompactIMURecoveryShouldWaitForStream5(
+            abortAlreadySentThisConnection: abortAlready,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+        ) {
+            return "wait_stream5"
+        }
         let skipAbort = liveWithout || abortAlready
         let command = skipAbort ? "6a" : "526a14"
         if !skipAbort {
