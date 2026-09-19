@@ -46,8 +46,9 @@ final class AtriaExpandedChartFormTests: XCTestCase {
     // MARK: - Wiring
 
     func testTheDailyBarClassifierDrivesTheChartsThatDrawBars() throws {
-        // The four `metricChart(rendersAsDailyBar: true)` call sites and the
-        // classifier must not drift apart — they describe the same fact.
+        // Inline charts must take the one classifier, not a leftover per-metric
+        // `rendersAsDailyBar: true` literal — HRV/RHR/respiration used to
+        // default to lines while Recovery was hardcoded as bars.
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -55,11 +56,20 @@ final class AtriaExpandedChartFormTests: XCTestCase {
                 .appendingPathComponent("Atria/AtriaOverviewSections.swift"),
             encoding: .utf8
         )
-        XCTAssertEqual(
-            source.components(separatedBy: "rendersAsDailyBar: true").count - 1, 4,
-            "exactly four charts draw daily bars"
+        XCTAssertTrue(
+            source.contains("rendersAsDailyBar: metric.rendersAsDailyBar"),
+            "inline charts must take the one classifier"
         )
-        for title in ["Recovery", "Sleep duration", "Strain", "Sleep sufficiency"] {
+        XCTAssertTrue(
+            source.contains("anchorsAtZero: metric.chartAnchorsAtZero"),
+            "level bars keep a padded domain; magnitudes still grow from zero"
+        )
+        XCTAssertFalse(
+            source.contains("rendersAsDailyBar: true"),
+            "no leftover per-metric bar literals"
+        )
+        for title in ["Recovery", "Sleep duration", "Strain", "Sleep sufficiency",
+                      "HRV", "Resting HR", "Respiratory rate"] {
             XCTAssertTrue(source.contains("metricChart(title: \"\(title)\""),
                           "\(title) must still be a metricChart")
         }
@@ -80,21 +90,19 @@ final class AtriaExpandedChartFormTests: XCTestCase {
                 source.contains("defaultChartType: metric.rendersAsDailyBar ? .bars : .line"),
                 "\(name) must open the expanded chart in the tapped form"
             )
+            XCTAssertTrue(
+                source.contains("anchorsAtZero: metric.chartAnchorsAtZero"),
+                "\(name) must pass the zero-floor rule"
+            )
             wired += 1
         }
         XCTAssertEqual(wired, 2, "both presenters must be wired")
     }
 
     func testBarsInTheExpandedChartAreAnchoredAtZeroLikeEverywhereElse() throws {
-        // Opening in bar form is only honest if the domain is anchored at zero.
-        // `prepared.yDomain` pads 12% around min…max — correct for a line, but a
-        // bar draws from the zero baseline, so a floor above zero clips it and
-        // makes rendered height proportional to `value − domainLower`. A sleep
-        // week of 5.5…8.0h pads to 5.2…8.3, drawing a 1.45x difference as ~9x.
-        //
-        // This test pins the DOMAIN. An earlier version of this file pinned
-        // only the `defaultChartType:` wiring, which is exactly why the
-        // truncated-bar regression shipped green.
+        // Opening in bar form is only honest if magnitude bars grow from zero
+        // and level bars keep the padded domain. All three surfaces now share
+        // `plottedYDomain`.
         let source = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
@@ -106,14 +114,15 @@ final class AtriaExpandedChartFormTests: XCTestCase {
             source.contains(".chartYScale(domain: prepared.yDomain)"),
             "the padded line domain must not be applied unconditionally"
         )
-        XCTAssertTrue(source.contains("0...max(prepared.yDomain.upperBound, 1)"),
-                      "bars must be anchored at zero")
-        XCTAssertTrue(source.contains("guard effectiveChartType == .bars"),
+        XCTAssertTrue(source.contains("plottedYDomain("),
+                      "bars share the one y-domain helper")
+        XCTAssertTrue(source.contains("drawsBars: effectiveChartType == .bars"),
                       "and lines must keep the padded domain")
+        XCTAssertTrue(source.contains("anchorsAtZero: anchorsAtZero"))
     }
 
     func testAllThreeBarSurfacesAnchorAtZero() throws {
-        // The rule now lives in three places; none may drift.
+        // The rule now lives in one helper; every surface must call it.
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -123,8 +132,8 @@ final class AtriaExpandedChartFormTests: XCTestCase {
                      "AtriaExpandedChart.swift"] {
             let text = try String(contentsOf: root.appendingPathComponent(name),
                                   encoding: .utf8)
-            XCTAssertTrue(text.contains("0...max("),
-                          "\(name) must anchor its bars at zero")
+            XCTAssertTrue(text.contains("plottedYDomain("),
+                          "\(name) must use the shared y-domain helper")
         }
     }
 

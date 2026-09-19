@@ -656,12 +656,12 @@ struct AtriaSleepDebtChartCard: View {
                 }
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartYScale(domain: lowerBound...upperBound)
         .chartXScale(domain: AtriaSleepDebtChartPresentation.weekXDomain(slots: slots) ?? Date()...Date())
         .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let value = value.as(Double.self) {
@@ -674,20 +674,18 @@ struct AtriaSleepDebtChartCard: View {
         }
         .chartXAxis {
             AxisMarks(values: slots.map(\.day)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel {
+                AxisValueLabel(centered: true) {
                     if let day = value.as(Date.self) {
-                        VStack(spacing: 1) {
-                            Text(day.formatted(.dateTime.weekday(.narrow)))
-                            Text(day.formatted(.dateTime.day()))
-                        }
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                        Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
         }
-        .frame(height: 172)
+        .frame(height: AtriaChartVisualGrammar.inlinePlotHeight)
         .padding(.trailing, 8)
     }
 

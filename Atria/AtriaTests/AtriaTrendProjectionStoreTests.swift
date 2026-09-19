@@ -169,15 +169,9 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         // trailing-window domain. Without the domain the axis sized itself to
         // whatever data existed, which is what put a lone point in the middle
         // of an otherwise unlabelled chart.
-        XCTAssertTrue(
-            source.contains(
-                "range: .plotDimension(startPadding: 18, endPadding: 18))"
-            )
-        )
-        XCTAssertTrue(source.contains(".chartXScale(domain: prepared.xDomain,"),
+        XCTAssertTrue(source.contains(".chartXScale(domain: prepared.xDomain"),
                       "the window, not the data, sets the axis")
-        XCTAssertTrue(source.contains("AxisMarks(preset: .aligned, values: chartXAxisDates)"))
-        XCTAssertTrue(source.contains("chartXAxisLabels[date]"))
+        XCTAssertTrue(source.contains("atriaOvernightChartXAxis("))
         XCTAssertFalse(source.contains("private var compactXAxisLabelRow"))
         XCTAssertFalse(
             source.contains(

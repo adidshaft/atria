@@ -486,7 +486,7 @@ class HandoffStaticChecks(unittest.TestCase):
             # added by the design-handoff chart-language pass.
             # 2026-07-07 (loop 3): domain also covers the dashed
             # prior-period ghost series.
-            ".chartYScale(domain: prepared.domain)",
+            ".chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(",
             # 2026-07-07: signature gained the optional comparison param (same
             # chart-language pass as the .chartYScale pin above).
             "struct AtriaMetricChartPreparedData",
@@ -794,7 +794,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaTrendChartScale",
             "static func domain(values: [Double], paddingRatio: Double = 0.16) -> ClosedRange<Double>",
             "static func domain(low: Double, high: Double, paddingRatio: Double = 0.16) -> ClosedRange<Double>",
-            ".chartYScale(domain: prepared.yDomain)",
+            ".chartYScale(domain: trendYDomain)",
         ]:
             assert_contains(self, trend_chart, needle)
         assert_not_contains(self, trend_chart, "private var rangedPoints")
@@ -7512,7 +7512,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "ForEach(overlay.points) { point in",
             "y: .value(title, prepared.eventLaneY)",
             ".chartXScale(domain: prepared.xDomain)",
-            ".chartYScale(domain: prepared.yDomain)",
+            ".chartYScale(domain: barAwareYDomain)",
             "ForEach(prepared.overlays) { overlay in",
             "return prepared.brushSummary(start: start, end: end, unit: unit)",
             "private struct AtriaExpandedChartPreparedOverlay: Identifiable",

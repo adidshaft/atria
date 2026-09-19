@@ -67,6 +67,22 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         }
     }
 
+    var drawsDailyBars: Bool {
+        switch self {
+        case .hrv, .recovery, .restingHeartRate, .respiration, .sleep:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var chartAnchorsAtZero: Bool {
+        switch self {
+        case .recovery, .sleep: return true
+        default: return false
+        }
+    }
+
     var glyph: String {
         switch self {
         case .hrv: return "waveform.path.ecg"
@@ -362,6 +378,8 @@ struct AtriaMiniTrendCard: View {
     let title: String
     /// What the values are, for VoiceOver ("HRV", "Sleep efficiency").
     let subject: String
+    var drawsDailyBars: Bool = false
+    var anchorsAtZero: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
@@ -370,31 +388,41 @@ struct AtriaMiniTrendCard: View {
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
             Chart {
-                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(subject, entry.point.value),
-                             series: .value("Run", "r\(entry.runID)"))
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.monotone)
-                        .lineStyle(AtriaChartVisualGrammar.trendLine)
-                }
-                // A dot per real reading so single-day runs (no line segment)
-                // are still visible instead of silently disappearing.
-                ForEach(trend.points) { point in
-                    PointMark(x: .value("Day", point.day, unit: .day),
-                              y: .value(subject, point.value))
-                        .foregroundStyle(tint)
-                        .symbolSize(18)
+                if drawsDailyBars {
+                    ForEach(trend.points) { point in
+                        BarMark(x: .value("Day", point.day, unit: .day),
+                                y: .value(subject, point.value),
+                                width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
+                            .foregroundStyle(tint.gradient)
+                            .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
+                    }
+                } else {
+                    ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
+                        LineMark(x: .value("Day", entry.point.day, unit: .day),
+                                 y: .value(subject, entry.point.value),
+                                 series: .value("Run", "r\(entry.runID)"))
+                            .foregroundStyle(tint)
+                            .interpolationMethod(.monotone)
+                            .lineStyle(AtriaChartVisualGrammar.trendLine)
+                    }
+                    ForEach(trend.points) { point in
+                        PointMark(x: .value("Day", point.day, unit: .day),
+                                  y: .value(subject, point.value))
+                            .foregroundStyle(tint)
+                            .symbolSize(18)
+                    }
                 }
             }
-            .atriaGraphPlotSurface()
+            .atriaDailyChartPlotChrome()
             .chartXScale(domain: trend.window)
-            .chartYScale(domain: trend.yDomain)
+            .chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(
+                values: trend.yDomain,
+                drawsBars: drawsDailyBars,
+                anchorsAtZero: anchorsAtZero
+            ))
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 72)
-            // Full-bleed plot inside the card (2026-08-05 width audit): the
-            // axis-less sparkline needs no inset; title and caption keep it.
             .padding(.horizontal, -AtriaDesignTokens.Spacing.lg)
             Text(trend.caption)
                 .font(.caption2)
@@ -489,7 +517,9 @@ struct AtriaAboutMetricSheet: View {
         AtriaMiniTrendCard(trend: trend,
                            tint: metric.tint,
                            title: "YOUR LAST 30 DAYS",
-                           subject: metric.title)
+                           subject: metric.title,
+                           drawsDailyBars: metric.drawsDailyBars,
+                           anchorsAtZero: metric.chartAnchorsAtZero)
     }
 
     private var computeCard: some View {

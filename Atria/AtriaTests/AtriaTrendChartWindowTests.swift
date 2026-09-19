@@ -26,7 +26,7 @@ final class AtriaTrendChartWindowTests: XCTestCase {
 
     func testAxisIsBoundToThatWindowNotTheData() throws {
         let s = try source
-        XCTAssertTrue(s.contains(".chartXScale(domain: prepared.xDomain,"),
+        XCTAssertTrue(s.contains(".chartXScale(domain: prepared.xDomain"),
                       "the trend chart must scale to its window, never to whatever data exists")
         XCTAssertFalse(s.contains(".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))\n"),
                        "the domain-free scale is what let sparse data fill the plot")

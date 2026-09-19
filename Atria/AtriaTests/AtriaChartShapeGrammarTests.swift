@@ -43,6 +43,30 @@ final class AtriaChartShapeGrammarTests: XCTestCase {
             XCTAssertTrue(
                 text.contains("defaultChartType: metric.rendersAsDailyBar ? .bars : .line"),
                 "\(name) must derive the expanded default from the one rule")
+            XCTAssertTrue(
+                text.contains("anchorsAtZero: metric.chartAnchorsAtZero"),
+                "\(name) must pass the zero-floor rule into the expanded chart")
         }
+    }
+
+    func testMagnitudeBarsGrowFromZeroAndLevelBarsKeepTheirRange() {
+        for kind in [AtriaMetricDetailKind.recovery, .sleep, .strain,
+                     .sleepPerformance, .sleepEfficiency] {
+            XCTAssertTrue(kind.chartAnchorsAtZero, "\(kind.rawValue) is a magnitude")
+        }
+        for kind in [AtriaMetricDetailKind.hrv, .restingHeartRate, .respiratoryRate] {
+            XCTAssertTrue(kind.rendersAsDailyBar, "\(kind.rawValue) is once a day")
+            XCTAssertFalse(kind.chartAnchorsAtZero,
+                           "\(kind.rawValue) would hide its signal on a 0-based axis")
+        }
+    }
+
+    func testVitalsTrendUsesTheSameBarGrammar() {
+        XCTAssertTrue(AtriaTrendMetric.hrv.rendersAsDailyBar)
+        XCTAssertTrue(AtriaTrendMetric.restingHR.rendersAsDailyBar)
+        XCTAssertTrue(AtriaTrendMetric.strain.rendersAsDailyBar)
+        XCTAssertFalse(AtriaTrendMetric.hrv.chartAnchorsAtZero)
+        XCTAssertFalse(AtriaTrendMetric.restingHR.chartAnchorsAtZero)
+        XCTAssertTrue(AtriaTrendMetric.strain.chartAnchorsAtZero)
     }
 }
