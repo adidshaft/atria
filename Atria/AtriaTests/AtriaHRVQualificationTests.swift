@@ -183,6 +183,42 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(stillKept.hrvWindowCount, 26)
     }
 
+    func testQualifiedOvernightHRVDoesNotMoveWhenOverlappingSessionsRemeasure() {
+        let resolved = SessionStore.requalifiedConfirmedSleepHRV(
+            existingHRV: 49,
+            existingWindowCount: 4,
+            measuredHRV: 64,
+            measuredWindowCount: 6,
+            sessionsOverlapSleep: true
+        )
+        XCTAssertEqual(resolved.hrv, 49)
+        XCTAssertEqual(resolved.windowCount, 4)
+    }
+
+    func testUnqualifiedScalarHRVStillYieldsToExactQualifiedRRWindow() {
+        let resolved = SessionStore.requalifiedConfirmedSleepHRV(
+            existingHRV: 99,
+            existingWindowCount: 0,
+            measuredHRV: 64,
+            measuredWindowCount: 4,
+            sessionsOverlapSleep: true
+        )
+        XCTAssertEqual(resolved.hrv, 64)
+        XCTAssertEqual(resolved.windowCount, 4)
+    }
+
+    func testQualifiedOvernightClearsWhenOverlappingSessionsFailTrust() {
+        let resolved = SessionStore.requalifiedConfirmedSleepHRV(
+            existingHRV: 77,
+            existingWindowCount: 4,
+            measuredHRV: nil,
+            measuredWindowCount: 0,
+            sessionsOverlapSleep: true
+        )
+        XCTAssertNil(resolved.hrv)
+        XCTAssertEqual(resolved.windowCount, 0)
+    }
+
     func testOvernightHRVRestoreReceiptFillsNilOnlyWhenIdentityMatches() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let end = start.addingTimeInterval(7 * 60 * 60 + 40 * 60)
@@ -246,7 +282,7 @@ final class AtriaHRVQualificationTests: XCTestCase {
         let persisted = confirmedMainSleep(for: standard,
                                            id: "qualified-confirmed-sleep",
                                            persistedHRV: 99,
-                                           persistedHRVWindowCount: 9)
+                                           persistedHRVWindowCount: 0)
 
         let updated = try XCTUnwrap(
             SessionStore.requalifiedConfirmedSleepHRVRecords(
@@ -261,6 +297,25 @@ final class AtriaHRVQualificationTests: XCTestCase {
                        standard.localHRVWindowCount(in: persisted.start,
                                                    end: persisted.end))
         XCTAssertNotEqual(updated.hrv, 99)
+    }
+
+    func testAlreadyQualifiedOvernightHRVIsNotReplacedByLaterExactWindow() throws {
+        let standard = session(dayOffset: 0,
+                               source: .standardHeartRateMeasurement2A37)
+        let persisted = confirmedMainSleep(for: standard,
+                                           id: "already-qualified-overnight",
+                                           persistedHRV: 49,
+                                           persistedHRVWindowCount: 4)
+
+        let updated = try XCTUnwrap(
+            SessionStore.requalifiedConfirmedSleepHRVRecords(
+                [persisted],
+                sessions: [standard]
+            ).first
+        )
+
+        XCTAssertEqual(updated.hrv, 49)
+        XCTAssertEqual(updated.hrvWindowCount, 4)
     }
 
     func testRecoveredHistoricalRRFillsOvernightSleepOnWakeDay() throws {

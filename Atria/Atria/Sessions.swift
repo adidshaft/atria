@@ -43658,6 +43658,13 @@ final class SessionStore: ObservableObject {
     /// night, clearing a 26-window measurement punches Week HRV down to 2 of 7
     /// (device 2026-09-18 Sep 15). Keep a previously qualified overnight when
     /// today's session set simply no longer covers it.
+    ///
+    /// Catch-up after a background install can remeasure the same night with
+    /// more RR and a different RMSSD (device 2026-09-19: 49 → 64, recovery
+    /// 45 → 56 while sleep stayed 5h46m). Once the morning freeze has a
+    /// qualified overnight, do not chase that later window. Overlapping
+    /// sessions that fail the trust gate still clear a scalar that cannot be
+    /// requalified.
     nonisolated static func requalifiedConfirmedSleepHRV(
         existingHRV: Int?,
         existingWindowCount: Int?,
@@ -43665,11 +43672,21 @@ final class SessionStore: ObservableObject {
         measuredWindowCount: Int,
         sessionsOverlapSleep: Bool
     ) -> (hrv: Int?, windowCount: Int) {
+        let existingIsQualified = (existingWindowCount ?? 0) >= 3
+            && (existingHRV ?? 0) > 0
+        if existingIsQualified, let existing = existingHRV {
+            if measuredWindowCount >= 3, let hrv = measuredHRV, hrv > 0 {
+                return (existing, existingWindowCount ?? 0)
+            }
+            if !sessionsOverlapSleep {
+                return (existing, existingWindowCount ?? 0)
+            }
+            return (nil, measuredWindowCount)
+        }
         if measuredWindowCount >= 3, let hrv = measuredHRV, hrv > 0 {
             return (hrv, measuredWindowCount)
         }
         if !sessionsOverlapSleep,
-           (existingWindowCount ?? 0) >= 3,
            let hrv = existingHRV, hrv > 0 {
             return (hrv, existingWindowCount ?? 0)
         }
@@ -43708,11 +43725,12 @@ final class SessionStore: ObservableObject {
             // HRV's historical migration intentionally clears scalar-only
             // values that cannot be requalified. Respiration is already stored
             // only after the stricter continuous-run gate above; session
-            // pruning must not erase that durable accepted result.
-            let respiratoryRate = confirmedSleepRespiratoryRate(from: sessions,
-                                                                start: sleep.start,
-                                                                end: sleep.end)
-                ?? sleep.respiratoryRate
+            // pruning must not erase that durable accepted result, and a later
+            // overlapping remeasure must not move this morning's 12 → 10.
+            let respiratoryRate = sleep.respiratoryRate
+                ?? confirmedSleepRespiratoryRate(from: sessions,
+                                                 start: sleep.start,
+                                                 end: sleep.end)
             guard sleep.hrv != qualifiedHRV
                     || sleep.hrvWindowCount != resolved.windowCount
                     || sleep.respiratoryRate != respiratoryRate else {
@@ -43778,12 +43796,17 @@ final class SessionStore: ObservableObject {
                     )
                 )
                 let qualifiedHRV = resolved.hrv
-                let respiratoryRate = try confirmedSleepRespiratoryRate(
-                    from: sessions,
-                    start: sleep.start,
-                    end: sleep.end,
-                    cooperativeDeadline: deadline
-                ) ?? sleep.respiratoryRate
+                let respiratoryRate: Double?
+                if let existing = sleep.respiratoryRate {
+                    respiratoryRate = existing
+                } else {
+                    respiratoryRate = try confirmedSleepRespiratoryRate(
+                        from: sessions,
+                        start: sleep.start,
+                        end: sleep.end,
+                        cooperativeDeadline: deadline
+                    )
+                }
                 guard sleep.hrv != qualifiedHRV
                         || sleep.hrvWindowCount != resolved.windowCount
                         || sleep.respiratoryRate != respiratoryRate else {
