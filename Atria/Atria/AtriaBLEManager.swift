@@ -30854,13 +30854,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return "should_not_toggle"
     }
 
-    /// Device 199: 6A ACK'd on stream-4 and 0x51 (Labs raw) never produced
-    /// compact 0x33 on stream-5. Official all-day compact IMU is 6A on, after
-    /// STOP_RAW_DATA so a leftover 51 session cannot own the pipe.
+    /// Device 201: `52` then `6A` ACK'd on stream-4 (`24…6a…`) and still
+    /// produced 0 stream-5 `0x33`. Official Gen4 compact is 6A on then
+    /// abort-historical (`0x14`); 0x03 realtime-HR stays off because 2A37
+    /// is already live. Still stop leftover Labs raw first. Never 0x51/0x3F.
     nonisolated static func allDayCompactIMURecoveryCommandBodies() -> [[UInt8]] {
         [
             [Cmd.stopRawData, 0x01],
             [Cmd.toggleIMUMode, 0x01],
+            [Cmd.abortHistoricalTransmits, 0x00],
         ]
     }
 
@@ -31549,10 +31551,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected else { return }
             await self.writeAllDayCompactIMURecovery(reason: "cover_live")
-            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_compact_sent reason=%@ cmds=5201,6a01 action=same_link_no_disconnect_no_proof_no_3f_no_51",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_compact_sent reason=%@ cmds=5201,6a01,1400 action=same_link_no_disconnect_no_proof_no_3f_no_51",
                           reason)
             self.persistLastIMURecovery(
-                command: "526a",
+                command: "526a14",
                 action: "same_link_no_disconnect_no_proof_no_3f_no_51",
                 now: now,
                 heartRateNotifying: recoveryAges.heartRateNotifying,
@@ -31814,8 +31816,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: RadioDefaults.passiveR10Status)
         let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
         persistLastIMURecovery(
-            command: "6a51",
-            action: "paced_pair_same_link_companion_if_inactive_no_3f_no_reconnect",
+            command: "526a14",
+            action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
             now: now,
             defaults: defaults,
             heartRateNotifying: recoveryAges.heartRateNotifying,
@@ -31856,11 +31858,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard !Task.isCancelled, peripheral.state == .connected else { return }
             }
             await self.writeAllDayCompactIMURecovery(reason: "silent_stream")
-            AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=5201,6a01 companions=%d action=paced_pair_same_link_companion_if_inactive_no_3f_no_51",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=5201,6a01,1400 companions=%d action=paced_pair_same_link_companion_if_inactive_no_3f_no_51",
                           reason,
                           companions)
             self.persistLastIMURecovery(
-                command: "526a",
+                command: "526a14",
                 action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
                 now: now,
                 heartRateNotifying: recoveryAges.heartRateNotifying,

@@ -427,8 +427,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             [
                 [AtriaBLEManager.Cmd.stopRawData, 0x01],
                 [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+                [AtriaBLEManager.Cmd.abortHistoricalTransmits, 0x00],
             ],
-            "device 199: stop leftover Labs raw, then compact IMU on, never 0x51"
+            "device 201: 52/6A ACK'd on stream-4 with 0x33 still missing; add official 0x14 abort, never 0x51"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
@@ -12605,7 +12606,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(coverBody.contains("Cmd.startRawData"),
                        "device 199: Labs 0x51 ACK'd on stream-4 and never produced compact 0x33")
         XCTAssertTrue(coverBody.contains("writeAllDayCompactIMURecovery"))
-        XCTAssertTrue(coverBody.contains("cmds=5201,6a01"))
+        XCTAssertTrue(coverBody.contains("cmds=5201,6a01,1400"))
         XCTAssertTrue(coverBody.contains("persistLastIMURecovery"))
         XCTAssertTrue(coverBody.contains("cover_live_compact_restore_2a37"),
                       "compact IMU recovery must reassert 2A37 (device 2026-09-18 167)")
@@ -12633,7 +12634,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "sitting compact 0x33 on this connection must not silent-refresh 6A/51")
         XCTAssertTrue(refreshBody.contains("silent_stream_compact_restore_2a37"),
                       "a compact IMU write that still queues must reassert 2A37")
-        XCTAssertTrue(refreshBody.contains("526a"))
+        XCTAssertTrue(refreshBody.contains("526a14"))
         XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
