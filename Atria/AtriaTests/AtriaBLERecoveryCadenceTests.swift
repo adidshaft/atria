@@ -519,6 +519,69 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "device 210: after one 6A, wait so historical IMU can catch up"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                catchUpAge: 15
+            ),
+            .toggleIMUOn,
+            "device 216: after catch-up finishes empty, one live 6A with stream-5 subscribed"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                live6AAfterCatchUpAlreadySent: true,
+                catchUpAge: 40
+            ),
+            .waitStream5,
+            "device 204: the post-catch-up 6A is still only once"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryStep(
+                stream5LiveWithoutCompactIMU: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                catchUpAge: 15,
+                historyCatchUpInProgress: true
+            ),
+            .waitStream5,
+            "do not 6A while stored IMU is still draining"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.allDayCompactIMURecoveryCommandBodies(
+                abortAlreadySentThisConnection: true,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                catchUpAge: 15
+            ),
+            [
+                [AtriaBLEManager.Cmd.toggleIMUMode, 0x01],
+            ]
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
+                abortAlreadySentThisConnection: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                abortAge: 180,
+                followUp6AAlreadySentThisConnection: true,
+                catchUpAlreadyRequested: true,
+                catchUpAge: 15
+            )
+        )
         XCTAssertFalse(
             AtriaBLEManager.allDayCompactIMURecoveryShouldWaitForStream5(
                 abortAlreadySentThisConnection: true,
@@ -3274,7 +3337,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("allowCleanOwnerLaunchCutover: true"))
 
         let protectedDiscoveryStart = try XCTUnwrap(source.range(
-            of: "if discoveryUsesProtectedStandardHR,\n                   !protectedR10StreamSuppressed,\n                   ch.uuid == Self.UUIDs.strapStream5"
+            of: "if discoveryUsesProtectedStandardHR,\n                   (!protectedR10StreamSuppressed || compactIMURecoveryActive),\n                   ch.uuid == Self.UUIDs.strapStream5"
         ))
         let protectedDiscoveryEnd = try XCTUnwrap(source.range(
             of: "} else if discoveryUsesProtectedStandardHR, UUIDs.allNotify.contains(ch.uuid)",
@@ -13040,6 +13103,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
         XCTAssertTrue(writeBody.contains("persistAllDayCompactFollowUp6A"),
                       "device 213: stamp follow-up 6A even on type-32 so history can catch up")
+        XCTAssertTrue(writeBody.contains("persistAllDayCompactLive6AAfterCatchUp"),
+                      "device 216: one live 6A after catch-up finishes empty")
+        XCTAssertTrue(writeBody.contains("catchUpAlreadyRequested: catchUpAlready"),
+                      "device 216: recovery step must see persisted catch-up before a second 6A")
         XCTAssertTrue(source.contains("RadioDefaults.allDayCompactAbortAt"),
                       "device 213: persist abort across reconnects or the 12s 6A never fires")
         XCTAssertTrue(source.contains("shouldResetAllDayCompactIMURecoveryOnConnect"))
@@ -13105,6 +13172,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(refreshBody.contains("shouldRequestHistoryCatchUpAfterLiveCompactAttempt"),
                       "device 214: 6A ACK with empty stream-5 must start historical IMU catch-up")
         XCTAssertTrue(refreshBody.contains("live_compact_yield_catch_up"))
+        XCTAssertTrue(refreshBody.contains("persistAllDayCompactHistoryCatchUp"),
+                      "device 216: persist catch-up so a relaunch can send the post-drain 6A")
+        XCTAssertTrue(refreshBody.contains("live6AAfterCatchUpAlreadySent"),
+                      "device 216: wait_stream5 must expire after catch-up so one live 6A can run")
         XCTAssertTrue(refreshBody.contains("finishProtectedR10CommandSequence"))
         XCTAssertTrue(refreshBody.contains("loadAllDayCompactIMURecoveryLease"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
