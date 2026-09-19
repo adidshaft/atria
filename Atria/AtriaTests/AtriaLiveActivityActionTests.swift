@@ -1553,4 +1553,123 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertNil(decoded.workoutStrainCapturedAt)
         XCTAssertNil(decoded.workoutStrainAvailability)
     }
+
+    func testIdleLiveActivityIntentStartsFromWidgetSnapshotWithoutOpeningApp() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let payload = AtriaIdleLiveActivityStart.SnapshotPayload(
+            heartRate: 93,
+            heartRateCapturedAt: now.addingTimeInterval(-2),
+            heartRateZoneIndex: 1,
+            heartRateZoneName: "Z1",
+            strain: 1.2,
+            batteryLevel: 12,
+            batteryCapturedAt: now.addingTimeInterval(-30),
+            batteryChargeStatus: "notCharging",
+            batteryChargeText: "Not charging",
+            steps: 6756,
+            stepsAreEstimated: false,
+            stepsCapturedAt: now.addingTimeInterval(-4),
+            dailyStepGoal: 8000
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: true,
+                heartRate: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 1,
+                activitiesEnabled: true,
+                heartRate: 93
+            )
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: false,
+                heartRate: 93
+            )
+        )
+        XCTAssertTrue(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: true,
+                heartRate: 93
+            )
+        )
+
+        let state = AtriaIdleLiveActivityStart.contentState(from: payload, now: now)
+        XCTAssertEqual(state.heartRate, 93)
+        XCTAssertEqual(state.heartRateAvailability, .live)
+        XCTAssertEqual(state.activityName, "Live")
+        XCTAssertEqual(state.showsWorkoutControls, false)
+        XCTAssertEqual(state.dailySteps, 6756)
+        XCTAssertEqual(state.elapsedDuration, 0)
+        XCTAssertEqual(
+            AtriaIdleLiveActivityStart.staleDate(
+                heartRateCapturedAt: payload.heartRateCapturedAt,
+                now: now
+            ),
+            now.addingTimeInterval(13)
+        )
+
+        var requested = false
+        let started = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 0,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            requested = true
+        }
+        XCTAssertEqual(started, .started)
+        XCTAssertTrue(requested)
+
+        let skipped = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 1,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            XCTFail("must not request when ActivityKit already has idle Live")
+        }
+        XCTAssertEqual(skipped, .skipped)
+
+        struct StartError: Error {}
+        let failed = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 0,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            throw StartError()
+        }
+        guard case .failed(let message) = failed else {
+            return XCTFail("visibility/request failures must stay failed")
+        }
+        XCTAssertTrue(message.contains("StartError"))
+
+        let fractional = #"{"heartRate":88,"heartRateCapturedAt":"2026-09-19T05:32:38.123Z"}"#
+        let decoded = AtriaIdleLiveActivityStart.decodePayload(
+            from: Data(fractional.utf8)
+        )
+        XCTAssertEqual(decoded?.heartRate, 88)
+        XCTAssertNotNil(decoded?.heartRateCapturedAt)
+
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let widget = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+        XCTAssertTrue(widget.contains("Button(intent: AtriaStartIdleLiveActivityIntent())"))
+        XCTAssertTrue(widget.contains("struct AtriaShowLiveControl: ControlWidget"))
+        XCTAssertTrue(widget.contains("AtriaShowLiveControl()"))
+        XCTAssertTrue(widget.contains("ControlWidgetButton(action: AtriaStartIdleLiveActivityIntent())"))
+
+        let coordinator = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
+        XCTAssertTrue(coordinator.contains("AtriaIdleLiveActivityStart.lastStartErrorKey"))
+    }
 }

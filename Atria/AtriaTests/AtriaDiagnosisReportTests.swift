@@ -49,9 +49,12 @@ final class AtriaDiagnosisReportTests: XCTestCase {
             ),
             liveHeartRate: 80,
             liveZone: "Z1",
-            widgetHeartRate: 80
+            widgetHeartRate: 80,
+            widgetHRV: 65
         )
-        XCTAssertTrue(snapshot.discrepancies.contains("hrv_today_settled_77_live_65"))
+        XCTAssertTrue(snapshot.discrepancies.contains("hrv_widget_65_settled_77"))
+        XCTAssertFalse(snapshot.discrepancies.contains(where: { $0.hasPrefix("hrv_today_settled_") }),
+                       "live strap RMSSD is not the Today tile")
         XCTAssertTrue(snapshot.discrepancies.contains("rhr_overnight_55_daytime_84"))
         XCTAssertTrue(snapshot.discrepancies.contains("recovery_overnight_79_today_38"))
         XCTAssertTrue(snapshot.discrepancies.contains("hr_stale_while_connected"))

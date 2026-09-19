@@ -961,6 +961,7 @@ struct AtriaWidgetEntryView: View {
                 .foregroundStyle(widgetStatusTint)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
+            AtriaStartIdleLiveActivityButton()
             if let battery = batteryHeaderText {
                 Label(battery, systemImage: batterySymbol)
                     .font(.system(size: 9, weight: .semibold))
@@ -2939,6 +2940,31 @@ struct AtriaStopCaptureControl: ControlWidget {
     }
 }
 
+struct AtriaShowLiveControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "AtriaShowLiveControl") {
+            ControlWidgetButton(action: AtriaStartIdleLiveActivityIntent()) {
+                Label("Show Atria Live", systemImage: "heart.fill")
+            }
+        }
+        .displayName("Show Atria Live")
+        .description("Start live heart rate on the Lock Screen and Dynamic Island.")
+    }
+}
+
+private struct AtriaStartIdleLiveActivityButton: View {
+    var body: some View {
+        Button(intent: AtriaStartIdleLiveActivityIntent()) {
+            Image(systemName: "heart.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(atriaWidgetHRVIdentityColor)
+                .accessibilityLabel("Show live heart rate")
+                .accessibilityHint("Starts live heart rate on the Lock Screen and Dynamic Island")
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct AtriaLiveActivityLockScreenView: View {
     let context: ActivityViewContext<AtriaLiveActivityAttributes>
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -3819,6 +3845,8 @@ struct AtriaMetricWidgetEntryView: View {
 
                 Spacer(minLength: 0)
 
+                AtriaStartIdleLiveActivityButton()
+
                 Text(metric.unit.uppercased())
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
@@ -3965,5 +3993,6 @@ struct AtriaWidgetBundle: WidgetBundle {
         AtriaLiveActivityWidget()
         AtriaStartCaptureControl()
         AtriaStopCaptureControl()
+        AtriaShowLiveControl()
     }
 }
