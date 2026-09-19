@@ -71,6 +71,10 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
             "device 2026-09-19 15:37: journal reconstruction must keep Review this workout after HR lookback slides off"
         )
         XCTAssertTrue(
+            implementation.contains("workoutPromptHeartSamples(now: now)"),
+            "device 2026-09-19 16:25: 197 install checkpointed the 13:13 journal; reconstruction must read that saved walk"
+        )
+        XCTAssertTrue(
             implementation.contains("episodeStart") && implementation.contains("episodeEnd"),
             "Review this workout must open the completed bout window, not now"
         )

@@ -4017,7 +4017,7 @@ struct AtriaHomeView: View {
             heldSustainedWorkoutPromptAt = nil
         }
         if let bout = AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
-            samples: ble.session,
+            samples: workoutPromptHeartSamples(now: now),
             restingHeartRate: rest,
             now: now
         ), !completedSustainedBoutOverlapsConfirmedWorkout(bout) {
@@ -4560,6 +4560,25 @@ struct AtriaHomeView: View {
         store.confirmedWorkouts.contains { workout in
             max(workout.start, bout.start) < min(workout.end, bout.end)
         }
+    }
+
+    /// Device 2026-09-19 16:25: installing 197 checkpointed the 13:13–16:13
+    /// all-day journal, so live `ble.session` no longer holds the 15:23 walk.
+    /// Reconstruction must read that saved window or Review this workout
+    /// never comes back.
+    private func workoutPromptHeartSamples(now: Date) -> [HRSample] {
+        let lookbackStart = now.addingTimeInterval(
+            -AtriaWorkoutPromptEvaluator.completedSustainedReviewLookback
+        )
+        var samples = ble.session.filter { $0.t >= lookbackStart && $0.t <= now }
+        for session in store.sessions where session.end >= lookbackStart {
+            for point in session.points {
+                let t = session.start.addingTimeInterval(point.t)
+                guard t >= lookbackStart, t <= now else { continue }
+                samples.append(HRSample(t: t, bpm: point.bpm))
+            }
+        }
+        return samples
     }
 
     private func presentWorkoutReview(candidate: WorkoutReviewCandidate) {
