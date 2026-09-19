@@ -394,6 +394,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "device 198: stream-4 type-24 must not count as stream-5; empty stream-5 + stale IMU toggles"
         )
         XCTAssertFalse(
+            AtriaBLEManager.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: 0
+            ),
+            "device 199: 0 stream-5 callbacks with live 2A37 and type-24 6A ACKs is not IMU"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: 1
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.zombieToggleSkipDetail(
+                connectedAge: 12,
+                alreadyToggled: false,
+                lastToggleAge: nil,
+                sittingSkipFresh: false
+            ),
+            "should_not_toggle:connected_age"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.zombieToggleSkipDetail(
+                connectedAge: 120,
+                alreadyToggled: true,
+                lastToggleAge: 20,
+                sittingSkipFresh: false
+            ),
+            "should_not_toggle:paced"
+        )
+        XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
                 connected: true,
                 heartRateNotifying: true,
@@ -12610,7 +12639,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let toggleBody = String(source[toggleStart.lowerBound..<toggleEnd.lowerBound])
         XCTAssertTrue(toggleBody.contains("zombie_cccd_toggle_on"))
-        XCTAssertTrue(toggleBody.contains("strapStream5NotifyConfirmed = true"))
+        XCTAssertFalse(toggleBody.contains("self.strapStream5NotifyConfirmed = true"),
+                       "device 199: CCCD on is not stream-5 proof; wait for a stream-5 value")
+        XCTAssertTrue(toggleBody.contains("zombieToggleSkipDetail"),
+                      "device 199: paced vs connected-age skip must be diagnosable")
         XCTAssertTrue(toggleBody.contains("rediscoverZombieProprietaryTransportIfNeeded"))
         XCTAssertTrue(toggleBody.contains("after_zombie_toggle"))
         XCTAssertTrue(toggleBody.contains("liveHeartRateEpochOwnsRadio"),
@@ -12700,6 +12732,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             liveBody.contains("_stream5_unconfirmed_before_6a51"),
             "device 198: stream-5 CCCD repair must run before cover-live 6A/51"
         )
+        XCTAssertTrue(source.contains("shouldConfirmStream5FromCCCDState"),
+                      "device 199: isNotifying after 6A ACK must not count as live stream-5")
         XCTAssertTrue(source.contains("liveR10EligibilityBlockers"),
                       "device 198: persist why live_r10_eligible stayed 0")
         XCTAssertFalse(liveBody.contains("if eligible, connected, !strapStream5NotifyConfirmed"),

@@ -8868,7 +8868,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         if stream5.isNotifying {
-            strapStream5NotifyConfirmed = true
+            if Self.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+            ) {
+                strapStream5NotifyConfirmed = true
+            }
             ensureR10LivenessWatchdog(reason: "\(reason)_stream5_active")
             let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
             let lastRefreshAge = lastR10ZombieCCCDRefreshAt.map { now.timeIntervalSince($0) }
@@ -8976,7 +8980,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) }
         )
         guard shouldToggle else {
-            persistSkip("should_not_toggle")
+            persistSkip(
+                Self.zombieToggleSkipDetail(
+                    connectedAge: connectedAge,
+                    alreadyToggled: lastR10ZombieCCCDToggleAt != nil,
+                    lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) },
+                    sittingSkipFresh: sittingSkipFresh
+                )
+            )
             return
         }
         guard let strapService = peripheral.services?.first(where: {
@@ -9028,7 +9039,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 .characteristics?
                 .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else { return }
             peripheral.setNotifyValue(true, for: stream5)
-            self.strapStream5NotifyConfirmed = true
             self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
             AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
                           reason)
@@ -11721,7 +11731,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             for characteristic in service.characteristics ?? []
                 where needed.contains(characteristic.uuid) {
                 if activeProprietaryNotifyUUIDs.contains(characteristic.uuid) {
-                    if characteristic.uuid == Self.UUIDs.strapStream5 {
+                    if characteristic.uuid == Self.UUIDs.strapStream5,
+                       Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+                       ) {
                         strapStream5NotifyConfirmed = true
                     }
                 } else if idleWindowHistoryNotifyRequestedUUIDs.contains(characteristic.uuid) {
@@ -14387,7 +14400,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recordProtectedV9BringUpEdge("notify_confirmed_\(characteristic.uuid.uuidString)")
         activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
         if characteristic.uuid == Self.UUIDs.strapStream5 {
-            strapStream5NotifyConfirmed = true
+            if Self.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+            ) {
+                strapStream5NotifyConfirmed = true
+            }
             markPassiveR10SubscriptionConfirmed()
         }
         advanceProtectedR10ResponseEventDataProfile(peripheral: peripheral)
@@ -15178,7 +15195,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let cachedStream5, cachedStream5.properties.contains(.notify) {
             if cachedStream5.isNotifying {
                 activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
-                strapStream5NotifyConfirmed = true
+                if Self.shouldConfirmStream5FromCCCDState(
+                    stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+                ) {
+                    strapStream5NotifyConfirmed = true
+                }
                 markPassiveR10SubscriptionConfirmed()
             } else {
                 requestProtectedR10InitialProfileNotificationIfAllowed(
@@ -30806,6 +30827,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         confirmed || characteristicNotifying
     }
 
+    /// Device 199: CoreBluetooth `isNotifying=true` after stream-5 CCCD on
+    /// still delivered 0 stream-5 callbacks. Type-24 6A ACKs on stream-4 are
+    /// not compact IMU. Only a stream-5 value update may stamp confirmed.
+    nonisolated static func shouldConfirmStream5FromCCCDState(
+        stream5NotifyCallbacksThisConnection: Int
+    ) -> Bool {
+        stream5NotifyCallbacksThisConnection > 0
+    }
+
+    nonisolated static func zombieToggleSkipDetail(
+        connectedAge: TimeInterval,
+        alreadyToggled: Bool,
+        lastToggleAge: TimeInterval?,
+        sittingSkipFresh: Bool,
+        minimumConnectedAge: TimeInterval = 20,
+        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval
+    ) -> String {
+        if sittingSkipFresh { return "should_not_toggle:sitting_skip" }
+        if connectedAge < minimumConnectedAge { return "should_not_toggle:connected_age" }
+        if alreadyToggled,
+           let lastToggleAge,
+           lastToggleAge < minimumRetoggleInterval {
+            return "should_not_toggle:paced"
+        }
+        return "should_not_toggle"
+    }
+
     nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
         canSend
     }
@@ -31608,7 +31656,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ),
             forKey: RadioDefaults.liveR10EligibleBlockers
         )
-        defaults.set(strapStream5NotifyConfirmed, forKey: RadioDefaults.liveStream5Confirmed)
+        defaults.set(
+            strapStream5NotifyConfirmed
+                && protocolStream5NotifyCallbacksThisConnection > 0,
+            forKey: RadioDefaults.liveStream5Confirmed
+        )
         defaults.set(realtimeArmed, forKey: RadioDefaults.liveRealtimeArmed)
     }
 
@@ -52544,7 +52596,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if !alreadyActiveProprietaryNotifications.isEmpty {
                     self.activeProprietaryNotifyUUIDs.formUnion(alreadyActiveProprietaryNotifications)
-                    self.strapStream5NotifyConfirmed = alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                    self.strapStream5NotifyConfirmed =
+                        alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                        && Self.shouldConfirmStream5FromCCCDState(
+                            stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                        )
                     AtriaDebugLog("ATRIADBG ble_restore_notifications status=seeded active=%d stream5=%d",
                                   self.activeProprietaryNotifyUUIDs.count,
                                   self.strapStream5NotifyConfirmed ? 1 : 0)
@@ -52552,7 +52608,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if passiveR10AlreadyNotifying {
                     self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
-                    self.strapStream5NotifyConfirmed = true
+                    if Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                    ) {
+                        self.strapStream5NotifyConfirmed = true
+                    }
                     self.markPassiveR10SubscriptionConfirmed()
                 }
                 for counter in radioCounters {
@@ -53137,7 +53197,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 if Self.UUIDs.allNotify.contains(characteristic.uuid) {
                     self.activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
                     self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
-                    if isData {
+                    if isData,
+                       Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                       ) {
                         self.strapStream5NotifyConfirmed = true
                         if self.r10TransportIsExpected {
                             self.ensureR10LivenessWatchdog(reason: "stream5_notify_active")
@@ -53295,6 +53358,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.protocolStream5NotifyCallbacksThisConnection = defaults.integer(
                         forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
                     )
+                    self.strapStream5NotifyConfirmed = true
                     if Self.proprietaryNotifyLooksLikeSleepModeLog(data) {
                         self.lastStrapSleepModeAt = receivedAt
                     } else if self.lastR10ZombieCCCDToggleAt != nil {
