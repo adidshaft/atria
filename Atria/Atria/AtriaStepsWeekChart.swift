@@ -173,9 +173,10 @@ struct AtriaStepsWeekChart: View {
                     ForEach(days, id: \.self) { day in
                         if let steps = stepsByDay[day] {
                             BarMark(x: .value("Day", day, unit: .day),
-                                    y: .value("Steps", steps))
+                                    y: .value("Steps", steps),
+                                    width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
                                 .foregroundStyle(barTint(steps: steps).opacity(0.85))
-                                .cornerRadius(4)
+                                .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                                 // Per-bar count (2026-08-08): bars alone gave no
                                 // read of the actual number. Small label above
                                 // each bar; days with no bar stay empty.
@@ -202,34 +203,22 @@ struct AtriaStepsWeekChart: View {
                             }
                     }
                 }
-                .atriaGraphPlotSurface()
+                .atriaDailyChartPlotChrome()
                 .chartXScale(domain: axisLo...axisHi)
                 .chartXAxis {
                     AxisMarks(values: days) { _ in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                        AxisTick().foregroundStyle(.clear)
                         // `centered: true` places the letter in the MIDDLE of
                         // the day it names, which is where a `unit: .day` bar
-                        // is drawn. Without it the tick sits at midnight while
-                        // the bar occupies the whole day, so every weekday
-                        // letter sat half a day left of its own bar. The grid
-                        // line stays on the boundary, which is correct — only
-                        // the label is centred. (Same treatment the stress
-                        // distribution chart already uses.)
+                        // is drawn.
                         AxisValueLabel(format: .dateTime.weekday(.narrow),
                                        centered: true)
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-                // Leading axis, like every other chart in the app. Swift Charts
-                // defaults the value axis to the TRAILING edge, which put these
-                // labels on the right where they collided with the "goal"
-                // annotation and were the first thing clipped.
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel().foregroundStyle(.secondary)
-                    }
-                }
+                .atriaDailyQuantityYAxis()
                 .frame(height: 140)
                 // The plot used to be pulled 12pt wider than its card on each
                 // side to sit "full bleed". That is wider than the space it
@@ -243,7 +232,7 @@ struct AtriaStepsWeekChart: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Verified strap-step days will appear here.")
+                Text("Verified step days will appear here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

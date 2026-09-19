@@ -573,6 +573,11 @@ final class AtriaCompactLatestNightSettlementTests: XCTestCase {
         XCTAssertEqual(clipped.points.last?.t, duration)
         XCTAssertEqual(clippedRR.count, 900)
         XCTAssertEqual(clippedRR.last?.t, duration)
+        // 2026-08-29 pair-based qualification: the 150 s half-stride places 5
+        // windows on this 900 s stream (was 3 under 300 s tiling). The final
+        // window still ends exactly at the retained session endpoint, so
+        // clipping that endpoint away would drop this to 4 — the sensitivity
+        // this test exists to keep.
         XCTAssertEqual(try clipped.qualifiedLnRMSSDWindows(
             in: clipped.start,
             end: clipped.end,
@@ -580,7 +585,7 @@ final class AtriaCompactLatestNightSettlementTests: XCTestCase {
                 uptimeNanoseconds:
                     DispatchTime.now().uptimeNanoseconds + 2_000_000_000
             )
-        ).count, 3)
+        ).count, 5)
     }
 
     func testLatestNightSessionSliceClearsTemperatureAndFailsDeadline()

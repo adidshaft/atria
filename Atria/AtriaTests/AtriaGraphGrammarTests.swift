@@ -190,4 +190,87 @@ final class AtriaGraphGrammarTests: XCTestCase {
         XCTAssertEqual(AtriaGraphChartType.options(hasMinMaxBand: false), [.line, .bars])
         XCTAssertEqual(AtriaGraphChartType.options(hasMinMaxBand: true), [.line, .bars, .range])
     }
+
+    // MARK: - Shared scrub selection (2026-08-29)
+
+    func testScrubSelectionPicksNearestRealSampleAcrossGaps() {
+        let base = reference
+        let dates = [0.0, 60, 120, 3_600].map { base.addingTimeInterval($0) }
+        // Deep inside the 58-minute hole the selection snaps to a REAL edge
+        // sample — nothing between recorded observations is ever selectable.
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(500), points: dates, date: { $0 }
+        ), dates[2])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(3_000), points: dates, date: { $0 }
+        ), dates[3])
+    }
+
+    func testScrubSelectionClampsToRealEndpointsAndHandlesEmpty() {
+        let base = reference
+        let dates = [0.0, 60, 120].map { base.addingTimeInterval($0) }
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(-9_999), points: dates, date: { $0 }
+        ), dates[0])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(9_999), points: dates, date: { $0 }
+        ), dates[2])
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: dates[1], points: dates, date: { $0 }
+        ), dates[1], "an exact hit selects that sample")
+        XCTAssertNil(AtriaChartScrubSelection.nearest(
+            to: base, points: [Date](), date: { $0 }
+        ), "no samples means no selection — never a fabricated one")
+    }
+
+    func testPlottedYDomainAnchorsMagnitudeBarsAndKeepsLevelRange() {
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 5.5...8.0, drawsBars: true, anchorsAtZero: true
+            ),
+            0...8.0
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 49...64, drawsBars: true, anchorsAtZero: false
+            ),
+            49...64
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 49...64, drawsBars: false, anchorsAtZero: true
+            ),
+            49...64
+        )
+    }
+
+    func testWeekAxisLabelsUseWeekdayAndDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let friday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 18))!
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar),
+            friday.formatted(.dateTime.weekday(.narrow)) + " 18"
+        )
+        let week = friday.addingTimeInterval(-6 * 86_400)...friday
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelText(for: friday, domain: week, calendar: calendar),
+            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar)
+        )
+        let month = friday.addingTimeInterval(-29 * 86_400)...friday
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelText(for: friday, domain: month, calendar: calendar),
+            friday.formatted(.dateTime.month(.abbreviated).day())
+        )
+    }
+
+    func testScrubSelectionIsGenericOverTheChartsOwnPointType() {
+        struct Sample: Equatable { let t: Date; let bpm: Int }
+        let base = reference
+        let samples = [Sample(t: base, bpm: 61),
+                       Sample(t: base.addingTimeInterval(300), bpm: 95)]
+        XCTAssertEqual(AtriaChartScrubSelection.nearest(
+            to: base.addingTimeInterval(200), points: samples, date: { $0.t }
+        ), samples[1])
+    }
 }

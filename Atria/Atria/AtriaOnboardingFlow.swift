@@ -303,7 +303,7 @@ struct AtriaOnboardingFlow: View {
     let ble: AtriaBLEManager
     @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
     let onComplete: (AthleteProfile) -> Void
-    let onAppReviewDemo: (String) -> Void
+    let onAppReviewDemo: () -> Void
     let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -399,7 +399,7 @@ struct AtriaOnboardingFlow: View {
         init?(debugName: String?) {
             guard let debugName else { return nil }
             switch debugName.lowercased() {
-            case "welcome", "what-this-is", "what": self = .whatThisIs
+            case "welcome", "what-this-is", "what", "hardware", "compatible", "signals": self = .whatThisIs
             case "nickname", "name", "you-name": self = .nickname
             case "strap", "connect": self = .strap
             case "you", "profile": self = .you
@@ -500,7 +500,7 @@ struct AtriaOnboardingFlow: View {
          historyBootstrap: AtriaOnboardingHistoryBootstrap,
          debugInitialStep: String? = nil,
          onRestoreBackup: ((URL) async -> Bool)? = nil,
-         onAppReviewDemo: @escaping (String) -> Void = { _ in },
+         onAppReviewDemo: @escaping () -> Void = {},
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
@@ -581,11 +581,6 @@ struct AtriaOnboardingFlow: View {
                                 move(to: .strap)
                             }
                         } else {
-                            if step == .nickname,
-                               AtriaAppReviewDemo.isRequested(nickname: nicknameDraft) {
-                                onAppReviewDemo(nicknameDraft)
-                                return
-                            }
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
                     }
@@ -655,13 +650,32 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             onboardingLifestyleHero
             Text("Your strap. Your data.")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
             onboardingRingCard
             // The ring is a layout preview. Its empty values match the real
             // fresh-install state rather than inventing first-run readings.
             Text("Your numbers appear here after your first night of wear.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("atria.onboarding.hardware-signals")
+            Button(AtriaAppReviewDemo.exploreButtonTitle) {
+                onAppReviewDemo()
+            }
+            .font(.headline.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .accessibilityIdentifier("atria.onboarding.explore-sample-data")
+            .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
+            Text("No account, strap, Bluetooth, or internet required. Every screen is marked Sample data.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -721,7 +735,7 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             onboardingBrandTile
             Text("Welcome to Atria")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Your strap becomes a calm, honest readiness coach. What should we call you?")
                 .font(.subheadline)
@@ -745,10 +759,6 @@ struct AtriaOnboardingFlow: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("For App Review, enter \"App Review\" to explore local demo data without connecting a strap.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
@@ -764,7 +774,7 @@ struct AtriaOnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             ringsPreviewCard
             Text("Choose your rings")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Pick what the three rings track, and which one sits in the center. You can change this anytime from Customize Today.")
                 .font(.subheadline)
@@ -854,7 +864,7 @@ struct AtriaOnboardingFlow: View {
                                    colors: [Self.cycleHue.opacity(0.38),
                                             Color.red.opacity(0.22)])
             Text("Cycle tracking")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Track your cycle alongside recovery. Your own store, kept separate from research sharing — always.")
                 .font(.subheadline)
@@ -996,6 +1006,7 @@ struct AtriaOnboardingFlow: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Take the strap off, wait for its green sensor lights to stop, then tap the top repeatedly until the side light pulses blue. Close WHOOP first. Atria securely asks iPhone to pair — accept the system prompt, put the strap back on snugly, and keep it nearby. The strap stops its blue light when pairing finishes — Atria does not force the light off.")
                         .accessibilityLabel("Pairing instructions")
+                    Text("If this strap was already paired with WHOOP or another phone: open iPhone Settings → Bluetooth, forget the WHOOP device, and force-quit the official WHOOP app. Then pulse blue as above. Atria cannot factory-reset WHOOP flash.")
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
@@ -1106,7 +1117,7 @@ struct AtriaOnboardingFlow: View {
     private var behaviorsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
-            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime in Settings.")
+            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime from Journal or Settings.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             ForEach(behaviorGroups, id: \.title) { group in
@@ -1132,18 +1143,7 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var behaviorGroups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
-        [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
-                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
-                                  .coldExposure, .massage, .stretching, .soreness]),
-            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
-                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
-                                      .supplements, .medication]),
-            ("Substances", [.alcohol, .nicotine, .cannabis]),
-            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
-                                  .morningLight, .outdoors, .travel, .unwell]),
-            ("Intimacy", [.sexualActivity, .selfPleasure])
-        ]
+        AtriaTrackedBehaviors.groups
     }
 
     private var behaviorGridColumns: [GridItem] {
@@ -1163,11 +1163,15 @@ struct AtriaOnboardingFlow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(selected ? .cyan : .secondary)
                     .frame(width: 18)
-                Text(tag.label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tag.label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(selected ? .primary : .secondary)
+                    Text(tag.prompt)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 0)
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.caption)
@@ -1186,7 +1190,7 @@ struct AtriaOnboardingFlow: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tag.label)
         .accessibilityValue(selected ? "Tracked" : "Not tracked")
-        .accessibilityHint(selected ? "Double tap to stop tracking" : "Double tap to track")
+        .accessibilityHint(tag.prompt)
     }
 
     private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {
@@ -1256,14 +1260,19 @@ struct AtriaOnboardingFlow: View {
                                 tint: .indigo,
                                 title: "Tonight",
                                 detail: "Wear your strap to sleep — it captures your night automatically.")
+                // 2026-09-02: the engine scores recovery from the first saved
+                // sleep on a provisional baseline; trusted baselines take
+                // `PersonalBaseline.trustedMinimumSamples` (14) nights, the
+                // same "of 14 nights" the metric heroes count. The page said
+                // the score "kicks in after 3–4 nights", which matched neither.
                 expectationStep(icon: "sunrise.fill",
                                 tint: .orange,
                                 title: "Tomorrow morning",
-                                detail: "Your first sleep review is ready to confirm.")
+                                detail: "Your first sleep review to confirm, and a first recovery score.")
                 expectationStep(icon: "chart.line.uptrend.xyaxis",
                                 tint: .green,
-                                title: "After 3–4 nights",
-                                detail: "Your recovery score kicks in as Atria learns your baseline.",
+                                title: "Over the first two weeks",
+                                detail: "Scores firm up as Atria learns your baseline.",
                                 isLast: true)
             }
             .padding(18)
@@ -1329,7 +1338,7 @@ struct AtriaOnboardingFlow: View {
                 .frame(width: 40)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

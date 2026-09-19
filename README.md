@@ -201,8 +201,14 @@ python3 tools/audit_handoff_status.py \
 | `docs/` | Technical notes, validation plans, and protocol research — start at [`docs/README.md`](docs/README.md). |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
+| `test_*.py`, `test_*.sh` | Repository checks and device-evidence harnesses, run from the repo root. Most need a paired strap; `test_handoff_static_checks.py` needs nothing but Python. |
+| `gate_*.sh`, `reference_*.sh` | Capture and reference-comparison runs for sensor validation. |
 | `assets/` | Logo and README screenshots. |
 | `evidence/` | Physical-device evidence trees. Gitignored — may contain personal health data. |
+
+Nothing in this repository needs credentials to build. The only local secrets
+are your own Apple signing settings, and `.gitignore` keeps signing material,
+device evidence, and logs out of version control.
 
 - [Research validation corpus](docs/research-validation-corpus.md) — the rules and fixtures used for reproducible sensor validation.
 

@@ -2273,6 +2273,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                           "The exact boundary must follow the persisted intent start")
         XCTAssertLessThan(boundary.lowerBound, lease.lowerBound)
         XCTAssertTrue(body.contains("status=start_boundary_persist_failed action=retain_all_day_journal"))
+        XCTAssertFalse(body.contains("activityType == .strength"),
+                       "Start restores 2A37 for walk/run/ride/Strength, not Strength only")
+        XCTAssertFalse(body.contains("switch session.activityType"),
+                       "the live-HR lease is not gated on the picker type")
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: configuration)"),
+                      "the Start sheet passes every catalog type through the same lease")
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"),
+                      "Live Activity / deep-link Start of any type keeps 2A37")
     }
 
     func testWorkoutEndCheckpointPassesPersistedStartOwnership() throws {
@@ -2288,6 +2296,66 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(body.contains("notBefore: finalIntent.startedAt"),
                       "The end checkpoint must carry the persisted exact workout start")
         XCTAssertTrue(body.contains("endWorkoutMotionLease(reason: \"workout_end\")"))
+        XCTAssertTrue(body.contains("requestPostWorkoutHistoryBackfillIfNeeded("))
+        XCTAssertTrue(home.contains("queueConnectedRawHistoryCatchUpIntent(reason: \"post_workout_hr_backfill\")"))
+        XCTAssertTrue(home.contains("upgradeMetadataOnlyWorkoutsFromHistoryInBackground()"))
+        XCTAssertTrue(home.contains("shouldQueuePostWorkoutHistoryBackfill("))
+        XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
+        XCTAssertTrue(
+            home.contains("requestPostWorkoutHistoryBackfillIfNeeded()\n            await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: \"scene_active\")"),
+            "already-connected Recovery must retire leftover pending without waiting for a reconnect"
+        )
+        let confirm = try XCTUnwrap(body.range(of: "confirmWorkoutWindowForUIAsync("))
+        let backfill = try XCTUnwrap(body.range(of: "requestPostWorkoutHistoryBackfillIfNeeded("))
+        XCTAssertLessThan(
+            confirm.lowerBound,
+            backfill.lowerBound,
+            "only a 0-sample confirm may queue leftover drain, so a walk with HR cannot pause 2A37 before Strength"
+        )
+        let manager = try durabilitySource("AtriaBLEManager.swift")
+        XCTAssertTrue(manager.contains("connectedRawHistoryCatchUpHasDrainableWork("))
+        XCTAssertTrue(manager.contains("shouldDeferRawCatchUpForIdleWindowDrain("))
+        let catchUp = try XCTUnwrap(manager.range(
+            of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded("
+        ))
+        let catchUpBody = String(manager[catchUp.lowerBound...].prefix(16_000))
+        XCTAssertTrue(
+            catchUpBody.contains("queuedPullIntent: queuedIntent != nil"),
+            "queued post-workout catch-up must not drop on a suppressed backlog detector"
+        )
+        XCTAssertTrue(
+            catchUpBody.contains("shouldHoldQueuedCatchUpForIdleWindowDrain("),
+            "queued gym fill must not mint a keep-2A37 0x22 while idle drain is warming"
+        )
+        XCTAssertTrue(
+            catchUpBody.contains("queuedRawCatchUpIntentIsExpired("),
+            "post-workout catch-up must outlive the 10-minute UI pull"
+        )
+        XCTAssertTrue(
+            catchUpBody.contains("preserveConnectedRealtimeOwner: true"),
+            "fallback raw catch-up still keeps the live 2A37 owner"
+        )
+        let observers = try durabilitySource("AtriaHomeShellSupport.swift")
+        let observerStart = try XCTUnwrap(observers.range(
+            of: "struct AtriaHomeObservers: View {"
+        ))
+        let observerBody = String(observers[observerStart.lowerBound...].prefix(1_800))
+        XCTAssertTrue(
+            observerBody.contains("onChange(of: statusStore.state.status, initial: true)"),
+            "a restored already-connected link must re-queue post-workout catch-up"
+        )
+        XCTAssertTrue(
+            manager.contains("queuedPullIntent: queuedPullIntent"),
+            "slice continuation must keep a queued gym pull alive when Start-fresh reports no backlog"
+        )
+        XCTAssertTrue(
+            manager.contains("reason: \"history_write_22_timeout_retry\""),
+            "a live-preserving 0x22 timeout must re-queue catch-up without disconnecting"
+        )
+        XCTAssertTrue(
+            manager.contains("queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil"),
+            "queued gym fill must not restore 2A37 after one ACK on the Home screen"
+        )
     }
 
     func testCheckpointOwnershipGuardRunsBeforeSnapshotAndFailsClosed() throws {

@@ -191,6 +191,22 @@ final class AtriaHistoricalSealedJSONLCompressionTests: XCTestCase {
         XCTAssertFalse(scanned.complete)
     }
 
+    func testJSONLIdentityAbortsWhenLeaseExpires() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        XCTAssertThrowsError(
+            try AtriaHistoricalJSONLInput.identity(at: fixture.source, shouldContinue: { false })
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalJSONLInput.InputError,
+                .maintenanceAuthorityRevoked
+            )
+        }
+        let identity = try AtriaHistoricalJSONLInput.identity(at: fixture.source)
+        XCTAssertGreaterThan(identity.byteCount, 0)
+        XCTAssertFalse(identity.sha256.isEmpty)
+    }
+
     private func scan(_ url: URL) -> (complete: Bool, timestamps: [TimeInterval], lineCount: Int) {
         guard let descriptor = AtriaHistoricalJSONLRecentScanner.descriptors(for: [url]).first else {
             return (false, [], 0)

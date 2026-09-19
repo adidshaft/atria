@@ -514,6 +514,40 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
         XCTAssertEqual(legend.first { $0.stage == .rem }?.minutes, 120)
     }
 
+    func testEstimatedHypnogramCompositesSpecklesIntoReadableBands() {
+        var segments: [SleepStageSegment] = []
+        for index in 0..<240 {
+            let stage: SleepStageKind
+            switch index % 4 {
+            case 0: stage = .awake
+            case 1: stage = .light
+            case 2: stage = .rem
+            default: stage = .deep
+            }
+            segments.append(seg(stage,
+                                Double(index) * 0.5,
+                                Double(index + 1) * 0.5,
+                                id: "est-\(index)"))
+        }
+        let windowEnd = base.addingTimeInterval(120 * 60)
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: segments,
+            windowStart: base,
+            windowEnd: windowEnd,
+            isEstimate: true
+        )
+        XCTAssertEqual(
+            AtriaSleepHypnogramPresentation.displayMarkBudget(isEstimate: true),
+            16
+        )
+        XCTAssertTrue(timeline.composited)
+        XCTAssertLessThanOrEqual(timeline.runs.count, 16,
+                                 "HR-only estimate nights must not paint 30-second static")
+        XCTAssertGreaterThan(timeline.runs.count, 1)
+        XCTAssertEqual(timeline.runs.first?.start, base)
+        XCTAssertEqual(timeline.runs.last?.end, windowEnd)
+    }
+
     func testDegenerateWindowsProduceNoRuns() {
         XCTAssertTrue(AtriaSleepHypnogramPresentation.timelineRuns(
             for: [seg(.deep, 0, 30)],

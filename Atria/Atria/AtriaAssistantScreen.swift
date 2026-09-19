@@ -87,15 +87,23 @@ struct AtriaAssistantScreen: View {
     #endif
 
     private var introBubble: some View {
-        Label {
-            Text("Ask Atria")
-                .font(.headline.weight(.bold))
-        } icon: {
-            Image(systemName: "lock.shield.fill")
-                .foregroundStyle(.cyan)
+        VStack(alignment: .leading, spacing: 4) {
+            Label {
+                Text("Ask Atria")
+                    .font(.headline.weight(.bold))
+            } icon: {
+                Image(systemName: "lock.shield.fill")
+                    .foregroundStyle(.cyan)
+            }
+            // The on-device promise was a VoiceOver-only hint (2026-09-02);
+            // sighted readers saw a shield with no words behind it. One
+            // caption says it for everyone.
+            Text("Quick answers come from your data on this phone, not generated text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Quick answers use on-device data and Atria calculations, not generated text.")
     }
 
     private func exchangeBubbles(_ exchange: Exchange) -> some View {
@@ -104,7 +112,7 @@ struct AtriaAssistantScreen: View {
                 .font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(.tint.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(.tint.opacity(0.16), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 .frame(maxWidth: .infinity, alignment: .trailing)
             VStack(alignment: .leading, spacing: 6) {
                 Text(exchange.answer)
@@ -118,7 +126,7 @@ struct AtriaAssistantScreen: View {
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(uiColor: .secondarySystemGroupedBackground),
-                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
     }
 
@@ -143,8 +151,8 @@ struct AtriaAssistantScreen: View {
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                     .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(prompt.question)
@@ -237,7 +245,8 @@ struct AtriaAssistantScreen: View {
 
     private func weekAnswer(_ prompt: Prompt) -> Exchange {
         let report = WeeklyReport(rollups: store.dailyRollupHistory,
-                                  sleepNights: store.sleepHistorySnapshot.nights)
+                                  sleepNights: store.sleepHistorySnapshot.nights,
+                                  cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay)
         var parts: [String] = []
         if let recovery = report.recoveryAvg {
             let delta = report.recoveryDeltaVsPriorWeek.map { $0 >= 0 ? " (up \($0) on the prior week)" : " (down \(-$0) on the prior week)" } ?? ""

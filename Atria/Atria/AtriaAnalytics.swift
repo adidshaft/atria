@@ -13,7 +13,11 @@ enum AtriaAnalytics {
                   let first = recent.first?.t,
                   let last = recent.last?.t else { return nil }
             let duration = last.timeIntervalSince(first)
-            guard duration >= 45 else { return nil }
+            // Apply the same missing-beat tolerance at the trailing edge as
+            // inside the window; otherwise a disconnected stream can continue
+            // publishing an apparently current breathing rate for ~45 seconds.
+            guard duration.isFinite, duration >= 45,
+                  now.timeIntervalSince(last) <= 5 else { return nil }
 
             let start = first.timeIntervalSinceReferenceDate
             let relative = recent.map { ($0.t.timeIntervalSinceReferenceDate - start, $0.ms) }
@@ -21,8 +25,10 @@ enum AtriaAnalytics {
             // up to ~69s from 118 link disconnects). A large gap means missing
             // beats; resampling across it manufactures slow low-frequency drift
             // the periodogram would mislabel as breathing. 2026-07-08.
-            for index in 1..<relative.count where relative[index].0 - relative[index - 1].0 > 5.0 {
-                return nil
+            guard recent.allSatisfy({ $0.ms.isFinite && (300...2000).contains($0.ms) }) else { return nil }
+            for index in 1..<relative.count {
+                let gap = relative[index].0 - relative[index - 1].0
+                guard gap.isFinite, gap > 0, gap <= 5 else { return nil }
             }
             let sampleRate = 4.0
             let step = 1.0 / sampleRate
@@ -80,12 +86,17 @@ enum AtriaAnalytics {
                   let first = recent.first?.t,
                   let last = recent.last?.t else { return nil }
             let duration = last.timeIntervalSince(first)
-            guard duration >= 45 else { return nil }
+            // Apply the same missing-beat tolerance at the trailing edge as
+            // inside the window; otherwise a disconnected stream can continue
+            // publishing an apparently current breathing rate for ~45 seconds.
+            guard duration.isFinite, duration >= 45,
+                  now.timeIntervalSince(last) <= 5 else { return nil }
             let origin = first.timeIntervalSinceReferenceDate
             var relative: [(Double, Double)] = []
             relative.reserveCapacity(recent.count)
             for (offset, sample) in recent.enumerated() {
                 if offset.isMultiple(of: 64), !shouldContinue() { return nil }
+                guard sample.ms.isFinite, (300...2000).contains(sample.ms) else { return nil }
                 relative.append((
                     sample.t.timeIntervalSinceReferenceDate - origin,
                     sample.ms
@@ -93,7 +104,8 @@ enum AtriaAnalytics {
             }
             for index in 1..<relative.count {
                 if index.isMultiple(of: 64), !shouldContinue() { return nil }
-                if relative[index].0 - relative[index - 1].0 > 5 { return nil }
+                let gap = relative[index].0 - relative[index - 1].0
+                guard gap.isFinite, gap > 0, gap <= 5 else { return nil }
             }
             let sampleRate = 4.0
             let step = 1.0 / sampleRate
@@ -195,11 +207,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Recovery is inside your target zone. Match training load to how you feel."
+                recommendation = "Recovery is inside the range you configured. See Sources for how this derived score is computed."
             case .yellow:
-                recommendation = "Low recovery -- keep today light, hydrate, and get to bed earlier."
+                recommendation = "Recovery is below the range you configured. See Sources for how this derived score is computed."
             case .red:
-                recommendation = "Very low recovery -- prioritize rest, hydration, and an easy day."
+                recommendation = "Recovery is well below the range you configured. See Sources for how this derived score is computed."
             }
 
             return AtriaMetricZone(level: level,
@@ -223,15 +235,15 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Strain is inside today's recovery-scaled target band."
+                recommendation = "Strain is inside today's recovery-scaled target band. See Sources for TRIMP."
             case .yellow where delta > 0:
-                recommendation = "You're past today's suggested strain for your recovery -- ease off to protect tomorrow."
+                recommendation = "Strain is above today's recovery-scaled target band. See Sources for TRIMP."
             case .red where delta > 0:
-                recommendation = "You're far past today's suggested strain. Keep the rest of the day light."
+                recommendation = "Strain is well above today's recovery-scaled target band. See Sources for TRIMP."
             case .yellow:
-                recommendation = "Room to add load if you feel good."
+                recommendation = "Strain is below today's recovery-scaled target band. See Sources for TRIMP."
             case .red:
-                recommendation = "Well under today's target. Add easy movement or training only if it fits how you feel."
+                recommendation = "Strain is well below today's recovery-scaled target band. See Sources for TRIMP."
             }
             return AtriaMetricZone(level: level,
                                    title: "Strain target",
@@ -273,11 +285,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "HRV is near your personal baseline. Match your day to recovery and sleep."
+                recommendation = "HRV is near your personal baseline. See Sources for the definition."
             case .yellow:
-                recommendation = "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load. Prioritize sleep and an easier day."
+                recommendation = "HRV is below your personal baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             case .red:
-                recommendation = "HRV is well below your norm. Keep today easy and focus on sleep, hydration, and recovery."
+                recommendation = "HRV is well below your personal baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             }
             let current = "\(rmssd) ms vs \(baseline) ms baseline."
             let greenValue = Int((Double(baseline) * safeGreen).rounded())
@@ -323,11 +335,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Resting heart rate is near your baseline."
+                recommendation = "Resting heart rate is near your baseline. See Sources."
             case .yellow:
-                recommendation = "Resting HR is up vs your norm -- fatigue, stress, dehydration, or poor sleep can move it. Hydrate and keep the day lighter."
+                recommendation = "Resting HR is above your baseline. Fatigue, stress, or poor sleep can move this derived overnight value. See Sources."
             case .red:
-                recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
+                recommendation = "Resting HR is well above your baseline. This is a comparison to your own recent nights, not a diagnosis. See Sources."
             }
             let target = "Personal baseline · Green \(baseline + safeGreenDelta) bpm or lower and within 1 SD\(zScoreText), yellow to 2 SD or \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
             return AtriaMetricZone(level: level,
@@ -367,9 +379,9 @@ enum AtriaAnalytics {
             case .green:
                 recommendation = "Sleep efficiency is in the target zone."
             case .yellow:
-                recommendation = "Restless night -- cut late caffeine or alcohol, cool the room, and keep bed/wake times consistent."
+                recommendation = "Sleep efficiency is below the range you set. This compares classified sleep time with time in bed."
             case .red:
-                recommendation = "Sleep was inefficient. Keep the room cool and dark, reduce late stimulants, and protect a consistent schedule."
+                recommendation = "Sleep efficiency is well below the range you set. This compares classified sleep time with time in bed."
             }
             return AtriaMetricZone(level: level,
                                    title: "Sleep efficiency target",
@@ -388,11 +400,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Sleep duration met your goal. Keep bed and wake times consistent."
+                recommendation = "Sleep duration met the duration you set as a goal."
             case .yellow:
-                recommendation = "A little under your sleep goal -- aim for about \(AtriaMetricFormat.sleepHours(remaining)) more and keep bed and wake times consistent."
+                recommendation = "Last night was a little under the sleep duration you set as a goal (\(AtriaMetricFormat.sleepHours(remaining)) remaining versus that goal)."
             case .red:
-                recommendation = "Under your sleep need -- aim for about \(AtriaMetricFormat.sleepHours(remaining)) more and keep bed and wake times consistent."
+                recommendation = "Last night was under the sleep duration you set as a goal (\(AtriaMetricFormat.sleepHours(remaining)) remaining versus that goal)."
             }
             return AtriaMetricZone(level: level,
                                    title: "Sleep duration target",
@@ -418,11 +430,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Sleep reached the perform range. Keep the routine consistent."
+                recommendation = "Sleep duration reached 85% or more of the stored need Atria computed. See Sources."
             case .yellow:
-                recommendation = "Sleep was close to the perform range. Protect more sleep when your schedule allows."
+                recommendation = "Sleep duration was 70–84% of the stored need Atria computed. See Sources."
             case .red:
-                recommendation = "Sleep was well below tonight's need. Prioritize recovery and an earlier sleep opportunity."
+                recommendation = "Sleep duration was below 70% of the stored need Atria computed. See Sources."
             }
             let needText = neededHours.map {
                 " · \(AtriaMetricFormat.sleepHours($0)) adaptive need"
@@ -490,11 +502,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "VO2max trend is improving. Keep the cardio and recovery habits consistent."
+                recommendation = "VO2max trend is improving. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             case .yellow:
-                recommendation = "VO2max trend is flat -- consistent cardio, Zone 2, intervals, and sleep move this most."
+                recommendation = "VO2max trend is flat. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             case .red:
-                recommendation = "Trending the wrong way -- consistent cardio, Zone 2, intervals, and sleep move this most."
+                recommendation = "VO2max trend is declining. Cardio minutes and sleep consistency are the inputs this estimate uses. See Sources."
             }
 
             return AtriaMetricZone(level: level,
@@ -523,11 +535,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Fitness age is on the younger side for your profile. Keep the RHR, HRV, zone-2, and sleep-consistency habits steady."
+                recommendation = "Fitness age is on the younger side for your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             case .yellow:
-                recommendation = "Fitness age is slightly older than your profile. Zone-2 minutes, sleep timing, RHR, and HRV move this estimate most."
+                recommendation = "Fitness age is slightly older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             case .red:
-                recommendation = "Fitness age is older than your profile. Prioritize steady aerobic minutes, sleep regularity, and easier days when strain is high."
+                recommendation = "Fitness age is older than your profile. Resting HR, HRV, aerobic minutes, and sleep consistency are the inputs this estimate uses. See Sources."
             }
 
             return AtriaMetricZone(level: level,
@@ -555,11 +567,11 @@ enum AtriaAnalytics {
             let recommendation: String
             switch level {
             case .green:
-                recommendation = "Respiratory rate is close to your local sleep baseline."
+                recommendation = "Respiratory rate is close to your local sleep baseline. See Sources."
             case .yellow:
-                recommendation = "Respiratory rate is slightly off your baseline -- environment, poor sleep, stress, or illness onset can move it. Watch the trend, not one night."
+                recommendation = "Respiratory rate is slightly off your local sleep baseline. Environment, sleep, or stress can move this derived estimate. See Sources."
             case .red:
-                recommendation = "Respiratory rate is well off your baseline. Treat this as a wellness signal only and prioritize rest if you feel off."
+                recommendation = "Respiratory rate is well off your local sleep baseline. This is a comparison to your own nights, not a diagnosis. See Sources."
             }
             return AtriaMetricZone(level: level,
                                    title: "Respiratory rate baseline",
@@ -585,9 +597,9 @@ enum AtriaAnalytics {
             case .green:
                 recommendation = "Skin temperature deviation is close to your local sleep baseline."
             case .yellow:
-                recommendation = "Skin temperature is slightly off your baseline -- room temperature, alcohol, cycle, travel, or illness onset can move it."
+                recommendation = "Skin temperature is slightly off your local sleep baseline. This remains a relative overnight signal, not core temperature."
             case .red:
-                recommendation = "Skin temperature is well off your baseline. Treat this as informational and compare with how you feel."
+                recommendation = "Skin temperature is well off your local sleep baseline. This remains a relative overnight signal, not core temperature."
             }
             return AtriaMetricZone(level: level,
                                    title: "Skin temperature baseline",
@@ -682,9 +694,9 @@ enum AtriaAnalytics {
             var total = 0.0
             for index in 1..<samples.count {
                 let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
-                guard dtSeconds > 0,
+                guard dtSeconds.isFinite, dtSeconds > 0,
                       dtSeconds <= Strain.maximumLoadEvidenceGap,
-                      samples[index].bpm > 0 else { continue }
+                      Strain.hasPlausibleHeartRateEndpoints(samples[index - 1].bpm, samples[index].bpm) else { continue }
                 let dtMin = dtSeconds / 60.0
                 let gross = energyKcalPerMinute(heartRate: samples[index].bpm, profile: profile)
                 total += max(0, gross - resting) * dtMin
@@ -708,6 +720,13 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
+        /// Match the load model's evidence contract. Both endpoints must be
+        /// usable: removing an invalid observation first would bridge its hole.
+        fileprivate static func hasPlausibleHeartRateEndpoints(_ previous: Int, _ current: Int) -> Bool {
+            AtriaStrainLoadModel.plausibleBPMRange.contains(Double(previous))
+                && AtriaStrainLoadModel.plausibleBPMRange.contains(Double(current))
+        }
+
         /// The single version authority for both the current display curve and
         /// persisted strain values. Bump whenever stored HR evidence can
         /// produce a different public 0–21 score, whether the evidence kernel
@@ -924,8 +943,8 @@ enum AtriaAnalytics {
 
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maxGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maxGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     dropped += dt
                     continue
                 }
@@ -965,8 +984,8 @@ enum AtriaAnalytics {
             for index in 1..<series.count {
                 if index.isMultiple(of: 256), !shouldContinue() { return nil }
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maxGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maxGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     total = MaxHeartRateZoneSeconds(
                         rest: total.rest,
                         warmup: total.warmup,
@@ -1039,8 +1058,9 @@ enum AtriaAnalytics {
             var total = 0.0
             for index in 1..<series.count {
                 let dtMin = (series[index].t - series[index - 1].t) / 60.0
-                guard dtMin > 0,
-                      dtMin <= maximumGapMinutes else { continue }
+                guard dtMin.isFinite, dtMin > 0,
+                      dtMin <= maximumGapMinutes,
+                      hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) else { continue }
                 let reserve = Swift.min(Swift.max((Double(series[index].bpm) - Double(rest)) / span, 0), 1)
                 total += dtMin * Double(edwardsWeight(forHRReserve: reserve))
             }
@@ -1212,8 +1232,8 @@ enum AtriaAnalytics {
             var usableSamples = 0
             for index in 1..<series.count {
                 let dt = series[index].t - series[index - 1].t
-                guard dt > 0 else { continue }
-                if dt > maximumLoadEvidenceGap {
+                guard dt.isFinite, dt > 0 else { continue }
+                if dt > maximumLoadEvidenceGap || !hasPlausibleHeartRateEndpoints(series[index - 1].bpm, series[index].bpm) {
                     dropped += dt
                     continue
                 }

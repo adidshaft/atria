@@ -17,7 +17,8 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
             typedInsights: insights,
             dailyRollupHistoryRevision: rollupRevision,
             dailyMetricHistoryRevision: metricRevision,
-            localDay: day
+            localDay: day,
+            answeredDayCount: 0
         )
     }
 
@@ -84,7 +85,8 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
                 typedInsights: [],
                 dailyRollupHistoryRevision: 1,
                 dailyMetricHistoryRevision: 1,
-                localDay: initialDay
+                localDay: initialDay,
+            answeredDayCount: 0
             )
         )
         let sameDay = day.addingTimeInterval(12 * 60 * 60)

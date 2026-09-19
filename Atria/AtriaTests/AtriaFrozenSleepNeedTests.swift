@@ -10,10 +10,10 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         return calendar
     }()
 
-    private func day(_ year: Int, _ month: Int, _ day: Int, hour: Int = 0) -> Date {
+    private func day(_ year: Int, _ month: Int, _ day: Int, hour: Int = 0, minute: Int = 0) -> Date {
         DateComponents(calendar: calendar,
                        timeZone: calendar.timeZone,
-                       year: year, month: month, day: day, hour: hour).date!
+                       year: year, month: month, day: day, hour: hour, minute: minute).date!
     }
 
     private func mainSleep(id: String,
@@ -85,7 +85,9 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         let mintedNight = settled.first { $0.id == "new-main" }
         XCTAssertNotNil(mintedNight?.frozenSleepNeed,
                         "a genuinely new main sleep mints an itemized receipt at settlement")
-        XCTAssertEqual(mintedNight?.frozenSleepNeed?.baseHours, 8)
+        // Prior 7h night pulls typical to 7h; adapted base is the midpoint of
+        // the configured 8h and that typical.
+        XCTAssertEqual(try XCTUnwrap(mintedNight?.frozenSleepNeed).baseHours, 7.5, accuracy: 0.001)
         XCTAssertNil(settled.first { $0.id == "old-main" }?.frozenSleepNeed,
                      "a record outside the freezable set must not be back-minted")
         XCTAssertNil(settled.first { $0.id == "nap" }?.frozenSleepNeed,
@@ -154,20 +156,46 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
             calendar: calendar
         ))
 
-        let expectedDebt = AtriaSleepBudget.sleepDebt(nights: [
-            (needed: priorA.frozenSleepNeed!.totalHours, slept: 6),
-            (needed: priorB.frozenSleepNeed!.totalHours, slept: 6.5),
-        ])
+        let typical = try XCTUnwrap(AtriaSleepBudget.typicalSleepHours(fromSlept: [6, 6.5]))
+        XCTAssertEqual(typical, 6.5, accuracy: 0.001)
+        // 6h and 6.5h both sit within 10% of typical, so recovered nights
+        // add no debt. Strain and nap credit still move the receipt.
         let expected = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
                                                             yesterdayStrain: 15,
-                                                            debtHours: expectedDebt,
-                                                            sameDayNapHours: 1)
+                                                            debtHours: 0,
+                                                            sameDayNapHours: 1,
+                                                            typicalSleepHours: typical)
         let minted = settled.first { $0.id == "tonight" }?.frozenSleepNeed
         XCTAssertEqual(minted, AtriaSleepBudget.FrozenNeed(expected),
-                       "tonight's receipt must be built from prior frozen nights' debt, yesterday's strain, and the same-day nap credit")
-        XCTAssertGreaterThan(expected.debtAdderHours, 0)
+                       "tonight's receipt uses typical-sleep debt, yesterday's strain, and the same-day nap credit")
+        XCTAssertEqual(expected.debtAdderHours, 0, accuracy: 0.001)
         XCTAssertGreaterThan(expected.napCreditHours, 0)
         XCTAssertGreaterThan(expected.strainAdderHours, 0)
+        XCTAssertEqual(expected.baseHours, 7.25, accuracy: 0.001)
+    }
+
+    func testRecoveredSixHourNightsDoNotFreezeTenHourNeed() throws {
+        let crash = mainSleep(id: "crash", start: day(2026, 9, 3, hour: 7), hours: 2.3)
+        let prior = (0..<3).map { offset in
+            mainSleep(id: "prior-\(offset)",
+                      start: day(2026, 9, 4 + offset, hour: 23),
+                      hours: 6.5)
+        }
+        let tonight = mainSleep(id: "tonight", start: day(2026, 9, 7, hour: 21), hours: 6.4)
+
+        let settled = try XCTUnwrap(SessionStore.freezingAdaptiveSleepNeed(
+            in: [crash] + prior + [tonight],
+            freezableSleepIDs: ["tonight"],
+            dailyMetrics: [],
+            baseNeedHours: 8,
+            calendar: calendar
+        ))
+
+        let minted = try XCTUnwrap(settled.first { $0.id == "tonight" }?.frozenSleepNeed)
+        XCTAssertEqual(minted.debtAdderHours, 0, accuracy: 0.01,
+                       "crash nights under 5h must not inflate later targets")
+        XCTAssertEqual(minted.totalHours, 7.25, accuracy: 0.05)
+        XCTAssertLessThan(minted.totalHours, 8.5)
     }
 
     // MARK: assessment P1.7+8 — TRIMP is truth; the need adder consumes it
@@ -254,6 +282,107 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         // receipt instead of downgrading to a bare scalar.
         XCTAssertTrue(source.contains("(need: need, receipt: sleep.frozenSleepNeed)"))
         XCTAssertTrue(source.contains("preserved = sleep.replacingFrozenSleepNeed(receipt)"))
+    }
+
+    // MARK: rollup overlay
+
+    func testOverlayFrozenSleepNeedFillsMeasuredNightsThatOmitNeed() {
+        let frozen = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 7.65,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let night = mainSleep(
+            id: "sep15",
+            start: day(2026, 9, 14, hour: 23),
+            hours: 4.359,
+            frozen: frozen
+        )
+        let wakeDay = EventCivilTime.day(
+            containing: night.end,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        let missingNeed = DailyRollupStoreEntry(
+            day: wakeDay,
+            recovery: 48,
+            sleepSeconds: 15_693,
+            bedtimeMinutes: 1_401,
+            calendar: calendar
+        )
+        let alreadyStored = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: -1, to: wakeDay)!,
+            sleepSeconds: 17_349,
+            sleepNeedSeconds: 28_000,
+            calendar: calendar
+        )
+        let noSleep = DailyRollupStoreEntry(
+            day: calendar.date(byAdding: .day, value: 1, to: wakeDay)!,
+            recovery: 65,
+            rhr: 55,
+            calendar: calendar
+        )
+        let filled = SessionStore.overlayFrozenSleepNeed(
+            onto: [missingNeed, alreadyStored, noSleep],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        XCTAssertEqual(filled[0].sleepNeedSeconds ?? 0, frozen.seconds, accuracy: 0.001)
+        XCTAssertEqual(filled[1].sleepNeedSeconds ?? 0, 28_000, accuracy: 0.001)
+        XCTAssertNil(filled[2].sleepNeedSeconds)
+    }
+
+    func testOverlayFrozenSleepNeedLatestEndWinsOnTheSameWakeDay() {
+        let earlier = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 8,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let later = AtriaSleepBudget.FrozenNeed(
+            AtriaSleepBudget.sleepNeedComponents(
+                baseHours: 7.65,
+                yesterdayStrain: nil,
+                debtHours: 0,
+                sameDayNapHours: 0
+            )
+        )
+        let first = mainSleep(
+            id: "first",
+            start: day(2026, 9, 14, hour: 22),
+            hours: 7,
+            frozen: earlier
+        )
+        let second = mainSleep(
+            id: "second",
+            start: day(2026, 9, 14, hour: 23, minute: 30),
+            hours: 7,
+            frozen: later
+        )
+        let wakeDay = EventCivilTime.day(
+            containing: second.end,
+            eventTimeZoneIdentifier: second.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        XCTAssertEqual(
+            wakeDay,
+            EventCivilTime.day(
+                containing: first.end,
+                eventTimeZoneIdentifier: first.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+        )
+        let filled = SessionStore.overlayFrozenSleepNeed(
+            onto: [DailyRollupStoreEntry(day: wakeDay, sleepSeconds: 25_200, calendar: calendar)],
+            confirmedSleeps: [first, second],
+            calendar: calendar
+        )
+        XCTAssertEqual(filled.first?.sleepNeedSeconds ?? 0, later.seconds, accuracy: 0.001)
     }
 
     // MARK: chart gap grammar

@@ -37,7 +37,8 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
     func testTheNewlyWiredMetricsReadRealStoredFields() throws {
         let body = try glanceTrendBody()
         // Each of these is an actual field on DailyRollupStoreEntry.
-        for expected in ["case .respiratoryRate", "case .bodyTemp", "case .bioAge", "case .steps"] {
+        for expected in ["case .respiratoryRate", "case .bodyTemp", "case .bioAge", "case .steps",
+                         "case .sleep, .sleepHistory", "case .sleepEfficiency"] {
             XCTAssertTrue(body.contains(expected), "\(expected) must have a trend")
         }
         let rollup = try source("DailyRollupStore.swift")
@@ -65,14 +66,26 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
     func testBothStepSurfacesFoldDaysThroughTheSameFunction() throws {
         let today = try source("AtriaTodayScreen.swift")
         let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(today.contains("AtriaStepsWeekChart.dailyStepTotals"),
-                      "the Today sparkline must use the shared rule")
-        XCTAssertTrue(overview.contains("AtriaStepsWeekChart.dailyStepTotals"),
-                      "and so must the Overview week chart")
+        // Layered, and both layers shared: exact per-calendar-day totals from
+        // AtriaCivilDayStepAuthority (2026-08-27 audit: a day showing 505 held
+        // ~7,000 in its shards, another showing 0 held 3,615), with the
+        // receipt fold as the fallback for days whose shards rotated out.
+        for (name, text) in [("Today", today), ("Overview", overview)] {
+            XCTAssertTrue(text.contains("AtriaCivilDayStepAuthority.shared.dailyTotals"),
+                          "\(name) must read exact day totals from the authority")
+            XCTAssertTrue(text.contains("AtriaStepsWeekChart.dailyStepTotals"),
+                          "\(name) must keep the receipt fold as its fallback")
+        }
         XCTAssertFalse(overview.contains("map[day, default: 0] += receipt.steps"),
                        "the second copy of the folding rule must be gone — two "
                            + "copies is how the card and its own chart came to "
                            + "disagree")
+    }
+
+    func testTheStepsTileIsFedTheWeekTrend() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertTrue(today.contains("trend: weekStepTrend"),
+                      "the live steps tile must draw the same week bars as glanceTrend")
     }
 
     func testTheOpenCycleIsPinnedToTodayAndClosedOnesSum() {
@@ -118,5 +131,24 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
         XCTAssertEqual(totals[yesterday], 2_358,
                        "two closed cycles on one day SUM (1458 + 900); max "
                            + "would have silently dropped the smaller")
+    }
+
+    /// 2026-09-03: the strain tile's number is cycle strain (the same series
+    /// the chart, History, and weekly report use) while its sparkline and the
+    /// 14-day compare median still compactMapped the civil rollup. A shifted
+    /// sleeper's last bar, and "above typical", could disagree with the number
+    /// they sit under.
+    func testStrainSparklineAndCompareMedianOverlayTheCycleSeries() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertTrue(today.contains("case .strain, .strainCompare, .load:"),
+                      "both strain tiles share the sparkline")
+        XCTAssertTrue(today.contains("WeeklyReport.applyingCycleStrain(\n                Array(history),"),
+                      "the sparkline overlays the same cycle series as the tile number")
+        XCTAssertTrue(today.contains("store.physiologicalCycleStrainByDisplayDay"),
+                      "from the store, keyed the same way as History")
+        XCTAssertTrue(today.contains("WeeklyReport.applyingCycleStrain(\n            Array(highlightRollups.drop { $0.day >= today }.prefix { $0.day >= cutoff }),"),
+                      "the 14-day median must overlay too, or 'above typical' lies")
+        XCTAssertTrue(today.contains(".compactMap(\\.strain)"),
+                      "missing days still contribute nothing")
     }
 }

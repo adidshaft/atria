@@ -35,10 +35,16 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(source.contains(
             "publisher(for: HistoricalArchive.didUpdateNotification)"
         ), "Per-row archive writes must not trigger repeated whole-day scans")
-        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay ? store.sessions : []"),
+        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay"),
                       "The current wake cycle should start from the resident prepared session image")
+        XCTAssertTrue(source.contains("store.sessionsIncludingFreshActiveJournal()"),
+                      "device 2026-09-11: Activity HR must include the open journal")
+        XCTAssertTrue(source.contains("start: snapshot.interval.start"),
+                      "The current wake cycle should use the exact-window reader")
+        XCTAssertTrue(source.contains("end: snapshot.interval.end"),
+                      "The current wake cycle must bound the exact-window reader")
         XCTAssertTrue(source.contains("since: snapshot.interval.start"),
-                      "The current wake cycle should use the bounded recent reader")
+                      "An incomplete exact-window scan may fall back to the bounded recent reader")
         XCTAssertTrue(source.contains("maximumPoints: 100_000"),
                       "Completed historical days must keep the exact-window reader")
         XCTAssertTrue(source.contains("withTaskCancellationHandler"))
@@ -179,7 +185,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertTrue(timelineHost.contains("private var timelineSignalInspector"))
 
         let sheetHostStart = try XCTUnwrap(source.range(
-            of: "private struct AtriaActivityWorkoutDetailSheetHost: View"
+            of: "struct AtriaActivityWorkoutDetailSheetHost: View"
         ))
         let sheetStart = try XCTUnwrap(source.range(
             of: "private struct AtriaActivityWorkoutDetailSheet: View",
@@ -336,8 +342,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let recent = DateInterval(start: now.addingTimeInterval(-12 * 3_600),
                                   end: now.addingTimeInterval(-11 * 3_600))
-        let expired = DateInterval(start: now.addingTimeInterval(-72 * 3_600),
-                                   end: now.addingTimeInterval(-71 * 3_600))
+        // 2026-08-29: retention grew to 7 days, so "expired" must sit beyond
+        // 168 hours — a 3-day-old interval is now retained detailed history.
+        let expired = DateInterval(start: now.addingTimeInterval(-200 * 3_600),
+                                   end: now.addingTimeInterval(-199 * 3_600))
 
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
             loadState: .loading,
@@ -359,7 +367,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             isCurrentPhysiologicalDay: false,
             currentState: .noSignal,
             now: now
-        ).contains("2-day detailed-history window"))
+        ).contains("7-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
             loadState: .loaded,
             interval: recent,
@@ -550,9 +558,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ).contains("couldn’t be read"))
         XCTAssertTrue(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
             loadState: .loaded,
-            workoutEnd: now.addingTimeInterval(-72 * 3_600),
+            workoutEnd: now.addingTimeInterval(-200 * 3_600),
             now: now
-        ).contains("2-day detailed-history window"))
+        ).contains("7-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
             loadState: .loaded,
             workoutEnd: now,
@@ -627,9 +635,76 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout()), "Strain 0.1")
     }
 
+    func testHeartRateLoadPointsUsesEdwardsZoneMinutes() {
+        var loaded = workout(strain: 5.4, coverage: 92)
+        loaded.zoneSeconds = [
+            "warmup": 60,
+            "fatBurn": 120,
+            "aerobic": 180,
+            "anaerobic": 60,
+            "max": 60
+        ]
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateLoadPoints(loaded), 23)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateLoadText(loaded), "23")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: loaded), "HR 23 · 5.4")
+        XCTAssertNil(AtriaWorkoutMetricPresentation.heartRateLoadPoints(
+            workout(samples: 0, avgHR: 0, strain: nil)
+        ))
+        XCTAssertEqual(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 523, avgHR: 102, peakHR: 122, strain: 0.6)
+            )?.caption,
+            "avg HR"
+        )
+        XCTAssertEqual(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 523, avgHR: 102, peakHR: 122, strain: 0.6)
+            )?.value,
+            "102"
+        )
+        XCTAssertNil(
+            AtriaWorkoutMetricPresentation.firstScreenTrailingMetric(
+                workout(samples: 0, avgHR: 0, strain: nil)
+            )
+        )
+    }
+
     func testOnlyMissingSamplesClaimNoHRData() {
-        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(samples: 0)), "No HR data")
-        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR data")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(samples: 0)), "No HR")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR")
+        XCTAssertEqual(
+            AtriaWorkoutMetricPresentation.compactStatus(workout(samples: 0)),
+            "No HR"
+        )
+    }
+
+    func testRecentSavedWorkoutsKeepYesterdaySessionsWithoutHeartRate() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 11))!
+        let yesterday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 16, minute: 31))!
+        let older = calendar.date(from: DateComponents(year: 2026, month: 9, day: 11, hour: 17))!
+        let kept = AtriaWorkoutMetricPresentation.recentSavedWorkouts(
+            [
+                workout(samples: 0, avgHR: 0, strain: nil, start: yesterday, duration: 66 * 60),
+                workout(samples: 0, avgHR: 0, strain: nil, start: older, duration: 40 * 60),
+            ],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(kept.map(\.start), [yesterday])
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(66 * 60), "1h 6m")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.durationText(28 * 60), "28m")
+        let todayMorning = calendar.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 9, minute: 12))!
+        let firstScreen = AtriaWorkoutMetricPresentation.todayFirstScreenSavedWorkouts(
+            [
+                workout(samples: 158, avgHR: 80, strain: 0.4, start: todayMorning, duration: 3 * 60),
+                workout(samples: 1428, avgHR: 85, strain: 2.7, start: yesterday, duration: 23 * 60),
+            ],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(firstScreen.map(\.start), [todayMorning, yesterday])
     }
 
     func testSparseHeartRateShowsMeasuredStrainValue() {

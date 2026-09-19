@@ -17,19 +17,46 @@ struct AtriaWidgetProofDiagnostics: Equatable {
     let configuredOrderText: String
     let ringCenterText: String
     let legendStyleText: String
+    /// nil only when neither a payload nor a live probe could answer.
+    let appGroupAvailable: Bool?
 
-    init(snapshot: WidgetSnapshot?, layoutConfig: AtriaHomeLayoutConfig) {
+    /// Why there is no payload, in terms the reader can act on. The old copy
+    /// told them to open the app once — advice that can only ever be read from
+    /// inside the app, by someone who has already done exactly that
+    /// (2026-09-03 render). nil once a payload exists.
+    var missingPayloadDetail: String? {
+        guard !hasSnapshot else { return nil }
+        switch appGroupAvailable {
+        case false:
+            return "This build cannot reach the shared app group, so no payload can be written and the widgets stay unavailable."
+        case true:
+            return "The shared app group is reachable and nothing has been published yet. Atria publishes when today's numbers change; the widgets stay blank until that first delivery lands."
+        case nil:
+            return "No shared payload has been written, and the app group could not be checked from here. The widgets stay unavailable until a delivery succeeds."
+        }
+    }
+
+    /// The snapshot answers for the payload that exists; a live probe answers
+    /// for the surfaces themselves, which the app can check whether or not it
+    /// has ever published. Reading only the snapshot reported three
+    /// "Unknown"s on exactly the screen opened to find out (2026-09-03).
+    init(snapshot: WidgetSnapshot?,
+         layoutConfig: AtriaHomeLayoutConfig,
+         live: WidgetSnapshotPublisher.Diagnostics? = nil) {
         let layout = layoutConfig.validated()
         hasSnapshot = snapshot != nil
         snapshotWrittenAt = snapshot?.createdAt
         schemaText = snapshot.map { String($0.schema) } ?? "--"
-        storageText = snapshot?.storage ?? "No shared payload"
-        appGroupText = Self.availabilityText(snapshot?.appGroupEnabled)
+        appGroupAvailable = snapshot?.appGroupEnabled ?? live?.appGroupEnabled
+        storageText = snapshot?.storage
+            ?? live.map { $0.appGroupEnabled ? "Ready · nothing published yet" : "App group unavailable" }
+            ?? "No shared payload"
+        appGroupText = Self.availabilityText(appGroupAvailable)
         homeScreenTargetText = Self.availabilityText(
-            snapshot?.widgetTargetPresent
+            snapshot?.widgetTargetPresent ?? live?.widgetTargetPresent
         )
         lockScreenTargetText = Self.availabilityText(
-            snapshot?.complicationTargetPresent
+            snapshot?.complicationTargetPresent ?? live?.complicationTargetPresent
         )
         configuredOrderText = (
             snapshot?.layoutGlanceMetrics ?? layout.glanceMetrics
@@ -58,7 +85,8 @@ struct AtriaWidgetProofSheet: View {
     private var diagnostics: AtriaWidgetProofDiagnostics {
         AtriaWidgetProofDiagnostics(
             snapshot: snapshot,
-            layoutConfig: layoutConfig
+            layoutConfig: layoutConfig,
+            live: WidgetSnapshotPublisher.diagnostics
         )
     }
 
@@ -67,7 +95,8 @@ struct AtriaWidgetProofSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     AtriaWidgetDiagnosticHeader(
-                        hasSnapshot: diagnostics.hasSnapshot
+                        hasSnapshot: diagnostics.hasSnapshot,
+                        missingPayloadDetail: diagnostics.missingPayloadDetail
                     )
                     AtriaWidgetDiagnosticScopeCard()
                     AtriaWidgetTargetDiagnosticsCard(
@@ -102,6 +131,7 @@ struct AtriaWidgetProofSheet: View {
 
 private struct AtriaWidgetDiagnosticHeader: View {
     let hasSnapshot: Bool
+    let missingPayloadDetail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -116,9 +146,8 @@ private struct AtriaWidgetDiagnosticHeader: View {
             .font(.headline.weight(.semibold))
             .foregroundStyle(hasSnapshot ? .green : .orange)
 
-            Text(hasSnapshot
-                 ? "Atria can inspect delivery metadata here. Verify values and rings on the installed widgets, where WidgetKit applies their real freshness and expiry rules."
-                 : "Open Atria once to publish a shared payload. Widgets remain unavailable until that delivery succeeds.")
+            Text(missingPayloadDetail
+                 ?? "Atria can inspect delivery metadata here. Verify values and rings on the installed widgets, where WidgetKit applies their real freshness and expiry rules.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

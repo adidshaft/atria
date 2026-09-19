@@ -28,9 +28,13 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
                           "Editing controls must appear before route/analysis content")
         XCTAssertFalse(detail.contains("AtriaPanelSectionHeader(title: \"Workout\""))
         XCTAssertFalse(detail.contains("Times and stats come straight from the recorded session"))
-        XCTAssertTrue(detail.contains("DisclosureGroup(isExpanded: $showsHeartRateAndRecovery)"))
-        XCTAssertTrue(detail.contains(".task(id: showsHeartRateAndRecovery)"))
-        XCTAssertTrue(detail.contains("guard showsHeartRateAndRecovery, !hasPreparedTrace else { return }"))
+        XCTAssertTrue(detail.contains("heartRateTraceCard"))
+        XCTAssertTrue(detail.contains("workoutHeartRateLoadCard"))
+        XCTAssertTrue(detail.contains("workoutZoneDistributionCard"))
+        XCTAssertTrue(detail.contains("recoveryEffectCard"))
+        XCTAssertFalse(detail.contains("DisclosureGroup(isExpanded: $showsHeartRateAndRecovery)"))
+        XCTAssertTrue(detail.contains(".task(id: workout.id)"))
+        XCTAssertTrue(detail.contains("guard !hasPreparedTrace else { return }"))
         XCTAssertTrue(detail.contains("hasPreparedTrace = true"))
         XCTAssertTrue(detail.contains("Image(systemName: \"square.and.arrow.up\")"))
         XCTAssertTrue(detail.contains("private var hasUnsavedChanges: Bool"))
@@ -153,7 +157,9 @@ final class AtriaActivityEditorObservationTests: XCTestCase {
         let sessionsSource = try String(contentsOf: sessionsSourceURL, encoding: .utf8)
         XCTAssertTrue(sessionsSource.contains("settlingCandidateWindow:"),
                       "Saving an adjusted sleep/nap review must durably settle its original detector window")
-        XCTAssertTrue(sessionsSource.contains("addDismissedSleepCandidate(start: start, end: end)"),
+        // 2026-09-02 pin migration: the tombstone-provenance change (75ef1318)
+        // gave this call extra arguments; the invariant is the call itself.
+        XCTAssertTrue(sessionsSource.contains("addDismissedSleepCandidate(start: start, end: end,"),
                       "Confirming a sleep/nap candidate must prevent it from returning as actionable")
         XCTAssertTrue(sessionsSource.contains("let activityLabel: String?"))
         XCTAssertTrue(sessionsSource.contains("label: cleanedLabel ?? cleanedType ?? \"Live workout\""),

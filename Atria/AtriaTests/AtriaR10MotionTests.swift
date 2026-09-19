@@ -1363,6 +1363,34 @@ final class AtriaR10MotionTests: XCTestCase {
         XCTAssertLessThan(steps, expected * 1.05)
     }
 
+    func testCompactSlowWalkBandCountsOnePointTwoThreeHertzCadence() {
+        // Device 2026-09-17 lock-screen walk: 100 steps in 81 s = 1.23 Hz,
+        // mean ~72 dps. Native 1.3 Hz treats the 1.25 Hz DFT bin as sway.
+        let seconds = 16.0
+        let cadence = 1.23
+        let samples = syntheticRotationMagnitudes(seconds: seconds,
+                                                  cadenceHz: cadence,
+                                                  level: 72,
+                                                  swing: 40)
+        let native = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples,
+            rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate
+        )
+        XCTAssertLessThan(
+            native,
+            4,
+            "the native 1.3 Hz floor must still miss this lock-screen stroll"
+        )
+        let compact = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: samples,
+            rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate,
+            stepBandLoHz: AtriaGyroCadenceResearchPedometer.compactAssembledStepBandLoHz
+        )
+        let expected = seconds * cadence
+        XCTAssertGreaterThan(compact, expected * 0.70)
+        XCTAssertLessThan(compact, expected * 1.20)
+    }
+
     func testGyroCadenceResearchPedometerRejectsRestAndSway() {
         // Below the rotation level gate: dead still.
         let still = [Double](repeating: 6, count: 6_000)

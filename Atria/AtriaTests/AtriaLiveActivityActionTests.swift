@@ -55,7 +55,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains("expandedMetricRail(showsSupportingFacts: true)"))
         XCTAssertTrue(island.contains("expandedMetricRail(showsSupportingFacts: false)"),
                       "the action and BPM hero need a terminal narrow-width rail")
-        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(state.heartRate)\" : \"--\")"))
+        XCTAssertTrue(island.contains("liveActivityDisplayedHeartRateText(state.heartRate)"))
         XCTAssertTrue(island.contains("size: 27"))
         XCTAssertTrue(island.contains("Text(\"BPM\")"),
                       "the unit must stay attached to the dominant heart-rate value")
@@ -63,12 +63,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(island.contains(".minimumScaleFactor(0.82)"))
         XCTAssertTrue(island.contains(".allowsTightening(true)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
-        XCTAssertTrue(compactHeart.contains("Text(isLive ? \"\\(heartRate)\" : \"--\")"),
-                      "the compact island must show the live numeric HR without an overflowing suffix")
+        XCTAssertTrue(compactHeart.contains("liveActivityDisplayedHeartRateText(heartRate)"),
+                      "the compact island must keep the last numeric HR visible")
         XCTAssertTrue(compactHeart.contains("size: 15"))
         XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
         XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.82)"))
-        XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
+        XCTAssertTrue(compactHeart.contains("liveActivityHeartRateAccessibilityLabel("))
 
         XCTAssertTrue(lockScreen.contains("size: 29"),
                       "the Lock Screen heart-rate hero must fit a three-digit value inline with BPM")
@@ -104,15 +104,30 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("state.batteryLevel <= 20 ? .red : .secondary"))
         XCTAssertTrue(source.contains("liveActivitySourceFreshnessText("),
                       "the truth helper must retain exact last-seen sensor evidence for diagnostics")
-        XCTAssertTrue(source.contains("guard heartRateAvailability == .live else { return \"Heart rate zone unavailable\" }"),
-                      "nonnominal sensor states must not be repeated as a fake zone value")
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"\\(context.state.activityName ?? \"Workout\") workout\")"),
-                      "compact and minimal island presentations need a meaningful activity label")
+        XCTAssertTrue(source.contains("liveActivityZoneAccessibilityLabel("),
+                      "stale lock-screen copy must keep last zone instead of a blank unavailable hero")
+        XCTAssertTrue(source.contains("liveActivityIsExplicitWorkout("),
+                      "all-day Live must drop workout timer, strain, and Pause/End chrome")
+        XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation("),
+                      "idle Lock Screen should show daily steps instead of workout strain --")
         XCTAssertTrue(source.contains(".accessibilityLabel(lockScreenStatusAccessibilityLabel(showsBattery: showsBattery))"),
                       "the combined Lock Screen status element must preserve any visible battery evidence")
         XCTAssertTrue(source.contains("guard showsBattery, batteryAvailability == .live else"))
         XCTAssertTrue(source.contains("liveActivityBatteryText(for: context.state,"),
                       "a live battery value and state must be spoken when the header displays it")
+    }
+
+    func testLockPreviewHidesWorkoutChromeOnAllDayLive() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveActivityLockPreview.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("if snapshot.showsWorkoutControls"),
+                      "the photographable lock preview must match idle Live chrome")
+        XCTAssertTrue(source.contains("snapshot.dailySteps"),
+                      "idle preview should show daily steps, not workout strain --")
+        XCTAssertTrue(source.contains("Text(elapsedText)"),
+                      "explicit workouts still show elapsed time")
     }
 
     func testLiveActivityAccessibilityIncludesTruthfulElapsedDuration() throws {
@@ -135,7 +150,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "VoiceOver output must include human-readable hours, minutes, and seconds")
         XCTAssertTrue(source.contains("let duration = liveActivityDurationAccessibilityText("),
                       "the grouped Lock Screen hero must not hide the timer's elapsed value")
-        XCTAssertTrue(source.contains("return \"\\(heart). \\(zoneAccessibilityLabel). \\(duration).\""))
+        XCTAssertTrue(source.contains("return \"\\(heartRateAccessibilityLabel). \\(zoneAccessibilityLabel). \\(duration).\""),
+                      "the grouped Lock Screen hero must keep last HR, zone, and elapsed time together")
     }
 
     func testLiveActivityFullChargeStatusExpiresOnItsIndependentClock() throws {
@@ -206,12 +222,17 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let lockEnd = try XCTUnwrap(source.range(of: "#if DEBUG",
                                                 range: lockStart.upperBound..<source.endIndex))
         let lockScreen = String(source[lockStart.lowerBound..<lockEnd.lowerBound])
-        XCTAssertTrue(lockScreen.contains(".accessibilityLabel(\"Workout strain "))
+        XCTAssertTrue(lockScreen.contains("\"Workout strain \\(workoutStrainText)"),
+                      "workout Lock Screen still speaks strain; idle Live must not show strain --")
+        XCTAssertTrue(lockScreen.contains("liveActivityIsExplicitWorkout(context.state)"),
+                      "all-day Live hides the workout timer, strain --, and Pause/End")
         XCTAssertTrue(lockScreen.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(lockScreen.contains("ViewThatFits(in: .vertical)"))
         XCTAssertTrue(lockScreen.contains("compactLockScreenContent"),
                       "Accessibility sizes need a terminal two-row layout under ActivityKit's height cap")
-        XCTAssertTrue(lockScreen.contains("context.isStale ? .distantFuture : Date()"))
+        XCTAssertTrue(island.contains("liveActivityZoneBar(for: state"))
+        XCTAssertTrue(lockScreen.contains("liveActivityZoneBar(for: context.state"))
+        XCTAssertTrue(source.contains("atriaOvernightStatusText("))
         XCTAssertFalse(lockScreen.contains(".frame(width: 108)\n            }\n            .accessibilityElement(children: .ignore)"),
                        "the parent must not suppress the Pause and End buttons")
     }
@@ -236,16 +257,23 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "compact trailing should retain the current measured heart rate")
         XCTAssertTrue(island.contains("AtriaDynamicIslandMinimalHeartRate("),
                       "minimal coexistence should prefer updated workout information over a static glyph")
-        XCTAssertTrue(island.contains("if nominalState"))
+        XCTAssertTrue(island.contains("if !nominalState"),
+                      "compact leading still yields the target/glyph to paused and ending")
+        XCTAssertTrue(island.contains("liveActivityShowsWorkoutMetrics("),
+                      "stale or reconnecting ActivityKit still keeps last-known HR, zone, and activity name visible")
+        XCTAssertTrue(island.contains("context.state.isPaused == true || context.state.isEnding == true"),
+                      "a missing live BPM must keep the run glyph and last BPM, not a lone status icon")
         XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
-                      "paused, ending, reconnecting, and stale truth must override the live metric")
+                      "paused and ending still mark compact leading")
+        XCTAssertFalse(island.contains("} minimal: {\n                if nominalState"),
+                       "the last numeric HR must stay in the minimal island after the live window expires")
         XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),
                        "minimal must spend its narrow slot on the legible three-digit value")
-        XCTAssertTrue(minimalHeartRate.contains("Text(\"\\(heartRate)\")"))
+        XCTAssertTrue(minimalHeartRate.contains("liveActivityDisplayedHeartRateText(heartRate)"))
         XCTAssertTrue(minimalHeartRate.contains("size: 14"))
         XCTAssertTrue(minimalHeartRate.contains(".minimumScaleFactor(0.85)"))
-        XCTAssertTrue(minimalHeartRate.contains("live heart rate \\(heartRate) beats per minute, \\(zoneLabel)"),
-                      "VoiceOver should identify the workout, current metric, and color-coded zone")
+        XCTAssertTrue(minimalHeartRate.contains("last heart rate \\(heartRate) beats per minute, \\(zoneLabel)"),
+                      "VoiceOver should keep the last numeric HR when the live window expires")
         XCTAssertTrue(island.contains("zoneLabel: liveActivityZoneLabel(for: context.state"))
         XCTAssertFalse(island.contains("NowPlaying"))
         XCTAssertFalse(island.contains("mediaController"))
@@ -518,6 +546,135 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             snapshotIsRecording: false,
             pendingWorkoutIsActive: false
         ))
+    }
+
+    func testIdleLiveActivityIsAdoptedWithoutMatchingProcessLocalStart() {
+        let originalStart = Date(timeIntervalSince1970: 2_000_000_000)
+        let relaunchStart = originalStart.addingTimeInterval(3_600)
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: true,
+                snapshotShowsWorkoutControls: false,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: false
+            ),
+            "device 175: idle island start is process-local; adopt it instead of orphaning"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: true,
+                snapshotShowsWorkoutControls: true,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: true
+            ),
+            "a workout island still requires the same startedAt"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldAdoptExistingActivity(
+                snapshotIsRecording: false,
+                snapshotShowsWorkoutControls: false,
+                snapshotStartedAt: relaunchStart,
+                existingStartedAt: originalStart,
+                existingShowsWorkoutControls: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: false,
+                existingShowsWorkoutControls: false
+            ),
+            "the first post-install tick must not end an idle island before HR returns"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: false,
+                existingShowsWorkoutControls: true
+            ),
+            "leftover workout controls are still orphans while idle"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: true,
+                existingShowsWorkoutControls: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: false
+            ),
+            "device 2026-09-19: a Telegram/X background tick must not empty the idle island"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: true
+            ),
+            "ending a workout still dismisses the Lock Screen session"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: false,
+                ownedShowsWorkoutControls: nil
+            ),
+            "legacy ActivityKit content without the idle flag is still a workout terminal"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldEndOwnedActivity(
+                snapshotIsRecording: true,
+                ownedShowsWorkoutControls: false
+            )
+        )
+    }
+
+    func testIdleStartRetryThrottlesBackgroundAttemptsAndForcesOnForeground() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: nil,
+                now: now,
+                showsWorkoutControls: false,
+                force: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: false,
+                force: false
+            ),
+            "background Activity.request fails after --no-launch; do not spam it"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: false,
+                force: true
+            ),
+            "foreground must retry immediately when kit is empty"
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(5),
+                showsWorkoutControls: true,
+                force: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.shouldRetryIdleStart(
+                lastAttemptAt: now,
+                now: now.addingTimeInterval(
+                    AtriaLiveActivityCoordinator.idleStartRetryInterval
+                ),
+                showsWorkoutControls: false,
+                force: false
+            )
+        )
     }
 
     func testSlowActivityKitWriterKeepsOnlyNewestSuccessorAndBackgroundProtection() {
@@ -798,7 +955,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateAvailability: .live,
             stepsAvailability: .stale,
             sensorHasContact: true
-        ), freshHeartRate.addingTimeInterval(6),
+        ), freshHeartRate.addingTimeInterval(AtriaHomeModel.liveHeartRateFreshnessInterval),
         "stale steps stay labelled stale, but must not mark current HR and workout metrics globally stale")
 
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
@@ -944,7 +1101,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"), encoding: .utf8)
 
-        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(6)"))
+        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(15)"))
         XCTAssertTrue(source.contains("state.stepsCapturedAt?.addingTimeInterval(15)"))
         XCTAssertTrue(source.contains("state.batteryCapturedAt?.addingTimeInterval(10 * 60)"))
         XCTAssertTrue(source.contains("expiry > canonicalState.appliedAt"),
@@ -1058,6 +1215,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("case .reconnecting: return \"Reconnecting\""))
         XCTAssertTrue(source.contains("case .stale: return \"HR stale\""))
         XCTAssertTrue(source.contains("case .unavailable: return \"Unavailable\""))
+        XCTAssertTrue(source.contains("if state.heartRate > 0"),
+                      "last-known zone stays on screen while a BPM is still held")
         XCTAssertTrue(source.contains("state.stepsAreEstimated != false"),
                       "missing workout-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("let capturedAt = state.stepsCapturedAt"))
@@ -1065,7 +1224,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("labelText: \"Steps reconnecting\""))
         XCTAssertTrue(source.contains("labelText: \"Steps stale\""))
         XCTAssertTrue(source.contains("labelText: \"Steps unavailable\""))
-        XCTAssertTrue(source.contains("strap-derived workout steps"))
+        XCTAssertTrue(source.contains("workout steps"))
         XCTAssertTrue(source.contains("liveActivityStrainProgressText(for: state, now: now)"))
         XCTAssertTrue(source.contains("String(format: \"%.1f / %.1f\", strain, target)"))
         XCTAssertTrue(source.contains("String(format: \"Goal ✓ · %.1f\", strain)"))
@@ -1212,9 +1371,112 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
         let body = String(home[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("let pulse = model.pulseLiveStore.state"))
+        XCTAssertTrue(body.contains("let lastKnownSample = ble.session.last"))
         XCTAssertTrue(body.contains("heartRateZoneIndex: zone?.index"))
         XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
+        XCTAssertTrue(body.contains("isRecording: workoutActive || livePresence"))
+        XCTAssertTrue(body.contains("idleLivePresenceShouldStayActive"),
+                      "idle Live must not end ActivityKit when pulse freshness zeros BPM")
+        XCTAssertTrue(body.contains("idleLiveLinkIsUsable"),
+                      "idle Live must treat a live 2A37 sample as a usable link")
+        XCTAssertTrue(body.contains("liveActivityCoordinator.activityKitCount > 0"),
+                      "an existing idle island counts as presence already started after relaunch")
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .connected,
+                heartRate: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .connecting,
+                heartRate: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .scanning,
+                heartRate: 71
+            ),
+            "device 185: 2A37 samples keep idle Live eligible while status is still Scanning"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .scanning,
+                heartRate: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+                status: .poweredOff,
+                heartRate: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 81,
+                presenceAlreadyStarted: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: true
+            ),
+            "device 2026-09-18: keep the island after a 15s HR freshness blip"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: false
+            ),
+            "never start an empty island before the first pulse"
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: false,
+                linkUsable: false,
+                heldHeartRate: 81,
+                presenceAlreadyStarted: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+                workoutActive: true,
+                linkUsable: true,
+                heldHeartRate: 0,
+                presenceAlreadyStarted: true
+            ),
+            "workout recording is not idle presence"
+        )
+        XCTAssertTrue(body.contains("AtriaHomeModel.resolvedLiveHeartRate("))
+        XCTAssertTrue(body.contains("let status = ble.status"),
+                      "idle Live must use BLE status, not frozen CoreLive, after background install")
+        XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"),
+                      "widgets and idle Live must patch from BLE while Home stores are frozen")
+        XCTAssertTrue(home.contains("phase == .inactive"),
+                      "device 185: --no-launch bounce must retry idle start on inactive, not wait for active")
+        XCTAssertTrue(home.contains("if phase == .active,"),
+                      "device 186: opening Today with an empty island must force Activity.request")
+        XCTAssertTrue(
+            home.contains("liveActivityCoordinator.activityKitCount == 0"),
+            "foreground idle start is only forced while ActivityKit is empty"
+        )
+        XCTAssertTrue(home.contains("lastStartErrorKey"),
+                      "diagnosis must record Activity.request visibility failures")
+        XCTAssertTrue(home.contains("let liveActivityCoordinator = AtriaLiveActivityCoordinator()"))
+        XCTAssertTrue(body.contains("elapsedDuration: workoutActive ? movingDuration : 0"),
+                      "all-day Live must not publish a presence timer as workout elapsed")
+        XCTAssertTrue(body.contains("activityName: workoutActive"))
         XCTAssertFalse(body.contains("store.baseline.restingInt ?? 60"))
+        XCTAssertTrue(home.contains("AtriaHomeModel.latestHeartRateCapturedAt("))
+        XCTAssertTrue(home.contains("latestSampleAt: ble.session.last?.t"))
 
         let sample = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
@@ -1223,7 +1485,50 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             fallback: sample,
             heartRateAvailability: .live,
             sensorHasContact: true
-        ), sample.addingTimeInterval(6))
+        ), sample.addingTimeInterval(AtriaHomeModel.liveHeartRateFreshnessInterval))
+    }
+
+    func testLiveActivityHoldsLastKnownHeartRateWhenTheSessionClears() {
+        let live = liveSnapshot(elapsed: 24 * 60, heartRate: 146)
+        var dropped = live
+        dropped.heartRate = 0
+        dropped.heartRateZoneIndex = nil
+        dropped.heartRateZoneName = nil
+        dropped.heartRateAvailability = .unavailable
+        dropped.workoutStrain = 0
+        dropped.workoutStrainAvailability = .unavailable
+        let held = AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+            dropped,
+            previous: live
+        )
+        XCTAssertEqual(held.heartRate, 146)
+        XCTAssertEqual(held.heartRateZoneIndex, 3)
+        XCTAssertEqual(held.heartRateZoneName, "Aerobic")
+        XCTAssertEqual(held.heartRateAvailability, .stale)
+        XCTAssertEqual(held.workoutStrain, 5.4)
+        XCTAssertEqual(held.workoutStrainAvailability, .stale)
+        XCTAssertEqual(
+            AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+                liveSnapshot(elapsed: 0, heartRate: 0),
+                previous: nil
+            ).heartRate,
+            0,
+            "the first beat of a workout must not invent a prior BPM"
+        )
+
+        var idleLive = liveSnapshot(elapsed: 0, heartRate: 79)
+        idleLive.showsWorkoutControls = false
+        idleLive.activityName = "Live"
+        var idleDropped = idleLive
+        idleDropped.heartRate = 0
+        idleDropped.heartRateAvailability = .unavailable
+        idleDropped.startedAt = idleLive.startedAt.addingTimeInterval(3_600)
+        let idleHeld = AtriaLiveActivityCoordinator.holdingLastKnownWorkoutMetrics(
+            idleDropped,
+            previous: idleLive
+        )
+        XCTAssertEqual(idleHeld.heartRate, 79,
+                       "idle presence start is process-local after relaunch; still hold BPM")
     }
 
     func testBatteryClockParticipatesInLiveActivityStalenessWithoutRenewingHR() {
@@ -1280,5 +1585,126 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         )
         XCTAssertNil(decoded.workoutStrainCapturedAt)
         XCTAssertNil(decoded.workoutStrainAvailability)
+    }
+
+    func testIdleLiveActivityIntentStartsFromWidgetSnapshotWithoutOpeningApp() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let payload = AtriaIdleLiveActivityStart.SnapshotPayload(
+            heartRate: 93,
+            heartRateCapturedAt: now.addingTimeInterval(-2),
+            heartRateZoneIndex: 1,
+            heartRateZoneName: "Z1",
+            strain: 1.2,
+            batteryLevel: 12,
+            batteryCapturedAt: now.addingTimeInterval(-30),
+            batteryChargeStatus: "notCharging",
+            batteryChargeText: "Not charging",
+            steps: 6756,
+            stepsAreEstimated: false,
+            stepsCapturedAt: now.addingTimeInterval(-4),
+            dailyStepGoal: 8000
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: true,
+                heartRate: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 1,
+                activitiesEnabled: true,
+                heartRate: 93
+            )
+        )
+        XCTAssertFalse(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: false,
+                heartRate: 93
+            )
+        )
+        XCTAssertTrue(
+            AtriaIdleLiveActivityStart.shouldRequest(
+                existingCount: 0,
+                activitiesEnabled: true,
+                heartRate: 93
+            )
+        )
+
+        let state = AtriaIdleLiveActivityStart.contentState(from: payload, now: now)
+        XCTAssertEqual(state.heartRate, 93)
+        XCTAssertEqual(state.heartRateAvailability, .live)
+        XCTAssertEqual(state.activityName, "Live")
+        XCTAssertEqual(state.showsWorkoutControls, false)
+        XCTAssertEqual(state.dailySteps, 6756)
+        XCTAssertEqual(state.elapsedDuration, 0)
+        XCTAssertEqual(
+            AtriaIdleLiveActivityStart.staleDate(
+                heartRateCapturedAt: payload.heartRateCapturedAt,
+                now: now
+            ),
+            now.addingTimeInterval(13)
+        )
+
+        var requested = false
+        let started = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 0,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            requested = true
+        }
+        XCTAssertEqual(started, .started)
+        XCTAssertTrue(requested)
+
+        let skipped = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 1,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            XCTFail("must not request when ActivityKit already has idle Live")
+        }
+        XCTAssertEqual(skipped, .skipped)
+
+        struct StartError: Error {}
+        let failed = AtriaIdleLiveActivityStart.startIfNeeded(
+            existingCount: 0,
+            activitiesEnabled: true,
+            payload: payload,
+            now: now
+        ) { _, _, _ in
+            throw StartError()
+        }
+        guard case .failed(let message) = failed else {
+            return XCTFail("visibility/request failures must stay failed")
+        }
+        XCTAssertTrue(message.contains("StartError"))
+
+        let fractional = #"{"heartRate":88,"heartRateCapturedAt":"2026-09-19T05:32:38.123Z"}"#
+        let decoded = AtriaIdleLiveActivityStart.decodePayload(
+            from: Data(fractional.utf8)
+        )
+        XCTAssertEqual(decoded?.heartRate, 88)
+        XCTAssertNotNil(decoded?.heartRateCapturedAt)
+
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let widget = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+        XCTAssertTrue(widget.contains("Button(intent: AtriaStartIdleLiveActivityIntent())"))
+        XCTAssertTrue(widget.contains("struct AtriaShowLiveControl: ControlWidget"))
+        XCTAssertTrue(widget.contains("AtriaShowLiveControl()"))
+        XCTAssertTrue(widget.contains("ControlWidgetButton(action: AtriaStartIdleLiveActivityIntent())"))
+
+        let coordinator = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
+        XCTAssertTrue(coordinator.contains("AtriaIdleLiveActivityStart.lastStartErrorKey"))
+        XCTAssertTrue(coordinator.contains("shouldEndOwnedActivity("),
+                      "owned idle presence must consult the preserve gate before endActivity")
     }
 }

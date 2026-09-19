@@ -25,6 +25,11 @@ struct MonthlyReport: Codable, Equatable {
 
     let totalStrain: Double?
     let hardestWeek: WeekSummary?
+    /// 2026-09-02: the strain row compares like its neighbours, but as a
+    /// daily average, never total against total: a partial month's sum
+    /// cannot be compared to a full one.
+    let strainDailyAverage: Double?
+    let strainDailyAverageDeltaVsPriorMonth: Double?
 
     let sleepPerformanceAvg: Int?
     let sleepPerformanceDeltaVsPriorMonth: Int?
@@ -40,7 +45,8 @@ struct MonthlyReport: Codable, Equatable {
     init(rollups: [DailyRollupStoreEntry],
          sleepNights: [SleepHistorySnapshot.Night] = [],
          now: Date = Date(),
-         calendar: Calendar = MonthlyReportCalendar.gregorian) {
+         calendar: Calendar = MonthlyReportCalendar.gregorian,
+         cycleStrainByDisplayDay: [Date: Double] = [:]) {
         let components = calendar.dateComponents([.year, .month], from: now)
         let year = components.year ?? 0
         let month = components.month ?? 0
@@ -48,9 +54,19 @@ struct MonthlyReport: Codable, Equatable {
         self.month = month
         generatedAt = now
 
-        let currentMonth = Self.entries(rollups, year: year, month: month, calendar: calendar)
+        // Same overlay the weekly report, strain chart, and Trends card use
+        // (2026-08-30 / 2026-09-03): a shifted sleeper's civil rollup shreds
+        // one wake-to-wake day across two bars. An empty map leaves every
+        // civil value untouched.
+        let currentMonth = Self.applyingCycleStrain(
+            Self.entries(rollups, year: year, month: month, calendar: calendar),
+            cycleStrainByDisplayDay,
+            calendar: calendar)
         let (priorYear, priorMonth) = Self.priorMonth(year: year, month: month)
-        let priorMonthEntries = Self.entries(rollups, year: priorYear, month: priorMonth, calendar: calendar)
+        let priorMonthEntries = Self.applyingCycleStrain(
+            Self.entries(rollups, year: priorYear, month: priorMonth, calendar: calendar),
+            cycleStrainByDisplayDay,
+            calendar: calendar)
 
         let dataDayCount = currentMonth.filter { entry in
             entry.recovery != nil || entry.strain != nil || entry.sleepSeconds != nil
@@ -64,6 +80,8 @@ struct MonthlyReport: Codable, Equatable {
             recoveryDeltaVsPriorMonth = nil
             totalStrain = nil
             hardestWeek = nil
+            strainDailyAverage = nil
+            strainDailyAverageDeltaVsPriorMonth = nil
             sleepPerformanceAvg = nil
             sleepPerformanceDeltaVsPriorMonth = nil
             rhrAvg = nil
@@ -85,6 +103,11 @@ struct MonthlyReport: Codable, Equatable {
 
         let strains = currentMonth.compactMap(\.strain)
         totalStrain = strains.isEmpty ? nil : strains.reduce(0, +)
+        let strainAverage = strains.isEmpty ? nil : strains.reduce(0, +) / Double(strains.count)
+        let priorStrains = priorMonthEntries.compactMap(\.strain)
+        let priorStrainAverage = priorStrains.isEmpty ? nil : priorStrains.reduce(0, +) / Double(priorStrains.count)
+        strainDailyAverage = strainAverage
+        strainDailyAverageDeltaVsPriorMonth = strainAverage.flatMap { current in priorStrainAverage.map { current - $0 } }
         hardestWeek = Self.hardestWeek(in: currentMonth, calendar: calendar)
 
         let currentSleepPerformances = currentMonth.compactMap(\.sleepPerformance)
@@ -123,6 +146,35 @@ struct MonthlyReport: Codable, Equatable {
             return parts.year == year && parts.month == month
         }
         consistencyScore = AtriaSleepConsistency.result(from: monthNights).combinedPercent
+    }
+
+    /// "8.0 a day · +4.0 vs last month"; the comparison clause only once a
+    /// prior month exists, and "same as last month" within a tenth.
+    static func strainDetailText(dailyAverage: Double?, delta: Double?) -> String {
+        guard let dailyAverage else { return "Daily strain summed across the month" }
+        let average = String(format: "%.1f a day", dailyAverage)
+        guard let delta else { return average }
+        if abs(delta) < 0.05 { return "\(average) · same as last month" }
+        return "\(average) · \(delta < 0 ? "\u{2212}" : "+")\(String(format: "%.1f", abs(delta))) vs last month"
+    }
+
+    /// Prefer Calendar.current, which is how SessionStore keys the map and
+    /// how the strain chart looks it up. Fall back to the report calendar
+    /// and the stored day itself so a test that keys on civil midnight still
+    /// hits, and a pre-normalized rollup day hits without a second convert.
+    static func applyingCycleStrain(_ entries: [DailyRollupStoreEntry],
+                                    _ cycleStrainByDisplayDay: [Date: Double],
+                                    calendar: Calendar) -> [DailyRollupStoreEntry] {
+        guard !cycleStrainByDisplayDay.isEmpty else { return entries }
+        return entries.map { entry in
+            let cycleStrain = cycleStrainByDisplayDay[Calendar.current.startOfDay(for: entry.day)]
+                ?? cycleStrainByDisplayDay[calendar.startOfDay(for: entry.day)]
+                ?? cycleStrainByDisplayDay[entry.day]
+            guard let cycleStrain, cycleStrain != entry.strain else { return entry }
+            var copy = entry
+            copy.strain = cycleStrain
+            return copy
+        }
     }
 
     private static func entries(_ rollups: [DailyRollupStoreEntry],

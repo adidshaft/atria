@@ -1,6 +1,6 @@
 # Implementation Design — Sleep-Stage Detection Strengthening + WHOOP-Style Sleep Detail UI
 
-All paths under `/Users/amanpandey/projects/atria/Atria/Atria/` unless noted. Line refs from the maps (2026-08-20). Test scheme is **AtriaTests**; all new fixtures use post-2026-08-06 time bases.
+All paths under `<repo-root>/Atria/Atria/` unless noted. Line refs from the maps (2026-08-20). Test scheme is **AtriaTests**; all new fixtures use post-2026-08-06 time bases.
 
 ---
 

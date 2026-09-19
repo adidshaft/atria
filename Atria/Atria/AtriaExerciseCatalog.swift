@@ -232,6 +232,21 @@ enum AtriaWorkoutActivityType: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
+    /// `atria://workout/start?type=` tokens. Raw values stay user-facing.
+    static func deepLinkType(_ token: String?) -> Self? {
+        guard let token, !token.isEmpty else { return nil }
+        let lowered = token.lowercased()
+        switch lowered {
+        case "running", "run": return .running
+        case "walking", "walk": return .walking
+        case "cardio": return .cardio
+        case "hiit": return .hiit
+        case "strength": return .strength
+        default:
+            return Self(rawValue: token) ?? allCases.first { $0.rawValue.lowercased() == lowered }
+        }
+    }
+
     /// Resolves both modern persisted activity types and older workouts that
     /// only carried a free-form label/subtype. One shared resolver keeps the
     /// Activity list, timeline, Live Activity and share card iconography in

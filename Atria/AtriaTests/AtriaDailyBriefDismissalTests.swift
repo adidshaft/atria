@@ -55,10 +55,19 @@ final class AtriaDailyBriefDismissalTests: XCTestCase {
 
     // MARK: - The card obeys it
 
-    func testTheTodayCardHidesTheBriefOnceItIsComplete() throws {
-        let text = try source("AtriaTodayScreen.swift")
-        XCTAssertTrue(text.contains("if !checkIn.isComplete {"),
-                      "the Today plan card must drop the brief when it is done")
+    /// 2026-08-28: the brief no longer lives on Today at all — it moved to the
+    /// Journal tab, where a badge carries the questions remaining and clears
+    /// itself on completion. The original guarantee ("a finished check-in
+    /// stops occupying the day") is now enforced there.
+    func testTheCompletedCheckInStopsAskingAnywhere() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertFalse(today.contains("AtriaTodayPlanCard"),
+                       "the brief moved to the Journal tab")
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains(".badge(journalCheckInBadgeCount)"))
+        XCTAssertTrue(home.contains("progress.isComplete\n            ? 0")
+                        || home.contains("progress.isComplete"),
+                      "a completed check-in must produce no badge")
     }
 
     func testTheCompletedIconBranchIsGoneRatherThanUnreachable() throws {

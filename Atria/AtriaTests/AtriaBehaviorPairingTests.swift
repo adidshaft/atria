@@ -44,10 +44,15 @@ final class AtriaBehaviorPairingTests: XCTestCase {
         let calmer = AtriaInsight(id: "sleep-rhr", tagLabel: "Sleep", metric: .rhr,
                                   delta: -3, days: 6)
         XCTAssertTrue(calmer.isPositive)
-        XCTAssertEqual(calmer.headline, "RHR 3 bpm lower")
+        XCTAssertEqual(calmer.headline, "Resting HR averages 3 bpm lower on sleep days")
+        XCTAssertEqual(calmer.symbolName, "moon.zzz.fill")
+        XCTAssertEqual(calmer.compactDeltaText, "-3 bpm")
 
         let elevated = AtriaInsight(id: "caffeine-rhr", tagLabel: "Caffeine", metric: .rhr,
                                     delta: 3, days: 6)
         XCTAssertFalse(elevated.isPositive)
+        XCTAssertEqual(elevated.headline, "Resting HR averages 3 bpm higher on caffeine days")
+        XCTAssertEqual(elevated.symbolName, "cup.and.saucer.fill")
+        XCTAssertEqual(elevated.compactDeltaText, "+3 bpm")
     }
 }

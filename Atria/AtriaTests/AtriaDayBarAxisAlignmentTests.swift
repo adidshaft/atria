@@ -53,14 +53,18 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
         //
         // Marking noon puts the label at the bar's middle at ANY stride,
         // because it no longer depends on where the next mark falls.
-        for name in ["AtriaOverviewSections.swift", "AtriaExpandedChart.swift"] {
+        for name in ["AtriaOverviewSections.swift", "AtriaExpandedChart.swift", "AtriaTrendChart.swift"] {
             let text = try source(name)
-            XCTAssertTrue(text.contains("dayCentreMarks("),
-                          "\(name) must mark day centres when drawing day bars")
+            XCTAssertTrue(text.contains("atriaOvernightChartXAxis("),
+                          "\(name) must label the recorded nights, not empty domain days")
             XCTAssertFalse(text.contains("centered: rendersAsDailyBar"),
                            "\(name) must not reintroduce step-relative centring")
             XCTAssertFalse(text.contains("centered: effectiveChartType == .bars"),
                            "\(name) must not reintroduce step-relative centring")
+            XCTAssertFalse(text.contains("AxisMarks(values: .automatic(desiredCount: 4)) { _ in"),
+                           "HRV/RHR Week must not label empty domain days under recorded points")
+            XCTAssertFalse(text.contains("AxisMarks(values: .automatic(desiredCount: 6))"),
+                           "the expanded line chart must use recorded-night marks")
         }
     }
 

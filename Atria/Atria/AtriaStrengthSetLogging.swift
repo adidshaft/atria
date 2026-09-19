@@ -176,7 +176,7 @@ struct AtriaStrengthRestRing: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                 Text(caption)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }
         }
@@ -259,7 +259,7 @@ struct AtriaStrengthSetTable: View {
 
     private func headerCell(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 9, weight: .bold))
+            .font(.caption2.weight(.bold))
             .kerning(0.6)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
@@ -324,7 +324,7 @@ struct AtriaStrengthSetTable: View {
             Spacer(minLength: 0)
             if row.isPersonalRecord {
                 Text("PR")
-                    .font(.system(size: 9, weight: .heavy))
+                    .font(.caption2.weight(.heavy))
                     .foregroundStyle(AtriaStrengthPalette.amberTint)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -376,7 +376,7 @@ struct AtriaStrengthStepper: View {
                     .monospacedDigit()
                 if let unit {
                     Text(unit)
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption2.weight(.bold))
                         .foregroundStyle(.secondary)
                 }
             }

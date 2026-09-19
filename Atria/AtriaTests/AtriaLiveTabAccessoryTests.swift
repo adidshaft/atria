@@ -66,6 +66,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("scrollBottomSafeAreaInset"))
         XCTAssertFalse(source.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
                        "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
+        XCTAssertTrue(source.contains(".safeAreaPadding(.bottom, bottomContentMargin)"),
+                      "first-screen Today cards must rest above the glass tab, not only become reachable at the end of the scroll")
+        XCTAssertFalse(source.contains(".contentMargins(.bottom, bottomContentMargin, for: .scrollContent)"))
     }
 
     func testHomeTabBarUsesNativeScrollDrivenSingleButtonTreatment() throws {
@@ -152,7 +155,8 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(island.contains("if reduceMotion"))
         XCTAssertTrue(island.contains(".contentTransition(.numericText())"))
         XCTAssertTrue(island.contains(".animation(.snappy(duration: 0.22), value: value)"))
-        XCTAssertTrue(island.contains(".atriaLiveActivityValueTransition(isLive ? heartRate : -1)"))
+        XCTAssertTrue(island.contains(".atriaLiveActivityValueTransition(heartRate)"))
+        XCTAssertTrue(island.contains(".foregroundStyle(isLive ? .primary : .secondary)"))
         XCTAssertTrue(island.contains(".symbolEffect(.bounce, options: .nonRepeating, value: isPaused)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate"))
         XCTAssertFalse(island.contains("Timer."))
@@ -688,9 +692,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         XCTAssertEqual(menuActions.components(separatedBy: "Button(action:").count - 1, 2)
         XCTAssertTrue(menuActions.contains("Button(action: onStartActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Start Activity\", systemImage: \"figure.run\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Start workout\", systemImage: \"figure.run\")"))
         XCTAssertTrue(menuActions.contains("Button(action: onAddActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Add Activity\", systemImage: \"calendar.badge.plus\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Add workout\", systemImage: \"calendar.badge.plus\")"))
         XCTAssertTrue(chrome.contains("AtriaToolbarIcon(symbol: \"plus\")"))
         XCTAssertTrue(chrome.contains(".buttonStyle(AtriaHeaderActionButtonStyle())"))
         XCTAssertTrue(chrome.contains(".accessibilityLabel(\"Activity shortcuts\")"))

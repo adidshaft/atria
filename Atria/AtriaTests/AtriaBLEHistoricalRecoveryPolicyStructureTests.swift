@@ -1824,12 +1824,15 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
         XCTAssertLessThan(ownership.lowerBound, inProgress.lowerBound)
         XCTAssertLessThan(inProgress.lowerBound, suspension.lowerBound)
-        for guardedBody in [schedule, evaluate, activation] {
-            XCTAssertTrue(
-                guardedBody.contains("guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }"),
-                "every workout-motion entry point must yield to the history owner"
-            )
-        }
+        XCTAssertTrue(schedule.contains("guard !historyOnlyProbeMode else { return }"))
+        XCTAssertTrue(schedule.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded("),
+                      "a live workout must keep IMU bring-up instead of waiting behind history")
+        XCTAssertTrue(evaluate.contains("guard !historyOnlyProbeMode else { return }"))
+        XCTAssertTrue(evaluate.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded("))
+        XCTAssertTrue(
+            activation.contains("guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }"),
+            "the motion command pair still refuses to fire while history owns the radio"
+        )
         XCTAssertTrue(
             finalizer.contains("resumeWorkoutMotionLeaseAfterHistoricalSync("),
             "all history exits must re-arm through the common finalizer"
@@ -1873,8 +1876,19 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
 
         for guardedBody in [hrBringUp, protectedBringUp] {
             XCTAssertTrue(guardedBody.contains("!historyOnlyProbeMode"))
-            XCTAssertTrue(guardedBody.contains("!offlineHistoricalSyncInProgress"))
         }
+        XCTAssertTrue(
+            hrBringUp.contains("offlineHistoricalSyncInProgress"),
+            "HR-first must still notice a history owner"
+        )
+        XCTAssertTrue(
+            hrBringUp.contains("yieldHistoricalTransportToExplicitWorkoutIfNeeded"),
+            "device 2026-09-11: yield history instead of skipping 2A37 on a live workout"
+        )
+        XCTAssertTrue(
+            protectedBringUp.contains("!offlineHistoricalSyncInProgress"),
+            "dense IMU bring-up must still refuse while history owns the link"
+        )
     }
 
     func testHistoricalRecoveryPolicyIsExtractedAndRemainsPure() throws {
@@ -1936,6 +1950,10 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "shouldClearIdleWindowArmFenceWhenDrainDidNotStart",
             "shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect",
             "shouldSkipIdleWindowHeartRateReassert",
+            "shouldAdmitIdleWindowHeartRatePause",
+            "shouldRefuseIdleWindowHeartRatePauseForDryLeftover",
+            "shouldDropShortLivedCatchUpToRetireDryLeftover",
+            "shouldAdmitFreshHistoryOwnerOnConnect",
             "shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry",
             "shouldBlockHistoryTransportForTerminalConsumerMaterialization",
             "shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish",

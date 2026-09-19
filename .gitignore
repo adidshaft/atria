@@ -38,6 +38,13 @@ GOAL.md
 tmp/
 artifacts/
 
+# macOS folder metadata.
+.DS_Store
+
+# Agent working notes, worktrees, and generated patches. Local scratch:
+# they carry machine paths and device identifiers, and are not project docs.
+.claude/
+
 # Local design experiments; curated public assets live in assets/.
 design/
 

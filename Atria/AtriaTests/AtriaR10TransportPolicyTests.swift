@@ -79,6 +79,19 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
         XCTAssertNil(AtriaBLEManager.protectedStandardHRStrapCharacteristics(
             streamSuppressed: true
         ))
+        XCTAssertEqual(
+            Set(try XCTUnwrap(
+                AtriaBLEManager.protectedStandardHRStrapCharacteristics(
+                    streamSuppressed: true,
+                    compactIMURecoveryActive: true
+                )
+            )),
+            [
+                AtriaBLEManager.UUIDs.strapStream5,
+                AtriaBLEManager.UUIDs.strapTX
+            ],
+            "device 216: compact recovery must still subscribe stream-5 under pure_hr_v10"
+        )
     }
 
     func testProtectedProductionDiscoversNotifyOnlyStandardBatteryAlongsideHRAndR10() throws {
@@ -97,6 +110,17 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
                 AtriaBLEManager.UUIDs.batteryService
             ],
             "R10 rollback must not also remove the safe standard battery notification path"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.protectedStandardHRServices(
+                streamSuppressed: true,
+                compactIMURecoveryActive: true
+            ),
+            [
+                AtriaBLEManager.UUIDs.heartRateService,
+                AtriaBLEManager.UUIDs.batteryService,
+                AtriaBLEManager.UUIDs.strapService
+            ]
         )
 
         let batteryCharacteristics = try XCTUnwrap(
@@ -124,6 +148,18 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
             streamSuppressed: true,
             pendingOneShotBatteryResponse: false
         ))
+        XCTAssertTrue(AtriaBLEManager.shouldAcceptProtectedProprietaryNotification(
+            characteristicUUID: AtriaBLEManager.UUIDs.strapStream5,
+            streamSuppressed: true,
+            pendingOneShotBatteryResponse: false,
+            compactIMURecoveryActive: true
+        ), "device 216: incoming 0x33 must not be dropped while compact recovery is active")
+        XCTAssertTrue(AtriaBLEManager.shouldAcceptProtectedProprietaryNotification(
+            characteristicUUID: AtriaBLEManager.UUIDs.strapStream5,
+            streamSuppressed: true,
+            pendingOneShotBatteryResponse: false,
+            stream5NotifyCallbacksThisConnection: 2
+        ), "once stream-5 is live this connection, keep ingesting after compact clocks refresh")
         XCTAssertFalse(AtriaBLEManager.shouldAcceptProtectedProprietaryNotification(
             characteristicUUID: AtriaBLEManager.UUIDs.strapStream4,
             streamSuppressed: false,
@@ -146,6 +182,39 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
             pendingOneShotBatteryResponse: false,
             historyRecoveryActive: true
         ), "WHOOP command responses must reach the history state machine in protected mode")
+    }
+
+    func testCompactIMURecoveryArmsStream5InitialProfileWhileSuppressed() {
+        XCTAssertFalse(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: false
+        ), "pure_hr_v10 suppression must not subscribe stream-5 when compact IMU is already live")
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ), "device 217: suppressed launch must still take the one initial stream-5 CCCD")
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: false,
+            historyOnlyProbeMode: false,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: true,
+            streamSuppressed: true,
+            compactIMURecoveryActive: true
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldArmProtectedStream5InitialProfile(
+            standardHROnlyMode: true,
+            historyOnlyProbeMode: false,
+            streamSuppressed: false,
+            compactIMURecoveryActive: false
+        ))
     }
 
     func testEveryDecodedR10PathRecordsSourceFreshness() throws {

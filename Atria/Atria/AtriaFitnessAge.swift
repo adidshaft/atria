@@ -152,7 +152,7 @@ enum AtriaFitnessAge {
             blockers.append("\(earlyEstimateMinimumDays) days of heart data")
         }
         if inputs.vo2Max == nil {
-            blockers.append("VO2 max estimate")
+            blockers.append("VO2max estimate")
         }
         guard blockers.isEmpty, let vo2Max = inputs.vo2Max else {
             return BiologicalAgeSummary(biologicalAge: nil,
@@ -167,7 +167,7 @@ enum AtriaFitnessAge {
 
         var factors: [BioAgeFactor] = [
             factor(id: "vo2max",
-                   label: "VO2 max",
+                   label: "VO2max",
                    offset: vo2MaxOffset(age: inputs.chronologicalAge,
                                         vo2Max: vo2Max,
                                         sex: inputs.biologicalSex),

@@ -344,7 +344,10 @@ enum AtriaIntentSnapshotStore {
     private static let key = "atria.widgetSnapshot.v1"
     private static let appGroupID = "group.com.adidshaft.atria"
 
-    static func loadLatestSnapshot() -> WidgetSnapshot? {
+    /// Bytes WidgetKit already has, including overnight clocks. Day-fence
+    /// fail-closed belongs to `loadLatestSnapshot()` for "today" answers, not
+    /// to diagnosis or the overnight payload board.
+    static func loadPublishedPayload() -> WidgetSnapshot? {
         guard FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroupID
         ) != nil,
@@ -352,11 +355,11 @@ enum AtriaIntentSnapshotStore {
               let data = defaults.data(forKey: key) else {
             return nil
         }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let snapshot = try? decoder.decode(WidgetSnapshot.self, from: data) else {
-            return nil
-        }
+        return try? JSONDecoder.widgetSnapshotDecoder.decode(WidgetSnapshot.self, from: data)
+    }
+
+    static func loadLatestSnapshot() -> WidgetSnapshot? {
+        guard let snapshot = loadPublishedPayload() else { return nil }
         // Handoff-10 CP1: past the display-day identity expiry this snapshot
         // may no longer answer for "today" — fail closed to the learning
         // dialog instead of re-wearing a prior day's values after relaunch.

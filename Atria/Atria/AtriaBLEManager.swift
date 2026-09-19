@@ -1,6 +1,7 @@
 import Foundation
 import CoreBluetooth
 import UIKit
+import os
 
 /// One-shot owner for an obsolete CoreBluetooth restoration namespace. It
 /// never scans or connects; it only cancels peripherals restored from the
@@ -416,6 +417,89 @@ struct AtriaBLEWorkoutHistoryPreemptionSuccessorGate: Sendable {
     }
 }
 
+/// CoreBluetooth silently drops `.withoutResponse` writes when the local
+/// transmit queue is full. Live 2A37 traffic on this phone filled that queue
+/// while 6A/51 still incremented `activationCount` (device 2026-09-14 23:56).
+private final class AtriaProprietaryWWRGate: @unchecked Sendable {
+    static let maximumPendingFrames = 4
+    private let lock = NSLock()
+    private var pending: [Data] = []
+
+    @discardableResult
+    func sendOrQueue(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic,
+        frame: Data
+    ) -> Bool {
+        guard characteristic.properties.contains(.writeWithoutResponse) else {
+            return false
+        }
+        let pendingCount = lock.withLock { pending.count }
+        // Device 192 13:15: `canSendWriteWithoutResponse` was false on the
+        // first post-launch 6A/51, so the gate queued locally and never
+        // submitted a CoreBluetooth write. `peripheralIsReady` never fires
+        // unless a write was issued, so IMU stayed 343s stale while 2A37
+        // stayed live (`packets_this_connection=0`, `wwr_pending=1`).
+        if AtriaBLEManager.shouldKickstartWriteWithoutResponse(
+            canSend: peripheral.canSendWriteWithoutResponse,
+            pendingCount: pendingCount
+        ) {
+            peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+            return true
+        }
+        lock.withLock {
+            if pending.count >= Self.maximumPendingFrames {
+                pending.removeFirst()
+            }
+            pending.append(frame)
+        }
+        return false
+    }
+
+    @discardableResult
+    func flush(
+        peripheral: CBPeripheral,
+        characteristic: CBCharacteristic
+    ) -> Int {
+        guard characteristic.properties.contains(.writeWithoutResponse) else {
+            return 0
+        }
+        var sent = 0
+        while peripheral.canSendWriteWithoutResponse {
+            let frame: Data? = lock.withLock {
+                guard !pending.isEmpty else { return nil }
+                return pending.removeFirst()
+            }
+            guard let frame else { break }
+            peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+            sent += 1
+        }
+        if sent == 0,
+           AtriaBLEManager.shouldForceFlushQueuedWriteWithoutResponse(
+            canSend: peripheral.canSendWriteWithoutResponse,
+            pendingCount: pendingCount()
+           ) {
+            let frame: Data? = lock.withLock {
+                guard !pending.isEmpty else { return nil }
+                return pending.removeFirst()
+            }
+            if let frame {
+                peripheral.writeValue(frame, for: characteristic, type: .withoutResponse)
+                sent = 1
+            }
+        }
+        return sent
+    }
+
+    func pendingCount() -> Int {
+        lock.withLock { pending.count }
+    }
+
+    func reset() {
+        lock.withLock { pending.removeAll(keepingCapacity: true) }
+    }
+}
+
 /// Connects to the strap over BLE and publishes the reliable, relevant data:
 /// live heart rate, battery level, connection state — plus a raw log of the
 /// proprietary stream for later protocol decoding.
@@ -425,6 +509,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// transport owner prevents background reconnect paths from making a radio
     /// attempt after the reviewer intentionally chose the no-strap experience.
     private var appReviewDemoMode = false
+    private let appReviewDemoFlag = OSAllocatedUnfairLock(initialState: false)
     /// Diagnostics-only accounting for the existing historical drain.  This is
     /// deliberately kept on the main actor with the orchestrator: it observes
     /// callback/order/persistence outcomes, but never participates in protocol
@@ -464,6 +549,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// must carry this token so callbacks queued by a dead link cannot mutate a
     /// newer history generation after reconnect.
     private nonisolated let bleCallbackEpochFence = AtriaBLECallbackEpochFence()
+    /// Compact 0x33 is ingested on the BLE queue. Watchdog lastFrameAge must
+    /// not wait for a MainActor hop or an 8s silence gate fires on live gyro.
+    private nonisolated let liveIMULivenessUnix = OSAllocatedUnfairLock(initialState: 0.0)
     /// A replacement CBCentralManager does not synchronously cancel callbacks
     /// already queued by the retired instance. Fence every central delegate
     /// entry with exact object identity and a replacement generation.
@@ -1125,17 +1213,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     var strapGenerationDetail: String {
         switch strapModel {
         case .strapMG:
-            return "Generation: WHOOP MG, explicit metadata"
+            return "WHOOP MG · explicit metadata"
         case .strap5:
-            return "Generation: WHOOP 5.0, explicit metadata"
+            return "WHOOP 5.0 · explicit metadata"
         case .strap4:
-            return "Generation: WHOOP 4.0, explicit metadata"
+            return "WHOOP 4.0 · explicit metadata"
         case .strap4Class:
-            return "Generation: unverified; 4.0-class protocol"
+            return "Unverified · 4.0-class protocol"
         case .strap3:
-            return "Generation: WHOOP 3.0, explicit metadata"
+            return "WHOOP 3.0 · explicit metadata"
         case .unknown:
-            return "Generation: unknown; heart rate only until layout is checked"
+            // The Settings row is already labeled "Generation" (2026-09-02 audit):
+            // the value no longer repeats the label, and reads as a value.
+            return "Unknown · heart rate only until the strap is checked"
         }
     }
 
@@ -1216,6 +1306,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingHRJump: (rate: Int, at: Date)?
     private var lastAcceptedHRAt: Date?
     var lastAcceptedHeartRateAt: Date? { lastAcceptedHRAt }
+    /// Survives workout session-boundary resets. HUD / Live Activity hold this
+    /// so Start cannot blank the last real BPM while a new live sample is
+    /// still arriving. Connection UI still uses `currentConnectionHasFreshHeartRate`.
+    private(set) var lastKnownDisplayHeartRate: Int = 0
+    private(set) var lastKnownDisplayHeartRateAt: Date?
+    var lastAcceptedMotionFrameAt: Date? { lastR10MotionFrameAt }
+    var liveStream5NotifyConfirmed: Bool { strapStream5NotifyConfirmed }
 
     /// Onboarding and connection UI must never promote a cached heart rate from
     /// an earlier link. A link is Live only after this connection epoch accepts
@@ -1268,7 +1365,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private(set) var tachogram: [RRSample] = []
-    @Published var hrvQuality = "waiting for beat-to-beat samples"
+    // "waiting for beat-to-beat samples" truncated to "waiting for beat-to-b…"
+    // on the Vitals HRV tile (2026-09-02 screenshot); the shorter form says
+    // the same thing and fits the tile at the default text size.
+    @Published var hrvQuality = "no beat-to-beat yet"
     @Published var rrContinuityState = "learning"
     private(set) var rrContinuityDetail = "RR continuity waiting"
     private(set) var rrContinuityFraction = 0.0
@@ -1326,6 +1426,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingLiveHRVRefreshRequest: (now: Date, logKind: String, shouldLogConsole: Bool)?
     private var hrvLiveRefreshGeneration: UInt64 = 0
     private var contactStableSince: Date?
+    /// Zero-contact run evidence for gap-open suppression. The run start is the
+    /// first HR==0 after a worn period; the last value is the newest zero. Both
+    /// are bounded against the exact missing interval at every use
+    /// (`AtriaGapWearClassification.offWristProvenAcross`), so a stale run from
+    /// an earlier outage can never suppress a later window.
+    private var zeroContactRunStartedAt: Date?
+    private var lastZeroContactAt: Date?
     private var hrvGateWasOpen = false
     private nonisolated static let foregroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
     private nonisolated static let backgroundLiveHRVRefreshMinimumInterval: TimeInterval = 4 * 60 * 60
@@ -2717,6 +2824,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var offlineHistoricalSyncHistoryStartObserved = false
     private let offlineHistoricalSyncWatchdogPollInterval: TimeInterval = 15
     private var protocolPacketCount = 0
+    private var protocolPacketsThisConnection = 0
+    private var protocolNotifyCallbacksThisConnection = 0
+    private var protocolStream5NotifyCallbacksThisConnection = 0
+    private var lastStrapSleepModeAt: Date?
+    private var currentConnectionProprietaryTraffic: Int {
+        Self.proprietaryTrafficThisConnection(
+            protocolPackets: protocolPacketsThisConnection,
+            notifyCallbacks: protocolNotifyCallbacksThisConnection
+        )
+    }
     private var protocolIMUFrameCount = 0
     private var decodedIMUSampleCount = 0
     private var imuGravityValidatedFrameCount = 0
@@ -2777,18 +2894,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// authority and cannot rebind a segment that has since advanced again.
     private var strapStepLedgerUnhandedRestoreRebindSourceSegmentID: UUID?
     private var lastStrapStepLedgerSavedRawSteps = 0
+    private var lastStrapStepLedgerSavedSegmentSteps = 0
     private var lastStrapStepLedgerSavedGyroCadenceResearchSteps = 0
+    private var lastStrapStepLedgerSegmentID: UUID?
     /// Cumulative gyro total before the active ledger segment. Combined with
-    /// the queue-owned segment value, this survives process and R10 boundaries
-    /// without exposing the challenger as an all-day production count.
+    /// the queue-owned segment value this is today's strap-only coordinate:
+    /// new IMU ticks add on top of the restored floor instead of competing
+    /// with it through `max(liveSegment, heldFloor)`.
     private var strapStepLedgerGyroCumulativePrefix = 0
     private var lastStrapStepLedgerSaveAt: Date?
     @Published private(set) var liveStrapStepResearchCount = 0
+    /// Prefix plus the current detector segment. Home/widgets use this as the
+    /// open-cycle live count so a 10-step walk after reconnect shows 7855,
+    /// not the frozen 7845 floor.
+    @Published private(set) var liveStrapStepResearchCumulativeCount = 0
     @Published private(set) var liveStrapStepResearchTodayCount = 0
     @Published private(set) var liveStrapStepResearchState = "research_unvalidated"
     private var strapStepResearchState = "research_unvalidated"
     private var strapStepResearchDay = Calendar.current.startOfDay(for: Date())
     private var strapStepResearchDayBaseline = 0
+    /// Wake boundary the live step coordinate is attributed to. Distinct from
+    /// civil midnight so a confirmed sleep starts a new day's count.
+    private var strapStepResearchCycleStart: Date?
+    private var strapStepResearchCycleBaseline = 0
     /// The R10 gyro cadence coordinate is owned by the atomic pipeline. It is
     /// the only coordinate promoted to the daily strap-only total for this
     /// device; the parallel acceleration-peak counter remains diagnostic.
@@ -3212,6 +3340,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var legacyCentralCleaners: [AtriaLegacyBLECentralCleaner] = []
     private let centralQueue = DispatchQueue(label: "com.adidshaft.atria.ble-central",
                                              qos: .utility)
+    nonisolated private let proprietaryWWRGate = AtriaProprietaryWWRGate()
     /// Diagnostic-only parity switch for the reference iOS client, which runs
     /// CoreBluetooth delegates on the main queue. Production retains the
     /// physically proven private serial queue unless this explicit launch
@@ -3227,6 +3356,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return centralQueue
     }
     private nonisolated let proprietaryFrameReassembler = AtriaWhoop4FrameReassembler()
+    private nonisolated let compactIMUAssembler = AtriaWhoop4CompactIMUAssembler()
     private nonisolated let r10MotionPipeline = AtriaR10MotionPipeline()
     /// RESEARCH-ONLY: consumes the same decoded R10 stream read-only; issues
     /// no strap writes and never influences production step accounting.
@@ -3636,6 +3766,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// a process-wide boolean: one explicit workout earns one fresh v9 owner
     /// attempt, while a later workout may be considered independently.
     nonisolated private static let protectedR10V8WorkoutInProcessCutoverLeaseKey = "atria.protectedR10.v8WorkoutInProcessCutoverLease"
+    nonisolated private static let protectedR10AllDayInProcessCutoverAtKey = "atria.protectedR10.allDayInProcessCutoverAt"
+    nonisolated private static let protectedR10AllDayMinimalProofKey = "atria.protectedR10.allDayMinimalProof"
+    /// One 6A+51 retry after a cover-live proof that omitted 51.
+    nonisolated private static let protectedR10CoverLive51RetryAtKey = "atria.protectedR10.coverLive51RetryAt"
+    nonisolated private static let protectedR10CoverLive51WriteAtKey = "atria.protectedR10.coverLive51WriteAt"
+    nonisolated private static let protectedR10CoverLive51WithRealtimeAtKey = "atria.protectedR10.coverLive51WithRealtimeAt"
     nonisolated private static let protectedR10CleanOwnerKey = "atria.protectedR10.cleanOwner"
     nonisolated private static let protectedR10CleanOwnerStateKey = "atria.protectedR10.cleanOwnerState"
     /// True while a lease bring-up demoted a previously QUALIFIED owner to
@@ -3943,6 +4079,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     ) -> String {
         let alternate = "\(baseIdentifier).recovery-b-v1"
         return currentIdentifier == alternate ? baseIdentifier : alternate
+    }
+
+    /// Both A/B restore slots can keep a zombie `.connecting` WHOOP in
+    /// bluetoothd after a rebuild storm. Drain every identifier the retired
+    /// manager could still own so the anonymous replacement can complete.
+    nonisolated static func restoreSlotIdentifiersToDrainAfterStuckRebuild(
+        baseIdentifier: String,
+        currentIdentifier: String
+    ) -> [String] {
+        let alternate = nextCentralRecoveryRestoreIdentifier(
+            baseIdentifier: baseIdentifier,
+            currentIdentifier: currentIdentifier
+        )
+        var seen = Set<String>()
+        return [currentIdentifier, alternate, baseIdentifier].compactMap { id in
+            guard !id.isEmpty, seen.insert(id).inserted else { return nil }
+            return id
+        }
     }
 
     enum CentralUnavailableRecoveryPlan: Equatable {
@@ -4372,6 +4526,57 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// Once the dense stream has degraded to a pure-HR fallback this many times
+    /// with no intervening qualification, the in-process (HR-disconnecting)
+    /// workout requalify stops attempting: a strap that physically cannot hold
+    /// the dense R10 stream must degrade to pure HR, not lose live HR on every
+    /// cooldown for a proof already proven to storm this link. The launch-time
+    /// 12 h passive requalify still retries forever, so recovery is never truly
+    /// terminal — it just stops disconnecting a healthy workout link to chase it.
+    nonisolated static let workoutMotionInProcessRequalifyMaxConsecutiveFallbacks = 4
+
+    /// Pure policy for the in-process workout requalify (2026-09-07 directive).
+    /// The pure-HR fallback is the right fail-safe for unattended all-day wear
+    /// (recovered across launches by the 12 h passive requalify), but a live,
+    /// user-started workout must not sit in `.unavailablePureHRFallback` for its
+    /// whole duration when the strap could still qualify stream-5. This is the
+    /// only in-process escalation allowed and is deliberately more restrictive
+    /// than the launch path because it costs one app-owned HR disconnect:
+    ///  - a durable manual workout must be active (never all-day wear);
+    ///  - the stream must actually be suppressed on a pure-HR fallback owner;
+    ///  - the same physical qualification credential the launch cutover demands;
+    ///  - the 30-min fallback/attempt cooldown, so it never flaps 3F; and
+    ///  - it fails CLOSED once the profile is demonstrably storming this link
+    ///    (`consecutiveFallbackCount >= maxConsecutiveFallbacks`).
+    /// The bounded `beginProtectedR10V8WorkoutCutoverIfNeeded` it hands off to
+    /// re-checks the physical prerequisites and fires at most once per workout.
+    nonisolated static func workoutMotionInProcessRequalifyShouldAttempt(
+        manualWorkoutActive: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        priorQualifiedAt: Double?,
+        fallbackAt: Double?,
+        lastAttemptAt: Double?,
+        consecutiveFallbackCount: Int,
+        maxConsecutiveFallbacks: Int = workoutMotionInProcessRequalifyMaxConsecutiveFallbacks,
+        cooldown: TimeInterval = protectedR10FallbackRequalifyCooldown,
+        now: Double
+    ) -> Bool {
+        guard manualWorkoutActive else { return false }
+        guard streamSuppressed else { return false }
+        guard owner == .pureHRV8 || owner == .pureHRV10 else { return false }
+        guard state == .fallbackActive || state == .fallbackPending else { return false }
+        guard consecutiveFallbackCount < maxConsecutiveFallbacks else { return false }
+        return protectedR10FallbackShouldRequalify(
+            priorQualifiedAt: priorQualifiedAt,
+            fallbackAt: fallbackAt,
+            lastAttemptAt: lastAttemptAt,
+            cooldown: cooldown,
+            now: now
+        )
+    }
+
     /// A pure-HR fallback is meant to be a *recoverable* degradation — the
     /// v10 branch of `prepareProtectedR10CleanOwnerAtLaunch` says so in as many
     /// words. In practice it was terminal for every passive user, and this is
@@ -4425,6 +4630,285 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let attemptAge = now - lastAttemptAt
         if attemptAge < 0 { return true }
         return attemptAge >= interval
+    }
+
+    /// In-process all-day recovery from a pure-HR fallback. Launch still uses
+    /// the 12 h interval so a cold start cannot flap the radio. A long-running
+    /// wear session may retry sooner: the bounded 51 capture lasts 6 h, and
+    /// waiting another 12 h after it expires leaves live steps frozen all day.
+    nonisolated static let protectedR10AllDayInProcessRequalifyInterval: TimeInterval = 2 * 60 * 60
+
+    /// Same credential and owner gates as the launch-time passive requalify,
+    /// plus the physical facts an in-process cutover needs: the live link is
+    /// connected, history does not own it, and the stream is actually
+    /// suppressed. Unlike the workout path, this does not fail closed on the
+    /// consecutive-fallback storm cap — that cap exists to protect a live
+    /// workout's HR from a 30-minute reconnect loop. All-day wear recovers
+    /// through this slower interval instead.
+    nonisolated static func allDayPassiveInProcessRequalifyShouldAttempt(
+        historyOwnsTransport: Bool,
+        connected: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        priorQualifiedAt: Double?,
+        fallbackAt: Double?,
+        lastAttemptAt: Double?,
+        lastAllDayCutoverAt: Double? = nil,
+        minimalProofAlreadyAttempted: Bool = false,
+        coverLiveReleasedAt: Double? = nil,
+        coverLive51RetryAt: Double? = nil,
+        interval: TimeInterval = protectedR10AllDayInProcessRequalifyInterval,
+        now: Double
+    ) -> Bool {
+        guard !historyOwnsTransport, connected, streamSuppressed else { return false }
+        guard owner == .pureHRV8 || owner == .pureHRV10 else { return false }
+        guard state == .fallbackActive || state == .fallbackPending else { return false }
+        // After a stuck oldest-first drain jumps to now, history no longer
+        // owns the radio. Allow exactly one all-day IMU attempt even if the
+        // 2 h interval has not elapsed — prior proofs ran while drain held
+        // the link. Fail closed after that one shot.
+        if let coverLiveReleasedAt,
+           coverLiveReleasedAt.isFinite, coverLiveReleasedAt > 0,
+           priorQualifiedAt != nil {
+            let alreadyTriedAfterCover = lastAttemptAt.map {
+                $0 >= coverLiveReleasedAt - 1
+            } ?? false
+            if !alreadyTriedAfterCover {
+                return true
+            }
+            // Device 2026-09-08: the cover-live proof sent 6A only. IMU is the
+            // 6-hour 51 burst. Allow exactly one 6A+51 retry.
+            let retryAlreadyFired = coverLive51RetryAt.map {
+                $0.isFinite && $0 > 0
+            } ?? false
+            if !retryAlreadyFired {
+                return true
+            }
+        }
+        if protectedR10FallbackShouldPassivelyRequalify(
+            priorQualifiedAt: priorQualifiedAt,
+            fallbackAt: fallbackAt,
+            lastAttemptAt: lastAttemptAt,
+            interval: interval,
+            now: now
+        ) {
+            return true
+        }
+        // 2026-09-08 device: the first in-process all-day cutover used the
+        // heavy response/event/data profile and timed out in 12 s with zero
+        // frames. Allow exactly one follow-up on the stream-5-only proof
+        // without waiting the full interval.
+        guard !minimalProofAlreadyAttempted,
+              let lastAllDayCutoverAt,
+              let lastAttemptAt else { return false }
+        let cutoverAge = now - lastAllDayCutoverAt
+        let attemptAge = now - lastAttemptAt
+        guard cutoverAge >= 0, cutoverAge < interval,
+              attemptAge >= 0, attemptAge < interval else { return false }
+        return abs(lastAllDayCutoverAt - lastAttemptAt) < 1
+    }
+
+    nonisolated static func protectedR10ProofNotifyOrder(
+        allDayMinimalProof: Bool
+    ) -> [CBUUID] {
+        allDayMinimalProof
+            ? [UUIDs.strapStream5]
+            : protectedR10ResponseEventDataNotifyOrder
+    }
+
+    /// Always send the 6-hour `51` burst. Stream-5-only all-day proofs used
+    /// to skip it (`6a01_only`); that yields zero IMU frames. Monday's
+    /// working path was 6A then 51.
+    nonisolated static func protectedR10ProofSendsBoundedRawCapture(
+        allDayMinimalProof: Bool
+    ) -> Bool {
+        _ = allDayMinimalProof
+        return true
+    }
+
+    /// After cover-live, write 6A+51 on the current HR link. A disconnect
+    /// cutover re-arms range-loss and trips leftover proof timeouts before
+    /// 51 is sent. One write per cover-live jump.
+    nonisolated static func shouldSendCoverLiveBoundedRawCapture(
+        connected: Bool,
+        historyOwnsTransport: Bool,
+        txReady: Bool,
+        coverLiveUnix: Double?,
+        coverLive51WriteAt: Double?,
+        coverLive51WithRealtimeAt: Double?,
+        imuFrames: Int = 0,
+        nowUnix: Double
+    ) -> Bool {
+        guard connected, !historyOwnsTransport, txReady else { return false }
+        guard let cover = coverLiveUnix, cover.isFinite, cover > 0,
+              nowUnix.isFinite, nowUnix >= cover else {
+            return false
+        }
+        if imuFrames > 0 { return false }
+        if let realtime = coverLive51WithRealtimeAt,
+           realtime.isFinite, realtime >= cover - 1 {
+            return false
+        }
+        if let sent = coverLive51WriteAt, sent.isFinite, sent >= cover - 1 {
+            // First write was 6A+51 with no frames. One extra 6A/51 follow-up.
+            return nowUnix - sent >= 5
+        }
+        return true
+    }
+
+    /// Re-issue the bounded 6A/51 pair on an already-qualified protected link
+    /// whose stream went silent. This is a write on an established notifying
+    /// stream-5 CCCD, not a mid-link subscribe, reconnect, or proof restart.
+    /// The 6 h `51` capture is the production IMU source; once it expires the
+    /// strap keeps the CCCD and simply stops sending frames.
+    ///
+    /// Mode is deliberately not gated: full-protocol silent recovery used to
+    /// send `0x3F` on a live HR link and physically drop both streams
+    /// (device 2026-09-14). Same-link 6A/51 is the IMU recovery for every
+    /// qualified owner. Stream-5 `isNotifying` is not required: CoreBluetooth
+    /// can report false while 0x33 still trickles, which is the IMU-drop case.
+    nonisolated static func protectedBoundedRawCaptureRefreshBlocker(
+        standardHROnlyMode: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        proofActive: Bool,
+        historyOwnsTransport: Bool,
+        connected: Bool,
+        stream5Notifying: Bool,
+        heartRateNotifying: Bool,
+        lastFrameAge: TimeInterval?,
+        lastActivationAge: TimeInterval?,
+        staleInterval: TimeInterval = r10LivenessStaleInterval,
+        minimumActivationInterval: TimeInterval = 12
+    ) -> String? {
+        _ = standardHROnlyMode
+        _ = stream5Notifying
+        if streamSuppressed { return "stream_suppressed" }
+        if proofActive { return "proof_active" }
+        if historyOwnsTransport { return "history_owns_transport" }
+        if owner != .protectedV9 { return "owner_\(owner.rawValue)" }
+        if state != .qualified { return "state_\(state.rawValue)" }
+        if !connected { return "not_connected" }
+        if !heartRateNotifying { return "hr_epoch_down" }
+        let frameStale = lastFrameAge.map { $0 > staleInterval } ?? true
+        if !frameStale { return "frame_fresh" }
+        if let lastActivationAge, lastActivationAge >= 0,
+           lastActivationAge < minimumActivationInterval {
+            return "activation_lease"
+        }
+        return nil
+    }
+
+    nonisolated static func shouldRefreshProtectedBoundedRawCapture(
+        standardHROnlyMode: Bool,
+        streamSuppressed: Bool,
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        proofActive: Bool,
+        historyOwnsTransport: Bool,
+        connected: Bool,
+        stream5Notifying: Bool,
+        heartRateNotifying: Bool,
+        lastFrameAge: TimeInterval?,
+        lastActivationAge: TimeInterval?,
+        staleInterval: TimeInterval = r10LivenessStaleInterval,
+        minimumActivationInterval: TimeInterval = 12
+    ) -> Bool {
+        protectedBoundedRawCaptureRefreshBlocker(
+            standardHROnlyMode: standardHROnlyMode,
+            streamSuppressed: streamSuppressed,
+            owner: owner,
+            state: state,
+            proofActive: proofActive,
+            historyOwnsTransport: historyOwnsTransport,
+            connected: connected,
+            stream5Notifying: stream5Notifying,
+            heartRateNotifying: heartRateNotifying,
+            lastFrameAge: lastFrameAge,
+            lastActivationAge: lastActivationAge,
+            staleInterval: staleInterval,
+            minimumActivationInterval: minimumActivationInterval
+        ) == nil
+    }
+
+    /// Same clock diagnosis uses: newest of R10 / assembled compact second /
+    /// native 0x33 packet. Sitting skip can leave assembled stale while
+    /// packets still flow; those packets must not look like an IMU drop.
+    nonisolated static func liveIMUEvidenceAgeSeconds(
+        rawFrameAt: Date?,
+        compactSecondAt: Date?,
+        compactPacketAt: Date?,
+        now: Date
+    ) -> TimeInterval? {
+        guard let captured = [rawFrameAt, compactSecondAt, compactPacketAt]
+            .compactMap({ $0 }).max(),
+              now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
+    }
+
+    /// `pure_hr_v10` fallback keeps 2A37 by suppressing R10. Compact 0x33 then
+    /// idles off and nothing writes 6A/51 (device 2026-09-18: packets stopped
+    /// 14:01 IST, HR age 0.02s, `liveR10Eligible=false`, IMU 37 min stale).
+    /// Device 211: a fresh install sat in `protected_redp_v9` /
+    /// `protected_launch_pending` and skipped the 12s 6A the same way.
+    /// Same-link abort+6A on a live HR epoch, 45s paced, no reconnect / 0x3F.
+    nonisolated static func shouldRefreshIMUOnLiveHeartRateFallback(
+        owner: ProtectedR10CleanOwner,
+        state: ProtectedR10CleanOwnerState,
+        connected: Bool,
+        historyOwnsTransport: Bool,
+        heartRateNotifying: Bool,
+        imuAge: TimeInterval?,
+        lastActivationAge: TimeInterval?,
+        staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds,
+        minimumActivationInterval: TimeInterval = r10LivenessRearmMinimumInterval,
+        sittingSkipFresh: Bool = false,
+        sleepModeHoldActive: Bool = false
+    ) -> Bool {
+        let fallbackOwner = owner == .pureHRV10 || owner == .pureHRV8
+        let fallbackState = state == .fallbackActive || state == .fallbackPending
+        let launchPending = owner == .protectedV9 && state == .protectedLaunchPending
+        guard fallbackOwner || fallbackState || launchPending else { return false }
+        guard connected, !historyOwnsTransport, heartRateNotifying else { return false }
+        if sittingSkipFresh { return false }
+        let stale = imuAge.map { $0 > staleInterval } ?? true
+        guard stale else { return false }
+        if sleepModeHoldActive { return false }
+        if let lastActivationAge, lastActivationAge >= 0,
+           lastActivationAge < minimumActivationInterval {
+            return false
+        }
+        return true
+    }
+
+    /// CoreBluetooth `isNotifying` can be false while 2A37 samples still
+    /// arrive. A fresh HR sample is enough proof the HR epoch is up, so IMU
+    /// 6A/51 recovery must not wait on the CCCD flag.
+    nonisolated static func heartRateEpochAllowsIMURefresh(
+        characteristicNotifying: Bool,
+        lastAcceptedHRAge: TimeInterval?,
+        freshnessWindow: TimeInterval = 15
+    ) -> Bool {
+        if characteristicNotifying { return true }
+        guard let lastAcceptedHRAge, lastAcceptedHRAge >= 0 else { return false }
+        return lastAcceptedHRAge <= freshnessWindow
+    }
+
+    /// Device 2026-09-18 163: `status` stayed `.connecting` for ~19 min after
+    /// `powered_on` while `live_hr_notifying=1`. IMU 6A/51 and the zombie
+    /// stream-5 toggle both required `status == .connected`, so compact 0x33
+    /// never resumed (`packets_this_connection=0`). A live HR epoch on a
+    /// connected peripheral is enough to own same-link IMU repair.
+    nonisolated static func liveHeartRateEpochOwnsRadio(
+        status: Status,
+        peripheralConnected: Bool,
+        heartRateEpochLive: Bool
+    ) -> Bool {
+        guard peripheralConnected, status != .poweredOff else { return false }
+        if status == .connected { return true }
+        return heartRateEpochLive
     }
 
     /// The only in-process escalation allowed from a pure-HR fallback owner.
@@ -4951,6 +5435,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && protectedR10CleanOwnerState == .proving
     }
 
+    nonisolated private var protectedR10AllDayMinimalProof: Bool {
+        UserDefaults.standard.bool(forKey: Self.protectedR10AllDayMinimalProofKey)
+    }
+
+    nonisolated private var protectedR10CurrentProofNotifyOrder: [CBUUID] {
+        Self.protectedR10ProofNotifyOrder(
+            allDayMinimalProof: protectedR10AllDayMinimalProof
+        )
+    }
+
     nonisolated private var protectedR10RollbackEnabled: Bool {
         UserDefaults.standard.bool(forKey: Self.protectedR10RollbackKey)
     }
@@ -4996,7 +5490,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if standardHROnlyMode, !historyOnlyProbeMode {
             return Self.protectedStandardHRServices(
-                streamSuppressed: protectedR10StreamSuppressed
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
             )
         }
         return Self.UUIDs.discoveryServices
@@ -5047,6 +5542,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastSilentStreamRepairSpentAt = nil
         }
         connectedAt = now
+        didConnectThisProcess = true
+        protocolPacketsThisConnection = 0
+        protocolNotifyCallbacksThisConnection = 0
+        protocolStream5NotifyCallbacksThisConnection = 0
+        lastStrapSleepModeAt = nil
+        lastR10ZombieCCCDRefreshAt = nil
+        lastR10ZombieCCCDToggleAt = nil
+        lastR10ZombieTxRediscoverAt = nil
+        if Self.shouldResetAllDayCompactIMURecoveryOnConnect() {
+            clearAllDayCompactIMURecoveryLease()
+        } else {
+            loadAllDayCompactIMURecoveryLease()
+        }
+        UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieCCCDToggleAt)
+        UserDefaults.standard.removeObject(forKey: RadioDefaults.zombieKickSkipReason)
+        proprietaryWWRGate.reset()
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.packetsThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection)
+        UserDefaults.standard.set(0, forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackAt)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackLength)
+        UserDefaults.standard.removeObject(forKey: ProtocolDefaults.lastNotifyCallbackHex)
+        UserDefaults.standard.set(false, forKey: RadioDefaults.txReady)
+        UserDefaults.standard.set(0, forKey: RadioDefaults.wwrBlockedCount)
+        reissuedStuckRestoredConnecting = false
+        rediscoveredStuckRestoredConnecting = false
+        identifiedCentralRebuiltAfterRestoreSlotDrain = false
+        reissuedIdentifiedStandingConnectAfterDrain = false
+        recoveredHungIssuedStandingConnect = false
+        skipStandingReconnectOnce = false
+        callbackPolicyState.update {
+            $0.skipStandingReconnectOnce = false
+            $0.deferStandingConnectForRestoreSlotDrain = false
+            $0.identifiedStandingConnectIssued = false
+        }
         connectedEpochAcceptedHeartRateSamples = 0
         invalidateConnectedRawHistoryCatchUpPublicationYield(
             reason: "connection_epoch_changed"
@@ -5101,6 +5633,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         leaseHeld && (manualWorkoutActive || calibrationHoldActive)
     }
 
+    /// The radio entry for ordered strap CCCDs (`didConnect` /
+    /// `2a37_notify_confirmed` / lease `beginBringUp`). Once this workout
+    /// lease has already observed dense R10, a new `connectedAt` must not
+    /// demote a qualified owner or rediscover stream-5 (2026-09-08 gym:
+    /// 20–47 s 2A37 holes). Same-connection repeats stay bound as before.
+    nonisolated static func shouldBeginProtectedR10BringUpForCurrentEpoch(
+        leaseHasObservedDenseFrames: Bool,
+        connectedAt: Date?,
+        lastActivationConnectionAt: Date?
+    ) -> Bool {
+        guard !leaseHasObservedDenseFrames else { return false }
+        guard let connectedAt else { return false }
+        if let lastActivationConnectionAt,
+           abs(lastActivationConnectionAt.timeIntervalSince(connectedAt)) < 0.001 {
+            return false
+        }
+        return true
+    }
+
     private var denseBringUpIsWanted: Bool {
         let calibrationHoldActive =
             workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true
@@ -5130,14 +5681,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard self.peripheral?.identifier == peripheral.identifier,
               peripheral.state == .connected,
               denseBringUpIsWanted,
-              standardHROnlyMode,
               !historyOnlyProbeMode,
-              !offlineHistoricalSyncInProgress,
-              !protectedR10StreamSuppressed,
-              protectedR10CleanOwner == .protectedV9 else { return }
+              !protectedR10StreamSuppressed else { return }
+        // Device 2026-09-11: full-protocol mode (`standardHROnlyMode == false`)
+        // made this coordinator a no-op, so `didConnect` never discovered 2A37
+        // after a workout-start history preemption. Restore HR first on every
+        // explicit workout, then arm dense IMU once 2A37 is notifying.
+        if offlineHistoricalSyncInProgress {
+            yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                reason: "hr_first_\(reason)"
+            )
+        }
         if heartRateCharacteristic?.isNotifying == true {
-            beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
-                                                     reason: reason)
+            if protectedR10CleanOwner == .protectedV9 {
+                beginProtectedR10BringUpForCurrentEpoch(peripheral: peripheral,
+                                                         reason: reason)
+            }
             return
         }
         protectedR10StandardDiscoveryStarted = true
@@ -5161,6 +5720,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               !historyOnlyProbeMode,
               !offlineHistoricalSyncInProgress,
               let connectedAt else { return }
+        let defaults = UserDefaults.standard
+        let lastActivationConnectionAt = (defaults.object(
+            forKey: WorkoutMotionDefaults.activationConnectionAt
+        ) as? Double).map(Date.init(timeIntervalSince1970:))
+        guard Self.shouldBeginProtectedR10BringUpForCurrentEpoch(
+            leaseHasObservedDenseFrames: defaults.object(
+                forKey: WorkoutMotionDefaults.denseObservedAt
+            ) != nil,
+            connectedAt: connectedAt,
+            lastActivationConnectionAt: lastActivationConnectionAt
+        ) else { return }
         let motionBattery = motionEligibilityBatteryLevel()
         guard Self.shouldArmHighFrequencyMotion(
             batteryLevel: motionBattery,
@@ -5176,13 +5746,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         guard r10SessionBoundaryID == nil else {
             scheduleWorkoutMotionLeaseEvaluation(reason: "boundary_deferred", delay: 1)
-            return
-        }
-        let defaults = UserDefaults.standard
-        if let attempted = defaults.object(
-            forKey: WorkoutMotionDefaults.activationConnectionAt
-        ) as? Double,
-           abs(attempted - connectedAt.timeIntervalSince1970) < 0.001 {
             return
         }
         guard protectedR10CleanOwner == .protectedV9,
@@ -5222,7 +5785,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 Self.protectedStandardHRCharacteristics(
                     for: Self.UUIDs.strapService,
                     streamSuppressed: protectedR10StreamSuppressed,
-                    cleanOwner: protectedR10CleanOwner
+                    cleanOwner: protectedR10CleanOwner,
+                    compactIMURecoveryActive: compactIMURecoveryIsActive()
                 ),
                 for: service
             )
@@ -5238,6 +5802,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let reconnectWatchdogSeconds: TimeInterval = 20
     private var reconnectWatchdogTask: Task<Void, Never>?
     private var reissuedStuckRestoredConnecting = false
+    private var rediscoveredStuckRestoredConnecting = false
+    /// After a stuck restored `.connecting` object is cancelled for scan
+    /// rediscovery, `didDisconnect` must not immediately reinstall the same
+    /// standing `connect` that hung for minutes (device 2026-09-14).
+    private var skipStandingReconnectOnce = false
+    private var pendingRestoreSlotDrainCount = 0
+    private var restoreSlotDrainGeneration: UInt64 = 0
+    /// After restore-slot drain, a leftover `.connecting` object is cancelled
+    /// and this waits for `didDisconnect` before issuing a real standing
+    /// `connect` (device 2026-09-14 18:29: connect-on-connecting hung).
+    private var awaitingDidDisconnectToForceConnectAfterDrain = false
+    /// Anonymous-central `connect` on a disconnected WHOOP hung in-range
+    /// (device 2026-09-14 18:56: `state=0`, no `didConnect`). One identified
+    /// rebuild after drain restores the session type that produced 9315 links.
+    private var identifiedCentralRebuiltAfterRestoreSlotDrain = false
+    private var reissuedIdentifiedStandingConnectAfterDrain = false
+    /// One-shot after an issued standing `connect` never delivers
+    /// `didConnect` (device 223 bedtime launch).
+    private var recoveredHungIssuedStandingConnect = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -5451,6 +6034,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 #endif
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
+    /// Survives disconnect so a live `didConnect` this process is not treated
+    /// as a restored `.connecting` zombie. Device 220 cancelled the reconnect
+    /// 3s after the first drop because `connectedAt` had been cleared.
+    private var didConnectThisProcess = false
     /// Accepted standard-HR samples in this exact connection epoch. The live
     /// session can span reconnects, so `session.count` is not sufficient proof
     /// that the current CBPeripheral object has delivered ten healthy samples.
@@ -5581,9 +6168,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// changing the standard 2A37 heart-rate subscription.
     nonisolated static func protectedStandardHRStrapCharacteristics(
         streamSuppressed: Bool,
-        cleanOwner: ProtectedR10CleanOwner = .legacy
+        cleanOwner: ProtectedR10CleanOwner = .legacy,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID]? {
-        guard !streamSuppressed else { return nil }
+        guard !streamSuppressed || compactIMURecoveryActive else { return nil }
         if cleanOwner == .protectedV9 {
             return protectedR10ResponseEventDataNotifyOrder + [UUIDs.strapTX]
         }
@@ -5594,11 +6182,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// available independently of the proprietary R10 rollback. 2A19 remains
     /// notification-only; 2A1B may use one bounded standard read outside
     /// history ownership. Neither path authorizes a custom command.
+    /// Compact IMU recovery still needs the strap service so stream-5 CCCD
+    /// can be established on the initial profile (device 216: 6A ACK'd,
+    /// stream-5 stayed 0 because discovery returned nil while suppressed).
     nonisolated static func protectedStandardHRServices(
-        streamSuppressed: Bool
+        streamSuppressed: Bool,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID] {
         var services = [UUIDs.heartRateService, UUIDs.batteryService]
-        if !streamSuppressed {
+        if !streamSuppressed || compactIMURecoveryActive {
             services.append(UUIDs.strapService)
         }
         return services
@@ -5613,7 +6205,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func protectedStandardHRCharacteristics(
         for service: CBUUID,
         streamSuppressed: Bool,
-        cleanOwner: ProtectedR10CleanOwner = .legacy
+        cleanOwner: ProtectedR10CleanOwner = .legacy,
+        compactIMURecoveryActive: Bool = false
     ) -> [CBUUID]? {
         switch service {
         case UUIDs.heartRateService:
@@ -5623,7 +6216,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case UUIDs.strapService:
             return protectedStandardHRStrapCharacteristics(
                 streamSuppressed: streamSuppressed,
-                cleanOwner: cleanOwner
+                cleanOwner: cleanOwner,
+                compactIMURecoveryActive: compactIMURecoveryActive
             )
         default:
             return nil
@@ -5638,11 +6232,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         characteristicUUID: CBUUID,
         streamSuppressed: Bool,
         pendingOneShotBatteryResponse: Bool,
-        historyRecoveryActive: Bool = false
+        historyRecoveryActive: Bool = false,
+        compactIMURecoveryActive: Bool = false,
+        stream5NotifyCallbacksThisConnection: Int = 0
     ) -> Bool {
         historyRecoveryActive
-            || (characteristicUUID == UUIDs.strapStream5 && !streamSuppressed)
+            || (characteristicUUID == UUIDs.strapStream5
+                && (!streamSuppressed
+                    || compactIMURecoveryActive
+                    || stream5NotifyCallbacksThisConnection > 1))
             || pendingOneShotBatteryResponse
+    }
+
+    /// Device 217: compact recovery discovered stream-5, then
+    /// `didConnect` left `protectedR10InitialProfilePeripheralID` nil
+    /// because `pure_hr_v10` still had `streamSuppressed`. The initial
+    /// subscribe helper treated that as mid-link CCCD and skipped, so
+    /// 6A ACK'd on RX with stream-5 callbacks still 0.
+    nonisolated static func shouldArmProtectedStream5InitialProfile(
+        standardHROnlyMode: Bool,
+        historyOnlyProbeMode: Bool,
+        streamSuppressed: Bool,
+        compactIMURecoveryActive: Bool
+    ) -> Bool {
+        guard !historyOnlyProbeMode else { return false }
+        if compactIMURecoveryActive { return true }
+        return standardHROnlyMode && !streamSuppressed
     }
 
     /// One exhaustive owner decision for strap-service discovery. BOTH
@@ -6086,7 +6701,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // Retain an inert manager solely for those queries; it has no
             // delegate or restoration identity and therefore cannot scan,
             // reconnect, or receive a strap callback.
-            appReviewDemoMode = true
+            appReviewDemoMode = AtriaAppReviewDemo.isActive
+            appReviewDemoFlag.withLock { $0 = AtriaAppReviewDemo.isActive }
             central = CBCentralManager(delegate: nil,
                                        queue: nil,
                                        options: [CBCentralManagerOptionShowPowerAlertKey: false])
@@ -6467,6 +7083,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let initialRestoreIdentifier = centralRestoreIdentifier
         installedCentralBaseIdentifier = initialBaseRestoreIdentifier
         installedCentralRestoreIdentifier = initialRestoreIdentifier
+        if motionHandshakeDiagnostic == nil {
+            let unusedRestoreSlot = Self.nextCentralRecoveryRestoreIdentifier(
+                baseIdentifier: initialBaseRestoreIdentifier,
+                currentIdentifier: initialRestoreIdentifier
+            )
+            if unusedRestoreSlot != initialRestoreIdentifier {
+                legacyCentralCleaners.append(
+                    AtriaLegacyBLECentralCleaner(
+                        restoreIdentifier: unusedRestoreSlot
+                    ) { [weak self] cleanerID in
+                        self?.legacyCentralCleaners.removeAll {
+                            $0.id == cleanerID
+                        }
+                    }
+                )
+            }
+        }
         let delegateQueue = centralDelegateQueue
         delegateQueue?.suspend()
         central = CBCentralManager(delegate: self,
@@ -8094,7 +8727,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             updateDutyCycleState(reason: "scene_active_workout_fast", now: now)
             AtriaDebugLog("ATRIADBG foreground_resume path=workout_fast samples=%d connected=1 action=preserve_live_pipeline",
                           session.count)
+            reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active_workout_fast")
             return
+        }
+        // Device 207: glance/history first-refusal occupied stream-5 before
+        // the compact abort. Empty stale IMU on live 2A37 recovers first.
+        let deferHistoryForLiveIMU = emptyStreamNeedsLiveCompactIMURecovery(now: now)
+        if deferHistoryForLiveIMU {
+            reissueAllDayCompactAbortOnForegroundIfNeeded(
+                reason: "scene_active_before_history"
+            )
+            evaluateR10Liveness(now: now, reason: "scene_active_compact_before_history")
         }
         // Give a glance-eligible compact motion bank first refusal before any
         // deferred whole-archive consumer work can set the global
@@ -8103,7 +8746,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // pass atomic canonical admission. Heavy terminal projection stays
         // durable for its ordinary safe-background lane.
         let motionBankGlanceCheckpointStarted =
-            checkpointHistoricalMotionBankOnGlanceIfNeeded(
+            deferHistoryForLiveIMU
+            ? false
+            : checkpointHistoricalMotionBankOnGlanceIfNeeded(
                 at: now,
                 reason: "scene_active"
             )
@@ -8147,6 +8792,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reassertHeartRateNotificationsIfConnected(reason: "scene_active")
         reassertR10NotificationIfConnected(reason: "scene_active")
         elevateLongWearRadioForInteractiveForegroundIfNeeded(reason: "scene_active_interactive")
+        if !deferHistoryForLiveIMU {
+            reissueAllDayCompactAbortOnForegroundIfNeeded(reason: "scene_active")
+        }
         if foregroundInteractiveMode {
             return
         }
@@ -8157,6 +8805,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG long_wear_mode foreground_interactive=1 action=keep_supervisor_and_keepalive_armed rest_hr=%d max_hr=%d",
               rest,
               maxHR)
+    }
+
+    /// Device 206 Today 19:19: abort ran in the background, then
+    /// `wait_stream5` held in the foreground with stream-5 still 0.
+    /// Device 202: a single 0x14 while Today was in front restored
+    /// stream-5 type-32 logs. Re-arm that one abort on a real scene-active
+    /// (not the <1s UIKit/SwiftUI coalesced duplicate).
+    nonisolated static func shouldReissueAllDayCompactAbortOnForeground(
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAlreadySentThisConnection: Bool,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil
+    ) -> Bool {
+        abortAlreadySentThisConnection
+            && stream5NotifyCallbacksThisConnection == 0
+            && !followUp6AAlreadySentThisConnection
+            && abortAge == nil
+    }
+
+    private func reissueAllDayCompactAbortOnForegroundIfNeeded(reason: String) {
+        loadAllDayCompactIMURecoveryLease()
+        let abortAge = lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
+        guard Self.shouldReissueAllDayCompactAbortOnForeground(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAlreadySentThisConnection: lastAllDayCompactAbortAt != nil,
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            abortAge: abortAge
+        ) else { return }
+        clearAllDayCompactIMURecoveryLease()
+        AtriaDebugLog("ATRIADBG imu_recovery status=foreground_reissue_abort reason=%@ action=14_on_empty_stream5",
+                      reason)
+        evaluateR10Liveness(now: Date(), reason: "\(reason)_compact_abort_reissue")
     }
 
     private func reassertHeartRateNotificationsIfConnected(reason: String) {
@@ -8171,7 +8851,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 == offlineHistoricalSyncGeneration
         if Self.shouldSkipIdleWindowHeartRateReassert(
             idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
-            verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor
+            verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio()
         ) {
             AtriaDebugLog("ATRIADBG ble_notify_reassert status=skipped reason=%@ detail=idle_window_drain_pauses_2a37", reason)
             return
@@ -8282,10 +8963,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         if stream5.isNotifying {
-            strapStream5NotifyConfirmed = true
+            if Self.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+            ) {
+                strapStream5NotifyConfirmed = true
+            }
             ensureR10LivenessWatchdog(reason: "\(reason)_stream5_active")
-            AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_active_cccd",
-                          reason)
+            let connectedAge = connectedAt.map { now.timeIntervalSince($0) } ?? 0
+            let lastRefreshAge = lastR10ZombieCCCDRefreshAt.map { now.timeIntervalSince($0) }
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                    .map { now.timeIntervalSince($0) }
+            )
+            if Self.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: hrEpochLive,
+                packetsThisConnection: protocolStream5NotifyCallbacksThisConnection,
+                connectedAge: connectedAge,
+                lastRefreshAge: lastRefreshAge
+            ) {
+                lastR10ZombieCCCDRefreshAt = now
+                lastR10NotifyRepairAt = now
+                peripheral.setNotifyValue(true, for: stream5)
+                _ = enableMissingProtectedCompanionNotifications(
+                    peripheral: peripheral,
+                    refreshEvenIfNotifying: true
+                )
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_refresh reason=%@ action=set_notify_true_no_disable_no_3f_no_reconnect packets_this_connection=%d",
+                              reason,
+                              protocolPacketsThisConnection)
+            } else {
+                AtriaDebugLog("ATRIADBG r10_notify_repair status=preserved reason=%@ action=keep_active_cccd",
+                              reason)
+            }
             return
         }
         guard Self.shouldRepairR10Notification(
@@ -8299,6 +9010,201 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         strapStream5NotifyConfirmed = false
         peripheral.setNotifyValue(true, for: stream5)
         AtriaDebugLog("ATRIADBG r10_notify_repair status=requested reason=%@ action=enable_stream5_no_reconnect",
+                      reason)
+    }
+
+    /// Stream-5 off/on when this connection has HR but the proprietary pipe
+    /// is empty *or* compact 0x33 flowed and then died. Stream-5 traffic
+    /// rearms the ticket; an empty pipe after 45s gets a paced retoggle.
+    /// Never touches 2A37. Device 184 10:18: toggle-on aborted on the 2A37
+    /// CCCD flag while samples were still arriving, so stream-5 stayed off.
+    /// Device 198: `standardHROnlyMode` is the production HR+R10 profile.
+    /// Skipping the toggle there left 6A/51 napping the strap while stream-4
+    /// type-24 still counted as proprietary traffic.
+    private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        let connected = peripheral?.state == .connected && Self.liveHeartRateEpochOwnsRadio(
+            status: status,
+            peripheralConnected: peripheral?.state == .connected,
+            heartRateEpochLive: hrLive
+        )
+        func persistSkip(_ skip: String) {
+            UserDefaults.standard.set(skip, forKey: RadioDefaults.zombieKickSkipReason)
+        }
+        guard !readOnlyHistoryCaptureRequested,
+              let peripheral,
+              connected else {
+            if readOnlyHistoryCaptureRequested {
+                persistSkip("read_only_history")
+            } else if peripheral?.state != .connected {
+                persistSkip("not_connected")
+            } else if !hrLive {
+                persistSkip("hr_not_live")
+            } else {
+                persistSkip("radio_not_owned")
+            }
+            return
+        }
+        let connectedAge = connectedAt.map { now.timeIntervalSince($0) }
+            ?? (lastAcceptedHRAt ?? lastRawHRNotificationAt).map { now.timeIntervalSince($0) }
+            ?? 0
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        ) && currentConnectionProprietaryTraffic > 0
+        let shouldToggle = Self.shouldToggleZombieProprietaryCCCD(
+            connected: true,
+            heartRateNotifying: hrLive,
+            packetsThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            connectedAge: connectedAge,
+            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
+            imuAge: imuAge,
+            sittingSkipFresh: sittingSkipFresh,
+            lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) }
+        )
+        guard shouldToggle else {
+            persistSkip(
+                Self.zombieToggleSkipDetail(
+                    connectedAge: connectedAge,
+                    alreadyToggled: lastR10ZombieCCCDToggleAt != nil,
+                    lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) },
+                    sittingSkipFresh: sittingSkipFresh
+                )
+            )
+            return
+        }
+        guard let strapService = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) else {
+            persistSkip("missing_strap_service")
+            peripheral.discoverServices([Self.UUIDs.strapService])
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_service reason=%@ action=no_2a37_no_3f_no_reconnect",
+                          reason)
+            return
+        }
+        guard let stream5 = strapService.characteristics?
+            .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
+              stream5.properties.contains(.notify) else {
+            persistSkip("missing_stream5")
+            peripheral.discoverCharacteristics(
+                [Self.UUIDs.strapStream5, Self.UUIDs.strapTX],
+                for: strapService
+            )
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=discover_characteristics reason=%@ action=no_2a37_no_3f_no_reconnect",
+                          reason)
+            return
+        }
+        lastR10ZombieCCCDToggleAt = now
+        persistSkip("toggled")
+        UserDefaults.standard.set(
+            now.timeIntervalSince1970,
+            forKey: RadioDefaults.zombieCCCDToggleAt
+        )
+        strapStream5NotifyConfirmed = false
+        peripheral.setNotifyValue(false, for: stream5)
+        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_off reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
+                      reason)
+        Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, let peripheral, !Task.isCancelled else { return }
+            let onAt = Date()
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { onAt.timeIntervalSince($0) }
+            )
+            guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: peripheral.state == .connected,
+                heartRateEpochLive: hrEpochLive
+            ) else { return }
+            guard let stream5 = peripheral.services?
+                .first(where: { $0.uuid == Self.UUIDs.strapService })?
+                .characteristics?
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else { return }
+            peripheral.setNotifyValue(true, for: stream5)
+            self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
+            AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
+                          reason)
+            self.rediscoverZombieProprietaryTransportIfNeeded(
+                peripheral: peripheral,
+                reason: reason
+            )
+            UserDefaults.standard.removeObject(
+                forKey: Self.protectedR10ActivationSentAtKey
+            )
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            let afterAt = Date()
+            let afterHRLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { afterAt.timeIntervalSince($0) }
+            )
+            guard Self.shouldCompleteZombieProprietaryCCCDToggleOn(
+                connected: peripheral.state == .connected,
+                heartRateEpochLive: afterHRLive
+            ) else { return }
+            _ = self.refreshProtectedBoundedRawCaptureIfNeeded(
+                now: afterAt,
+                reason: "\(reason)_after_zombie_toggle"
+            )
+        }
+    }
+
+    /// Restored TX objects can accept `writeValue` while the radio never
+    /// delivers the frame. Rediscover strap TX/notify chars once after the
+    /// stream-5 toggle, never 2A37, never 0x3F.
+    private func rediscoverZombieProprietaryTransportIfNeeded(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        let rediscoverNow = Date()
+        let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { rediscoverNow.timeIntervalSince($0) }
+        )
+        guard Self.shouldRediscoverZombieProprietaryTransport(
+            connected: peripheral.state == .connected,
+            heartRateNotifying: hrEpochLive,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
+            alreadyRediscoveredThisConnection: lastR10ZombieTxRediscoverAt != nil,
+            lastRediscoverAge: lastR10ZombieTxRediscoverAt.map {
+                rediscoverNow.timeIntervalSince($0)
+            }
+        ) else { return }
+        guard let strapService = peripheral.services?.first(where: {
+            $0.uuid == Self.UUIDs.strapService
+        }) else { return }
+        let now = Date()
+        lastR10ZombieTxRediscoverAt = now
+        UserDefaults.standard.set(
+            now.timeIntervalSince1970,
+            forKey: RadioDefaults.zombieTxRediscoverAt
+        )
+        peripheral.discoverCharacteristics(
+            [
+                Self.UUIDs.strapTX,
+                Self.UUIDs.strapRX,
+                Self.UUIDs.strapStream4,
+                Self.UUIDs.strapStream5,
+            ],
+            for: strapService
+        )
+        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_tx_rediscover reason=%@ action=strap_chars_only_keep_2a37_no_3f_no_reconnect",
                       reason)
     }
 
@@ -8807,6 +9713,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let now = Date()
         let defaults = UserDefaults.standard
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.tickStartedAt)
+        // Keep the R10 liveness clock running through a pure-HR fallback so
+        // all-day passive requalify can fire without waiting for a relaunch.
+        ensureR10LivenessWatchdog(reason: "keepalive_tick")
+        evaluateR10Liveness(now: now, reason: "keepalive_tick")
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: defaults, now: now
+        ) {
+            defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+            assignIfChanged(\.rangeLossBackfillPending, false)
+        }
+        if sendCoverLiveBoundedRawCaptureIfNeeded(
+            now: now,
+            reason: "keepalive_cover_live_51"
+        ) {
+            // 6A+51 on the live HR link; do not disconnect-cutover.
+        } else if protectedR10StreamSuppressed,
+                  defaults.object(
+                    forKey: OfflineSyncDefaults.historyCoverLiveUnix
+                  ) == nil {
+            _ = beginProtectedR10AllDayPassiveCutoverIfNeeded(
+                now: now,
+                reason: "keepalive_all_day_passive_requalify"
+            )
+        }
         let activeExplicitWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         guard Self.isBLEContinuityRelevant(
             longWearEnabled: longWearModeEnabled,
@@ -8841,13 +9771,66 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(now.timeIntervalSince1970, forKey: KeepaliveDefaults.lastTickAt)
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.ticks) + 1, forKey: KeepaliveDefaults.ticks)
         if peripheral == nil {
+            if isActivelyScanning {
+                isActivelyScanning = false
+                central.stopScan()
+            }
+            if Self.shouldKeepaliveDeferToActiveScan(
+                isActivelyScanning: isActivelyScanning,
+                rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
+                connectedThisProcess: didConnectThisProcess,
+                skipStandingReconnectOnce: skipStandingReconnectOnce
+                    || callbackPolicyState.snapshot().skipStandingReconnectOnce,
+                restoreSlotDrainDeferred: callbackPolicyState.snapshot()
+                    .deferStandingConnectForRestoreSlotDrain
+            ) {
+                defaults.set("stuck_restore_scan", forKey: KeepaliveDefaults.lastStatus)
+                defaults.set("defer_scan", forKey: KeepaliveDefaults.lastAction)
+                AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=defer_to_stuck_restore_scan")
+                return
+            }
             recomputeConnectionStatus(reason: "foreground_keepalive_missing_peripheral")
             defaults.set("missing_peripheral", forKey: KeepaliveDefaults.lastStatus)
             defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
             AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=reconnect_known_strap saved=%d",
                           hasSavedStrap ? 1 : 0)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_missing_peripheral") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=missing_peripheral action=retry_saved_no_scan")
+                    return
+                }
                 startScan(reason: "foreground_keepalive_missing_peripheral")
+            }
+            return
+        }
+        if isActivelyScanning {
+            isActivelyScanning = false
+            central.stopScan()
+        }
+        if Self.shouldKeepaliveDeferToActiveScan(
+            isActivelyScanning: isActivelyScanning,
+            rediscoveringStuckRestore: rediscoveredStuckRestoredConnecting,
+            connectedThisProcess: didConnectThisProcess,
+            skipStandingReconnectOnce: skipStandingReconnectOnce
+                || callbackPolicyState.snapshot().skipStandingReconnectOnce,
+            restoreSlotDrainDeferred: callbackPolicyState.snapshot()
+                .deferStandingConnectForRestoreSlotDrain
+        ) {
+            defaults.set("stuck_restore_scan", forKey: KeepaliveDefaults.lastStatus)
+            defaults.set("defer_scan", forKey: KeepaliveDefaults.lastAction)
+            return
+        }
+        if status != .connected {
+            defaults.set("not_connected", forKey: KeepaliveDefaults.lastStatus)
+            defaults.set("reconnect_known_strap", forKey: KeepaliveDefaults.lastAction)
+            AtriaDebugLog("ATRIADBG foreground_keepalive status=not_connected action=reconnect_known_strap peripheral_state=%d",
+                          peripheral?.state.rawValue ?? -1)
+            if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_not_connected") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=not_connected action=retry_saved_no_scan")
+                    return
+                }
+                startScan(reason: "foreground_keepalive_not_connected")
             }
             return
         }
@@ -8861,6 +9844,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           peripheral.state.rawValue,
                           hasSavedStrap ? 1 : 0)
             if !reconnectToSavedPeripheralIfPossible(reason: "foreground_keepalive_peripheral_state_\(peripheral.state.rawValue)") {
+                if hasSavedStrap {
+                    AtriaDebugLog("ATRIADBG foreground_keepalive status=peripheral_not_connected action=retry_saved_no_scan")
+                    return
+                }
                 startScan(reason: "foreground_keepalive_peripheral_state_\(peripheral.state.rawValue)")
             }
             return
@@ -10592,6 +11579,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func explicitWorkoutOwnsRadio(now: Date = Date()) -> Bool {
+        Self.explicitMotionOwnershipBlocksHistory(
+            pendingWorkoutIntentActive:
+                AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now),
+            inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+            calibrationHoldActive:
+                workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        )
+    }
+
+    private func abortIdleWindowHeartRatePauseForExplicitWorkout(reason: String) {
+        idleWindowDrainArchiveWarmRetry = false
+        idleWindowDrainPausesHeartRate = false
+        idleWindowDrainStartedAt = nil
+        idleWindowPreferImmediatePause = false
+        idleWindowConsumeLiveTailPauseStartedAt = nil
+        naturalGapDrainArmed = false
+        idleWindowDrainArmFence.clear()
+        cancelIdleWindowHistoryPipeRetry()
+        // A previous walk's End leftover pull must not re-pause 2A37 one
+        // second into the next Strength session. Drop the queued intent and
+        // the stuck 0x22 pending snapshot (device 2026-09-18 pending=5).
+        queuedConnectedRawHistoryCatchUpIntent = nil
+        clearIdleWindowAckedHistoryRangePointer()
+        AtriaDebugLog(
+            "ATRIADBG idle_window_drain status=aborted_for_explicit_workout reason=%@ action=restore_2a37",
+            reason
+        )
+    }
+
     private func currentIdleWindowHistoryDrainWindow(
         treatAsNaturalGap: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
@@ -10600,6 +11617,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let naturalFlag = arguments.contains("--atria-natural-gap-drain-enable")
         guard idleFlag || naturalFlag else { return .none }
         let nowTs = Date()
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        if let queued = queuedConnectedRawHistoryCatchUpIntent,
+           Self.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: queued.reason,
+                lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
+                leftoverPendingRecords: leftoverPending,
+                chargingOrOffWrist: batteryIsCharging || !hasContact
+           ) {
+            queuedConnectedRawHistoryCatchUpIntent = nil
+            retireStuckIdleWindowLeftoverIfNeeded(now: nowTs)
+        } else if queuedConnectedRawHistoryCatchUpIntent == nil {
+            retireStuckIdleWindowLeftoverIfNeeded(now: nowTs)
+        }
         let motionOwner = Self.explicitMotionOwnershipBlocksHistory(
             pendingWorkoutIntentActive:
                 AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: nowTs),
@@ -10622,7 +11652,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 thermalState: ProcessInfo.processInfo.thermalState
             ),
             consumeToNow: idleWindowConsumeToNowConsent,
-            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
         )
         if idleFlag { return window }
         return window == .naturalGapPreHR ? window : .none
@@ -10633,6 +11664,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case "natural_gap_drain", "idle_window_drain":
             break
         default:
+            return false
+        }
+        guard Self.shouldAdmitIdleWindowHeartRatePause(
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio(),
+            lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
+            leftoverPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            chargingOrOffWrist: batteryIsCharging || !hasContact
+        ) else {
             return false
         }
         if idleWindowDrainArchiveWarmRetry {
@@ -10648,6 +11688,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         startBudgetClock: Bool = true
     ) {
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        let queuedPullIntent = queuedConnectedRawHistoryCatchUpIntent != nil
+        let chargingOrOffWrist = batteryIsCharging || !hasContact
+        let lastAttemptYieldedRows = lastIdleWindowDrainAttemptYieldedRows()
+        guard Self.shouldAdmitIdleWindowHeartRatePause(
+            explicitMotionOwnershipActive: explicitWorkoutOwnsRadio(),
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            leftoverPendingRecords: leftoverPending,
+            queuedPullIntent: queuedPullIntent,
+            chargingOrOffWrist: chargingOrOffWrist
+        ) else {
+            if Self.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: lastAttemptYieldedRows,
+                chargingOrOffWrist: chargingOrOffWrist,
+                leftoverPendingRecords: leftoverPending,
+                queuedPullIntent: queuedPullIntent
+            ) {
+                clearIdleWindowAckedHistoryRangePointer()
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=skip_pause_cleared_dry_leftover pending=%u action=keep_2a37",
+                    leftoverPending ?? 0
+                )
+            }
+            return
+        }
         idleWindowDrainPausesHeartRate = true
         // Soak-2 09:27: pause during orphan replay before generation starts.
         // The 20s handshake budget must not run from that pause; it starts
@@ -10764,7 +11829,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             for characteristic in service.characteristics ?? []
                 where needed.contains(characteristic.uuid) {
                 if activeProprietaryNotifyUUIDs.contains(characteristic.uuid) {
-                    if characteristic.uuid == Self.UUIDs.strapStream5 {
+                    if characteristic.uuid == Self.UUIDs.strapStream5,
+                       Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+                       ) {
                         strapStream5NotifyConfirmed = true
                     }
                 } else if idleWindowHistoryNotifyRequestedUUIDs.contains(characteristic.uuid) {
@@ -11055,7 +12123,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             now: Date(),
             consumeToNow: idleWindowConsumeToNowConsent,
             lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
-            chargingOrOffWrist: batteryIsCharging || !hasContact
+            chargingOrOffWrist: batteryIsCharging || !hasContact,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows()
         ) else { return false }
         let ingressReplayBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
             orphanReplayInFlight: orphanHistoricalIngressArchiveInFlight,
@@ -11320,6 +12390,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             attendedRequest: attendedHistoricalRequest,
             nonDestructiveConnectedHistoryAllowed:
                 exactConnectedRealtimePreservingRequest
+                || transientConnectedRealtimeOwnerPreservation
         ) {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
@@ -13338,9 +14409,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         txCharacteristic = tx
-        dbgTxReady = true
+        persistRadioTXReady(true)
 
-        let missing = Self.protectedR10ResponseEventDataNotifyOrder.filter {
+        let proofNotifyOrder = protectedR10CurrentProofNotifyOrder
+        let missing = proofNotifyOrder.filter {
             protectedR10ProfileCharacteristics[$0] == nil
         }
         guard missing.isEmpty else {
@@ -13349,7 +14421,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return
         }
-        let unsupported = Self.protectedR10ResponseEventDataNotifyOrder.filter {
+        let unsupported = proofNotifyOrder.filter {
             protectedR10ProfileCharacteristics[$0]?.properties.contains(.notify) != true
         }
         guard unsupported.isEmpty else {
@@ -13379,7 +14451,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func advanceProtectedR10ResponseEventDataProfile(peripheral: CBPeripheral) {
         guard protectedR10ResponseEventDataProofIsActive,
               peripheral.state == .connected else { return }
-        if let nextUUID = Self.protectedR10ResponseEventDataNotifyOrder.first(where: {
+        if let nextUUID = protectedR10CurrentProofNotifyOrder.first(where: {
             !protectedR10ProfileConfirmedNotifyUUIDs.contains($0)
                 && !protectedR10ProfileRequestedNotifyUUIDs.contains($0)
         }), let characteristic = protectedR10ProfileCharacteristics[nextUUID] {
@@ -13393,7 +14465,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           nextUUID.uuidString)
             return
         }
-        guard Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
+        guard protectedR10CurrentProofNotifyOrder.allSatisfy(
             protectedR10ProfileConfirmedNotifyUUIDs.contains
         ) else { return }
         sendProtectedR10ResponseEventDataSequenceIfReady(peripheral: peripheral)
@@ -13408,7 +14480,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard motionHandshakeDiagnostic == nil,
               standardHROnlyMode,
               protectedR10CleanOwner == .protectedV9,
-              Self.protectedR10ResponseEventDataNotifyOrder.contains(characteristic.uuid),
+              protectedR10CurrentProofNotifyOrder.contains(characteristic.uuid),
               (protectedR10CleanOwnerState == .proving
                 || protectedR10CleanOwnerState == .qualified) else { return false }
         if let error {
@@ -13427,7 +14499,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recordProtectedV9BringUpEdge("notify_confirmed_\(characteristic.uuid.uuidString)")
         activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
         if characteristic.uuid == Self.UUIDs.strapStream5 {
-            strapStream5NotifyConfirmed = true
+            if Self.shouldConfirmStream5FromCCCDState(
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+            ) {
+                strapStream5NotifyConfirmed = true
+            }
             markPassiveR10SubscriptionConfirmed()
         }
         advanceProtectedR10ResponseEventDataProfile(peripheral: peripheral)
@@ -13451,7 +14527,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             recordProtectedV9BringUpEdge("sequence_preflight_blocked_already_sent_local")
             return
         }
-        guard Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
+        guard protectedR10CurrentProofNotifyOrder.allSatisfy(
             protectedR10ProfileConfirmedNotifyUUIDs.contains
         ) else {
             recordProtectedV9BringUpEdge("sequence_preflight_blocked_notify_incomplete")
@@ -13497,7 +14573,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10ActivationSent = true
         protectedR10ActivationAt = startedAt
         protectedR10FramesAfterActivation = 0
+        protectedR10CommandSequenceStartedAt = Date()
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            defer { self?.finishProtectedR10CommandSequence() }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive else { return }
@@ -13523,25 +14601,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 txCharacteristic: txCharacteristic,
                 reason: "protected_profile"
             )
-            let rawSequence = self.cmdSeq
-            self.cmdSeq &+= 1
-            let rawFrame = encodeFrame(
-                [Packet.command, rawSequence, Cmd.startRawData]
-                    + Cmd.rawCaptureDurationPayload()
+            let sendBoundedRaw = Self.protectedR10ProofSendsBoundedRawCapture(
+                allDayMinimalProof: self.protectedR10AllDayMinimalProof
             )
             #if DEBUG
             let gate4IMUOnlyProbe = ProcessInfo.processInfo.arguments.contains(
                 "--atria-gate4-imu-only"
             )
-            let sentCommands = gate4IMUOnlyProbe
-                ? "6a01_only_debug_probe"
-                : "6a01,51_duration_le"
             #else
             let gate4IMUOnlyProbe = false
-            let sentCommands = "6a01,51_duration_le"
             #endif
-            if !gate4IMUOnlyProbe {
-                peripheral.writeValue(rawFrame, for: txCharacteristic, type: .withoutResponse)
+            let sentCommands: String
+            var rawSequence = imuSequence
+            if sendBoundedRaw, !gate4IMUOnlyProbe {
+                try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
+                guard !Task.isCancelled, peripheral.state == .connected,
+                      self.protectedR10ResponseEventDataProofIsActive else {
+                    self.protectedR10CommandSequenceTask = nil
+                    return
+                }
+                rawSequence = self.cmdSeq
+                self.cmdSeq &+= 1
+                peripheral.writeValue(
+                    encodeFrame(
+                        [Packet.command, rawSequence, Cmd.startRawData]
+                            + Cmd.rawCaptureDurationPayload()
+                    ),
+                    for: txCharacteristic,
+                    type: .withoutResponse
+                )
+                sentCommands = "6a01,51_duration_le"
+            } else {
+                sentCommands = "6a01_only_all_day_minimal"
             }
             AtriaDebugLog("ATRIADBG protected_r10 status=command_sent owner=v9 cmds=%@ seqs=%d,%d duration_ms=%u action=exactly_once_bounded_raw_motion",
                           sentCommands,
@@ -13828,12 +14919,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               peripheral?.state == .connected else { return }
 
         if protectedR10CleanOwnerProofIsActive {
-            if Self.protectedR10CleanOwnerProofHasExpired(
+            let startedAt = UserDefaults.standard.object(
+                forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+            ) as? Double
+            // A just-promoted launch-pending proof has no startedAt yet.
+            // Treating that as expired immediately aborts 51 before it is sent.
+            if let startedAt, startedAt > 0,
+               Self.protectedR10CleanOwnerProofHasExpired(
                 proofActive: true,
-                attemptAge: (UserDefaults.standard.object(
-                    forKey: Self.protectedR10CleanOwnerProofStartedAtKey
-                ) as? Double).map { now.timeIntervalSince1970 - $0 }
-            ) {
+                attemptAge: now.timeIntervalSince1970 - startedAt
+               ) {
                 persistProtectedR10CleanOwnerFallback(
                     reason: "clean_owner_proof_timeout_on_hr"
                 )
@@ -14097,9 +15192,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ characteristic: CBCharacteristic,
         peripheral: CBPeripheral
     ) {
-        guard standardHROnlyMode,
-              !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed,
+        guard Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+              ),
               characteristic.uuid == Self.UUIDs.strapStream5,
               characteristic.properties.contains(.notify),
               !characteristic.isNotifying else { return }
@@ -14145,9 +15243,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// from that cache so a Release reinstall cannot leave HR healthy while the
     /// motion stream silently stays dormant.
     private func resumeProtectedR10FromRestoredCache(_ peripheral: CBPeripheral) {
-        guard standardHROnlyMode,
-              !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed,
+        guard Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+              ),
               peripheral.state == .connected else { return }
 
         var cachedHR: CBCharacteristic?
@@ -14196,12 +15297,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         if let cachedTX, cachedTX.properties.contains(.writeWithoutResponse) {
             txCharacteristic = cachedTX
-            dbgTxReady = true
+            persistRadioTXReady(true)
         }
         if let cachedStream5, cachedStream5.properties.contains(.notify) {
             if cachedStream5.isNotifying {
                 activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
-                strapStream5NotifyConfirmed = true
+                if Self.shouldConfirmStream5FromCCCDState(
+                    stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection
+                ) {
+                    strapStream5NotifyConfirmed = true
+                }
                 markPassiveR10SubscriptionConfirmed()
             } else {
                 requestProtectedR10InitialProfileNotificationIfAllowed(
@@ -14654,6 +15759,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
+        if !explicitRequest,
+           emptyStreamNeedsLiveCompactIMURecovery(now: attemptAt) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: explicitRequest,
+                explicitPostWorkoutBankRequest:
+                    explicitPostWorkoutBankRequest,
+                preserveConnectedRealtimeOwner:
+                    preserveConnectedRealtimeOwner
+            )
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=deferred_live_compact_imu_recovery reason=%@ action=keep_stream5_for_526a14_no_history_command",
+                reason
+            )
+            return false
+        }
         guard historicalArchiveWarmState == .ready else {
             if historicalArchiveWarmState == .warming,
                let connectedMotionBankRequestAuthority {
@@ -14768,6 +15890,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 transactionPeripheralState?.rawValue ?? -1,
                 (transactionRealtimeEpochOwned
                     || transactionStandingConnectOwned) ? 1 : 0
+            )
+            return false
+        }
+        _ = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+            defaults: UserDefaults.standard
+        )
+        if !explicitRequest,
+           AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: UserDefaults.standard
+           ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_drain_cover_live reason=%@ action=release_radio_for_live_steps",
+                reason
+            )
+            return false
+        }
+        if !AtriaR10StepLeasePolicy.shouldClaimHistoryTransport(
+            manualWorkoutActive: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(
+                now: attemptAt
+            )
+        ) {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_drain_manual_workout reason=%@ action=keep_r10_lease_history_waits",
+                reason
             )
             return false
         }
@@ -16120,6 +17267,57 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    private func clearIdleWindowAckedHistoryRangePointer() {
+        idleWindowRangeBeforeACK = nil
+        let defaults = UserDefaults.standard
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeWriteCursor
+        )
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeReadCursor
+        )
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangePending
+        )
+    }
+
+    /// Drops a dry leftover 0x22 snapshot once no in-lifetime gym pull still
+    /// needs it. Start abort always clears; this is the connect/restore path
+    /// for a 13h-old Strength that can no longer fill from strap flash.
+    func retireStuckIdleWindowLeftoverIfNeeded(
+        metadataOnlyWorkoutEnds: [Date] = [],
+        now: Date = Date()
+    ) {
+        let pending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        guard Self.shouldRetireStuckIdleWindowLeftover(
+            pendingRecords: pending,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            metadataOnlyWorkoutEnds: metadataOnlyWorkoutEnds,
+            now: now
+        ) else { return }
+        abortIdleWindowHeartRatePauseForExplicitWorkout(reason: "retired_stuck_leftover")
+        if offlineHistoricalSyncInProgress {
+            finishOfflineHistoricalSync(
+                reason: "retired_stuck_leftover_restore_2a37",
+                generation: offlineHistoricalSyncGeneration,
+                resumePendingSync: false
+            )
+        }
+        reassertHeartRateNotificationsIfConnected(
+            reason: "retired_stuck_leftover_restore_2a37"
+        )
+        AtriaDebugLog(
+            "ATRIADBG idle_window_drain status=retired_stuck_leftover pending=%u action=restore_2a37",
+            pending ?? 0
+        )
+    }
+
+    private func lastIdleWindowDrainAttemptYieldedRows() -> Bool {
+        UserDefaults.standard.object(
+            forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        ) as? Bool ?? true
+    }
+
     private func loadIdleWindowAckedHistoryRangePointer()
         -> AtriaWhoop4HistoryRangePointerSnapshot?
     {
@@ -16216,6 +17414,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             range.pendingRecords
         )
         idleWindowConsumeToNowConsent = false
+        queuedConnectedRawHistoryCatchUpIntent = nil
         AtriaDebugLog(
             "ATRIADBG historyRange status=consume_consent_cleared generation=%llu action=persist_before_ack_go_forward",
             generation
@@ -16330,17 +17529,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func restoreIdleWindowHeartRateForAttendedForegroundIfNeeded() {
+        let leftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        let queuedPull = queuedConnectedRawHistoryCatchUpIntent != nil
         guard Self.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
             idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
             attendedForeground: true,
             drainBeganUnattended: idleWindowDrainBeganUnattended,
-            historyRangeRequested: idleWindowDrainRangeRequestedAt != nil
+            historyRangeRequested: idleWindowDrainRangeRequestedAt != nil,
+            leftoverPendingRecords: leftoverPending,
+            queuedPullIntent: queuedPull
         ),
         offlineHistoricalSyncInProgress else { return }
         AtriaDebugLog(
-            "ATRIADBG idle_window_drain status=attended_foreground_abort generation=%llu action=restore_2a37_same_epoch_no_cancel",
-            offlineHistoricalSyncGeneration
+            "ATRIADBG idle_window_drain status=attended_foreground_abort generation=%llu pending=%u queued=%d action=restore_2a37_same_epoch_no_cancel",
+            offlineHistoricalSyncGeneration,
+            leftoverPending ?? 0,
+            queuedPull ? 1 : 0
         )
+        if !queuedPull, (leftoverPending ?? 0) > 0 {
+            abortIdleWindowHeartRatePauseForExplicitWorkout(
+                reason: "attended_leftover_tail"
+            )
+        }
         finishOfflineHistoricalSync(
             reason: "idle_window_drain_attended_foreground_restore_2a37",
             generation: offlineHistoricalSyncGeneration,
@@ -16398,7 +17608,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastFrameAge: idleWindowDrainLastFrameAt.map {
                     now.timeIntervalSince($0)
                 },
-                stream5Received: historicalDrainTelemetry.stream5Received
+                stream5Received: historicalDrainTelemetry.stream5Received,
+                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
             )
         guard persistAckStalled || absoluteBudget || heartRatePause else {
             return false
@@ -16727,10 +17938,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func finishHistoricalDrainTelemetry(generation: UInt64, trigger: String) {
         emitHistoricalDrainTelemetry(generation: generation, trigger: trigger)
         if historicalDrainTelemetry.generation == generation {
+            let yieldedDurableRows = historicalDrainTelemetry.persisted > 0
             UserDefaults.standard.set(
-                historicalDrainTelemetry.stream5Received > 0,
+                yieldedDurableRows,
                 forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
             )
+            if !yieldedDurableRows {
+                _ = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+                    defaults: .standard
+                )
+            }
         }
         historicalDrainTelemetryTask?.cancel()
         historicalDrainTelemetryTask = nil
@@ -16871,7 +18088,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastPendingRecords: consumeLiveTailPending,
                 verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
                 linkStillConnected: peripheral?.state == .connected,
-                consumePauseElapsed: consumeLiveTailPauseElapsed
+                consumePauseElapsed: consumeLiveTailPauseElapsed,
+                lastAttemptYieldedRows: historicalDrainTelemetry.persisted > 0
             )
         let discardConsumeIngressSpool =
             Self.shouldDiscardUnackedConsumeIngressSpool(
@@ -16921,6 +18139,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         idleWindowServedUnixMin = nil
         idleWindowServedUnixMax = nil
         idleWindowPostACKRangeProbeIssued = false
+        let dryLeftoverPending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        if Self.shouldClearIdleWindowPointerAfterDryTerminal(
+            durableRowsThisAttempt: historicalDrainTelemetry.persisted,
+            pendingRecords: dryLeftoverPending,
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+        ) {
+            clearIdleWindowAckedHistoryRangePointer()
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=cleared_dry_leftover_pointer pending=%u action=keep_2a37",
+                dryLeftoverPending ?? 0
+            )
+        }
         idleWindowDrainStartedAt = nil
         idleWindowDrainRangeRequestedAt = nil
         idleWindowDrainFirstFrameAt = nil
@@ -17686,6 +18916,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults: defaults
         )
         let backlogPending = strapBacklogPendingForCatchUp(now: now)
+        let queuedPullIntent: Bool = {
+            if case .queuedPull = authority.request.intent { return true }
+            return queuedConnectedRawHistoryCatchUpIntent != nil
+        }()
         let thermalState = ProcessInfo.processInfo.thermalState
         let publicationYieldRunnable =
             UIApplication.shared.applicationState == .active
@@ -17723,7 +18957,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 presentCaptureShareAfterSlices:
                     connectedRawCatchUpPresentCaptureShareAfterSlices,
                 presentCaptureSharePause:
-                    connectedRawCatchUpPresentCaptureSharePauseSeconds
+                    connectedRawCatchUpPresentCaptureSharePauseSeconds,
+                queuedPullIntent: queuedPullIntent
             )
         let action: String
         switch disposition {
@@ -18340,13 +19575,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func reconcileHistoricalRecoveryPresentation(reason: String) {
         guard !offlineHistoricalSyncInProgress,
               !historicalConsumerMaterializationInFlight else { return }
+        let defaults = UserDefaults.standard
+        _ = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+            defaults: defaults
+        )
+        if AtriaMissedDataBannerPresentation.acceptTerminalHistoryLossIfNeeded(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            historicalRecoveryPresentation = .idle
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=accepted_unrecoverable_history_loss reason=%@ action=clear_pending_keep_nights",
+                reason
+            )
+            return
+        }
         switch historicalRecoveryPresentation {
         case .needsAttention, .partial:
             break
         case .idle, .syncing, .verified:
             return
         }
-        let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         let actionable = AtriaHistoricalGapLedger
             .windows(defaults: defaults)
@@ -18359,6 +19608,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func markRangeLossBackfillRequired(reason: String) {
         let defaults = UserDefaults.standard
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_rearm_unrecoverable_history reason=%@",
+                reason
+            )
+            return
+        }
+        if AtriaMissedDataBannerPresentation.resetZeroProgressSlicesForLaterGapAdmission(
+            defaults: defaults
+        ) {
+            connectedRawCatchUpConsecutiveZeroProgressSlices = 0
+        }
+        if let seek = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+            defaults: defaults
+        ) {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=history_drain_cursor_skip_ahead seek_unix=%.0f reason=%@ action=leave_unrecoverable_page_seek_next_recoverable",
+                seek,
+                reason
+            )
+        }
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: defaults
+        ) {
+            assignIfChanged(\.rangeLossBackfillPending, false)
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=skipped_rearm_after_cover_live reason=%@",
+                reason
+            )
+            return
+        }
         let alreadyPending = defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
         if !alreadyPending || defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) == nil {
             defaults.set(Date().timeIntervalSince1970, forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt)
@@ -19291,7 +20574,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             reason: reason,
             requestedAt: now
         )
-        if let deferral = connectedRawNoRadioCaptureDeferral {
+        if Self.queuedRawCatchUpIntentSurvivesLifetime(reason: reason) {
+            connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        } else if let deferral = connectedRawNoRadioCaptureDeferral {
             connectedRawHistoryCatchUpEvaluationNotBefore =
                 deferral.retryNotBefore
         } else {
@@ -19313,12 +20598,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date,
         trigger: String
     ) -> Bool {
-        if evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
-            AtriaDebugLog(
-                "ATRIADBG idle_window_drain status=preferred_over_raw_catch_up trigger=%@ action=stop_realtime_same_epoch_no_cancel",
-                trigger
-            )
-            return true
+        var queuedIntent = queuedConnectedRawHistoryCatchUpIntent
+        if let existingQueuedIntent = queuedIntent,
+           Self.queuedRawCatchUpIntentIsExpired(
+                reason: existingQueuedIntent.reason,
+                requestedAt: existingQueuedIntent.requestedAt,
+                now: now,
+                defaultLifetime: connectedRawHistoryCatchUpIntentLifetime
+           ) {
+            self.queuedConnectedRawHistoryCatchUpIntent = nil
+            queuedIntent = nil
+            retireStuckIdleWindowLeftoverIfNeeded(now: now)
+        }
+        let queuedPullIntent = queuedIntent != nil
+        if Self.shouldDeferRawCatchUpForIdleWindowDrain(
+            queuedPullIntent: queuedPullIntent
+        ) {
+            if evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain") {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=preferred_over_raw_catch_up trigger=%@ action=stop_realtime_same_epoch_no_cancel",
+                    trigger
+                )
+                return true
+            }
+            if Self.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: queuedPullIntent,
+                idleWindowAdmitted: currentIdleWindowHistoryDrainWindow() != .none,
+                idleWindowPreparing: idleWindowDrainArchiveWarmRetry
+                    || idleWindowDrainArmFence.isInFlight()
+            ) {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=queued_gym_pull_waiting_pipe trigger=%@ action=no_keep_2a37_22",
+                    trigger
+                )
+                return false
+            }
         }
         if let yield = connectedRawHistoryCatchUpPublicationYield {
             let publicationNow = Date()
@@ -19351,13 +20665,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard connectedRawHistoryCatchUpEvaluationNotBefore.map({ now >= $0 })
                 ?? true else { return false }
 
-        var queuedIntent = queuedConnectedRawHistoryCatchUpIntent
-        if let existingQueuedIntent = queuedIntent,
-           now.timeIntervalSince(existingQueuedIntent.requestedAt)
-                > connectedRawHistoryCatchUpIntentLifetime {
-            self.queuedConnectedRawHistoryCatchUpIntent = nil
-            queuedIntent = nil
-        }
         let persistedSliceCooldownUntil = UserDefaults.standard.double(
             forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
         )
@@ -19422,7 +20729,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         let backlogReason = Self.strapBacklogReason(now: now)
         let strapBacklogPending = backlogReason != .none
-        guard strapBacklogPending else {
+        guard Self.connectedRawHistoryCatchUpHasDrainableWork(
+            queuedPullIntent: queuedIntent != nil,
+            strapBacklogPending: strapBacklogPending
+        ) else {
             connectedRawHistoryCatchUpContinuationPending = false
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
             connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
@@ -19453,7 +20763,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 : nil,
             now: now,
             minimumPresentCaptureInterval:
-                connectedRawHistoryCatchUpZeroProgressRetryInterval
+                connectedRawHistoryCatchUpZeroProgressRetryInterval,
+            queuedPullIntent: queuedIntent != nil
         ) {
             connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
             return false
@@ -19525,7 +20836,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let started = requestOfflineHistoricalSyncIfNeeded(
             reason: "connected_raw_catch_up_\(trigger)",
             force: false,
-            allowConnectedAutomaticHandoff: false
+            allowConnectedAutomaticHandoff: false,
+            preserveConnectedRealtimeOwner: true
         )
         guard started else {
             if let retryNotBefore = Self.connectedRawNoRadioRetryNotBefore(
@@ -19966,8 +21278,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               peripheral?.name ?? deviceName)
     }
 
+    /// First drop wins. Refreshing this clock on every stall-reconnect kept
+    /// the header inside the 45s "Reading…" grace forever (1168 keepalive
+    /// stall reconnects on 2026-09-16 after the workout fence).
+    nonisolated static func pendingKnownReconnectStart(
+        existing: Date?,
+        now: Date
+    ) -> Date {
+        existing ?? now
+    }
+
     private func markPendingKnownReconnect(reason: String) {
-        pendingKnownReconnectStartedAt = Date()
+        pendingKnownReconnectStartedAt = Self.pendingKnownReconnectStart(
+            existing: pendingKnownReconnectStartedAt,
+            now: Date()
+        )
         pendingKnownReconnectReason = reason
     }
 
@@ -20274,6 +21599,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func resetProtocolDiagnosticsForDebugLaunch(arguments: [String]) {
         protocolPacketCount = 0
+        protocolPacketsThisConnection = 0
         protocolIMUFrameCount = 0
         resetIMUFeatureStats(resetResearchAggregates: false)
         protocolDiagnosticFrameCount = 0
@@ -20564,6 +21890,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
 
+        if let rebindSource = Self.strapStepLedgerUnhandedRebindSource(
+            currentSessionID: liveSessionID,
+            nextSessionID: record.id,
+            hasPersistedLedger: lastStrapStepLedgerSavedRawSteps > 0
+                || lastStrapStepLedgerSavedGyroCadenceResearchSteps > 0
+                || lastStrapStepLedgerSavedSegmentSteps > 0
+        ) {
+            strapStepLedgerUnhandedRestoreRebindSourceSegmentID = rebindSource
+        }
         liveSessionID = record.id
         liveSessionEventTimeZoneIdentifier = record.eventTimeZoneIdentifier ?? TimeZone.current.identifier
         sessionStart = first.t
@@ -20588,6 +21923,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         recentRRBeatTimes = payload.recentRRBeatTimes
         lastRRBeatTime = rrArchive.last?.t
         lastAcceptedHRAt = last.t
+        rememberDisplayHeartRate(last.bpm, at: last.t)
         lastRawHRNotificationAt = last.t
         lastStandardHR = (last.bpm, last.t)
         sessionRawHRNotifications = record.rawHRNotifications
@@ -20641,6 +21977,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let duration = last.t.timeIntervalSince(first.t)
         AtriaDebugLog("ATRIADBG active_session_journal status=restored reason=%@ samples=%d rr_values=%d duration_s=%.0f age_s=%.0f label=%@",
               reason, session.count, rrArchive.count, duration, payload.age, captureLabel)
+        persistStrapStepLedgerIfNeeded(reason: "journal_restore_rebind", force: true)
     }
 
     private func persistActiveSessionJournalIfNeeded(reason: String,
@@ -21323,6 +22660,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         central callbackCentral: CBCentralManager,
         reason: String
     ) -> Bool {
+        guard !appReviewDemoFlag.withLock({ $0 }) else {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=connect_suppressed reason=%@ mode=app_review_demo",
+                reason
+            )
+            return false
+        }
         guard connectedPeripheralRetainer
             .retainAndClaimConnectRequest(target) else {
             AtriaDebugLog(
@@ -21333,6 +22677,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
+        callbackPolicyState.update { $0.identifiedStandingConnectIssued = true }
         callbackCentral.connect(target, options: nil)
         return true
     }
@@ -21342,6 +22687,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// remains reserved for connected-link repair/rebuild requests.
     private func reconnectKnownPeripheralImmediately(_ target: CBPeripheral,
                                                      reason: String) {
+        guard !appReviewDemoMode else { return }
         guard target.state == .disconnected else {
             // `.disconnecting` will reach didDisconnectPeripheral, whose path
             // performs this same immediate known-peripheral reconnect.
@@ -21365,6 +22711,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func requestFreshScanReconnect(peripheral target: CBPeripheral,
                                            reason: String,
                                            intent: AutomaticRecoveryIntent = .repairPipeline) {
+        guard !appReviewDemoMode else { return }
         let defaults = UserDefaults.standard
         let streamState = defaults.string(forKey: StrapStreamDefaults.state)
         let streamBattery = defaults.object(forKey: StrapStreamDefaults.batteryLevel) as? Int ?? batteryLevel
@@ -21617,10 +22964,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             storeProprietaryFramesMode = true
             AtriaDebugLog("ATRIADBG ble_frame_history enabled=1 reason=launch_arg")
         }
-        protocolDiagnosticsPersistenceEnabled =
-            arguments.contains("--atria-active-motion-imu-check")
-            || arguments.contains("--atria-reset-protocol-diagnostics")
-            || verboseBLEFrameLogging
+        // Production long-wear must persist this-connection packet counters.
+        // Gating on launch-args hid live 0x33 IMU (CRC-valid 152-byte stream-5
+        // frames, device 2026-09-15) behind packetsThisConnection=0.
+        protocolDiagnosticsPersistenceEnabled = true
         if arguments.contains("--atria-standard-hr-only") {
             applyStandardHROnly(enabled: true, persist: false, reconnect: false, reason: "launch_arg")
             AtriaDebugLog("ATRIADBG protected_r10_minimal enabled=1 full_realtime_start=skipped stream5_r10=enabled history_ack=disabled")
@@ -22689,7 +24036,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled { break }
-                guard longWearModeEnabled, standardHROnlyMode else { continue }
+                // Device 2026-09-14: effective full_protocol skipped this
+                // loop while 2A37 sat notifying=false for 36s.
+                guard longWearModeEnabled else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
                 guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
@@ -23482,7 +24831,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 if Task.isCancelled { break }
-                guard longWearModeEnabled, standardHROnlyMode else { continue }
+                guard longWearModeEnabled else { continue }
                 guard status == .connected else { continue }
                 let now = Date()
                 guard let reference = Self.latestLinkActivity([lastAcceptedHRAt, connectedAt]) else { continue }
@@ -24336,6 +25685,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG ble_scan status=suppressed reason=%@ mode=app_review_demo", reason)
             return
         }
+        if bluetoothStartupSuspended {
+            startLiveBluetoothTransportIfNeeded()
+        }
         guard central.state == .poweredOn else {
             pendingScanReason = reason
             AtriaDebugLog("ATRIADBG ble_scan status=skipped reason=%@ central_state=%d",
@@ -24699,10 +26051,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     func enterAppReviewDemoMode() {
         appReviewDemoMode = true
+        appReviewDemoFlag.withLock { $0 = true }
         scanRetryTask?.cancel()
         scanWideningTask?.cancel()
         reconnectWatchdogTask?.cancel()
-        central.stopScan()
+        if !bluetoothStartupSuspended {
+            central.stopScan()
+        }
         isActivelyScanning = false
         if let peripheral {
             cancelPeripheralConnection(peripheral, reason: "app_review_demo")
@@ -24712,6 +26067,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     func exitAppReviewDemoMode() {
         appReviewDemoMode = false
+        appReviewDemoFlag.withLock { $0 = false }
+        startLiveBluetoothTransportIfNeeded()
+        recomputeConnectionStatus(reason: "app_review_demo_exit")
+    }
+
+    /// First-run and demo launches keep CoreBluetooth inert so Explore sample
+    /// data never prompts for Bluetooth. Connect, or leaving demo into setup,
+    /// installs the live manager in-process.
+    func startLiveBluetoothTransportIfNeeded() {
+        guard bluetoothStartupSuspended, !appReviewDemoMode else { return }
+        bluetoothStartupSuspended = false
+        let initialRestoreIdentifier = centralRestoreIdentifier
+        installedCentralRestoreIdentifier = initialRestoreIdentifier
+        let delegateQueue = centralDelegateQueue
+        delegateQueue?.suspend()
+        central = CBCentralManager(
+            delegate: self,
+            queue: delegateQueue,
+            options: [
+                CBCentralManagerOptionRestoreIdentifierKey: initialRestoreIdentifier,
+                CBCentralManagerOptionShowPowerAlertKey: true
+            ]
+        )
+        centralEventFence.install(central)
+        delegateQueue?.resume()
+        AtriaDebugLog("ATRIADBG ble_manager_init status=resumed reason=first_run_or_demo_exit")
     }
 
     /// A retained multi-file restore marker means canonical persistence is not
@@ -24769,7 +26150,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         realtimeRetry?.cancel()
         realtimeRestartTask?.cancel()
         r10ArmRetryTask?.cancel()
-        r10LivenessTask?.cancel()
+        stopR10LivenessWatchdog(reason: "canonical_restore_failure")
         proprietaryNotifyFallbackTask?.cancel()
         rangeLossBackfillTask?.cancel()
         rangeLossBackfillMaintenanceTickerTask?.cancel()
@@ -24971,10 +26352,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     func reconnectToSavedPeripheralIfPossible(reason: String,
                                                allowCleanOwnerLaunchCutover: Bool = false) -> Bool {
+        if callbackPolicyState.snapshot().deferStandingConnectForRestoreSlotDrain {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=skip_standing_connect_until_restore_slot_drain",
+                reason
+            )
+            return false
+        }
+        if rediscoveredStuckRestoredConnecting && connectedAt == nil && isActivelyScanning {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=skip_standing_connect_during_stuck_restore_scan",
+                reason
+            )
+            return false
+        }
         let defaults = UserDefaults.standard
         guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
-              let uuid = UUID(uuidString: uuidString),
-              let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+              let uuid = UUID(uuidString: uuidString) else {
+            return false
+        }
+        // Device 223 hung on `pending_connect` after retrievePeripherals
+        // returned a `.connecting` twin while bluetoothd already had the
+        // strap. Prefer the system-connected object so `connect` / adopt
+        // run on the live radio edge.
+        let systemConnected = central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+        guard let saved = systemConnected
+                ?? central.retrievePeripherals(withIdentifiers: [uuid]).first else {
             return false
         }
         // Restoration claims the exact CoreBluetooth object synchronously on
@@ -25268,6 +26673,65 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// All-day counterpart of the workout cutover. Same physical sequence —
+    /// one app-owned disconnect, then a fresh v9 owner on the next didConnect
+    /// — but gated by `allDayPassiveInProcessRequalifyShouldAttempt` so a
+    /// running wear session can recover IMU without waiting for a relaunch
+    /// or a manual workout.
+    private func beginProtectedR10AllDayPassiveCutoverIfNeeded(
+        now: Date,
+        reason: String
+    ) -> Bool {
+        guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress,
+              let peripheral, peripheral.state == .connected else { return false }
+        let defaults = UserDefaults.standard
+        guard Self.allDayPassiveInProcessRequalifyShouldAttempt(
+            historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
+            connected: true,
+            streamSuppressed: protectedR10StreamSuppressed,
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            priorQualifiedAt: defaults.object(
+                forKey: Self.protectedR10StableTransportQualifiedAtKey) as? Double,
+            fallbackAt: defaults.object(
+                forKey: Self.protectedR10FallbackAtKey) as? Double,
+            lastAttemptAt: defaults.object(
+                forKey: Self.protectedR10RequalifyAttemptAtKey) as? Double,
+            lastAllDayCutoverAt: defaults.object(
+                forKey: Self.protectedR10AllDayInProcessCutoverAtKey) as? Double,
+            minimalProofAlreadyAttempted: defaults.bool(
+                forKey: Self.protectedR10AllDayMinimalProofKey),
+            coverLiveReleasedAt: defaults.object(
+                forKey: OfflineSyncDefaults.historyCoverLiveUnix) as? Double,
+            coverLive51RetryAt: defaults.object(
+                forKey: Self.protectedR10CoverLive51RetryAtKey) as? Double,
+            now: now.timeIntervalSince1970
+        ) else { return false }
+        let coverLive = defaults.object(
+            forKey: OfflineSyncDefaults.historyCoverLiveUnix
+        ) as? Double
+        let lastAttempt = defaults.object(
+            forKey: Self.protectedR10RequalifyAttemptAtKey
+        ) as? Double
+        if let coverLive, let lastAttempt, lastAttempt >= coverLive - 1 {
+            defaults.set(now.timeIntervalSince1970,
+                         forKey: Self.protectedR10CoverLive51RetryAtKey)
+        }
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10AllDayInProcessCutoverAtKey)
+        defaults.set(true, forKey: Self.protectedR10AllDayMinimalProofKey)
+        Self.promoteFallbackToProtectedV9ForLaunch(defaults: defaults, now: now)
+        backgroundReconnectFence.markAppOwnedCancellation(
+            peripheralID: peripheral.identifier
+        )
+        endBackgroundReconnectLease(reason: "all_day_passive_cutover")
+        recordReconnectLeaseStage("app_cancel_r10_all_day_passive_cutover", detail: reason)
+        central.cancelPeripheralConnection(peripheral)
+        AtriaDebugLog("ATRIADBG protected_r10 status=all_day_passive_cutover_started reason=%@ action=single_disconnect_then_fresh_v9_central_no_cccd_no_command_no_history",
+                      reason)
+        return true
+    }
+
     /// Completes the v8 manual-workout cutover only after the old pure-HR link
     /// has emitted its disconnect callback. The physical disconnect is the
     /// fresh-link boundary we need; replacing CBCentralManager here is both
@@ -25282,9 +26746,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String
     ) -> Bool {
         let defaults = UserDefaults.standard
-        guard defaults.object(
-                forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey
-              ) != nil,
+        let workoutCutoverPending = defaults.object(
+            forKey: Self.protectedR10V8WorkoutInProcessCutoverLeaseKey
+        ) != nil
+        let allDayCutoverPending = defaults.object(
+            forKey: Self.protectedR10AllDayInProcessCutoverAtKey
+        ) != nil
+        guard workoutCutoverPending || allDayCutoverPending,
               protectedR10CleanOwner == .protectedV9,
               protectedR10CleanOwnerState == .protectedLaunchPending,
               !protectedR10StreamSuppressed else { return false }
@@ -25302,18 +26770,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         disconnectedPeripheral.delegate = self
         peripheral = disconnectedPeripheral
+        let reconnectReason = allDayCutoverPending && !workoutCutoverPending
+            ? "all_day_passive_fresh_v9_connection"
+            : "manual_workout_fresh_v9_connection"
         recordLinkAttempt(
-            reason: "manual_workout_fresh_v9_connection",
+            reason: reconnectReason,
             peripheral: disconnectedPeripheral
         )
-        markPendingKnownReconnect(reason: "manual_workout_fresh_v9_connection")
+        markPendingKnownReconnect(reason: reconnectReason)
         issueSingleFlightConnect(
             disconnectedPeripheral,
             central: callbackCentral,
-            reason: "manual_workout_fresh_v9_connection"
+            reason: reconnectReason
         )
         startReconnectWatchdog(
-            reason: "manual_workout_fresh_v9_connection",
+            reason: reconnectReason,
             peripheral: disconnectedPeripheral
         )
         recomputeConnectionStatus(reason: "event")
@@ -25402,27 +26873,232 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Process-kill mid-connect (devicectl --terminate-existing) can leave
     /// CoreBluetooth's saved peripheral in `.connecting` forever. One
     /// cancel/reissue unsticks that; later out-of-range waits stay standing.
+    /// An issued standing connect is a real radio wait — cancelling it at
+    /// the leftover-restore unstick (device 223) left a replacement
+    /// `pending_connect` that never reached didConnect.
     nonisolated static func shouldReissueStuckRestoredConnecting(
         peripheralState: CBPeripheralState,
         didConnectThisProcess: Bool,
-        alreadyReissued: Bool
+        alreadyReissued: Bool,
+        standingConnectIssued: Bool = false
     ) -> Bool {
         !alreadyReissued
             && !didConnectThisProcess
+            && !standingConnectIssued
             && peripheralState == .connecting
+    }
+
+    /// The one-shot reissue still left this phone connecting for 10+ minutes.
+    /// A saved standing `connect` to a zombie restored object never completes
+    /// and also blocks `didDiscover`. Scan once; genuine out-of-range after a
+    /// live `didConnect` this process keeps observing.
+    nonisolated static func shouldRediscoverStuckRestoredConnecting(
+        peripheralState: CBPeripheralState,
+        didConnectThisProcess: Bool,
+        alreadyReissued: Bool,
+        alreadyRediscovered: Bool
+    ) -> Bool {
+        alreadyReissued
+            && !alreadyRediscovered
+            && !didConnectThisProcess
+            && peripheralState == .connecting
+    }
+
+    nonisolated static func shouldSkipKnownStrapStandingReconnect(
+        skipStandingReconnectOnce: Bool
+    ) -> Bool {
+        skipStandingReconnectOnce
+    }
+
+    nonisolated static func shouldKeepaliveDeferToActiveScan(
+        isActivelyScanning: Bool,
+        rediscoveringStuckRestore: Bool,
+        connectedThisProcess: Bool,
+        skipStandingReconnectOnce: Bool = false,
+        restoreSlotDrainDeferred: Bool = false
+    ) -> Bool {
+        _ = isActivelyScanning
+        _ = rediscoveringStuckRestore
+        _ = connectedThisProcess
+        // Bonded WHOOP does not advertise. Deferring to an active scan is a
+        // deadlock (device 2026-09-14 22:46: keepalive=defer_scan, in range).
+        return skipStandingReconnectOnce || restoreSlotDrainDeferred
+    }
+
+    nonisolated static func shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+        deferring: Bool
+    ) -> Bool {
+        deferring
+    }
+
+    /// After the A/B restore slots are cancelled, issue a local `connect`
+    /// on a disconnected or already-system-connected object. A leftover
+    /// `.connecting` object is cancelled first (device 2026-09-14 18:19).
+    /// Skipping `.connected` left this phone hung: retrieveConnected returned
+    /// the strap and we never established a local epoch (18:46).
+    nonisolated static func shouldForceStandingConnectAfterRestoreSlotDrain(
+        didConnectThisProcess: Bool,
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        !didConnectThisProcess
+            && (peripheralState == .disconnected || peripheralState == .connected)
+    }
+
+    /// Device 220 hung with UI Connecting while CoreBluetooth still had
+    /// `.connected`: the reconnect watchdog returned without adopting.
+    nonisolated static func shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+        peripheralState: CBPeripheralState,
+        hasCurrentConnectionEpoch: Bool
+    ) -> Bool {
+        peripheralState == .connected && !hasCurrentConnectionEpoch
+    }
+
+    /// Device 223: identified rebuild issued `pending_connect` and the
+    /// watchdog observed forever. After that standing interval, either
+    /// adopt a system-connected strap (CoreBluetooth often skips
+    /// `didConnect` on an already-live object) or cancel once and
+    /// reinstall the standing request.
+    nonisolated static func shouldRecoverHungIssuedStandingConnect(
+        standingConnectIssued: Bool,
+        didConnectThisProcess: Bool,
+        alreadyRecovered: Bool,
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        standingConnectIssued
+            && !didConnectThisProcess
+            && !alreadyRecovered
+            && peripheralState != .connected
+    }
+
+    /// Empty restore-slot cleaners used to finish in 0.5s and issue `connect`
+    /// in the same second bluetoothd still owned the WHOOP (device 2026-09-14
+    /// 17:53 and 18:29). Wait out the cleaner release (0.5s empty / 2s with
+    /// peripherals) plus a settle beat before retrieve+connect.
+    nonisolated static var restoreSlotDrainSettleSeconds: TimeInterval { 4 }
+
+    nonisolated static func shouldFinishRestoreSlotDrainFromCleanerCallback() -> Bool {
+        false
+    }
+
+    nonisolated static func shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+        peripheralState: CBPeripheralState
+    ) -> Bool {
+        peripheralState == .connecting || peripheralState == .disconnecting
+    }
+
+    nonisolated static func shouldStartScanOnPoweredOnFallback(
+        drainDeferred: Bool,
+        hasSavedStrap: Bool
+    ) -> Bool {
+        !drainDeferred && !hasSavedStrap
+    }
+
+    /// Restored `.connecting` never completed on this phone today. Wait a
+    /// full standing interval before unstick: device 222 cancelled at 3s and
+    /// the replacement pending connect never reached didConnect.
+    nonisolated static var stuckRestoredConnectingUnstickSeconds: TimeInterval { 20 }
+
+    nonisolated static func reconnectWatchdogDelaySeconds(
+        reconnectWatchdogSeconds: TimeInterval,
+        unstickSeconds: TimeInterval,
+        shouldUnstickStuckRestore: Bool,
+        identifiedReissueSeconds: TimeInterval = 8,
+        shouldReissueIdentified: Bool = false
+    ) -> TimeInterval {
+        if shouldUnstickStuckRestore { return unstickSeconds }
+        if shouldReissueIdentified { return identifiedReissueSeconds }
+        return reconnectWatchdogSeconds
+    }
+
+    nonisolated static var identifiedStandingConnectReissueSeconds: TimeInterval { 8 }
+
+    /// After the identified rebuild issues `connect`, the 20s watchdog only
+    /// observed — the retainer claim stayed pending and no second radio
+    /// request ran (device 2026-09-14 19:09). Reissue once on that central.
+    nonisolated static func shouldReissueIdentifiedStandingConnectAfterDrain(
+        identifiedCentralRebuilt: Bool,
+        alreadyReissuedIdentified: Bool,
+        didConnectThisProcess: Bool,
+        peripheralState: CBPeripheralState,
+        standingConnectIssued: Bool = false
+    ) -> Bool {
+        identifiedCentralRebuilt
+            && !alreadyReissuedIdentified
+            && !didConnectThisProcess
+            && !standingConnectIssued
+            && peripheralState != .connected
+    }
+
+    /// Anonymous `connect` hung on a disconnected retrieve (device 18:56).
+    /// After the A/B slots are empty, rebuild a restore-identified central
+    /// and let poweredOn issue the standing connect that historically works.
+    nonisolated static func shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+        alreadyRebuiltIdentified: Bool,
+        didConnectThisProcess: Bool
+    ) -> Bool {
+        !alreadyRebuiltIdentified && !didConnectThisProcess
     }
 
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
     ) {
+        guard !appReviewDemoMode else { return }
         reconnectWatchdogTask?.cancel()
+        let delay = Self.reconnectWatchdogDelaySeconds(
+            reconnectWatchdogSeconds: reconnectWatchdogSeconds,
+            unstickSeconds: Self.stuckRestoredConnectingUnstickSeconds,
+            shouldUnstickStuckRestore: Self.shouldReissueStuckRestoredConnecting(
+                peripheralState: peripheral.state,
+                didConnectThisProcess: didConnectThisProcess,
+                alreadyReissued: reissuedStuckRestoredConnecting,
+                standingConnectIssued: callbackPolicyState.snapshot()
+                    .identifiedStandingConnectIssued
+            ),
+            identifiedReissueSeconds: Self.identifiedStandingConnectReissueSeconds,
+            shouldReissueIdentified: Self.shouldReissueIdentifiedStandingConnectAfterDrain(
+                identifiedCentralRebuilt: identifiedCentralRebuiltAfterRestoreSlotDrain,
+                alreadyReissuedIdentified: reissuedIdentifiedStandingConnectAfterDrain,
+                didConnectThisProcess: didConnectThisProcess,
+                peripheralState: peripheral.state,
+                standingConnectIssued: callbackPolicyState.snapshot()
+                    .identifiedStandingConnectIssued
+            )
+        )
         reconnectWatchdogTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(reconnectWatchdogSeconds))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             guard self.peripheral === peripheral,
-                  self.status == .connecting,
-                  peripheral.state != .connected else { return }
+                  self.status == .connecting else { return }
+            if Self.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: peripheral.state,
+                hasCurrentConnectionEpoch: self.connectedAt != nil
+            ) {
+                if self.adoptSystemConnectedEpochIfNeeded(
+                    peripheral: peripheral,
+                    reason: "\(reason)_adopt_already_connected"
+                ) {
+                    return
+                }
+                _ = self.reconnectToSavedPeripheralIfPossible(
+                    reason: "\(reason)_adopt_already_connected"
+                )
+                return
+            }
+            if let systemConnected = self.systemConnectedSavedPeripheral(),
+               Self.shouldAdoptAlreadyConnectedPeripheralWhileConnecting(
+                peripheralState: systemConnected.state,
+                hasCurrentConnectionEpoch: self.connectedAt != nil
+               ) {
+                _ = self.connectedPeripheralRetainer.completeConnectRequest(peripheral)
+                if self.adoptSystemConnectedEpochIfNeeded(
+                    peripheral: systemConnected,
+                    reason: "\(reason)_adopt_system_connected"
+                ) {
+                    return
+                }
+            }
+            guard peripheral.state != .connected else { return }
             switch Self.reconnectWatchdogDisposition(
                 elapsed: self.reconnectWatchdogSeconds,
                 hasSavedStrap: self.hasSavedStrap,
@@ -25431,18 +27107,76 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             case .observeSavedStandingRequest:
                 if Self.shouldReissueStuckRestoredConnecting(
                     peripheralState: peripheral.state,
-                    didConnectThisProcess: self.connectedAt != nil,
-                    alreadyReissued: self.reissuedStuckRestoredConnecting
+                    didConnectThisProcess: self.didConnectThisProcess,
+                    alreadyReissued: self.reissuedStuckRestoredConnecting,
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued
                 ) {
+                    // Cancel/reissue on the restored object just standing-
+                    // connected the same zombie (device 2026-09-14). Skip
+                    // that and the second 20s wait; unstick via anonymous
+                    // central rebuild.
                     self.reissuedStuckRestoredConnecting = true
+                    self.rediscoveredStuckRestoredConnecting = true
                     AtriaDebugLog(
                         "ATRIADBG ble_link watchdog reason=%@ action=reissue_stuck_restored_connecting peripheral_state=%d",
                         reason,
                         peripheral.state.rawValue
                     )
-                    self.cancelPeripheralConnection(
-                        peripheral,
-                        reason: "\(reason)_stuck_restored_connecting"
+                    self.beginStuckRestoredConnectingRediscovery(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
+                if Self.shouldRediscoverStuckRestoredConnecting(
+                    peripheralState: peripheral.state,
+                    didConnectThisProcess: self.didConnectThisProcess,
+                    alreadyReissued: self.reissuedStuckRestoredConnecting,
+                    alreadyRediscovered: self.rediscoveredStuckRestoredConnecting
+                ) {
+                    self.rediscoveredStuckRestoredConnecting = true
+                    AtriaDebugLog(
+                        "ATRIADBG ble_link watchdog reason=%@ action=rediscover_stuck_restored_connecting_scan peripheral_state=%d",
+                        reason,
+                        peripheral.state.rawValue
+                    )
+                    self.beginStuckRestoredConnectingRediscovery(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
+                if Self.shouldReissueIdentifiedStandingConnectAfterDrain(
+                    identifiedCentralRebuilt: self.identifiedCentralRebuiltAfterRestoreSlotDrain,
+                    alreadyReissuedIdentified: self.reissuedIdentifiedStandingConnectAfterDrain,
+                    didConnectThisProcess: self.didConnectThisProcess,
+                    peripheralState: peripheral.state,
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued
+                ) {
+                    self.reissuedIdentifiedStandingConnectAfterDrain = true
+                    AtriaDebugLog(
+                        "ATRIADBG ble_link watchdog reason=%@ action=reissue_identified_standing_connect peripheral_state=%d",
+                        reason,
+                        peripheral.state.rawValue
+                    )
+                    self.reissueIdentifiedStandingConnectAfterDrain(
+                        peripheral: peripheral,
+                        reason: reason
+                    )
+                    return
+                }
+                if Self.shouldRecoverHungIssuedStandingConnect(
+                    standingConnectIssued: self.callbackPolicyState.snapshot()
+                        .identifiedStandingConnectIssued,
+                    didConnectThisProcess: self.didConnectThisProcess,
+                    alreadyRecovered: self.recoveredHungIssuedStandingConnect,
+                    peripheralState: peripheral.state
+                ) {
+                    self.recoverHungIssuedStandingConnect(
+                        peripheral: peripheral,
+                        reason: reason
                     )
                     return
                 }
@@ -25464,6 +27198,167 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   reason,
                   reconnectWatchdogSeconds)
             self.startScan(reason: "\(reason)_watchdog_recovery")
+        }
+    }
+
+    /// The identified rebuild's first `connect` can sit in `.connecting`
+    /// forever if the retainer still owns the claim (device 2026-09-14 19:09).
+    /// Drop that claim, cancel, and let `didDisconnect` install a fresh
+    /// standing request on the same restore-identified central.
+    private func reissueIdentifiedStandingConnectAfterDrain(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        recordReconnectLeaseStage(
+            "repair_identified_standing_connect_reissue",
+            detail: reason
+        )
+        _ = connectedPeripheralRetainer.completeConnectRequest(peripheral)
+        awaitingDidDisconnectToForceConnectAfterDrain = true
+        recordReconnectLeaseStage(
+            "app_cancel_wrapper",
+            detail: "identified_standing_connect_reissue"
+        )
+        central.cancelPeripheralConnection(peripheral)
+        startReconnectWatchdog(
+            reason: "identified_standing_connect_reissue",
+            peripheral: peripheral
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+            self.awaitingDidDisconnectToForceConnectAfterDrain = false
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            self.forceStandingConnectAfterRestoreSlotDrain(
+                reason: "identified_standing_connect_reissue_timeout",
+                allowCancelConnecting: false
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=reissue_identified_standing_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
+    }
+
+    /// Device 223: `standing_connect_issued|pending_connect` never produced
+    /// `didConnect`. Cancel the hung request and install one fresh standing
+    /// connect on a disconnected or system-connected object.
+    private func recoverHungIssuedStandingConnect(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        recoveredHungIssuedStandingConnect = true
+        recordReconnectLeaseStage(
+            "repair_hung_issued_standing_connect",
+            detail: reason
+        )
+        if let systemConnected = systemConnectedSavedPeripheral(),
+           adoptSystemConnectedEpochIfNeeded(
+            peripheral: systemConnected,
+            reason: "\(reason)_hung_issued_adopt_system_connected"
+           ) {
+            return
+        }
+        _ = connectedPeripheralRetainer.completeConnectRequest(peripheral)
+        awaitingDidDisconnectToForceConnectAfterDrain = true
+        recordReconnectLeaseStage(
+            "app_cancel_wrapper",
+            detail: "hung_issued_standing_connect"
+        )
+        central.cancelPeripheralConnection(peripheral)
+        startReconnectWatchdog(
+            reason: "hung_issued_standing_connect",
+            peripheral: peripheral
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+            self.awaitingDidDisconnectToForceConnectAfterDrain = false
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            self.forceStandingConnectAfterRestoreSlotDrain(
+                reason: "hung_issued_standing_connect_timeout",
+                allowCancelConnecting: false
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=recover_hung_issued_standing_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
+    }
+
+    private func systemConnectedSavedPeripheral() -> CBPeripheral? {
+        guard let uuidString = UserDefaults.standard.string(
+            forKey: LinkDefaults.savedPeripheralUUID
+        ),
+              let uuid = UUID(uuidString: uuidString) else { return nil }
+        return central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+    }
+
+    /// CoreBluetooth restoration and system-connected retrieve often skip
+    /// `didConnect`. After an issued standing connect has already waited,
+    /// synthesize that callback so HR/IMU discovery can start.
+    @discardableResult
+    private func adoptSystemConnectedEpochIfNeeded(
+        peripheral: CBPeripheral,
+        reason: String
+    ) -> Bool {
+        guard peripheral.state == .connected, connectedAt == nil else {
+            return false
+        }
+        recordReconnectLeaseStage(
+            "adopt_system_connected_epoch",
+            detail: reason
+        )
+        if bleCallbackEpochFence.captureIfAccepted(
+            peripheralID: peripheral.identifier,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            peripheralConnected: true
+        ) != nil {
+            _ = bleCallbackEpochFence.invalidate(
+                ifMatching: peripheral.identifier,
+                peripheralObjectID: ObjectIdentifier(peripheral)
+            )
+        }
+        peripheral.delegate = self
+        self.peripheral = peripheral
+        centralManager(central, didConnect: peripheral)
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=adopt_system_connected_epoch_without_did_connect peripheral_state=%d",
+            reason,
+            peripheral.state.rawValue
+        )
+        return true
+    }
+
+    /// Cancel the zombie restored connect, then replace the wedged
+    /// CoreBluetooth session. Scan cannot find a bonded WHOOP that is not
+    /// advertising, and standing-connect on the restored object hung in-range
+    /// (device 2026-09-14).
+    private func beginStuckRestoredConnectingRediscovery(
+        peripheral: CBPeripheral,
+        reason: String
+    ) {
+        skipStandingReconnectOnce = true
+        callbackPolicyState.update { $0.skipStandingReconnectOnce = true }
+        cancelPeripheralConnection(
+            peripheral,
+            reason: "\(reason)_stuck_restored_connecting_rediscover"
+        )
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self else { return }
+            guard self.connectedAt == nil, self.status != .connected else { return }
+            AtriaDebugLog(
+                "ATRIADBG ble_link watchdog reason=%@ action=rebuild_central_after_stuck_restored_connecting",
+                reason
+            )
+            self.unstickRestoredConnectingCentral(reason: reason)
         }
     }
 
@@ -25505,6 +27400,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         startReconnectWatchdog(
             reason: "connection_timeout_pending_session",
             peripheral: peripheral
+        )
+    }
+
+    /// Fresh CBCentralManager + standing connect. The restored `.connecting`
+    /// object stayed hung even in range; a replacement central is the same
+    /// unstick used for a wedged live session.
+    private func unstickRestoredConnectingCentral(reason: String) {
+        // The replacement central's pending connect is a real in-range wait,
+        // not another zombie restore. Mark both one-shots spent so the
+        // watchdog observes instead of rebuild-looping every 20s
+        // (device 2026-09-14: first rebuild's connect was cancelled at 21s).
+        reissuedStuckRestoredConnecting = true
+        rediscoveredStuckRestoredConnecting = true
+        skipStandingReconnectOnce = false
+        callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
+        if let peripheral {
+            peripheral.delegate = nil
+            self.peripheral = nil
+        }
+        isActivelyScanning = false
+        rebuildCentralForWedgedSessionOnce(
+            trigger: "stuck_restored_connecting_\(reason)",
+            omitRestoreIdentifier: true
         )
     }
 
@@ -26083,9 +28001,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// central swap used by the v10 clean-owner cutover.
     private func rebuildCentralForWedgedSessionOnce(
         trigger: String,
-        centralUnavailableRecoveryAttempt: Bool = false
+        centralUnavailableRecoveryAttempt: Bool = false,
+        omitRestoreIdentifier: Bool = false
     ) {
-        recordReconnectLeaseStage("repair_central_rebuild", detail: trigger)
+        recordReconnectLeaseStage(
+            omitRestoreIdentifier
+                ? "repair_central_rebuild_anonymous"
+                : "repair_central_rebuild",
+            detail: trigger
+        )
+        callbackPolicyState.update { $0.identifiedStandingConnectIssued = false }
         // A replacement is a new CoreBluetooth-state episode even when both
         // managers report the same raw unavailable value. Retire A's timer and
         // observation before B can callback; otherwise B sees the non-nil A
@@ -26168,44 +28093,66 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // leaving bluetoothd two sessions for one strap and reaping HR CCCD
         // handle 0x002b out from under the canonical owner.
         if motionHandshakeDiagnostic == nil {
-            persistCentralRecoveryRestoreIdentifier(
-                replacementRestoreIdentifier,
-                baseIdentifier: baseRestoreIdentifier,
-                defaults: defaults
-            )
-            // A silent-link repair has not yet spent the separate unavailable-
-            // central fallback. The real Build 4 failure was A -> B for a
-            // silent link, followed by B reporting impossible `.unsupported`;
-            // marking that first swap as the unavailable one-shot strands B
-            // forever. Only a rebuild actually admitted by the unavailable-
-            // state timer consumes the persisted one-shot. Its replacement
-            // then cannot flip A/B again across force launches until an exact
-            // current `.poweredOn` callback clears this bit. This pending-bit
-            // write commits in the same post-drain/pre-construction window as
-            // the restore-slot persistence above.
-            if centralUnavailableRecoveryAttempt {
-                setCentralRecoveryPending(
-                    true,
+            if omitRestoreIdentifier {
+                // A/B restore slots both carried zombie `.connecting`
+                // peripherals after this afternoon's rebuild storm. An
+                // anonymous manager cannot restore them; next launch returns
+                // to the canonical slot.
+                persistCentralRecoveryRestoreIdentifier(
+                    baseRestoreIdentifier,
                     baseIdentifier: baseRestoreIdentifier,
                     defaults: defaults
                 )
+            } else {
+                persistCentralRecoveryRestoreIdentifier(
+                    replacementRestoreIdentifier,
+                    baseIdentifier: baseRestoreIdentifier,
+                    defaults: defaults
+                )
+                // A silent-link repair has not yet spent the separate unavailable-
+                // central fallback. The real Build 4 failure was A -> B for a
+                // silent link, followed by B reporting impossible `.unsupported`;
+                // marking that first swap as the unavailable one-shot strands B
+                // forever. Only a rebuild actually admitted by the unavailable-
+                // state timer consumes the persisted one-shot. Its replacement
+                // then cannot flip A/B again across force launches until an exact
+                // current `.poweredOn` callback clears this bit. This pending-bit
+                // write commits in the same post-drain/pre-construction window as
+                // the restore-slot persistence above.
+                if centralUnavailableRecoveryAttempt {
+                    setCentralRecoveryPending(
+                        true,
+                        baseIdentifier: baseRestoreIdentifier,
+                        defaults: defaults
+                    )
+                }
             }
         }
         let delegateQueue = centralDelegateQueue
         delegateQueue?.suspend()
-        central = CBCentralManager(delegate: self,
-                                   queue: delegateQueue,
-                                   options: [
-                                       CBCentralManagerOptionRestoreIdentifierKey:
-                                           replacementRestoreIdentifier,
-                                       // The initial manager already owns the
-                                       // system prompt. A transparent one-shot
-                                       // session repair must not show it again.
-                                       CBCentralManagerOptionShowPowerAlertKey: false
-                                   ])
+        if omitRestoreIdentifier {
+            central = CBCentralManager(delegate: self,
+                                       queue: delegateQueue,
+                                       options: [
+                                           CBCentralManagerOptionShowPowerAlertKey: false
+                                       ])
+        } else {
+            central = CBCentralManager(delegate: self,
+                                       queue: delegateQueue,
+                                       options: [
+                                           CBCentralManagerOptionRestoreIdentifierKey:
+                                               replacementRestoreIdentifier,
+                                           // The initial manager already owns the
+                                           // system prompt. A transparent one-shot
+                                           // session repair must not show it again.
+                                           CBCentralManagerOptionShowPowerAlertKey: false
+                                       ])
+        }
         let replacementToken = centralEventFence.install(central)
         installedCentralBaseIdentifier = baseRestoreIdentifier
-        installedCentralRestoreIdentifier = replacementRestoreIdentifier
+        installedCentralRestoreIdentifier = omitRestoreIdentifier
+            ? baseRestoreIdentifier
+            : replacementRestoreIdentifier
         // Marker ownership is the replacement generation itself. An old
         // admitted callback cannot consume this even if it was already running
         // when its central was retired.
@@ -26214,8 +28161,213 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             standingConnect: true,
             silentStreamRebuild: true
         )
+        if omitRestoreIdentifier, motionHandshakeDiagnostic == nil {
+            // Set before resume so poweredOn cannot connect into a still-owned
+            // restore slot (device 2026-09-14 17:53: drain and connect raced).
+            callbackPolicyState.update {
+                $0.deferStandingConnectForRestoreSlotDrain = true
+            }
+        }
         delegateQueue?.resume()
         recomputeConnectionStatus(reason: "event")
+        if omitRestoreIdentifier, motionHandshakeDiagnostic == nil {
+            drainStuckRestoreSlotsThenReissueConnect(
+                baseIdentifier: baseRestoreIdentifier,
+                currentIdentifier: currentRestoreIdentifier,
+                trigger: trigger
+            )
+        }
+    }
+
+    /// bluetoothd still owns the WHOOP through the retired A/B restore
+    /// sessions after an anonymous rebuild (device 2026-09-14 17:28: standing
+    /// connect issued, no `didConnect`). Cancel those namespaces *before*
+    /// issuing connect; 17:53 drained empty and connected in the same second.
+    private func drainStuckRestoreSlotsThenReissueConnect(
+        baseIdentifier: String,
+        currentIdentifier: String,
+        trigger: String
+    ) {
+        let identifiers = Self.restoreSlotIdentifiersToDrainAfterStuckRebuild(
+            baseIdentifier: baseIdentifier,
+            currentIdentifier: currentIdentifier
+        )
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain",
+            detail: identifiers.joined(separator: ",")
+        )
+        restoreSlotDrainGeneration &+= 1
+        let generation = restoreSlotDrainGeneration
+        pendingRestoreSlotDrainCount = identifiers.count
+        callbackPolicyState.update {
+            $0.deferStandingConnectForRestoreSlotDrain = true
+        }
+        for identifier in identifiers {
+            let cleaner = AtriaLegacyBLECentralCleaner(
+                restoreIdentifier: identifier
+            ) { [weak self] cleanerID in
+                guard let self else { return }
+                self.legacyCentralCleaners.removeAll { $0.id == cleanerID }
+                // Never finish from the cleaner callback. Empty namespaces
+                // complete in 0.5s and used to issue connect while bluetoothd
+                // still owned the strap (device 2026-09-14 18:29).
+                if Self.shouldFinishRestoreSlotDrainFromCleanerCallback() {
+                    self.pendingRestoreSlotDrainCount -= 1
+                    if self.pendingRestoreSlotDrainCount <= 0 {
+                        self.finishStuckRestoreSlotDrainIfNeeded(
+                            trigger: trigger,
+                            generation: generation
+                        )
+                    }
+                }
+            }
+            legacyCentralCleaners.append(cleaner)
+        }
+        if identifiers.isEmpty {
+            finishStuckRestoreSlotDrainIfNeeded(
+                trigger: trigger,
+                generation: generation
+            )
+            return
+        }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.restoreSlotDrainSettleSeconds))
+            guard let self else { return }
+            self.finishStuckRestoreSlotDrainIfNeeded(
+                trigger: trigger,
+                generation: generation
+            )
+        }
+    }
+
+    private func finishStuckRestoreSlotDrainIfNeeded(
+        trigger: String,
+        generation: UInt64
+    ) {
+        guard generation == restoreSlotDrainGeneration else { return }
+        restoreSlotDrainGeneration &+= 1
+        pendingRestoreSlotDrainCount = 0
+        callbackPolicyState.update {
+            $0.deferStandingConnectForRestoreSlotDrain = false
+        }
+        guard connectedAt == nil, status != .connected else { return }
+        isActivelyScanning = false
+        central.stopScan()
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain_reissue",
+            detail: trigger
+        )
+        if Self.shouldRebuildIdentifiedCentralAfterRestoreSlotDrain(
+            alreadyRebuiltIdentified: identifiedCentralRebuiltAfterRestoreSlotDrain,
+            didConnectThisProcess: didConnectThisProcess
+        ) {
+            identifiedCentralRebuiltAfterRestoreSlotDrain = true
+            recordReconnectLeaseStage(
+                "repair_central_rebuild_identified_after_drain",
+                detail: trigger
+            )
+            rebuildCentralForWedgedSessionOnce(
+                trigger: "after_restore_slot_drain",
+                omitRestoreIdentifier: false
+            )
+            return
+        }
+        forceStandingConnectAfterRestoreSlotDrain(reason: trigger)
+    }
+
+    private func forceStandingConnectAfterRestoreSlotDrain(
+        reason: String,
+        allowCancelConnecting: Bool = true
+    ) {
+        let defaults = UserDefaults.standard
+        guard let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
+              let uuid = UUID(uuidString: uuidString) else { return }
+        let systemConnected = central.retrieveConnectedPeripherals(
+            withServices: Self.UUIDs.scanServices
+        ).first(where: { $0.identifier == uuid })
+        guard let target = systemConnected
+                ?? central.retrievePeripherals(withIdentifiers: [uuid]).first else {
+            recordReconnectLeaseStage(
+                "repair_central_restore_slot_drain_retrieve_empty",
+                detail: reason
+            )
+            return
+        }
+        target.delegate = self
+        peripheral = target
+        assignIfChanged(\.deviceName, target.name ?? deviceName)
+        recordReconnectLeaseStage(
+            "repair_central_restore_slot_drain_retrieved",
+            detail: "state=\(target.state.rawValue) system_connected=\(systemConnected != nil ? 1 : 0)"
+        )
+        recordLinkAttempt(reason: "stuck_restore_slot_drain_complete", peripheral: target)
+        markPendingKnownReconnect(reason: "stuck_restore_slot_drain_complete")
+        if adoptSystemConnectedEpochIfNeeded(
+            peripheral: target,
+            reason: "\(reason)_force_standing_adopt"
+        ) {
+            return
+        }
+        if allowCancelConnecting,
+           Self.shouldCancelConnectingPeripheralAfterRestoreSlotDrain(
+            peripheralState: target.state
+        ) {
+            recordReconnectLeaseStage(
+                "repair_central_restore_slot_drain_cancel_connecting",
+                detail: reason
+            )
+            awaitingDidDisconnectToForceConnectAfterDrain = true
+            // Do not mark this as an app-owned cutover: that suppresses the
+            // didDisconnect fast-lane standing connect. bluetoothd has to see
+            // a fresh `connect` on a disconnected object (device 2026-09-14).
+            recordReconnectLeaseStage(
+                "app_cancel_wrapper",
+                detail: "stuck_restore_slot_drain_force_connect"
+            )
+            central.cancelPeripheralConnection(target)
+            startReconnectWatchdog(
+                reason: "stuck_restore_slot_drain_cancel_connecting",
+                peripheral: target
+            )
+            recomputeConnectionStatus(reason: "event")
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=reconnect_known reason=%@ action=cancel_connecting_after_restore_slot_drain peripheral_state=%d",
+                reason,
+                target.state.rawValue
+            )
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard let self else { return }
+                guard self.awaitingDidDisconnectToForceConnectAfterDrain else { return }
+                self.awaitingDidDisconnectToForceConnectAfterDrain = false
+                guard self.connectedAt == nil, self.status != .connected else { return }
+                self.forceStandingConnectAfterRestoreSlotDrain(
+                    reason: "\(reason)_cancel_timeout",
+                    allowCancelConnecting: false
+                )
+            }
+            return
+        }
+        if Self.shouldForceStandingConnectAfterRestoreSlotDrain(
+            didConnectThisProcess: didConnectThisProcess,
+            peripheralState: target.state
+        ) {
+            issueSingleFlightConnect(
+                target,
+                central: central,
+                reason: "stuck_restore_slot_drain_complete"
+            )
+        }
+        startReconnectWatchdog(
+            reason: "stuck_restore_slot_drain_complete",
+            peripheral: target
+        )
+        recomputeConnectionStatus(reason: "event")
+        AtriaDebugLog(
+            "ATRIADBG ble_link status=reconnect_known reason=%@ action=force_standing_connect_after_restore_slot_drain peripheral_state=%d",
+            reason,
+            target.state.rawValue
+        )
     }
 
     private func reconcileCentralUnavailableRecovery(
@@ -26532,7 +28684,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             hrv = 0
             assignIfChanged(\.hrvSnapshot, nil)
             tachogram.removeAll(keepingCapacity: true)
-            assignIfChanged(\.hrvQuality, "waiting for beat-to-beat samples")
+            assignIfChanged(\.hrvQuality, "no beat-to-beat yet")
             assignIfChanged(\.isRecording, true)
             let startedAtUTC = ISO8601DateFormatter().string(from: captureStart)
             let context = [
@@ -26818,7 +28970,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                    value: summaryLogValue)
         } else {
             ready = false
-            summary = String(format: "Still learning · saved %.0fs · waiting for beat-to-beat samples",
+            summary = String(format: "Still learning · saved %.0fs · no beat-to-beat yet",
                              captureElapsedSeconds)
             let reason = finalAbortReason ?? "no_realtime_rr"
             let cleanElapsed = Date().timeIntervalSince(captureCleanWindowStart)
@@ -27249,7 +29401,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // didDisconnect. Persist the exact consecutive-sample window;
                 // when an open disconnect window was just closed, do not add a
                 // duplicate interval for the same outage.
-                if continuityRelevant, !hadOpenMissingWindow,
+                //
+                // A zero-contact run bracketing this exact interval proves the
+                // strap was off the wrist, not out of range: its flash holds no
+                // pulse for unworn time, so a recoverable-history window would
+                // only inflate the backlog with unfillable time (the
+                // `off_wrist_no_recoverable_gap` rule the disconnect path
+                // already applies). Unknown contact keeps today's behavior.
+                let offWristProven = AtriaGapWearClassification.offWristProvenAcross(
+                    intervalStartUnix: lastAcceptedHRAt.timeIntervalSince1970,
+                    intervalEndUnix: sampleTime.timeIntervalSince1970,
+                    zeroContactRunStartUnix: zeroContactRunStartedAt?.timeIntervalSince1970,
+                    lastZeroContactUnix: lastZeroContactAt?.timeIntervalSince1970
+                )
+                if offWristProven {
+                    AtriaGapWearClassification.OffWristExclusion.recordExcludedSpan(
+                        startUnix: lastAcceptedHRAt.timeIntervalSince1970,
+                        endUnix: sampleTime.timeIntervalSince1970
+                    )
+                    AtriaDebugLog("ATRIADBG offline_sync status=range_loss_skipped reason=accepted_hr_gap detail=off_wrist_no_recoverable_gap gap_s=%.1f action=preserve_realtime_only",
+                                  gap)
+                }
+                if continuityRelevant, !hadOpenMissingWindow, !offWristProven,
                    AtriaHistoricalGapLedger.recordObservedGap(
                     start: lastAcceptedHRAt,
                     end: sampleTime,
@@ -27304,6 +29477,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             recordWorkoutPromptQualityEvent(.zero, at: sampleTime)
             sampleDiagnostics.zeroSamples += 1
             setSampleDiagnosticsStatus("zero_contact", reason: "hr_zero")
+            // Entry-time contact decides whether this zero starts a fresh run;
+            // stamp before the flag is cleared below.
+            if hasContact || zeroContactRunStartedAt == nil {
+                zeroContactRunStartedAt = sampleTime
+            }
+            lastZeroContactAt = sampleTime
             assignIfChanged(\.hasContact, false)
             contactStableSince = nil
             pendingHRJump = nil
@@ -27443,6 +29622,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         lastStandardHR = (rate, sampleTime)
         lastAcceptedHRAt = sampleTime
+        rememberDisplayHeartRate(rate, at: sampleTime)
         connectedEpochAcceptedHeartRateSamples += 1
         if let callbackSource,
            workoutHistoryPreemptionSuccessorGate
@@ -28605,10 +30785,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10RecoveryRearmAt: Date?
     private var lastR10RecoveryRediscoveryAt: Date?
     private var lastR10NotifyRepairAt: Date?
-    nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 60
-    nonisolated static let r10LivenessStaleInterval: TimeInterval = 60
-    nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 60
-    nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 10 * 60
+    private var lastR10ZombieCCCDRefreshAt: Date?
+    private var lastR10ZombieCCCDToggleAt: Date?
+    private var lastR10ZombieTxRediscoverAt: Date?
+    private var lastAllDayCompactAbortAt: Date?
+    private var lastAllDayCompactFollowUp6AAt: Date?
+    private var lastAllDayCompactHistoryCatchUpAt: Date?
+    private var lastAllDayCompactLive6AAfterCatchUpAt: Date?
+    private var lastAllDayCompactLive6AAfterSubscribeAt: Date?
+    private var protectedR10CommandSequenceStartedAt: Date?
+    nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
+    /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
+    /// to wait through a MainActor-stale live stream.
+    nonisolated static let r10LivenessStaleInterval: TimeInterval = 4
+    /// Compact 0x33 is not 1 Hz — sitting 30–60s, walking assembled ~8–12s
+    /// (device 2026-09-18 21:03: scored 44 dps, assembled 8.7s, 6A/51 17s ago
+    /// while 2A37 stayed up). Twelve seconds matches the 6A/51 activation lease.
+    nonisolated static let r10LivenessCompactStaleInterval: TimeInterval = 12
+    /// Faster than stale so a drop is seen within one stale window, not two.
+    nonisolated static let r10LivenessWatchdogInterval: TimeInterval = 2
+    nonisolated static let r10LivenessRearmGraceInterval: TimeInterval = 20
+    nonisolated static let r10LivenessRearmMinimumInterval: TimeInterval = 45
     nonisolated static let r10NotifyRepairMinimumInterval: TimeInterval = 30
     private var lastRRBearingRealtimeFrameAt: Date?
     private var lastRealtimeRestartAt: Date?
@@ -28660,6 +30857,74 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case rediscover
     }
 
+    /// Full-protocol IMU recovery used to require `realtimeArmed`, which is
+    /// cleared on every reconnect. Protected mode used `protectedR10MotionIsEligible`
+    /// instead. Confirmed stream-5 plus expected transport is enough to 6A/51.
+    nonisolated static func r10LivenessRealtimeArmed(
+        stream5Confirmed: Bool,
+        sessionRealtimeArmed: Bool,
+        transportExpected: Bool
+    ) -> Bool {
+        stream5Confirmed && (sessionRealtimeArmed || transportExpected)
+    }
+
+    /// Raw 0x33 can trickle while assembled compact seconds stall. Once
+    /// that second clock is older than 12s, use it as the motion evidence
+    /// so 6A/51 rearms on a live HR epoch instead of `frame_fresh`.
+    /// Sitting skip is the opposite: assembled seconds are *supposed* to
+    /// stall while native packets still arrive (device 2026-09-18 167:
+    /// 6A/51 on a 32–46s sitting skip dropped 2A37).
+    nonisolated static func r10LivenessEvidenceAt(
+        rawFrameAt: Date?,
+        compactSecondAt: Date?,
+        compactPacketAt: Date? = nil,
+        now: Date,
+        compactStaleInterval: TimeInterval = r10LivenessCompactStaleInterval,
+        sittingSkipFresh: Bool = false
+    ) -> Date? {
+        if sittingSkipFresh {
+            return [rawFrameAt, compactSecondAt, compactPacketAt]
+                .compactMap { $0 }
+                .max()
+        }
+        if let compactSecondAt,
+           now.timeIntervalSince(compactSecondAt) >= compactStaleInterval {
+            return compactSecondAt
+        }
+        return rawFrameAt
+    }
+
+    /// Never-seen IMU on a new connection is not yet a drop. Clock silence
+    /// from `connectedAt` so 6A/51 waits the same 4s stale window instead of
+    /// firing at the first HR sample with `imuAge` under 4s.
+    nonisolated static func r10LivenessLastMotionAt(
+        evidenceAt: Date?,
+        connectedAt: Date?
+    ) -> Date? {
+        evidenceAt ?? connectedAt
+    }
+
+    /// Dense raw within 4s keeps the 1 Hz watchdog. Compact 0x33 on a live
+    /// 2A37 epoch uses 12s so walking assembled seconds do not 6A/51-storm HR.
+    nonisolated static func r10LivenessStaleIntervalForEvidence(
+        rawFrameAt: Date?,
+        compactPacketAt: Date?,
+        compactSecondAt: Date?,
+        now: Date
+    ) -> TimeInterval {
+        if let rawFrameAt {
+            let rawAge = now.timeIntervalSince(rawFrameAt)
+            if rawAge >= 0, rawAge <= r10LivenessStaleInterval {
+                return r10LivenessStaleInterval
+            }
+        }
+        let compactNewest = [compactPacketAt, compactSecondAt].compactMap { $0 }.max()
+        if let compactNewest, now.timeIntervalSince(compactNewest) >= 0 {
+            return r10LivenessCompactStaleInterval
+        }
+        return r10LivenessStaleInterval
+    }
+
     /// Pure policy used by the persistent R10 watchdog. Heart-rate continuity
     /// is deliberately absent: 2A37 can remain healthy while proprietary motion
     /// is frozen, which is the failure this policy must detect independently.
@@ -28674,8 +30939,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         staleInterval: TimeInterval = r10LivenessStaleInterval,
         rearmGraceInterval: TimeInterval = r10LivenessRearmGraceInterval,
         rearmMinimumInterval: TimeInterval = r10LivenessRearmMinimumInterval,
-        rediscoveryMinimumInterval: TimeInterval = r10RecoveryRediscoveryMinimumInterval
+        rediscoveryMinimumInterval: TimeInterval = r10RecoveryRediscoveryMinimumInterval,
+        sittingSkipFresh: Bool = false
     ) -> R10LivenessAction {
+        // Sitting 0x33 is 30–60s apart. The 4s IMU silence gate must not
+        // 6A/51-storm a live 2A37 link between those packets.
+        if sittingSkipFresh { return .none }
         guard eligible, connected, realtimeArmed else { return .none }
         if let lastFrameAt,
            now.timeIntervalSince(lastFrameAt) >= 0,
@@ -28726,6 +30995,611 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard expected, connected, !isNotifying else { return false }
         guard let lastRepairAt else { return true }
         return now.timeIntervalSince(lastRepairAt) >= minimumInterval
+    }
+
+    /// Restored WHOOP links report stream-5 `isNotifying=true` with no
+    /// proprietary callbacks (device 2026-09-14 23:40: lifetime packets=48,
+    /// this process 0, HR live). Re-enable the CCCD without disabling it and
+    /// without 0x3F or reconnect.
+    nonisolated static func shouldRefreshZombieProprietaryCCCD(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        packetsThisConnection: Int,
+        connectedAge: TimeInterval,
+        lastRefreshAge: TimeInterval?,
+        minimumConnectedAge: TimeInterval = 6,
+        minimumRefreshInterval: TimeInterval = 45
+    ) -> Bool {
+        guard connected, heartRateNotifying, packetsThisConnection == 0 else { return false }
+        guard connectedAge >= minimumConnectedAge else { return false }
+        if let lastRefreshAge, lastRefreshAge >= 0,
+           lastRefreshAge < minimumRefreshInterval {
+            return false
+        }
+        return true
+    }
+
+    /// Compact 0x33 is counted as a stream-5 notify callback, not a decoded
+    /// protocol packet. Zombie CCCD repair must not treat that as silence.
+    nonisolated static func proprietaryTrafficThisConnection(
+        protocolPackets: Int,
+        notifyCallbacks: Int
+    ) -> Int {
+        max(protocolPackets, notifyCallbacks, 0)
+    }
+
+    /// `setNotify(true)` on an already-notifying zombie CCCD produced no
+    /// packets (device 2026-09-14 23:54). One stream-5 off/on per ticket,
+    /// then a 45s retoggle if the pipe is still empty / IMU still stale.
+    /// Never 2A37, never 0x3F, never a standing reconnect.
+    nonisolated static func shouldToggleZombieProprietaryCCCD(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        packetsThisConnection: Int,
+        connectedAge: TimeInterval,
+        alreadyToggledThisConnection: Bool,
+        minimumConnectedAge: TimeInterval = 20,
+        imuAge: TimeInterval? = nil,
+        sittingSkipFresh: Bool = false,
+        lastToggleAge: TimeInterval? = nil,
+        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval
+    ) -> Bool {
+        guard connected, heartRateNotifying else { return false }
+        guard connectedAge >= minimumConnectedAge else { return false }
+        if sittingSkipFresh { return false }
+        let emptyPipe = packetsThisConnection == 0
+        let stale = imuAge.map { $0 > AtriaDiagnosisReport.liveStaleSeconds } ?? false
+        guard emptyPipe || stale else { return false }
+        if !alreadyToggledThisConnection { return true }
+        // Device 184 10:18: the first stream-5 off never came back on because
+        // toggle-on required 2A37 `isNotifying`. Empty pipe / stale IMU after
+        // that ticket must get another paced off/on while HR stays up.
+        guard let lastToggleAge, lastToggleAge >= 0 else { return false }
+        return lastToggleAge >= minimumRetoggleInterval
+    }
+
+    /// Completing stream-5 `setNotify(true)` after the off half must not wait
+    /// on CoreBluetooth's 2A37 CCCD flag. Device 184 10:18: HR samples were
+    /// 0.03s fresh with `live_hr_notifying=1`, but `isNotifying` was enough
+    /// to abort the on-half and leave `packets_this_connection=0`.
+    /// Device 192 15:56: stream-4 type-24 notifies made
+    /// `packetsThisConnection=23` while stream-5 callbacks stayed 0, so the
+    /// on-half aborted and left IMU 34 min stale. Stream-4 is not compact
+    /// 0x33; after we turned stream-5 off we must turn it back on while HR
+    /// stays up.
+    nonisolated static func shouldCompleteZombieProprietaryCCCDToggleOn(
+        connected: Bool,
+        heartRateEpochLive: Bool
+    ) -> Bool {
+        connected && heartRateEpochLive
+    }
+
+    /// Stream-5 off/on still left stream-5 empty (device 2026-09-14
+    /// 23:56). Rediscover strap TX/notify after that toggle.
+    /// Device 204 18:54: rediscover ran once, then 18 min of 6A ACKs on
+    /// stream-4 with `stream5=0`. Pace another rediscover while the pipe
+    /// stays empty. Stream-4 history/debug notifies are not IMU.
+    nonisolated static func shouldRediscoverZombieProprietaryTransport(
+        connected: Bool,
+        heartRateNotifying: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        alreadyToggledThisConnection: Bool,
+        alreadyRediscoveredThisConnection: Bool,
+        lastRediscoverAge: TimeInterval? = nil,
+        minimumRediscoverInterval: TimeInterval = r10LivenessRearmMinimumInterval
+    ) -> Bool {
+        guard connected, heartRateNotifying,
+              stream5NotifyCallbacksThisConnection == 0 else {
+            return false
+        }
+        guard alreadyToggledThisConnection else { return false }
+        if !alreadyRediscoveredThisConnection { return true }
+        guard let lastRediscoverAge, lastRediscoverAge >= 0 else { return false }
+        return lastRediscoverAge >= minimumRediscoverInterval
+    }
+
+    /// Device 198: `live_r10_eligible=0` while 2A37 was live and 6A/51 still
+    /// wrote. Persist the actual blockers so the next pull can tell rollback
+    /// / probe / battery / HR-only apart from "IMU just died".
+    nonisolated static func liveR10EligibilityBlockers(
+        streamSuppressed: Bool,
+        standardHROnlyMode: Bool,
+        historyOnlyProbeEnabled: Bool,
+        historyOnlyProbeMode: Bool,
+        offlineHistoricalSyncInProgress: Bool,
+        rollbackEnabled: Bool,
+        motionBatteryEligible: Bool
+    ) -> String {
+        let r10 = !streamSuppressed
+            && !standardHROnlyMode
+            && !historyOnlyProbeEnabled
+            && motionBatteryEligible
+        let protected = standardHROnlyMode
+            && !historyOnlyProbeEnabled
+            && !historyOnlyProbeMode
+            && !offlineHistoricalSyncInProgress
+            && !streamSuppressed
+            && !rollbackEnabled
+            && motionBatteryEligible
+        if r10 || protected { return "none" }
+        var parts: [String] = []
+        if streamSuppressed { parts.append("stream_suppressed") }
+        if historyOnlyProbeEnabled { parts.append("history_probe") }
+        if !motionBatteryEligible { parts.append("battery") }
+        if standardHROnlyMode {
+            if historyOnlyProbeMode { parts.append("history_probe_mode") }
+            if offlineHistoricalSyncInProgress { parts.append("offline_sync") }
+            if rollbackEnabled { parts.append("rollback") }
+        }
+        return parts.isEmpty ? "unknown" : parts.joined(separator: ",")
+    }
+
+    /// Device 192 15:34: stream-5 delivered ASCII
+    /// `ing sleep mode for 30 seconds` as type 0x32. That is a firmware
+    /// log, not compact IMU. 6A/51 every ~33s retriggers the nap.
+    nonisolated static let strapSleepModeHold: TimeInterval = 35
+
+    nonisolated static func proprietaryNotifyLooksLikeSleepModeLog(_ data: Data) -> Bool {
+        guard data.count >= 5, data[0] == 0xAA, data[4] == 0x32 else { return false }
+        return data.range(of: Data("sleep mode".utf8)) != nil
+    }
+
+    nonisolated static func shouldHoldIMURefreshAfterSleepModeLog(
+        lastSleepModeAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard let lastSleepModeAt, now >= lastSleepModeAt else { return false }
+        return now.timeIntervalSince(lastSleepModeAt) < strapSleepModeHold
+    }
+
+    nonisolated static func stream5CountsAsNotifying(
+        confirmed: Bool,
+        characteristicNotifying: Bool
+    ) -> Bool {
+        confirmed || characteristicNotifying
+    }
+
+    /// Device 199: CoreBluetooth `isNotifying=true` after stream-5 CCCD on
+    /// still delivered 0 stream-5 callbacks. Type-24 6A ACKs on stream-4 are
+    /// not compact IMU. Only a stream-5 value update may stamp confirmed.
+    nonisolated static func shouldConfirmStream5FromCCCDState(
+        stream5NotifyCallbacksThisConnection: Int
+    ) -> Bool {
+        stream5NotifyCallbacksThisConnection > 0
+    }
+
+    nonisolated static func zombieToggleSkipDetail(
+        connectedAge: TimeInterval,
+        alreadyToggled: Bool,
+        lastToggleAge: TimeInterval?,
+        sittingSkipFresh: Bool,
+        minimumConnectedAge: TimeInterval = 20,
+        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval
+    ) -> String {
+        if sittingSkipFresh { return "should_not_toggle:sitting_skip" }
+        if connectedAge < minimumConnectedAge { return "should_not_toggle:connected_age" }
+        if alreadyToggled,
+           let lastToggleAge,
+           lastToggleAge < minimumRetoggleInterval {
+            return "should_not_toggle:paced"
+        }
+        return "should_not_toggle"
+    }
+
+    /// Device 202: `52`/`6A`/`14` restored stream-5 as type-32 ASCII logs
+    /// (214 callbacks, "Disconnect reason" / "BLE: No") and keepalive marked
+    /// `history_transport_owned`, so compact `0x33` still never started.
+    /// Follow-up on that live empty IMU pipe is 6A on only — do not abort
+    /// history again. Never 0x51/0x3F.
+    /// Device 212: stream-5 type-32 ("T1 Quiet Mode") must not look live
+    /// just because some other motion clock is newer than compact 0x33.
+    nonisolated static func compactIMUEvidenceIsStale(
+        compactSecondAt: Date?,
+        compactPacketAt: Date?,
+        now: Date,
+        staleInterval: TimeInterval = AtriaDiagnosisReport.liveStaleSeconds
+    ) -> Bool {
+        let age = liveIMUEvidenceAgeSeconds(
+            rawFrameAt: nil,
+            compactSecondAt: compactSecondAt,
+            compactPacketAt: compactPacketAt,
+            now: now
+        )
+        return age.map { $0 > staleInterval } ?? true
+    }
+
+    nonisolated static func stream5IsLiveWithoutCompactIMU(
+        stream5NotifyCallbacksThisConnection: Int,
+        compactIMUStale: Bool,
+        lastNotifyTypeHex: String?
+    ) -> Bool {
+        guard stream5NotifyCallbacksThisConnection > 0, compactIMUStale else {
+            return false
+        }
+        if lastNotifyTypeHex == "33" { return false }
+        return true
+    }
+
+    /// Device 207: after a power-cycle reconnect, `history_probe` /
+    /// `offline_sync` marked the proprietary pipe owned while stream-5
+    /// callbacks stayed 0. That made `shouldRefreshIMUOnLiveHeartRateFallback`
+    /// return false, so the 180s `526a14` retry never ran. An empty stale
+    /// IMU pipe on live 2A37 is compact recovery's job; history waits —
+    /// but only until one abort+6A has had a chance. Device 210 ACK'd 6A
+    /// on stream-4 and stream-5 stayed 0 for 17+ min while this defer
+    /// also blocked historical IMU catch-up. After the follow-up 6A,
+    /// yield the pipe so stored IMU drains at full quality. Device 213
+    /// waited another 20s after 6A; catch-up should start as soon as live
+    /// 0x33 has had a beat to arrive.
+    nonisolated static let allDayCompactIMUHistoryCatchUpAfterFollowUp: TimeInterval = 2
+    /// Device 216 catch-up finished empty. One live 6A after that drain,
+    /// with stream-5 subscribed, without a 6A storm (device 204).
+    nonisolated static let allDayCompactIMULive6AAfterCatchUpDelay: TimeInterval = 15
+    /// Device 218 subscribed stream-5 after the post-catch-up 6A, so the
+    /// strap never saw compact-on with CCCD live. One 6A after subscribe.
+    nonisolated static let allDayCompactIMULive6AAfterSubscribeDelay: TimeInterval = 2
+
+    nonisolated static func shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+        followUp6AAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval?,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        catchUpDelay: TimeInterval = allDayCompactIMUHistoryCatchUpAfterFollowUp
+    ) -> Bool {
+        guard followUp6AAlreadySentThisConnection else { return false }
+        guard let abortAge else { return true }
+        return abortAge >= followUp6ADelay + catchUpDelay
+    }
+
+    /// Device 214 ACK'd 6A on strapRX and stream-5 stayed 0. Glance already
+    /// ran at launch while history was deferred, so nothing restarted the
+    /// 0x69 drain. Kick catch-up once the live attempt has yielded.
+    nonisolated static func shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+        followUp6AAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval?,
+        catchUpAlreadyRequested: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        catchUpRetryAge: TimeInterval? = nil,
+        catchUpRetryInterval: TimeInterval = 60
+    ) -> Bool {
+        guard stream5NotifyCallbacksThisConnection == 0 else { return false }
+        guard shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
+        ) else { return false }
+        if !catchUpAlreadyRequested { return true }
+        guard let catchUpRetryAge else { return false }
+        return catchUpRetryAge >= catchUpRetryInterval
+    }
+
+    nonisolated static func shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+        heartRateEpochLive: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        compactIMUStale: Bool,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil
+    ) -> Bool {
+        guard heartRateEpochLive,
+              stream5NotifyCallbacksThisConnection == 0,
+              compactIMUStale else { return false }
+        if shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
+        ) {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func historyOwnsTransportForCompactIMURecovery(
+        historyOwnsTransport: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        compactIMUStale: Bool,
+        lastNotifyTypeHex: String?,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil
+    ) -> Bool {
+        guard historyOwnsTransport else { return false }
+        if shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+            heartRateEpochLive: true,
+            stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
+            compactIMUStale: compactIMUStale,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
+        ) {
+            return false
+        }
+        return !stream5IsLiveWithoutCompactIMU(
+            stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
+            compactIMUStale: compactIMUStale,
+            lastNotifyTypeHex: lastNotifyTypeHex
+        )
+    }
+
+    /// `wait_stream5` is a no-op. Abort `0x14` must not stamp the 45s
+    /// lease either: device 210's follow-up 6A was skipped
+    /// `owner_pure_hr_v10` until that lease expired. Only 6A starts it.
+    nonisolated static func shouldStampAllDayCompactIMUActivation(
+        command: String
+    ) -> Bool {
+        command == "6a"
+    }
+
+    /// Device 213: every didConnect nil'd abort+6A, so a ~11s BLE epoch
+    /// never reached the 12s follow-up 6A or yielded history. Keep the
+    /// wall-clock attempt across reconnects until compact 0x33 is live.
+    nonisolated static func shouldResetAllDayCompactIMURecoveryOnConnect() -> Bool {
+        false
+    }
+
+    nonisolated static func shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact(
+        lastNotifyTypeHex: String?
+    ) -> Bool {
+        lastNotifyTypeHex == "33"
+    }
+
+    nonisolated static func resolvedAllDayCompactTimestamp(
+        memory: Date?,
+        persistedUnix: Double?
+    ) -> Date? {
+        let persisted = persistedUnix.map { Date(timeIntervalSince1970: $0) }
+        switch (memory, persisted) {
+        case let (m?, p?):
+            return m.timeIntervalSince1970 >= p.timeIntervalSince1970 ? m : p
+        case let (m?, nil):
+            return m
+        case let (nil, p?):
+            return p
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    /// Device 213: `sendProtectedR10ResponseEventDataSequenceIfReady`
+    /// returned without nilling `protectedR10CommandSequenceTask`, so the
+    /// 12s 6A hit `tx_or_command_task` for minutes. A completed or leaked
+    /// task older than this is safe to cancel.
+    nonisolated static let imuCommandTaskStuckSeconds: TimeInterval = 15
+
+    nonisolated static func shouldClearStuckIMUCommandTask(
+        commandTaskOutstanding: Bool,
+        commandTaskAge: TimeInterval?,
+        stuckInterval: TimeInterval = imuCommandTaskStuckSeconds
+    ) -> Bool {
+        guard commandTaskOutstanding else { return false }
+        return (commandTaskAge ?? stuckInterval) >= stuckInterval
+    }
+
+    /// Device 209 Today: 0x14 ACK'd on stream-4 (`241714`) and stream-5 stayed
+    /// 0. Official compact is 6A on after history is clear. One 6A 12s after
+    /// abort, never a 45s 6A storm (device 204). Retry 0x14 at 3 minutes.
+    nonisolated static let allDayCompactIMUAbortRetryInterval: TimeInterval = 180
+    nonisolated static let allDayCompactIMUFollowUp6ADelay: TimeInterval = 12
+
+    enum AllDayCompactIMURecoveryStep: String, Equatable {
+        case waitStream5 = "wait_stream5"
+        case abortHistorical = "14"
+        case toggleIMUOn = "6a"
+    }
+
+    nonisolated static func allDayCompactIMURecoveryStep(
+        stream5LiveWithoutCompactIMU: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval? = nil,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false,
+        live6AAfterCatchUpDelay: TimeInterval = allDayCompactIMULive6AAfterCatchUpDelay,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil,
+        live6AAfterSubscribeDelay: TimeInterval = allDayCompactIMULive6AAfterSubscribeDelay
+    ) -> AllDayCompactIMURecoveryStep {
+        if stream5LiveWithoutCompactIMU { return .toggleIMUOn }
+        guard stream5NotifyCallbacksThisConnection == 0 else {
+            return .waitStream5
+        }
+        if !abortAlreadySentThisConnection { return .abortHistorical }
+        // Retry abort only if 6A never went out. After the follow-up 6A,
+        // aborting again kills historical IMU catch-up (device 210 17 min
+        // of wait_stream5 + 0x14 retries with stream-5 still 0).
+        if let abortAge, abortAge >= abortRetryInterval,
+           !followUp6AAlreadySentThisConnection {
+            return .abortHistorical
+        }
+        if !followUp6AAlreadySentThisConnection,
+           let abortAge, abortAge >= followUp6ADelay {
+            return .toggleIMUOn
+        }
+        if followUp6AAlreadySentThisConnection,
+           !live6AAfterCatchUpAlreadySent,
+           !historyCatchUpInProgress,
+           catchUpAlreadyRequested,
+           let catchUpAge,
+           catchUpAge >= live6AAfterCatchUpDelay {
+            return .toggleIMUOn
+        }
+        if followUp6AAlreadySentThisConnection,
+           stream5SubscribeConfirmed,
+           !live6AAfterSubscribeAlreadySent,
+           !historyCatchUpInProgress,
+           let subscribeAge,
+           subscribeAge >= live6AAfterSubscribeDelay {
+            return .toggleIMUOn
+        }
+        return .waitStream5
+    }
+
+    nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
+        abortAlreadySentThisConnection: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        abortAge: TimeInterval? = nil,
+        abortRetryInterval: TimeInterval = allDayCompactIMUAbortRetryInterval,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        followUp6ADelay: TimeInterval = allDayCompactIMUFollowUp6ADelay,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil
+    ) -> Bool {
+        // Stream-5 already has traffic (device 202 type-32, or live 0x33):
+        // that is not the empty-pipe wait. Empty pipe after abort waits
+        // until the 12s 6A, the post-catch-up 6A, or the 180s 0x14 retry.
+        guard stream5NotifyCallbacksThisConnection == 0 else { return false }
+        return allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: false,
+            stream5NotifyCallbacksThisConnection: stream5NotifyCallbacksThisConnection,
+            abortAlreadySentThisConnection: abortAlreadySentThisConnection,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            followUp6ADelay: followUp6ADelay,
+            abortRetryInterval: abortRetryInterval,
+            catchUpAlreadyRequested: catchUpAlreadyRequested,
+            live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: stream5SubscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: live6AAfterSubscribeAlreadySent,
+            subscribeAge: subscribeAge
+        ) == .waitStream5
+    }
+
+    nonisolated static func allDayCompactIMURecoveryCommandBodies(
+        stream5LiveWithoutCompactIMU: Bool = false,
+        abortAlreadySentThisConnection: Bool = false,
+        abortAge: TimeInterval? = nil,
+        followUp6AAlreadySentThisConnection: Bool = false,
+        catchUpAlreadyRequested: Bool = false,
+        live6AAfterCatchUpAlreadySent: Bool = false,
+        catchUpAge: TimeInterval? = nil,
+        historyCatchUpInProgress: Bool = false,
+        stream5SubscribeConfirmed: Bool = false,
+        live6AAfterSubscribeAlreadySent: Bool = false,
+        subscribeAge: TimeInterval? = nil
+    ) -> [[UInt8]] {
+        switch allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: stream5LiveWithoutCompactIMU,
+            stream5NotifyCallbacksThisConnection: stream5LiveWithoutCompactIMU ? 214 : 0,
+            abortAlreadySentThisConnection: abortAlreadySentThisConnection,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            catchUpAlreadyRequested: catchUpAlreadyRequested,
+            live6AAfterCatchUpAlreadySent: live6AAfterCatchUpAlreadySent,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: stream5SubscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: live6AAfterSubscribeAlreadySent,
+            subscribeAge: subscribeAge
+        ) {
+        case .waitStream5:
+            return []
+        case .abortHistorical:
+            return [[Cmd.abortHistoricalTransmits, 0x00]]
+        case .toggleIMUOn:
+            return [[Cmd.toggleIMUMode, 0x01]]
+        }
+    }
+
+    nonisolated static func shouldSendWriteWithoutResponseNow(canSend: Bool) -> Bool {
+        canSend
+    }
+
+    /// A new process often reports `canSendWriteWithoutResponse == false`
+    /// before any proprietary write has been submitted. Queueing in that
+    /// state never produces `peripheralIsReady`, so 6A/51 stays pending
+    /// while 2A37 is live (device 192).
+    nonisolated static func shouldKickstartWriteWithoutResponse(
+        canSend: Bool,
+        pendingCount: Int
+    ) -> Bool {
+        canSend || pendingCount == 0
+    }
+
+    nonisolated static func shouldForceFlushQueuedWriteWithoutResponse(
+        canSend: Bool,
+        pendingCount: Int
+    ) -> Bool {
+        !canSend && pendingCount > 0
+    }
+
+    nonisolated static func strapWriteCharacteristic(
+        on peripheral: CBPeripheral
+    ) -> CBCharacteristic? {
+        peripheral.services?
+            .first(where: { $0.uuid == UUIDs.strapService })?
+            .characteristics?
+            .first(where: { $0.uuid == UUIDs.strapTX })
+    }
+
+    private func persistRadioTXReady(_ ready: Bool) {
+        dbgTxReady = ready
+        UserDefaults.standard.set(ready, forKey: RadioDefaults.txReady)
+    }
+
+    /// Write 6A/51 and other IMU commands on the CoreBluetooth queue so a full
+    /// local WWR buffer cannot drop them while 2A37 is live.
+    @discardableResult
+    private func writeProprietaryWithoutResponse(
+        _ frame: Data,
+        reason: String
+    ) -> Bool {
+        guard let peripheral, peripheral.state == .connected else { return false }
+        let gate = proprietaryWWRGate
+        let defaults = UserDefaults.standard
+        centralQueue.async {
+            guard let tx = AtriaBLEManager.strapWriteCharacteristic(on: peripheral),
+                  tx.properties.contains(.writeWithoutResponse) else { return }
+            let sent = gate.sendOrQueue(
+                peripheral: peripheral,
+                characteristic: tx,
+                frame: frame
+            )
+            if sent {
+                defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+                defaults.set(Date().timeIntervalSince1970,
+                             forKey: RadioDefaults.lastWWRFlushedAt)
+            } else {
+                defaults.set(false, forKey: RadioDefaults.lastWWRAllowed)
+                defaults.set(
+                    defaults.integer(forKey: RadioDefaults.wwrBlockedCount) + 1,
+                    forKey: RadioDefaults.wwrBlockedCount
+                )
+            }
+            AtriaDebugLog("ATRIADBG proprietary_wwr status=%@ reason=%@ action=no_3f_no_2a37",
+                          sent ? "sent" : "queued",
+                          reason)
+            defaults.set(gate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
+        }
+        return true
+    }
+
+    /// A full 2A37 queue can ACK only one WWR at a time. Device 2026-09-15
+    /// 00:26 queued two IMU frames and flushed one; the leftover 51 must not
+    /// wait forever for a second `peripheralIsReady`.
+    private func flushPendingProprietaryWWRIfNeeded(reason: String) {
+        guard let peripheral, peripheral.state == .connected else { return }
+        let gate = proprietaryWWRGate
+        let defaults = UserDefaults.standard
+        centralQueue.async {
+            guard let tx = AtriaBLEManager.strapWriteCharacteristic(on: peripheral),
+                  tx.properties.contains(.writeWithoutResponse) else { return }
+            let flushed = gate.flush(peripheral: peripheral, characteristic: tx)
+            defaults.set(gate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
+            guard flushed > 0 else { return }
+            defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+            defaults.set(Date().timeIntervalSince1970, forKey: RadioDefaults.lastWWRFlushedAt)
+            defaults.set(flushed, forKey: RadioDefaults.lastWWRFlushCount)
+            AtriaDebugLog("ATRIADBG proprietary_wwr status=watchdog_flush count=%d reason=%@ action=no_3f_no_2a37",
+                          flushed,
+                          reason)
+        }
     }
 
     /// The protected R10 transport blocks experimental/maintenance writes by
@@ -28866,7 +31740,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 dbgWrite = "wwr unsupported"
                 return false
             }
-            p.writeValue(frame, for: tx, type: .withoutResponse)
+            persistRadioTXReady(true)
+            writeProprietaryWithoutResponse(frame, reason: String(format: "cmd_%02x", cmd))
         case .withResponse:
             guard tx.properties.contains(.write) else {
                 AtriaDebugLog("ATRIADBG writeSkip mode=wr reason=unsupported props=%lu", tx.properties.rawValue)
@@ -29207,14 +32082,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func ensureR10LivenessWatchdog(reason: String) {
-        guard r10LivenessTask == nil else { return }
+        if let r10LivenessTask, !r10LivenessTask.isCancelled {
+            return
+        }
+        r10LivenessTask = nil
         r10LivenessTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ interval_s=%.0f",
+            AtriaDebugLog("ATRIADBG r10_watchdog status=armed reason=%@ poll_s=%.0f stale_s=%.0f",
                           reason,
+                          Self.r10LivenessWatchdogInterval,
                           Self.r10LivenessStaleInterval)
+            self.evaluateR10Liveness(now: Date(), reason: "arm")
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Self.r10LivenessStaleInterval))
+                try? await Task.sleep(for: .seconds(Self.r10LivenessWatchdogInterval))
                 guard !Task.isCancelled else { return }
                 self.evaluateR10Liveness(now: Date(), reason: "periodic")
             }
@@ -29230,71 +32110,756 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG r10_watchdog status=stopped reason=%@", reason)
     }
 
+    /// Exit leftover Labs raw (`0x51`) then turn compact IMU on (`0x6A`).
+    /// Device 199 ACK'd 6A on stream-4 and never emitted stream-5 0x33 while
+    /// 51 kept napping the strap.
+    private func persistAllDayCompactAbort(at date: Date) {
+        lastAllDayCompactAbortAt = date
+        lastAllDayCompactFollowUp6AAt = nil
+        lastAllDayCompactHistoryCatchUpAt = nil
+        lastAllDayCompactLive6AAfterCatchUpAt = nil
+        lastAllDayCompactLive6AAfterSubscribeAt = nil
+        let defaults = UserDefaults.standard
+        defaults.set(date.timeIntervalSince1970, forKey: RadioDefaults.allDayCompactAbortAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt)
+    }
+
+    private func persistAllDayCompactFollowUp6A(at date: Date) {
+        lastAllDayCompactFollowUp6AAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactFollowUp6AAt
+        )
+    }
+
+    private func persistAllDayCompactHistoryCatchUp(at date: Date) {
+        lastAllDayCompactHistoryCatchUpAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactHistoryCatchUpAt
+        )
+    }
+
+    private func persistAllDayCompactLive6AAfterCatchUp(at date: Date) {
+        lastAllDayCompactLive6AAfterCatchUpAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt
+        )
+    }
+
+    private func persistAllDayCompactLive6AAfterSubscribe(at date: Date) {
+        lastAllDayCompactLive6AAfterSubscribeAt = date
+        UserDefaults.standard.set(
+            date.timeIntervalSince1970,
+            forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt
+        )
+    }
+
+    private func loadAllDayCompactIMURecoveryLease() {
+        let defaults = UserDefaults.standard
+        lastAllDayCompactAbortAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactAbortAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactAbortAt) as? Double
+        )
+        lastAllDayCompactFollowUp6AAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactFollowUp6AAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactFollowUp6AAt) as? Double
+        )
+        lastAllDayCompactHistoryCatchUpAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactHistoryCatchUpAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt) as? Double
+        )
+        lastAllDayCompactLive6AAfterCatchUpAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactLive6AAfterCatchUpAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt) as? Double
+        )
+        lastAllDayCompactLive6AAfterSubscribeAt = Self.resolvedAllDayCompactTimestamp(
+            memory: lastAllDayCompactLive6AAfterSubscribeAt,
+            persistedUnix: defaults.object(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt) as? Double
+        )
+    }
+
+    private func clearAllDayCompactIMURecoveryLease() {
+        lastAllDayCompactAbortAt = nil
+        lastAllDayCompactFollowUp6AAt = nil
+        lastAllDayCompactHistoryCatchUpAt = nil
+        lastAllDayCompactLive6AAfterCatchUpAt = nil
+        lastAllDayCompactLive6AAfterSubscribeAt = nil
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactAbortAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactFollowUp6AAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactHistoryCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterCatchUpAt)
+        defaults.removeObject(forKey: RadioDefaults.allDayCompactLive6AAfterSubscribeAt)
+    }
+
+    private func compactIMUEvidenceAge(now: Date) -> TimeInterval? {
+        Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: nil,
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+    }
+
+    nonisolated private func compactIMURecoveryIsActive(now: Date = Date()) -> Bool {
+        Self.compactIMUEvidenceIsStale(
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+            now: now
+        )
+    }
+
+    private func finishProtectedR10CommandSequence() {
+        protectedR10CommandSequenceTask = nil
+        protectedR10CommandSequenceStartedAt = nil
+    }
+
+    @discardableResult
+    private func writeAllDayCompactIMURecovery(reason: String) async -> String {
+        loadAllDayCompactIMURecoveryLease()
+        let typeHex = UserDefaults.standard.string(
+            forKey: ProtocolDefaults.lastNotifyCallbackType
+        )
+        let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: Date()
+            ),
+            lastNotifyTypeHex: typeHex
+        )
+        let abortAlready = lastAllDayCompactAbortAt != nil
+        let abortAge = lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
+        let followUpAlready = lastAllDayCompactFollowUp6AAt != nil
+        let catchUpAlready = lastAllDayCompactHistoryCatchUpAt != nil
+        let live6AAlready = lastAllDayCompactLive6AAfterCatchUpAt != nil
+        let catchUpAge = lastAllDayCompactHistoryCatchUpAt.map { Date().timeIntervalSince($0) }
+        let historyCatchUpInProgress = offlineHistoricalSyncInProgress || historyOnlyProbeMode
+        let afterSubscribeAlready = lastAllDayCompactLive6AAfterSubscribeAt != nil
+        let subscribeAge = (UserDefaults.standard.object(
+            forKey: RadioDefaults.passiveR10SubscribedAt
+        ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
+        // Device 220 treated a previous-process subscribe stamp as CCCD-on
+        // and fired 6A before this connection subscribed.
+        let subscribeConfirmed = strapStream5NotifyConfirmed
+        let step = Self.allDayCompactIMURecoveryStep(
+            stream5LiveWithoutCompactIMU: liveWithout,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAlreadySentThisConnection: abortAlready,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUpAlready,
+            catchUpAlreadyRequested: catchUpAlready,
+            live6AAfterCatchUpAlreadySent: live6AAlready,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: subscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: afterSubscribeAlready,
+            subscribeAge: subscribeAge
+        )
+        if step == .waitStream5 {
+            return AllDayCompactIMURecoveryStep.waitStream5.rawValue
+        }
+        // Device 209: abort ACK'd and stream-5 stayed 0. Empty pipe is 0x14,
+        // then one 6A after 12s, never 52 and never a 45s 6A storm.
+        // Device 216: after catch-up finishes empty, one more live 6A.
+        // Device 218: one 6A after stream-5 CCCD is actually on.
+        let command = step.rawValue
+        switch step {
+        case .waitStream5:
+            break
+        case .abortHistorical:
+            persistAllDayCompactAbort(at: Date())
+        case .toggleIMUOn:
+            if live6AAlready {
+                persistAllDayCompactLive6AAfterSubscribe(at: Date())
+            } else if followUpAlready {
+                persistAllDayCompactLive6AAfterCatchUp(at: Date())
+            } else {
+                persistAllDayCompactFollowUp6A(at: Date())
+            }
+        }
+        for (index, body) in Self.allDayCompactIMURecoveryCommandBodies(
+            stream5LiveWithoutCompactIMU: liveWithout,
+            abortAlreadySentThisConnection: abortAlready,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: followUpAlready,
+            catchUpAlreadyRequested: catchUpAlready,
+            live6AAfterCatchUpAlreadySent: live6AAlready,
+            catchUpAge: catchUpAge,
+            historyCatchUpInProgress: historyCatchUpInProgress,
+            stream5SubscribeConfirmed: subscribeConfirmed,
+            live6AAfterSubscribeAlreadySent: afterSubscribeAlready,
+            subscribeAge: subscribeAge
+        ).enumerated() {
+            if index > 0 {
+                try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
+                guard !Task.isCancelled, peripheral?.state == .connected else { return command }
+            }
+            let sequence = cmdSeq
+            cmdSeq &+= 1
+            writeProprietaryWithoutResponse(
+                encodeFrame([Packet.command, sequence] + body),
+                reason: "\(reason)_compact_\(index)"
+            )
+        }
+        return command
+    }
+
+    private func historyOwnsForCompactIMURecovery(imuAge _: TimeInterval?) -> Bool {
+        loadAllDayCompactIMURecoveryLease()
+        return Self.historyOwnsTransportForCompactIMURecovery(
+            historyOwnsTransport: historyOnlyProbeMode || offlineHistoricalSyncInProgress,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: Date()
+            ),
+            lastNotifyTypeHex: UserDefaults.standard.string(
+                forKey: ProtocolDefaults.lastNotifyCallbackType
+            ),
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            abortAge: lastAllDayCompactAbortAt.map { Date().timeIntervalSince($0) }
+        )
+    }
+
+    private func emptyStreamNeedsLiveCompactIMURecovery(now: Date = Date()) -> Bool {
+        loadAllDayCompactIMURecoveryLease()
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        return Self.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+            heartRateEpochLive: hrLive,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: now
+            ),
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            abortAge: lastAllDayCompactAbortAt.map { now.timeIntervalSince($0) }
+        )
+    }
+
+    /// Cover-live compact IMU on the current connected HR link. No disconnect,
+    /// no v9 proof, no history owner. Frames are admitted by clearing
+    /// stream suppression before the write.
+    @discardableResult
+    private func sendCoverLiveBoundedRawCaptureIfNeeded(
+        now: Date,
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        let txReady = peripheral?.state == .connected
+            && txCharacteristic?.properties.contains(.writeWithoutResponse) == true
+        let priorWrite = defaults.object(
+            forKey: Self.protectedR10CoverLive51WriteAtKey
+        ) as? Double
+        guard Self.shouldSendCoverLiveBoundedRawCapture(
+            connected: peripheral?.state == .connected,
+            historyOwnsTransport: false,
+            txReady: txReady,
+            coverLiveUnix: defaults.object(
+                forKey: OfflineSyncDefaults.historyCoverLiveUnix
+            ) as? Double,
+            coverLive51WriteAt: priorWrite,
+            coverLive51WithRealtimeAt: defaults.object(
+                forKey: Self.protectedR10CoverLive51WithRealtimeAtKey
+            ) as? Double,
+            imuFrames: protocolIMUFrameCount,
+            nowUnix: now.timeIntervalSince1970
+        ), let peripheral,
+           peripheral.state == .connected,
+           let txCharacteristic,
+           txCharacteristic.properties.contains(.writeWithoutResponse),
+           protectedR10CommandSequenceTask == nil,
+           workoutMotionCommandTask == nil else { return false }
+
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10CoverLive51WriteAtKey)
+        if priorWrite != nil {
+            // Bound the follow-up to one extra 6A/51. The key is historical
+            // ("with realtime") but the payload is IMU-only — 0x3F dropped HR.
+            defaults.set(now.timeIntervalSince1970,
+                         forKey: Self.protectedR10CoverLive51WithRealtimeAtKey)
+        }
+        defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
+        defaults.set(false, forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+        assignIfChanged(\.rangeLossBackfillPending, false)
+        defaults.set(now.timeIntervalSince1970,
+                     forKey: Self.protectedR10ActivationSentAtKey)
+        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
+                     forKey: Self.protectedR10ActivationCountKey)
+        defaults.set("cover_live_51_write",
+                     forKey: RadioDefaults.passiveR10Status)
+        if let stream5 = peripheral.services?
+            .first(where: { $0.uuid == Self.UUIDs.strapService })?
+            .characteristics?
+            .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
+           !stream5.isNotifying {
+            peripheral.setNotifyValue(true, for: stream5)
+        }
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
+        protectedR10CommandSequenceStartedAt = Date()
+        protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            defer { self?.finishProtectedR10CommandSequence() }
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected else { return }
+            let command = await self.writeAllDayCompactIMURecovery(reason: "cover_live")
+            AtriaDebugLog("ATRIADBG r10_watchdog status=cover_live_compact_sent reason=%@ cmds=%@ cmds=14_or_6a action=same_link_no_disconnect_no_proof_no_3f_no_51",
+                          reason,
+                          command)
+            self.persistLastIMURecovery(
+                command: command,
+                action: "same_link_no_disconnect_no_proof_no_3f_no_51",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
+            )
+            self.reassertHeartRateNotificationsIfConnected(
+                reason: "cover_live_compact_restore_2a37"
+            )
+        }
+        return true
+    }
+
+    /// 6A/51 restarts IMU. Stamp the silence that triggered recovery, not
+    /// the post-write frames that would make `imu_recovery_hr_stayed_up=0`.
+    nonisolated static func imuRecoveryPersistedIMUAge(
+        evidenceAge: TimeInterval?,
+        connectionAge: TimeInterval?
+    ) -> TimeInterval? {
+        evidenceAge ?? connectionAge
+    }
+
+    private func imuRecoveryTriggerSnapshot(now: Date) -> (
+        heartRateNotifying: Bool,
+        heartRateAge: TimeInterval?,
+        imuAge: TimeInterval?
+    ) {
+        let evidenceAge = currentR10LivenessEvidenceAt(now: now).map {
+            now.timeIntervalSince($0)
+        }
+        let connectionAge = connectedAt.map { max(0, now.timeIntervalSince($0)) }
+        return (
+            heartRateCharacteristic?.isNotifying == true,
+            (lastAcceptedHRAt ?? lastRawHRNotificationAt).map { now.timeIntervalSince($0) },
+            Self.imuRecoveryPersistedIMUAge(
+                evidenceAge: evidenceAge,
+                connectionAge: connectionAge
+            )
+        )
+    }
+
+    private func persistLastIMURecovery(
+        command: String,
+        action: String,
+        now: Date = Date(),
+        defaults: UserDefaults = .standard,
+        heartRateNotifying: Bool? = nil,
+        heartRateAge: TimeInterval? = nil,
+        imuAge: TimeInterval? = nil
+    ) {
+        let snapshot = imuRecoveryTriggerSnapshot(now: now)
+        Self.persistLastIMURecovery(
+            command: command,
+            action: action,
+            now: now,
+            defaults: defaults,
+            heartRateNotifying: heartRateNotifying ?? snapshot.heartRateNotifying,
+            heartRateAge: heartRateAge ?? snapshot.heartRateAge,
+            imuAge: imuAge ?? snapshot.imuAge
+        )
+    }
+
+    nonisolated static func persistLastIMURecovery(
+        command: String,
+        action: String,
+        now: Date,
+        defaults: UserDefaults,
+        heartRateNotifying: Bool? = nil,
+        heartRateAge: TimeInterval? = nil,
+        imuAge: TimeInterval? = nil
+    ) {
+        defaults.set(command, forKey: RadioDefaults.lastIMURecoveryCommand)
+        defaults.set(action, forKey: RadioDefaults.lastIMURecoveryAction)
+        defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoveryAt)
+        if let heartRateNotifying {
+            defaults.set(heartRateNotifying, forKey: RadioDefaults.lastIMURecoveryHRNotifying)
+        }
+        if let heartRateAge {
+            defaults.set(heartRateAge, forKey: RadioDefaults.lastIMURecoveryHRAge)
+        }
+        if let imuAge {
+            defaults.set(imuAge, forKey: RadioDefaults.lastIMURecoveryIMUAge)
+        }
+    }
+
+    private func persistLiveMotionEpoch(now: Date) {
+        let defaults = UserDefaults.standard
+        defaults.set(
+            heartRateCharacteristic?.isNotifying == true,
+            forKey: RadioDefaults.liveHRNotifying
+        )
+        if let hrAt = lastAcceptedHRAt ?? lastRawHRNotificationAt {
+            defaults.set(hrAt.timeIntervalSince1970, forKey: RadioDefaults.liveHRSampleAt)
+        }
+        if let imuAt = currentR10MotionFrameAt() {
+            defaults.set(imuAt.timeIntervalSince1970, forKey: RadioDefaults.liveIMUFrameAt)
+        }
+        defaults.set(r10TransportIsExpected, forKey: RadioDefaults.liveR10Eligible)
+        defaults.set(
+            Self.liveR10EligibilityBlockers(
+                streamSuppressed: protectedR10StreamSuppressed,
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeEnabled: historyOnlyProbeEnabled,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                offlineHistoricalSyncInProgress: offlineHistoricalSyncInProgress,
+                rollbackEnabled: protectedR10RollbackEnabled,
+                motionBatteryEligible: Self.shouldArmHighFrequencyMotion(
+                    batteryLevel: motionEligibilityBatteryLevel(now: now),
+                    isCharging: motionEligibilityIsCharging,
+                    calibrationActive: stepCalibrationCaptureIsActive
+                )
+            ),
+            forKey: RadioDefaults.liveR10EligibleBlockers
+        )
+        defaults.set(
+            strapStream5NotifyConfirmed
+                && protocolStream5NotifyCallbacksThisConnection > 0,
+            forKey: RadioDefaults.liveStream5Confirmed
+        )
+        defaults.set(realtimeArmed, forKey: RadioDefaults.liveRealtimeArmed)
+    }
+
+    /// Enable only inactive companion notifications on this already-connected
+    /// link. Established CCCDs are left alone; this is not a toggle and not a
+    /// reconnect. Workout dense IMU already does this; silent 6A/51 without
+    /// RX/stream4 produced diagnostic packets and zero IMU frames
+    /// (device 2026-09-14 23:03).
+    @discardableResult
+    private func enableMissingProtectedCompanionNotifications(
+        peripheral: CBPeripheral,
+        refreshEvenIfNotifying: Bool = false
+    ) -> Int {
+        let strapService = peripheral.services?.first {
+            $0.uuid == Self.UUIDs.strapService
+        }
+        var enabled = 0
+        for uuid in Self.protectedR10ResponseEventDataNotifyOrder {
+            guard let characteristic = strapService?.characteristics?
+                    .first(where: { $0.uuid == uuid }),
+                  characteristic.properties.contains(.notify) else { continue }
+            if characteristic.isNotifying, !refreshEvenIfNotifying { continue }
+            peripheral.setNotifyValue(true, for: characteristic)
+            enabled += 1
+        }
+        return enabled
+    }
+
+    /// Re-send 6A/01 then 51 on a qualified silent stream-5 link. Never
+    /// reconnects or writes 0x3F; inactive companion CCCDs may be enabled
+    /// once. The 12-second activation lease and the stale-frame gate live in
+    /// `shouldRefreshProtectedBoundedRawCapture`.
+    @discardableResult
+    private func refreshProtectedBoundedRawCaptureIfNeeded(
+        now: Date,
+        reason: String
+    ) -> Bool {
+        guard !readOnlyHistoryCaptureRequested else { return false }
+        loadAllDayCompactIMURecoveryLease()
+        let defaults = UserDefaults.standard
+        let lastActivationAt = (defaults.object(
+            forKey: Self.protectedR10ActivationSentAtKey
+        ) as? Double).map(Date.init(timeIntervalSince1970:))
+        let stream5Live = Self.stream5CountsAsNotifying(
+            confirmed: strapStream5NotifyConfirmed,
+            characteristicNotifying: peripheral?.services?
+                .first(where: { $0.uuid == Self.UUIDs.strapService })?
+                .characteristics?
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 })?
+                .isNotifying == true
+        )
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        let compactAge = compactIMUEvidenceAge(now: now)
+        let typeHex = UserDefaults.standard.string(
+            forKey: ProtocolDefaults.lastNotifyCallbackType
+        )
+        let liveWithout = Self.stream5IsLiveWithoutCompactIMU(
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            compactIMUStale: Self.compactIMUEvidenceIsStale(
+                compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+                compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt(),
+                now: now
+            ),
+            lastNotifyTypeHex: typeHex
+        )
+        let lastActivationAge = lastActivationAt.map { now.timeIntervalSince($0) }
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: compactAge
+        ) && currentConnectionProprietaryTraffic > 0
+        if sittingSkipFresh, !liveWithout {
+            defaults.set("sitting_skip_fresh", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
+        if Self.shouldHoldIMURefreshAfterSleepModeLog(
+            lastSleepModeAt: lastStrapSleepModeAt,
+            now: now
+        ) {
+            defaults.set("strap_sleep_mode_hold", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
+        let historyOwns = historyOwnsForCompactIMURecovery(imuAge: compactAge)
+        let fallbackIMU = Self.shouldRefreshIMUOnLiveHeartRateFallback(
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            connected: peripheral?.state == .connected,
+            historyOwnsTransport: historyOwns,
+            heartRateNotifying: hrLive,
+            imuAge: compactAge,
+            lastActivationAge: lastActivationAge,
+            sittingSkipFresh: sittingSkipFresh,
+            sleepModeHoldActive: Self.shouldHoldIMURefreshAfterSleepModeLog(
+                lastSleepModeAt: lastStrapSleepModeAt,
+                now: now
+            )
+        )
+        if let blocker = Self.protectedBoundedRawCaptureRefreshBlocker(
+            standardHROnlyMode: standardHROnlyMode,
+            streamSuppressed: protectedR10StreamSuppressed,
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            proofActive: protectedR10ResponseEventDataProofIsActive,
+            historyOwnsTransport: historyOwns,
+            connected: peripheral?.state == .connected,
+            stream5Notifying: stream5Live,
+            heartRateNotifying: hrLive,
+            lastFrameAge: fallbackIMU || liveWithout
+                ? compactAge
+                : currentR10LivenessLastMotionAt(now: now).map {
+                    now.timeIntervalSince($0)
+                },
+            lastActivationAge: lastActivationAge
+        ) {
+            if fallbackIMU || liveWithout,
+               blocker == "stream_suppressed"
+                || blocker.hasPrefix("owner_")
+                || blocker.hasPrefix("state_") {
+                defaults.set(false, forKey: Self.protectedR10StreamSuppressedKey)
+            } else {
+                defaults.set(blocker, forKey: RadioDefaults.lastIMURecoverySkipReason)
+                defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+                return false
+            }
+        }
+        let abortAlready = lastAllDayCompactAbortAt != nil
+        let abortAge = lastAllDayCompactAbortAt.map { now.timeIntervalSince($0) }
+        if !liveWithout,
+           Self.allDayCompactIMURecoveryShouldWaitForStream5(
+            abortAlreadySentThisConnection: abortAlready,
+            stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+            abortAge: abortAge,
+            followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+            catchUpAlreadyRequested: lastAllDayCompactHistoryCatchUpAt != nil,
+            live6AAfterCatchUpAlreadySent: lastAllDayCompactLive6AAfterCatchUpAt != nil,
+            catchUpAge: lastAllDayCompactHistoryCatchUpAt.map {
+                now.timeIntervalSince($0)
+            },
+            historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+            stream5SubscribeConfirmed: strapStream5NotifyConfirmed,
+            live6AAfterSubscribeAlreadySent: lastAllDayCompactLive6AAfterSubscribeAt != nil,
+            subscribeAge: (defaults.object(
+                forKey: RadioDefaults.passiveR10SubscribedAt
+            ) as? Double).map {
+                now.timeIntervalSince(Date(timeIntervalSince1970: $0))
+            }
+           ) {
+            let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
+            persistLastIMURecovery(
+                command: "wait_stream5",
+                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
+                now: now,
+                defaults: defaults,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
+            )
+            if Self.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+                abortAge: abortAge,
+                catchUpAlreadyRequested: lastAllDayCompactHistoryCatchUpAt != nil,
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+                catchUpRetryAge: lastAllDayCompactHistoryCatchUpAt.map {
+                    now.timeIntervalSince($0)
+                }
+            ) {
+                persistAllDayCompactHistoryCatchUp(at: now)
+                _ = requestOfflineHistoricalSyncIfNeeded(
+                    reason: "live_compact_yield_catch_up",
+                    allowConnectedAutomaticHandoff: true,
+                    preserveConnectedRealtimeOwner: true
+                )
+            }
+            return true
+        }
+        let commandTaskAge = protectedR10CommandSequenceStartedAt.map {
+            now.timeIntervalSince($0)
+        }
+        if Self.shouldClearStuckIMUCommandTask(
+            commandTaskOutstanding: protectedR10CommandSequenceTask != nil,
+            commandTaskAge: commandTaskAge
+        ) {
+            protectedR10CommandSequenceTask?.cancel()
+            finishProtectedR10CommandSequence()
+            AtriaDebugLog("ATRIADBG imu_recovery status=cleared_stuck_command_task age_s=%.1f reason=%@",
+                          commandTaskAge ?? -1,
+                          reason)
+        }
+        guard let peripheral,
+           peripheral.state == .connected,
+           let txCharacteristic,
+           txCharacteristic.properties.contains(.writeWithoutResponse),
+           protectedR10CommandSequenceTask == nil,
+           workoutMotionCommandTask == nil else {
+            defaults.set("tx_or_command_task", forKey: RadioDefaults.lastIMURecoverySkipReason)
+            defaults.set(now.timeIntervalSince1970, forKey: RadioDefaults.lastIMURecoverySkipAt)
+            return false
+        }
+
+        defaults.set("qualified_silent_stream_refresh",
+                     forKey: RadioDefaults.passiveR10Status)
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
+        protectedR10CommandSequenceStartedAt = Date()
+        protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
+            defer { self?.finishProtectedR10CommandSequence() }
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected else { return }
+            let writeAt = Date()
+            let connectedAge = self.connectedAt.map { writeAt.timeIntervalSince($0) } ?? 0
+            let lastRefreshAge = self.lastR10ZombieCCCDRefreshAt.map {
+                writeAt.timeIntervalSince($0)
+            }
+            let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+                characteristicNotifying: self.heartRateCharacteristic?.isNotifying == true,
+                lastAcceptedHRAge: (self.lastAcceptedHRAt ?? self.lastRawHRNotificationAt)
+                    .map { writeAt.timeIntervalSince($0) }
+            )
+            let zombie = Self.shouldRefreshZombieProprietaryCCCD(
+                connected: true,
+                heartRateNotifying: hrEpochLive,
+                packetsThisConnection: self.protocolStream5NotifyCallbacksThisConnection,
+                connectedAge: connectedAge,
+                lastRefreshAge: lastRefreshAge
+            )
+            if zombie {
+                self.lastR10ZombieCCCDRefreshAt = writeAt
+            }
+            let companions = self.enableMissingProtectedCompanionNotifications(
+                peripheral: peripheral,
+                refreshEvenIfNotifying: zombie
+            )
+            if companions > 0 {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, peripheral.state == .connected else { return }
+            }
+            let command = await self.writeAllDayCompactIMURecovery(reason: "silent_stream")
+            AtriaDebugLog("ATRIADBG r10_watchdog status=qualified_silent_stream_refreshed reason=%@ cmds=%@ companions=%d action=paced_pair_same_link_companion_if_inactive_no_3f_no_51",
+                          reason,
+                          command,
+                          companions)
+            if Self.shouldStampAllDayCompactIMUActivation(command: command) {
+                let stampAt = Date()
+                UserDefaults.standard.set(
+                    stampAt.timeIntervalSince1970,
+                    forKey: Self.protectedR10ActivationSentAtKey
+                )
+                UserDefaults.standard.set(
+                    UserDefaults.standard.integer(
+                        forKey: Self.protectedR10ActivationCountKey
+                    ) + 1,
+                    forKey: Self.protectedR10ActivationCountKey
+                )
+                self.lastR10RecoveryRearmAt = stampAt
+            }
+            self.persistLastIMURecovery(
+                command: command,
+                action: "paced_pair_same_link_companion_if_inactive_no_3f_no_51",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
+            )
+            self.reassertHeartRateNotificationsIfConnected(
+                reason: "silent_stream_compact_restore_2a37"
+            )
+        }
+        return true
+    }
+
     private func requestBoundedR10ActivationForSilentStream(now: Date,
                                                              reason: String) {
         guard !readOnlyHistoryCaptureRequested else { return }
         guard r10TransportIsExpected,
-              strapStream5NotifyConfirmed,
               let peripheral,
               peripheral.state == .connected,
               let stream5 = peripheral.services?
                 .first(where: { $0.uuid == Self.UUIDs.strapService })?
                 .characteristics?
-                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
-              stream5.isNotifying else {
+                .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else {
             reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
             return
         }
-
-        if standardHROnlyMode {
-            if protectedR10CleanOwnerProofIsActive {
-                sendProtectedR10ActivationIfReady()
-            }
-            retryProtectedR10ShortBurstIfEligible(now: now, reason: reason)
-            // An already-qualified protected owner with a silent stream and an
-            // active explicit workout may issue the single validated per-
-            // connection activation pair through the workout motion lease. It
-            // still never toggles a CCCD or resets the connection epoch.
-            if workoutMotionOwnerStartedAt != nil {
-                evaluateWorkoutMotionLease(now: now, reason: "\(reason)_workout_lease")
-            }
-            // Retired diagnostic vocabulary retained for audit continuity:
-            // status=repair_scheduled mode=protected. Clean owners do not
-            // schedule a CCCD repair; only the in-flight proof command gate is
-            // re-evaluated above.
-            AtriaDebugLog("ATRIADBG r10_watchdog status=observed mode=protected reason=%@ action=no_mid_link_cccd_or_epoch_reset",
-                          reason)
-            return
-        }
-
-        guard let txCharacteristic,
-              txCharacteristic.properties.contains(.writeWithoutResponse),
-              heartRateCharacteristic?.isNotifying == true else { return }
-        let defaults = UserDefaults.standard
-        let lastActivationAt = (defaults.object(
-            forKey: Self.protectedR10ActivationSentAtKey
-        ) as? Double).map(Date.init(timeIntervalSince1970:))
-        let leaseDelay = Self.protectedR10ActivationLeaseDelay(
-            lastActivationAt: lastActivationAt,
-            now: now
+        let stream5Live = Self.stream5CountsAsNotifying(
+            confirmed: strapStream5NotifyConfirmed,
+            characteristicNotifying: stream5.isNotifying
         )
-        guard leaseDelay <= 0 else {
-            AtriaDebugLog("ATRIADBG r10_watchdog status=repair_deferred mode=full_protocol reason=%@ lease_remaining_s=%.0f action=preserve_hr_link",
-                          reason,
-                          leaseDelay)
+        let hrEpochLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        if !stream5Live {
+            reassertR10NotificationIfConnected(reason: "\(reason)_inactive_cccd", now: now)
+            // After the once-per-epoch toggle, waiting for a notify-state
+            // callback stranded 6A/51. A live 2A37 epoch is enough to write
+            // same-link IMU recovery onto this characteristic.
+            guard lastR10ZombieCCCDToggleAt != nil || hrEpochLive else { return }
+        }
+
+        // Same-link 6A/51 first, in every radio mode. Full-protocol used to
+        // write 0x3F on a healthy 2A37 link; that command physically dropped
+        // both HR and IMU (device 2026-09-14: 8686 disconnects, imuFrames=0).
+        if refreshProtectedBoundedRawCaptureIfNeeded(now: now, reason: reason) {
             return
         }
-        let sequence = cmdSeq
-        cmdSeq &+= 1
-        let frame = encodeFrame([Packet.command, sequence, Cmd.sendR10R11Realtime, 0x01])
-        defaults.set(now.timeIntervalSince1970,
-                     forKey: Self.protectedR10ActivationSentAtKey)
-        defaults.set(defaults.integer(forKey: Self.protectedR10ActivationCountKey) + 1,
-                     forKey: Self.protectedR10ActivationCountKey)
-        peripheral.writeValue(frame, for: txCharacteristic, type: .withoutResponse)
-        AtriaDebugLog("ATRIADBG r10_watchdog status=repair_sent mode=full_protocol reason=%@ cmd=3f data=01 seq=%d action=single_leased_write_no_reconnect",
-                      reason,
-                      Int(sequence))
+        if protectedR10CleanOwnerProofIsActive {
+            sendProtectedR10ActivationIfReady()
+        }
+        retryProtectedR10ShortBurstIfEligible(now: now, reason: reason)
+        if workoutMotionOwnerStartedAt != nil {
+            evaluateWorkoutMotionLease(now: now, reason: "\(reason)_workout_lease")
+        }
+        AtriaDebugLog("ATRIADBG r10_watchdog status=observed mode=%@ reason=%@ action=preserve_hr_same_link_imu_no_3f_no_reconnect",
+                      standardHROnlyMode ? "protected" : "full_protocol",
+                      reason)
     }
 
     /// One bounded, command-only retry for the observed two-frame v9 stall.
@@ -29304,6 +32869,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     private func retryProtectedR10ShortBurstIfEligible(now: Date, reason: String) -> Bool {
         guard !readOnlyHistoryCaptureRequested else { return false }
+        guard !protectedR10AllDayMinimalProof else {
+            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_suppressed reason=%@ owner=all_day_minimal_stream5",
+                          reason)
+            return false
+        }
         guard workoutMotionOwnerStartedAt == nil else {
             AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_suppressed reason=%@ owner=bounded_workout_raw",
                           reason)
@@ -29335,6 +32905,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set(connectedAt.timeIntervalSince1970,
                      forKey: Self.protectedR10ShortBurstRetryConnectionAtKey)
         defaults.set("short_burst_retry_started", forKey: RadioDefaults.passiveR10Status)
+        let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
+        persistLastIMURecovery(
+            command: "6a51",
+            action: "paced_pair_same_link_no_3f_no_reconnect",
+            now: now,
+            defaults: defaults,
+            heartRateNotifying: recoveryAges.heartRateNotifying,
+            heartRateAge: recoveryAges.heartRateAge,
+            imuAge: recoveryAges.imuAge
+        )
         // Give the retry its own complete density window. Keeping the original
         // deadline would leave fewer than 75 possible 1 Hz records after the
         // stale decision, making successful qualification unreachable.
@@ -29362,33 +32942,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 status: "response_event_data_retry_receiving_crc_valid"
             )
         }
+        protectedR10CommandSequenceStartedAt = Date()
         protectedR10CommandSequenceTask = Task { @MainActor [weak self, weak peripheral] in
-            defer { self?.protectedR10CommandSequenceTask = nil }
+            defer { self?.finishProtectedR10CommandSequence() }
             guard let self, let peripheral, !Task.isCancelled,
                   peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
-            let r10Sequence = self.cmdSeq
+            let imuSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
-                encodeFrame([Packet.command, r10Sequence, Cmd.sendR10R11Realtime, 0x01]),
-                for: txCharacteristic,
-                type: .withoutResponse
+            self.writeProprietaryWithoutResponse(
+                encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
+                reason: "short_burst_6a"
             )
             try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
             guard !Task.isCancelled, peripheral.state == .connected,
                   self.protectedR10ResponseEventDataProofIsActive,
                   self.heartRateCharacteristic?.isNotifying == true else { return }
-            let imuSequence = self.cmdSeq
+            let rawSequence = self.cmdSeq
             self.cmdSeq &+= 1
-            peripheral.writeValue(
-                encodeFrame([Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01]),
-                for: txCharacteristic,
-                type: .withoutResponse
+            self.writeProprietaryWithoutResponse(
+                encodeFrame(
+                    [Packet.command, rawSequence, Cmd.startRawData]
+                        + Cmd.rawCaptureDurationPayload()
+                ),
+                reason: "short_burst_51"
             )
-            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d action=one_pair_same_connection_no_cccd_no_reconnect",
+            AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_sent reason=%@ frames=%d cmds=6a01,51_duration_le action=paced_pair_same_link_no_3f_no_reconnect",
                           reason,
                           self.protectedR10FramesAfterActivation)
+            self.persistLastIMURecovery(
+                command: "6a51",
+                action: "paced_pair_same_link_no_3f_no_reconnect",
+                now: now,
+                heartRateNotifying: recoveryAges.heartRateNotifying,
+                heartRateAge: recoveryAges.heartRateAge,
+                imuAge: recoveryAges.imuAge
+            )
         }
         return true
     }
@@ -29403,7 +32993,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// itself — those decisions stay with the audited policies.
     func performBackgroundLinkAudit(reason: String) {
         evaluateR10Liveness(reason: "\(reason)_bg_audit")
-        guard longWearModeEnabled, standardHROnlyMode, status == .connected else { return }
+        guard longWearModeEnabled, status == .connected else { return }
         let now = Date()
         guard let rawReference = lastRawHRNotificationAt ?? connectedAt,
               let acceptedReference = lastAcceptedHRAt ?? connectedAt else { return }
@@ -29426,6 +33016,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
+        persistLiveMotionEpoch(now: now)
+        flushPendingProprietaryWWRIfNeeded(reason: "\(reason)_wwr_leftover")
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
         // restoration, and releases one whose pending intent no longer exists.
@@ -29434,13 +33026,84 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // resume hysteresis) instead of the stale-intent path.
         evaluateAllDayMotionGovernor(reason: "\(reason)_all_day_audit")
         restoreWorkoutMotionLeaseIfNeeded(reason: "\(reason)_lease_audit")
-        let connected = status == .connected && peripheral?.state == .connected
+        if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+            defaults: UserDefaults.standard, now: now
+        ) {
+            UserDefaults.standard.set(
+                false,
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            )
+            assignIfChanged(\.rangeLossBackfillPending, false)
+        }
+        let hrLive = Self.heartRateEpochAllowsIMURefresh(
+            characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
+            lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
+                .map { now.timeIntervalSince($0) }
+        )
+        let connected = Self.liveHeartRateEpochOwnsRadio(
+            status: status,
+            peripheralConnected: peripheral?.state == .connected,
+            heartRateEpochLive: hrLive
+        )
+        let rawFrameAt = currentR10MotionFrameAt()
+        let compactSecondAt = AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt()
+        let compactPacketAt = AtriaCompactIMULiveDiagnostics.lastPacketAt()
+        let compactAge = compactIMUEvidenceAge(now: now)
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: compactAge
+        ) && currentConnectionProprietaryTraffic > 0
         let eligible = r10TransportIsExpected
+        let fallbackIMU = connected
+            && Self.shouldRefreshIMUOnLiveHeartRateFallback(
+                owner: protectedR10CleanOwner,
+                state: protectedR10CleanOwnerState,
+                connected: connected,
+                historyOwnsTransport: historyOwnsForCompactIMURecovery(imuAge: compactAge),
+                heartRateNotifying: hrLive,
+                imuAge: compactAge,
+                lastActivationAge: (UserDefaults.standard.object(
+                    forKey: Self.protectedR10ActivationSentAtKey
+                ) as? Double).map { now.timeIntervalSince(Date(timeIntervalSince1970: $0)) },
+                sittingSkipFresh: sittingSkipFresh,
+                sleepModeHoldActive: Self.shouldHoldIMURefreshAfterSleepModeLog(
+                    lastSleepModeAt: lastStrapSleepModeAt,
+                    now: now
+                )
+            )
+        if connected, hrLive, !strapStream5NotifyConfirmed, !sittingSkipFresh {
+            kickZombieProprietaryStreamIfNeeded(
+                now: now,
+                reason: "\(reason)_stream5_unconfirmed_before_6a51"
+            )
+        }
+        if sendCoverLiveBoundedRawCaptureIfNeeded(
+            now: now,
+            reason: "\(reason)_cover_live_51"
+        ) {
+            // same-link 51
+        } else if fallbackIMU {
+            kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_pure_hr_imu")
+            _ = refreshProtectedBoundedRawCaptureIfNeeded(
+                now: now,
+                reason: "\(reason)_pure_hr_imu"
+            )
+        } else if protectedR10StreamSuppressed,
+                  UserDefaults.standard.object(
+                    forKey: OfflineSyncDefaults.historyCoverLiveUnix
+                  ) == nil {
+            _ = beginProtectedR10AllDayPassiveCutoverIfNeeded(
+                now: now,
+                reason: "\(reason)_all_day_passive_requalify"
+            )
+        }
         if Self.shouldOpenWorkoutMotionGapForUnavailableR10(
             motionLeaseHeld: workoutMotionOwnerStartedAt != nil,
             historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
             r10TransportExpected: eligible,
-            lastFrameAt: lastR10MotionFrameAt,
+            lastFrameAt: currentR10MotionFrameAt(),
             now: now
         ) {
             // The stream is intentionally unavailable in this fallback. Mark
@@ -29451,25 +33114,52 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "\(reason)_r10_transport_unavailable"
             )
         }
-        if eligible, connected, !strapStream5NotifyConfirmed {
+        if connected, !strapStream5NotifyConfirmed {
             reassertR10NotificationIfConnected(reason: "\(reason)_stream5_unconfirmed", now: now)
+            kickZombieProprietaryStreamIfNeeded(now: now, reason: "\(reason)_unconfirmed")
+            // Waiting for a notify-state callback or a zombie toggle stranded
+            // 6A/51 while 0x33 still arrived and HR stayed up. Sitting skip
+            // packets on this connection are not that stall.
+            if !sittingSkipFresh {
+                requestBoundedR10ActivationForSilentStream(
+                    now: now,
+                    reason: "\(reason)_unconfirmed_stream5"
+                )
+            }
+            UserDefaults.standard.set("unconfirmed_stream5", forKey: RadioDefaults.liveR10LivenessAction)
             return
         }
+        let staleInterval = Self.r10LivenessStaleIntervalForEvidence(
+            rawFrameAt: rawFrameAt,
+            compactPacketAt: compactPacketAt,
+            compactSecondAt: compactSecondAt,
+            now: now
+        )
         let action = Self.r10LivenessAction(
             eligible: eligible,
             connected: connected,
-            realtimeArmed: strapStream5NotifyConfirmed
-                && (realtimeArmed || protectedR10MotionIsEligible),
-            lastFrameAt: lastR10MotionFrameAt,
+            realtimeArmed: Self.r10LivenessRealtimeArmed(
+                stream5Confirmed: strapStream5NotifyConfirmed,
+                sessionRealtimeArmed: realtimeArmed,
+                transportExpected: eligible
+            ),
+            lastFrameAt: currentR10LivenessLastMotionAt(now: now),
             lastRearmAt: lastR10RecoveryRearmAt,
             lastRediscoveryAt: lastR10RecoveryRediscoveryAt,
-            now: now
+            now: now,
+            staleInterval: staleInterval,
+            sittingSkipFresh: sittingSkipFresh
+        )
+        UserDefaults.standard.set(
+            "\(action)",
+            forKey: RadioDefaults.liveR10LivenessAction
         )
         switch action {
         case .none:
             break
         case .rearm:
-            lastR10RecoveryRearmAt = now
+            // Stamp rearm only if 6A/51 actually queues. Stamping here made a
+            // blocked refresh wait 45s before the next try.
             requestBoundedR10ActivationForSilentStream(now: now, reason: reason)
         case .rediscover:
             lastR10RecoveryRediscoveryAt = now
@@ -29477,6 +33167,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // toggle a healthy HR/R10 subscription for a missing frame.
             reassertR10NotificationIfConnected(reason: "\(reason)_stale_followup", now: now)
         }
+        kickZombieProprietaryStreamIfNeeded(now: now, reason: reason)
     }
 
     // MARK: Workout motion ownership lease
@@ -29495,14 +33186,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case awaitGrace
         case activate
         case alreadyAttempted
+        /// This workout lease has already observed dense R10. A reconnect
+        /// must not restart 6A/51 bring-up; 2A37 stays the live stream.
+        case keepLive
     }
 
     /// Pure policy for the explicit-workout motion lease. A workout owns a
     /// persisted exact-start claim on the dense R10 epoch: after a passive
     /// grace with no fresh frame it may issue at most one already-validated
-    /// activation pair per peripheral connection. A frame captured before the
-    /// current connection (stale sparse passive motion) never marks workout
-    /// motion live.
+    /// activation pair per peripheral connection — until this lease has
+    /// observed dense frames. After that, reconnects (`did_connect` /
+    /// `fresh_accepted_hr`) must not restart bring-up or a new 6A/51 pair
+    /// (2026-09-08 gym: 20–47 s HR holes, IMU duty 8.8%/2.4%). A frame
+    /// captured before the current connection (stale sparse passive motion)
+    /// never marks workout motion live on that epoch, but it also must not
+    /// retrigger activation once the workout has already gone live.
     /// A qualified protected owner never re-runs the CCCD sequence on a
     /// reconnected link, so `strapStream5NotifyConfirmed` stays false there
     /// even though the strap-side subscription persists and CRC-valid frames
@@ -29538,6 +33236,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         denseFrameCount: Int,
         lastActivationConnectionAt: Date?,
         protectedPureHRFallback: Bool = false,
+        leaseHasObservedDenseFrames: Bool = false,
         graceInterval: TimeInterval = protectedR10PassiveGraceDuration,
         freshFrameWindow: TimeInterval = 10,
         denseFrameThreshold: Int = workoutMotionDenseFrameThreshold,
@@ -29560,6 +33259,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            denseFrameCount >= denseFrameThreshold {
             return .markLive
         }
+        // 2026-09-08 gym: evaluationTrace issued beginBringUp/activate on
+        // every reconnect because stream-5 flag was false and lastFrame was
+        // from the previous epoch. Once THIS lease has already gone dense,
+        // keep 2A37 — do not restart proprietary bring-up.
+        if leaseHasObservedDenseFrames {
+            return .keepLive
+        }
         if !stream5Confirmed {
             if let lastActivationConnectionAt,
                abs(lastActivationConnectionAt.timeIntervalSince(connectedAt)) < 0.001 {
@@ -29572,7 +33278,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // the strap reconnected every 15–25 s, so a per-connection grace never
         // elapsed and twelve consecutive evaluations returned awaitGrace while
         // the workout stayed sparse. The one-attempt bound below remains
-        // per-connection.
+        // per-connection until the lease has gone dense (keepLive above).
         guard now.timeIntervalSince(leaseStartedAt) >= graceInterval else {
             return .awaitGrace
         }
@@ -29767,6 +33473,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         releaseConnectedMotionBankLocalDependencyFirstRefusal(
             reason: "explicit_workout_\(reason)"
         )
+        abortIdleWindowHeartRatePauseForExplicitWorkout(reason: reason)
+        reassertHeartRateNotificationsIfConnected(reason: "explicit_workout_restore_2a37")
         if let owner = workoutMotionOwnerStartedAt,
            abs(owner.timeIntervalSince(startedAt)) < 0.001 {
             scheduleWorkoutMotionLeaseEvaluation(reason: "\(reason)_replay")
@@ -29812,6 +33520,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: WorkoutMotionDefaults.gapStartedAt)
         defaults.removeObject(forKey: WorkoutMotionDefaults.firstLiveFrameAt)
         defaults.removeObject(forKey: WorkoutMotionDefaults.lastLiveFrameAt)
+        defaults.removeObject(forKey: WorkoutMotionDefaults.denseObservedAt)
         setWorkoutMotionStatus("grace", at: Date())
         AtriaDebugLog("ATRIADBG workout_motion status=lease_begin reason=%@ started_unix=%d",
                       reason,
@@ -29840,6 +33549,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func yieldHistoricalTransportToExplicitWorkoutIfNeeded(reason: String) {
         let preservesRealtimeOwner =
             offlineHistoricalSyncPreservesConnectedRealtimeOwner
+        let now = Date()
+        let linkConnected = peripheral?.state == .connected
+        let freshLiveHeartRate = lastAcceptedHeartRateAt.map { capturedAt in
+            let age = now.timeIntervalSince(capturedAt)
+            return age >= 0 && age <= 8
+        } ?? false
+        let keepLiveHeartRate = linkConnected
+            || freshLiveHeartRate
+            || preservesRealtimeOwner
         let activeBankRequest =
             offlineHistoricalSyncExplicitPostWorkoutBankRequest
         let activeRawCatchUp = activeConnectedRawHistoryCatchUpAuthority(
@@ -29849,14 +33567,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .workoutHistoricalTransportPreemptionDisposition(
                 syncInProgress: offlineHistoricalSyncInProgress,
                 historyProbeActive: historyOnlyProbeMode,
-                // Releasing only the local owner cannot prove WHOOP stopped
-                // serving an in-flight FIFO page. A connected workout
-                // preemption always uses a physical disconnect fence; standard
-                // HR and 69/01 resume on the replacement callback epoch.
-                preservesConnectedRealtimeOwner: false,
-                linkConnected: peripheral?.state == .connected
+                preservesConnectedRealtimeOwner: keepLiveHeartRate,
+                linkConnected: linkConnected
             )
         guard disposition != .noHistoryOwner else { return }
+        if disposition == .pauseConnectedHistoryWithoutDisconnect {
+            AtriaDebugLog("ATRIADBG workout_motion status=history_owner_yielded_keep_live_hr reason=%@ generation=%llu action=interrupt_history_no_disconnect",
+                          reason,
+                          offlineHistoricalSyncGeneration)
+            interruptOfflineHistoricalSyncForTransportLoss(
+                reason: "explicit_workout_yield_keep_live_hr"
+            )
+            cancelHistoryOnlyProbe(reason: "explicit_workout_yield_keep_live_hr")
+            return
+        }
         if !activeRawCatchUp {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: "post_workout_resume_\(offlineHistoricalSyncReason)",
@@ -29974,6 +33698,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         defaults.removeObject(forKey: WorkoutMotionDefaults.ownerStartedAt)
         defaults.removeObject(forKey: WorkoutMotionDefaults.gapStartedAt)
+        defaults.removeObject(forKey: WorkoutMotionDefaults.denseObservedAt)
         setWorkoutMotionStatus("released", at: now)
         AtriaDebugLog("ATRIADBG workout_motion status=lease_released reason=%@", reason)
         // A released explicit lease returns v24 bank ownership to the all-day
@@ -30735,6 +34460,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         at date: Date,
         reason: String
     ) -> Bool {
+        if emptyStreamNeedsLiveCompactIMURecovery(now: date) {
+            AtriaDebugLog("ATRIADBG workout_motion_bank status=glance_deferred_live_compact_imu reason=%@ action=keep_stream5_for_526a14",
+                          reason)
+            return false
+        }
         let calibrationHoldActive =
             workoutMotionCalibrationHoldUntil.map { date < $0 } == true
         let historySyncInProgress =
@@ -33711,7 +37441,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         delay: TimeInterval = protectedR10PassiveGraceDuration
     ) {
         guard workoutMotionOwnerStartedAt != nil else { return }
-        guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
+        guard !historyOnlyProbeMode else { return }
+        if offlineHistoricalSyncInProgress {
+            if explicitWorkoutOwnsRadio() {
+                yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                    reason: "\(reason)_lease_eval"
+                )
+            } else {
+                return
+            }
+        }
         guard workoutMotionActivationTask == nil else { return }
         workoutMotionActivationTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
@@ -33722,7 +37461,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     }
 
     private func evaluateWorkoutMotionLease(now: Date, reason: String) {
-        guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
+        guard !historyOnlyProbeMode else { return }
+        if offlineHistoricalSyncInProgress {
+            if explicitWorkoutOwnsRadio(now: now) {
+                yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                    reason: "\(reason)_lease_eval"
+                )
+            } else {
+                return
+            }
+        }
         guard let leaseStartedAt = workoutMotionOwnerStartedAt else { return }
         let manualWorkoutActive =
             AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
@@ -33744,7 +37492,11 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         if manualWorkoutActive {
             let stepLeaseDecision = AtriaR10StepLeasePolicy.decision(
                 manualWorkoutActive: true,
-                historyOwnsTransport: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
+                historyOwnsTransport: AtriaR10StepLeasePolicy.historyOwnsTransportForStepLease(
+                    manualWorkoutActive: true,
+                    historySyncInProgress: offlineHistoricalSyncInProgress
+                        || historyOnlyProbeMode
+                ),
                 connected: peripheral?.state == .connected,
                 connectionStartedAt: connectedAt,
                 leaseConnectionStartedAt: r10StepLeaseConnectionStartedAt,
@@ -33763,8 +37515,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 // the product claim step capture although no stream-5 frame
                 // could possibly arrive. Only recordWorkoutMotionFrameIfNeeded
                 // promotes the status to `live`, after observed dense frames.
-                setWorkoutMotionStatus("r10_step_lease_eligible_waiting_for_motion", at: now)
-                AtriaDebugLog("ATRIADBG r10_step_lease status=eligible_waiting_for_motion reason=%@", reason)
+                // A reconnect of an already-dense lease rebinds without
+                // dropping `live` back to waiting (keepLive follows).
+                if UserDefaults.standard.object(
+                    forKey: WorkoutMotionDefaults.denseObservedAt
+                ) == nil {
+                    setWorkoutMotionStatus("r10_step_lease_eligible_waiting_for_motion", at: now)
+                    AtriaDebugLog("ATRIADBG r10_step_lease status=eligible_waiting_for_motion reason=%@", reason)
+                }
             case .keep:
                 break
             case .revoke(let revocation):
@@ -33803,6 +37561,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                     || protectedR10CleanOwner == .pureHRV10)
                 && (protectedR10CleanOwnerState == .fallbackActive
                     || protectedR10CleanOwnerState == .fallbackPending),
+            leaseHasObservedDenseFrames: defaults.object(
+                forKey: WorkoutMotionDefaults.denseObservedAt
+            ) != nil,
             now: now
         )
         // A pure-HR fallback is an intentional, stable terminal state for
@@ -33814,8 +37575,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                          reason: "protected_pure_hr_fallback")
             if workoutMotionStatus != "unavailable_pure_hr_fallback" {
                 setWorkoutMotionStatus("unavailable_pure_hr_fallback", at: now)
-                AtriaDebugLog("ATRIADBG r10_step_lease status=unavailable_pure_hr_fallback action=retain_lease_and_gap_no_transport_retry")
+                AtriaDebugLog("ATRIADBG r10_step_lease status=unavailable_pure_hr_fallback action=retain_lease_and_gap_bounded_in_process_requalify")
             }
+            // A started workout must not sit in pure-HR fallback for its whole
+            // duration when the strap could still qualify stream-5. Offer ONE
+            // bounded, credential-gated, cooldown-limited in-process requalify.
+            attemptWorkoutMotionInProcessRequalifyIfEligible(
+                leaseStartedAt: leaseStartedAt,
+                now: now,
+                reason: reason
+            )
             return
         }
         // Honest on-device decision trail: Release builds strip debug logging,
@@ -33886,7 +37655,56 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             sendWorkoutMotionActivationPair(now: now, reason: reason)
         case .alreadyAttempted:
             markWorkoutMotionGapIfNeeded(now: now, reason: "\(reason)_single_attempt_spent")
+        case .keepLive:
+            if workoutMotionStatus != "live" {
+                setWorkoutMotionStatus("live", at: now)
+            }
         }
+    }
+
+    /// Bounded in-process requalify for a live workout stuck in the pure-HR
+    /// fallback (2026-09-07 directive: "a started workout must not sit in
+    /// .unavailablePureHRFallback forever if the strap can still do stream-5").
+    /// The gate is `workoutMotionInProcessRequalifyShouldAttempt`; the hand-off
+    /// is the existing `beginProtectedR10V8WorkoutCutoverIfNeeded` — one
+    /// app-owned disconnect then a fresh v9 central whose normal didConnect
+    /// re-discovers and re-subscribes the protected notify set (so a stale
+    /// `characteristic_missing` reason is never treated as permanent hardware
+    /// death). It never mutates a CCCD on the live pure-HR link and reuses the
+    /// existing R10 decoder/lease machinery — no second transport path.
+    private func attemptWorkoutMotionInProcessRequalifyIfEligible(
+        leaseStartedAt: Date,
+        now: Date,
+        reason: String
+    ) {
+        let defaults = UserDefaults.standard
+        let consecutiveFallbacks = defaults.integer(
+            forKey: Self.protectedR10PassiveReprobeFailureCountKey
+        )
+        guard Self.workoutMotionInProcessRequalifyShouldAttempt(
+            manualWorkoutActive: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now),
+            streamSuppressed: protectedR10StreamSuppressed,
+            owner: protectedR10CleanOwner,
+            state: protectedR10CleanOwnerState,
+            priorQualifiedAt: defaults.object(
+                forKey: Self.protectedR10StableTransportQualifiedAtKey) as? Double,
+            fallbackAt: defaults.object(
+                forKey: Self.protectedR10FallbackAtKey) as? Double,
+            lastAttemptAt: defaults.object(
+                forKey: Self.protectedR10RequalifyAttemptAtKey) as? Double,
+            consecutiveFallbackCount: consecutiveFallbacks,
+            now: now.timeIntervalSince1970
+        ) else { return }
+        AtriaDebugLog("ATRIADBG r10_step_lease status=in_process_requalify_eligible reason=%@ failures=%d action=bounded_workout_cutover",
+                      reason, consecutiveFallbacks)
+        // The cutover re-checks the physical prerequisites (connected, fallback
+        // owner, prior qualification, one lease per workout start) and stamps
+        // its own requalify-attempt clock via promoteFallbackToProtectedV9ForLaunch,
+        // so the 30-min cooldown holds across evaluations after it fires.
+        _ = beginProtectedR10V8WorkoutCutoverIfNeeded(
+            startedAt: leaseStartedAt,
+            reason: "\(reason)_in_process_requalify"
+        )
     }
 
     /// Sends the WHOOP 4 bounded accelerometer pair (6A/01 then 51/u32-ms-LE)
@@ -34040,6 +37858,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 txCharacteristic: txCharacteristic,
                 reason: "direct_workout_lease"
             )
+            try? await Task.sleep(for: .seconds(Self.protectedR10CommandPacingDelay))
+            guard !Task.isCancelled, peripheral.state == .connected else { return }
             let rawSequence = self.cmdSeq
             self.cmdSeq &+= 1
             #if DEBUG
@@ -34091,6 +37911,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             )
             return
         }
+        if AtriaPendingWorkoutIntent.isActiveForBLEContinuity() {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion status=lease_suspend_rejected reason=manual_workout_active generation=%llu action=keep_r10_lease_history_waits",
+                generation
+            )
+            return
+        }
         workoutMotionActivationTask?.cancel()
         workoutMotionActivationTask = nil
         workoutMotionCommandTask?.cancel()
@@ -34131,6 +37958,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // closes an open gap; only restored ~1 Hz density does.
         guard workoutMotionDenseFrameCount(now: receivedAt)
                 >= Self.workoutMotionDenseFrameThreshold else { return }
+        if defaults.object(forKey: WorkoutMotionDefaults.denseObservedAt) == nil {
+            defaults.set(receivedAt.timeIntervalSince1970,
+                         forKey: WorkoutMotionDefaults.denseObservedAt)
+        }
         recordWorkoutMotionGapClosureIfNeeded(endedAt: receivedAt, outcome: "dense_frames_resumed")
         if workoutMotionStatus != "live" {
             setWorkoutMotionStatus("live", at: receivedAt)
@@ -34278,7 +38109,6 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 if !Self.r10FrameProvesCurrentArm(lastFrameAt: self.lastR10MotionFrameAt,
                                                   evidenceEpoch: r10EvidenceEpoch) {
                     let recoveryAt = Date()
-                    self.lastR10RecoveryRearmAt = recoveryAt
                     AtriaDebugLog("ATRIADBG r10_stream status=unavailable action=request_single_leased_activation")
                     self.requestBoundedR10ActivationForSilentStream(
                         now: recoveryAt,
@@ -34497,6 +38327,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             generation: generation,
             reason: "history_write_\(commandLabel)_\(status)_preserve_realtime"
         ) {
+            // 122 minted the queued gym pull, then a 0x22 timeout completed
+            // the slice because Start-fresh still reported no backlog. Keep
+            // the live 2A37 owner and re-queue so the next accepted HR retries
+            // flash drain without another install or tap.
+            if command == Cmd.getDataRange,
+               result == .timedOut,
+               queuedConnectedRawHistoryCatchUpIntent == nil {
+                queueConnectedRawHistoryCatchUpIntent(
+                    reason: "history_write_22_timeout_retry"
+                )
+            }
             return
         }
         if let peripheral, peripheral.state == .connected {
@@ -37285,11 +41126,18 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             | (UInt32(b[len + 1]) << 8)
             | (UInt32(b[len + 2]) << 16)
             | (UInt32(b[len + 3]) << 24)
-        guard expectedCRC == actualCRC else {
-            protectedR10CRCRejectedFramesThisConnection += 1
-            AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
-                  payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
-            return
+        if expectedCRC != actualCRC {
+            // Isolated complete frames are admitted by the reassembler even
+            // when the trailer CRC does not match ISO-HDLC. Re-checking here
+            // was dropping live IMU 0x33 (device 2026-09-15).
+            guard b.count == len + 4 else {
+                protectedR10CRCRejectedFramesThisConnection += 1
+                AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
+                      payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
+                return
+            }
+            AtriaDebugLog("ATRIADBG frameAdmit reason=crc32_mismatch_admitted type=%02x len=%d expected=%08x actual=%08x",
+                  payload.first ?? 0, b.count, expectedCRC, actualCRC)
         }
         if readOnlyHistoryCaptureActive,
            payload.first == Packet.metadata || payload.first == Packet.historical {
@@ -37899,6 +41747,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
         if type == Packet.imu {
             logIMUCandidate(payload: payload)
+            // Compact 0x33 is the live IMU source. Without this, lastR10MotionFrameAt
+            // stays nil and the 8s liveness watchdog re-sends 6A/51 on a healthy stream.
+            recordValidR10MotionEvidence(receivedAt: Date())
             return
         }
         if type == 0x32 {
@@ -37936,6 +41787,88 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                           payloadLength,
                           r10MotionFrameCount)
         }
+    }
+
+    /// Compact 0x33 is ingested on the BLE queue. Stamp here so silence
+    /// recovery does not wait on a MainActor hop.
+    nonisolated private func stampLiveIMULiveness(receivedAt: Date) {
+        let next = receivedAt.timeIntervalSince1970
+        liveIMULivenessUnix.withLock { unix in
+            if next > unix { unix = next }
+        }
+        let defaults = UserDefaults.standard
+        if let previous = defaults.object(forKey: RadioDefaults.passiveR10LastValidAt) as? Double,
+           next - previous < 1 {
+            return
+        }
+        defaults.set(next, forKey: RadioDefaults.passiveR10LastValidAt)
+    }
+
+    private func currentR10LivenessEvidenceAt(now: Date) -> Date? {
+        let packetAt = AtriaCompactIMULiveDiagnostics.lastPacketAt()
+        let imuAge = Self.liveIMUEvidenceAgeSeconds(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: packetAt,
+            now: now
+        )
+        let sittingSkipFresh = AtriaDiagnosisReport.compactIMUSittingSkipIsFresh(
+            skippedSitting: UserDefaults.standard.bool(
+                forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+            ),
+            imuAgeSeconds: imuAge
+        ) && currentConnectionProprietaryTraffic > 0
+        return Self.r10LivenessEvidenceAt(
+            rawFrameAt: currentR10MotionFrameAt(),
+            compactSecondAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt(),
+            compactPacketAt: packetAt,
+            now: now,
+            sittingSkipFresh: sittingSkipFresh
+        )
+    }
+
+    private func currentR10LivenessLastMotionAt(now: Date) -> Date? {
+        Self.r10LivenessLastMotionAt(
+            evidenceAt: currentR10LivenessEvidenceAt(now: now),
+            connectedAt: connectedAt
+        )
+    }
+
+    private func currentR10MotionFrameAt() -> Date? {
+        let stampedUnix = liveIMULivenessUnix.withLock { $0 }
+        let stamped = stampedUnix > 0 ? Date(timeIntervalSince1970: stampedUnix) : nil
+        switch (lastR10MotionFrameAt, stamped) {
+        case let (main?, queued?):
+            return main > queued ? main : queued
+        case let (main?, nil):
+            return main
+        case let (nil, queued?):
+            return queued
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    /// Compact 0x33 is ingested on the BLE queue, not only through the
+    /// MainActor protocol decoder. Keep published motion freshness in sync
+    /// after the BLE-queue stamp.
+    private func noteLiveIMULiveness(receivedAt: Date) {
+        stampLiveIMULiveness(receivedAt: receivedAt)
+        // Compact 0x33 arrives while CoreBluetooth still reports
+        // stream-5 `isNotifying=false`. That used to leave
+        // `strapStream5NotifyConfirmed` false, so 6A/51 never armed.
+        strapStream5NotifyConfirmed = true
+        if Self.shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact(
+            lastNotifyTypeHex: "33"
+        ) {
+            clearAllDayCompactIMURecoveryLease()
+        }
+        if r10TransportIsExpected {
+            ensureR10LivenessWatchdog(reason: "live_imu_frame")
+        }
+        if let previous = lastR10MotionFrameAt, receivedAt < previous { return }
+        lastR10MotionFrameAt = receivedAt
+        assignIfChanged(\.liveStrapMotionCapturedAt, receivedAt)
     }
 
     /// A decoded R10 frame has already passed framing, CRC and fixed-layout
@@ -38354,6 +42287,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         protectedR10InitialProfilePeripheralID = nil
         protectedR10InitialProfileNotificationRequested = false
         ensureR10LivenessWatchdog(reason: "protected_stream5_subscribed")
+        strapStream5NotifyConfirmed = true
         let defaults = UserDefaults.standard
         defaults.set("subscribed_waiting_for_crc_valid_frame",
                      forKey: RadioDefaults.passiveR10Status)
@@ -38396,6 +42330,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepCountCapturedAt, nil)
         assignIfChanged(\.liveStrapStepResearchState, state)
         UserDefaults.standard.removeObject(forKey: RadioDefaults.passiveR10LastValidAt)
+        liveIMULivenessUnix.withLock { $0 = 0 }
         AtriaDebugLog(
             "ATRIADBG strap_steps status=freshness_retired state=%@ reason=%@ count=%d action=preserve_monotonic_count",
             state,
@@ -38425,6 +42360,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
 
     private func recordProtocolPacket(type: UInt8, length: Int) {
         protocolPacketCount += 1
+        protocolPacketsThisConnection += 1
         protocolLastPacketType = String(format: "%02x", type)
         protocolLastPacketKind = Self.packetKind(type)
         protocolLastPacketLength = length
@@ -38441,6 +42377,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         guard protocolDiagnosticsPersistenceEnabled else { return }
         let defaults = UserDefaults.standard
         defaults.set(protocolPacketCount, forKey: ProtocolDefaults.packets)
+        defaults.set(protocolPacketsThisConnection, forKey: ProtocolDefaults.packetsThisConnection)
+        defaults.set(Date().timeIntervalSince1970, forKey: ProtocolDefaults.lastPacketAt)
         defaults.set(protocolLastPacketType, forKey: ProtocolDefaults.lastPacketType)
         defaults.set(protocolLastPacketKind, forKey: ProtocolDefaults.lastPacketKind)
         defaults.set(protocolLastPacketLength, forKey: ProtocolDefaults.lastPacketLength)
@@ -38493,6 +42431,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let decoded = AtriaIMUDecoder.decode(payload: payload)
         if let decoded {
             recordIMUFeatures(decoded)
+            AtriaStrengthSetWindow.ingestLiveDecoded(decoded, receivedAt: Date())
         }
         var i16Pairs: [String] = []
         var magnitudes: [String] = []
@@ -38999,6 +42938,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 generation: generation,
                 reason: "history_first_frame_timeout_preserve_realtime"
             ) {
+                _ = AtriaMissedDataBannerPresentation.applyResilientHistoryDrainSeekIfNeeded(
+                    defaults: UserDefaults.standard
+                )
+                if AtriaMissedDataBannerPresentation.shouldSkipRangeLossRearm(
+                    defaults: UserDefaults.standard
+                ) {
+                    self.assignIfChanged(\.rangeLossBackfillPending, false)
+                }
                 return
             }
             if let peripheral = self.peripheral, peripheral.state == .connected {
@@ -43178,7 +47125,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 consumeToNow: idleWindowConsumeToNowConsent,
                 sliceStartPendingRecords: idleWindowRangeBeforeACK?.pendingRecords,
                 heartRatePauseElapsed: idleWindowDrainStartedAt
-                    .map { Date().timeIntervalSince($0) } ?? 0
+                    .map { Date().timeIntervalSince($0) } ?? 0,
+                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
            ) {
             if AtriaWhoop4HistoryRangePointerPolicy
                 .shouldIssueIdleWindowPostACKRangeProbe(
@@ -44514,6 +48462,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         lastCurrentRRGapRecoveryAt = nil
     }
 
+    private func rememberDisplayHeartRate(_ bpm: Int, at date: Date) {
+        guard bpm > 0 else { return }
+        lastKnownDisplayHeartRate = bpm
+        lastKnownDisplayHeartRateAt = date
+    }
+
     private func appendLastHeartRate(_ rate: Int) {
         lastHeartRates.append(rate)
         if rate > 0 {
@@ -44603,6 +48557,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 historyPhase: historyPhase
             )
         case .historyMetadata(let payload):
+            recordProtocolPacket(type: Packet.metadata, length: payload.count)
             handleHistoryMetadata(payload, historyPhase: historyPhase)
         case .historical(let payload):
             handleHistoricalData(payload, historyPhase: historyPhase)
@@ -44935,7 +48890,25 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             longWearEnabled: longWearModeEnabled,
             activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         )
-        let recordedGap = continuityRelevant && AtriaHistoricalGapLedger.recordObservedGap(
+        // Overflow while a zero-contact run brackets the dropped envelope means
+        // the flooding stream itself was reporting no skin: the dropped span is
+        // off-wrist, not missing pulse data, so no recoverable-history window
+        // is minted (same `off_wrist_no_recoverable_gap` rule as the disconnect
+        // path). Unknown contact keeps today's behavior.
+        let offWristProven = AtriaGapWearClassification.offWristProvenAcross(
+            intervalStartUnix: start.timeIntervalSince1970,
+            intervalEndUnix: end.timeIntervalSince1970,
+            zeroContactRunStartUnix: zeroContactRunStartedAt?.timeIntervalSince1970,
+            lastZeroContactUnix: lastZeroContactAt?.timeIntervalSince1970
+        )
+        if offWristProven {
+            AtriaGapWearClassification.OffWristExclusion.recordExcludedSpan(
+                startUnix: start.timeIntervalSince1970,
+                endUnix: end.timeIntervalSince1970
+            )
+        }
+        let recordedGap = continuityRelevant && !offWristProven
+            && AtriaHistoricalGapLedger.recordObservedGap(
             start: start,
             end: end,
             reason: "heart_rate_ingress_overflow",
@@ -44948,12 +48921,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             )
             scheduleRangeLossBackfillIfNeeded(reason: "heart_rate_ingress_overflow")
         }
-        AtriaDebugLog("ATRIADBG hr_ingress_overflow dropped=%d start_unix=%.3f end_unix=%.3f gap_s=%.3f ledger_gap=%d action=retain_missing_window_no_interpolation",
+        AtriaDebugLog("ATRIADBG hr_ingress_overflow dropped=%d start_unix=%.3f end_unix=%.3f gap_s=%.3f ledger_gap=%d off_wrist=%d action=retain_missing_window_no_interpolation",
                       overflow.droppedCount,
                       start.timeIntervalSince1970,
                       end.timeIntervalSince1970,
                       gap,
-                      recordedGap ? 1 : 0)
+                      recordedGap ? 1 : 0,
+                      offWristProven ? 1 : 0)
         persistActiveSessionJournalIfNeeded(reason: "heart_rate_ingress_overflow", force: true)
         flushSampleDiagnostics()
     }
@@ -45216,9 +49190,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // `Snapshot.steps` is the legacy accelerometer-peak coordinate. The
         // saved Session must use the same gyro coordinate as Home so a segment
         // roll/relaunch cannot reintroduce the inferior source.
+        let gyroSessionSteps = currentGyroCadenceResearchSessionSteps()
         let snapshotStrapSteps = max(
             strapStepResearchCount,
-            currentGyroCadenceResearchSessionSteps()
+            gyroSessionSteps
         )
         // A count of zero is valid evidence only after this session has
         // received at least one strap R10 motion frame.  Keep unknown separate
@@ -45320,6 +49295,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             imuActivityBursts: decodedIMUSampleCount > 0 ? imuActivityBurstCount : nil,
                             imuValidationState: decodedIMUSampleCount > 0 ? imuValidationState : nil,
                             strapStepResearchCount: snapshotStrapSteps > 0 ? snapshotStrapSteps : nil,
+                            gyroCadenceResearchSteps: gyroSessionSteps > 0
+                                ? gyroSessionSteps : nil,
                             strapStepResearchAgreement: nil,
                             strapStepResearchState: snapshotStrapSteps > 0
                                 ? strapStepResearchState : nil,
@@ -45424,10 +49401,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 return
             }
 
+            let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday()
+            let gyroFloor = Self.strapStepLedgerGyroFloorForRestore(
+                ledgerGyro: record.segmentGyroCadenceResearchSteps ?? 0,
+                liveGyroToday: liveGyroToday?.count ?? 0,
+                liveGyroCapturedAt: liveGyroToday?.capturedAt,
+                now: Date()
+            )
             let restored = await self.r10MotionPipeline.seed(
                 committedRawSteps: record.segmentRawSteps,
                 lastAcceptedDeviceTimestamp: record.deviceTimestamp,
-                committedGyroCadenceResearchSteps: record.segmentGyroCadenceResearchSteps
+                committedGyroCadenceResearchSteps: gyroFloor
             )
             // A normal launch can receive fresh R10/HR while the tiny file is
             // decoded. Adopt the durable segment identity only if no other
@@ -45445,7 +49429,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             // gyro evidence fails closed instead of silently changing history.
             self.strapStepResearchCount = max(
                 self.strapStepResearchCount,
-                record.segmentGyroCadenceResearchSteps ?? 0
+                gyroFloor
             )
             self.strapStepResearchPeakCount = max(self.strapStepResearchPeakCount, restored.rawSteps)
             self.strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
@@ -45453,8 +49437,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 incoming: self.strapStepResearchDeviceTimestamp
             )
             self.lastStrapStepLedgerSavedRawSteps = record.segmentRawSteps
+            self.lastStrapStepLedgerSavedSegmentSteps = record.segmentSteps
             self.lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 record.segmentGyroCadenceResearchSteps ?? 0
+            self.lastStrapStepLedgerSegmentID = record.segmentID
             self.strapStepLedgerGyroCumulativePrefix = max(
                 0,
                 (record.cumulativeGyroCadenceResearchSteps ?? 0)
@@ -45467,6 +49453,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             self.strapStepLedgerRestoreInFlight = false
             let pending = self.strapStepLedgerSavePending
             self.strapStepLedgerSavePending = false
+            let restoredFloor = max(
+                0,
+                (record.segmentGyroCadenceResearchSteps ?? 0)
+            )
+            if restoredFloor > 0, let cycle = self.strapStepResearchCycleStart {
+                AtriaHeldDailyStepFloor.persistLiveCoordinate(
+                    count: restoredFloor,
+                    capturedAt: record.updatedAt,
+                    cycleStart: cycle
+                )
+                if self.liveStrapStepCountCapturedAt == nil {
+                    self.assignIfChanged(\.liveStrapStepCountCapturedAt, record.updatedAt)
+                }
+            }
             self.publishLiveStrapStepResearchIfNeeded(force: true)
             if self.strapStepResearchPeakCount > record.segmentRawSteps
                 || self.currentGyroCadenceResearchSessionSteps()
@@ -45513,9 +49513,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             strapStepLedgerSavePending = strapStepLedgerSavePending || force
             return
         }
-        let gyroCadenceResearchSteps = currentGyroCadenceResearchSessionSteps()
+        let gyroCadenceResearchSteps = Self.strapStepLedgerGyroStepsForCheckpoint(
+            pipelineGyroSteps: currentGyroCadenceResearchSessionSteps(),
+            sessionGyroSteps: strapStepResearchCount
+        )
+        let segmentSteps = Self.strapStepLedgerSegmentStepsForCheckpoint(
+            liveGyroSteps: strapStepResearchCount,
+            persistedSegmentSteps: lastStrapStepLedgerSavedSegmentSteps
+        )
+        let segmentRawSteps = Self.strapStepLedgerRawStepsForCheckpoint(
+            liveRawSteps: strapStepResearchPeakCount,
+            persistedRawSteps: lastStrapStepLedgerSavedRawSteps
+        )
         guard Self.strapStepLedgerHasUnsavedResearchSteps(
-            currentRawSteps: strapStepResearchPeakCount,
+            currentRawSteps: segmentRawSteps,
             persistedRawSteps: lastStrapStepLedgerSavedRawSteps,
             currentGyroSteps: gyroCadenceResearchSteps,
             persistedGyroSteps: lastStrapStepLedgerSavedGyroCadenceResearchSteps
@@ -45536,11 +49547,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         strapStepLedgerSaveInFlight = true
         let segmentID = liveSessionID
         let segmentStartedAt = sessionStart
-        let segmentSteps = strapStepResearchCount
-        let segmentRawSteps = strapStepResearchPeakCount
         let deviceTimestamp = strapStepResearchDeviceTimestamp
         let state = strapStepResearchState
-        let unhandedRebindingSourceSegmentID = strapStepLedgerUnhandedRestoreRebindSourceSegmentID
+        let unhandedRebindingSourceSegmentID =
+            Self.strapStepLedgerUnhandedRebindSource(
+                currentSessionID: lastStrapStepLedgerSegmentID ?? liveSessionID,
+                nextSessionID: liveSessionID,
+                hasPersistedLedger: lastStrapStepLedgerSegmentID != nil
+            ) ?? strapStepLedgerUnhandedRestoreRebindSourceSegmentID
         let savedAt = Date()
         Task.detached(priority: .utility) { [weak self] in
             let result: Result<(AtriaStrapStepLedger.Record, URL?), Error> = Result {
@@ -45594,12 +49608,17 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         case let .success((record, quarantinedMalformedURL)):
             strapStepLedgerConsecutiveSaveFailures = 0
             strapStepLedgerLastFailureDescription = nil
+            lastStrapStepLedgerSegmentID = record.segmentID
             if liveSessionID == segmentID {
                 if strapStepLedgerUnhandedRestoreRebindSourceSegmentID != nil {
                     strapStepLedgerUnhandedRestoreRebindSourceSegmentID = nil
                 }
                 lastStrapStepLedgerSavedRawSteps = max(lastStrapStepLedgerSavedRawSteps,
                                                        record.segmentRawSteps)
+                lastStrapStepLedgerSavedSegmentSteps = max(
+                    lastStrapStepLedgerSavedSegmentSteps,
+                    record.segmentSteps
+                )
                 lastStrapStepLedgerSavedGyroCadenceResearchSteps = max(
                     lastStrapStepLedgerSavedGyroCadenceResearchSteps,
                     record.segmentGyroCadenceResearchSteps ?? 0
@@ -45693,6 +49712,60 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             || currentGyroSteps > max(0, persistedGyroSteps)
     }
 
+    /// Live gyro is often smaller than a leftover accelerometer `segmentSteps`
+    /// (desk peaks). Feeding gyro in as `segmentSteps` throws `regressedCount`
+    /// and never writes the walk.
+    nonisolated static func strapStepLedgerSegmentStepsForCheckpoint(
+        liveGyroSteps: Int,
+        persistedSegmentSteps: Int
+    ) -> Int {
+        max(0, liveGyroSteps, persistedSegmentSteps)
+    }
+
+    nonisolated static func strapStepLedgerRawStepsForCheckpoint(
+        liveRawSteps: Int,
+        persistedRawSteps: Int
+    ) -> Int {
+        max(0, liveRawSteps, persistedRawSteps)
+    }
+
+    nonisolated static func strapStepLedgerGyroStepsForCheckpoint(
+        pipelineGyroSteps: Int,
+        sessionGyroSteps: Int
+    ) -> Int {
+        max(0, pipelineGyroSteps, sessionGyroSteps)
+    }
+
+    /// Same-day UserDefaults gyro is the walk that failed to checkpoint when
+    /// leftover accel `segmentSteps` threw. Restore must seed that floor so
+    /// reconnect does not publish 18 over 214.
+    nonisolated static func strapStepLedgerGyroFloorForRestore(
+        ledgerGyro: Int,
+        liveGyroToday: Int,
+        liveGyroCapturedAt: Date?,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Int {
+        let ledger = max(0, ledgerGyro)
+        guard liveGyroToday > ledger,
+              let captured = liveGyroCapturedAt,
+              calendar.isDate(captured, inSameDayAs: now) else {
+            return ledger
+        }
+        return liveGyroToday
+    }
+
+    /// Journal restore runs after the ledger adopt and replaces `liveSessionID`.
+    /// Without this rebind, every later checkpoint throws `mismatchedSegment`.
+    nonisolated static func strapStepLedgerUnhandedRebindSource(
+        currentSessionID: UUID,
+        nextSessionID: UUID,
+        hasPersistedLedger: Bool
+    ) -> UUID? {
+        guard hasPersistedLedger, currentSessionID != nextSessionID else { return nil }
+        return currentSessionID
+    }
+
     nonisolated static func strapStepLedgerCheckpointDelay(
         lastSavedAt: Date?,
         now: Date,
@@ -45776,6 +49849,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 now: now
             )
             lastStrapStepLedgerSavedRawSteps = rotated.segmentRawSteps
+            lastStrapStepLedgerSavedSegmentSteps = rotated.segmentSteps
+            lastStrapStepLedgerSegmentID = rotated.segmentID
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 rotated.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
@@ -45845,6 +49920,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 now: now
             )
             lastStrapStepLedgerSavedRawSteps = resegmented.segmentRawSteps
+            lastStrapStepLedgerSavedSegmentSteps = resegmented.segmentSteps
+            lastStrapStepLedgerSegmentID = resegmented.segmentID
             lastStrapStepLedgerSavedGyroCadenceResearchSteps =
                 resegmented.segmentGyroCadenceResearchSteps ?? 0
             strapStepLedgerGyroCumulativePrefix = max(
@@ -45864,6 +49941,65 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             AtriaDebugLog("ATRIADBG strap_step_ledger status=resegment_failed reason=%@ error=%@",
                           reason,
                           error.localizedDescription)
+        }
+    }
+
+    private nonisolated func compactIMUSecond(
+        from completeFrame: Data,
+        receivedAt: Date
+    ) -> [AtriaR10MotionFrame] {
+        guard let packet = AtriaWhoop4CompactIMUDecoder.decode(frame: completeFrame) else {
+            return []
+        }
+        AtriaCompactIMULiveDiagnostics.note(rotationRate: packet.rotationRate)
+        let frames = compactIMUAssembler.push(packet, receivedAt: receivedAt)
+        AtriaCompactIMULiveDiagnostics.notePacket(
+            deviceTimestamp: packet.deviceTimestamp,
+            emitCount: frames.count,
+            rotationRate: packet.rotationRate,
+            receivedAt: receivedAt
+        )
+        return frames
+    }
+
+    private nonisolated func ingestLiveMotionFrame(
+        _ r10Frame: AtriaR10MotionFrame,
+        receivedAt: Date,
+        callbackSource: AtriaBLECallbackEpochFence.Source
+    ) {
+        AtriaStrengthSetWindow.ingestLiveR10(frame: r10Frame, receivedAt: receivedAt)
+        // CoreBluetooth already invokes this delegate on one serial
+        // lane. Submit to the pipeline from that lane directly so a
+        // later MainActor boundary marker cannot overtake a frame that
+        // this callback has admitted. The pipeline still revalidates
+        // the exact source immediately before detector mutation, and
+        // both publication hops reject a retired source.
+        guard bleCallbackEpochFence.owns(source: callbackSource) else { return }
+        stampLiveIMULiveness(receivedAt: receivedAt)
+        let stampAt = receivedAt
+        Task { @MainActor [weak self] in
+            self?.noteLiveIMULiveness(receivedAt: stampAt)
+        }
+        r10MotionPipeline.ingest(
+            r10Frame,
+            receivedAt: receivedAt,
+            sourceIsValid: { [weak self] in
+                self?.bleCallbackEpochFence.owns(
+                    source: callbackSource
+                ) == true
+            }
+        ) { [weak self] snapshot in
+            guard let self,
+                  self.bleCallbackEpochFence.owns(
+                    source: callbackSource
+                  ) else { return }
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.bleCallbackEpochFence.owns(
+                        source: callbackSource
+                      ) else { return }
+                self.applyR10MotionSnapshot(snapshot)
+            }
         }
     }
 
@@ -45913,7 +50049,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // lower snapshot. The pipeline remains responsible for adding future
         // motion to its seeded/committed prefix; this guard only prevents stale
         // state from moving daily and workout totals backwards.
-        strapStepResearchCount = reconciledTotals.steps
+        // `Snapshot.steps` is the accelerometer-peak coordinate. Session
+        // carry used to copy it onto this field, and monotonic max then
+        // froze thousands of sitting peaks into Today. Keep the user-facing
+        // count on gyro cadence only.
+        strapStepResearchCount = Self.gyroOnlySessionSteps(
+            current: strapStepResearchCount,
+            incomingGyro: gyroCadenceSteps
+        )
         strapStepResearchPeakCount = reconciledTotals.rawSteps
         if snapshot.deviceTimestamp > 0 {
             strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
@@ -46060,6 +50203,25 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                         rawSteps: max(0, max(currentRawSteps, incomingRawSteps)))
     }
 
+    /// Sitting compact IMU still produces thousands of accelerometer-peak
+    /// "steps". If those leak into the session coordinate, monotonic max
+    /// cannot come back down. Drop a contaminated current back onto gyro.
+    nonisolated static func gyroOnlySessionSteps(
+        current: Int,
+        incomingGyro: Int,
+        contaminationSlack: Int = 30
+    ) -> Int {
+        let incoming = max(0, incomingGyro)
+        let current = max(0, current)
+        // Desk leftover accel peaks are thousands. A real gyro walk (214 vs a
+        // reconnect snapshot of 18) is not contamination.
+        if current > incoming + max(0, contaminationSlack),
+           current >= 1_000 {
+            return incoming
+        }
+        return max(current, incoming)
+    }
+
     /// Snapshot callbacks can reach the MainActor out of order even though the
     /// detector itself is serial. Keep the persisted replay watermark moving
     /// only forward, including across the UInt32 seconds-clock wrap.
@@ -46078,29 +50240,124 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         return (imuStillnessRatioSum / frames, imuMovementIntensitySum / frames, sampleRate)
     }
 
-    static func shouldPublishLiveStrapStepResearch(currentCount: Int,
+    nonisolated static func shouldPublishLiveStrapStepResearch(currentCount: Int,
                                                    publishedCount: Int,
+                                                   currentCumulativeCount: Int = 0,
+                                                   publishedCumulativeCount: Int = 0,
                                                    force: Bool = false) -> Bool {
         if force { return true }
         return currentCount != publishedCount
+            || currentCumulativeCount != publishedCumulativeCount
+    }
+
+    /// Durable ledger prefix plus the current detector segment. Session-local
+    /// snapshots stay 0-based after reconnect; this is what Today must show.
+    nonisolated static func cumulativeGyroCadenceResearchSteps(
+        prefix: Int,
+        segment: Int,
+        maximum: Int = AtriaStrapStepLedger.maximumCount
+    ) -> Int {
+        min(max(0, maximum), max(0, prefix) + max(0, segment))
     }
 
     private func publishLiveStrapStepResearchIfNeeded(now: Date = Date(),
                                                       force: Bool = false) {
         rollStrapStepResearchDayIfNeeded(now: now, currentSessionCount: strapStepResearchCount)
-        guard Self.shouldPublishLiveStrapStepResearch(currentCount: strapStepResearchCount,
-                                                      publishedCount: liveStrapStepResearchCount,
-                                                      force: force) else {
+        let cumulative = Self.cumulativeGyroCadenceResearchSteps(
+            prefix: strapStepLedgerGyroCumulativePrefix,
+            segment: strapStepResearchCount
+        )
+        let cycleCount = Self.dayScopedStrapStepCount(
+            sessionCount: strapStepResearchCount,
+            dayBaseline: strapStepResearchCycleBaseline
+        )
+        let todayCount = Self.dayScopedStrapStepCount(
+            sessionCount: strapStepResearchCount,
+            dayBaseline: strapStepResearchDayBaseline
+        )
+        let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
+        let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: persistCount,
+            capturedAt: now
+        )
+        let publishedToday = Self.publishedLiveStrapStepTodayCount(
+            cycleOrDayCount: persistCount,
+            liveGyroToday: liveGyroToday
+        )
+        // Publish today before the session-count gate. A relaunch can keep
+        // strapStepResearchCount unchanged while today is still the
+        // post-baseline fragment (device 2026-09-17: 167 vs gyro-today 1944).
+        assignIfChanged(\.liveStrapStepResearchTodayCount, publishedToday)
+        guard Self.shouldPublishLiveStrapStepResearch(
+            currentCount: strapStepResearchCount,
+            publishedCount: liveStrapStepResearchCount,
+            currentCumulativeCount: cumulative,
+            publishedCumulativeCount: liveStrapStepResearchCumulativeCount,
+            force: force
+        ) else {
             return
         }
         assignIfChanged(\.liveStrapStepResearchCount, strapStepResearchCount)
-        assignIfChanged(\.liveStrapStepResearchTodayCount,
-                        Self.dayScopedStrapStepCount(sessionCount: strapStepResearchCount,
-                                                     dayBaseline: strapStepResearchDayBaseline))
+        assignIfChanged(\.liveStrapStepResearchCumulativeCount, cumulative)
+        if publishedToday > 0 {
+            AtriaHeldDailyStepFloor.persistLiveCoordinate(
+                count: publishedToday,
+                capturedAt: liveStrapStepCountCapturedAt ?? now,
+                cycleStart: strapStepResearchCycleStart,
+                trustedPrefix: strapStepLedgerGyroCumulativePrefix
+            )
+        }
+    }
+
+    func noteOpenPhysiologicalCycleStart(_ start: Date, now: Date = Date()) {
+        if let existing = strapStepResearchCycleStart,
+           abs(start.timeIntervalSince(existing)) < 1 {
+            return
+        }
+        let cycleChanged = strapStepResearchCycleStart != nil
+        strapStepResearchCycleStart = start
+        if cycleChanged {
+            AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: start)
+            strapStepResearchCycleBaseline = strapStepResearchCount
+        } else {
+            // Cold start used to baseline at the current session total, so
+            // Today dropped to steps-since-launch (167) while gyro-today
+            // still held the walk (1944).
+            let restoredToday = max(
+                AtriaHeldDailyStepFloor.load(cycleStart: start)?.count ?? 0,
+                AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+            )
+            strapStepResearchCycleBaseline = Self.cycleBaselinePreservingRestoredToday(
+                sessionCount: strapStepResearchCount,
+                restoredToday: restoredToday
+            )
+        }
+        publishLiveStrapStepResearchIfNeeded(now: now, force: true)
     }
 
     nonisolated static func dayScopedStrapStepCount(sessionCount: Int, dayBaseline: Int) -> Int {
         max(0, sessionCount - min(max(0, dayBaseline), max(0, sessionCount)))
+    }
+
+    /// Same-day gyro-today outranks a post-relaunch cycle fragment.
+    /// Device 2026-09-17: cycle-local 167 vs gyro-today 1944.
+    nonisolated static func publishedLiveStrapStepTodayCount(
+        cycleOrDayCount: Int,
+        liveGyroToday: Int
+    ) -> Int {
+        max(0, cycleOrDayCount, liveGyroToday)
+    }
+
+    /// Cold-start baseline so today equals the restored walk, not 0.
+    nonisolated static func cycleBaselinePreservingRestoredToday(
+        sessionCount: Int,
+        restoredToday: Int
+    ) -> Int {
+        let session = max(0, sessionCount)
+        let restored = max(0, restoredToday)
+        guard restored > 0 else { return session }
+        return max(0, session - restored)
     }
 
     private func rollStrapStepResearchDayIfNeeded(now: Date,
@@ -46193,6 +50450,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         imuInferredEndian = nil
         r10MotionFrameCount = 0
         lastR10MotionFrameAt = nil
+        liveIMULivenessUnix.withLock { $0 = 0 }
         assignIfChanged(\.liveStrapMotionCapturedAt, nil)
         assignIfChanged(\.liveStrapStepCountCapturedAt, nil)
         strapStepResearchCount = 0
@@ -46203,7 +50461,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         strapStepResearchDeviceTimestamp = nil
         strapStepResearchState = "research_unvalidated"
         if let carriedMotionSnapshot {
-            strapStepResearchCount = carriedMotionSnapshot.steps
+            strapStepResearchCount = carriedMotionSnapshot.gyroCadenceResearchSteps
             strapStepResearchPeakCount = carriedMotionSnapshot.rawSteps
             strapStepResearchDeviceTimestamp = carriedMotionSnapshot.deviceTimestamp > 0
                 ? carriedMotionSnapshot.deviceTimestamp : nil
@@ -46431,10 +50689,32 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // connect call and its success line are byte-for-byte unchanged.
             if let uuidString = defaults.string(forKey: LinkDefaults.savedPeripheralUUID),
                let uuid = UUID(uuidString: uuidString) {
-                if let saved = central.retrievePeripherals(withIdentifiers: [uuid]).first {
-                    if Self.shouldIssuePoweredOnStandingConnect(
-                        peripheralState: saved.state
-                    ) {
+                let preferSystemConnected = legacyPowerOnMarkers.silentStreamRebuild
+                    || centralPowerOnMarkers.silentStreamRebuild
+                let systemConnected = preferSystemConnected
+                    ? central.retrieveConnectedPeripherals(
+                        withServices: Self.UUIDs.scanServices
+                    ).first(where: { $0.identifier == uuid })
+                    : nil
+                if let saved = systemConnected
+                    ?? central.retrievePeripherals(withIdentifiers: [uuid]).first {
+                    let deferForDrain = Self.shouldDeferPoweredOnStandingConnectForRestoreSlotDrain(
+                        deferring: callbackPolicyState.snapshot()
+                            .deferStandingConnectForRestoreSlotDrain
+                    )
+                    let issueConnect = !deferForDrain && (
+                        Self.shouldIssuePoweredOnStandingConnect(
+                            peripheralState: saved.state
+                        ) || (preferSystemConnected && saved.state == .connected)
+                    )
+                    if deferForDrain {
+                        recordReconnectLeaseStage(
+                            "central_rebuild_standing_connect_deferred_drain",
+                            detail: "saved_uuid=1"
+                        )
+                        AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_precheck action=defer_until_restore_slot_drain peripheral_state=%d",
+                                      saved.state.rawValue)
+                    } else if issueConnect {
                         issueSingleFlightConnect(
                             saved,
                             central: central,
@@ -46556,9 +50836,16 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     // or became available only after the early precheck ran).
                     // Re-armed a standing pending connection to the known strap.
                     // No scan needed — iOS reconnects when it is in range.
-                } else {
+                } else if Self.shouldStartScanOnPoweredOnFallback(
+                    drainDeferred: callbackPolicyState.snapshot()
+                        .deferStandingConnectForRestoreSlotDrain,
+                    hasSavedStrap: hasSavedStrap
+                ) {
                     // No saved strap yet (first-time setup) — scan to find one.
                     startScan(reason: reason)
+                } else {
+                    AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_%@ action=skip_scan_saved_or_restore_slot_drain",
+                                  reason)
                 }
                 self.recomputeConnectionStatus(reason: "central_powered_on")
             case .poweredOff:
@@ -47036,6 +51323,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         let callbackEpoch = bleCallbackEpochFence.activate(
             peripheralID: peripheral.identifier,
             peripheralObjectID: ObjectIdentifier(peripheral)
@@ -47214,7 +51502,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 callbackEpoch: callbackEpoch,
                 reason: "did_connect_background_safe"
             )
-            if self.idleWindowDrainOwnsHeartRateLink() {
+            if self.idleWindowDrainOwnsHeartRateLink(),
+               !self.explicitWorkoutOwnsRadio() {
                 AtriaDebugLog(
                     "ATRIADBG ble_notify_reassert status=skipped reason=did_connect_background_safe detail=idle_window_drain_owns_2a37"
                 )
@@ -47364,11 +51653,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10ProfileRequestedNotifyUUIDs.removeAll()
             protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
             protectedR10StandardDiscoveryStarted = false
-            protectedR10InitialProfilePeripheralID = standardHROnlyMode
-                && !historyOnlyProbeMode
-                && !protectedR10StreamSuppressed
-                ? peripheral.identifier
-                : nil
+            protectedR10InitialProfilePeripheralID = Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+            ) ? peripheral.identifier : nil
             protectedR10InitialProfileNotificationRequested = false
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
@@ -47396,13 +51686,24 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // stay sparse and die within ~25 s regardless of what is sent on
             // them (2026-07-16 00:50 telemetry). Only an explicit workout or
             // calibration lease can re-enter that profile; ordinary all-day
-            // v24 banking is deliberately excluded.
+            // v24 banking is deliberately excluded. After THIS lease has
+            // already gone dense, do not re-arm: a reconnect must restore
+            // 2A37 only. Arming here would later demote a qualified owner
+            // into pure-HR fallback (2026-09-08 gym: 20–47 s HR holes).
             if denseBringUpIsWanted,
-               standardHROnlyMode,
                !historyOnlyProbeMode,
                protectedR10CleanOwner == .protectedV9,
                protectedR10CleanOwnerState == .qualified,
-               !protectedR10StreamSuppressed {
+               !protectedR10StreamSuppressed,
+               Self.shouldBeginProtectedR10BringUpForCurrentEpoch(
+                   leaseHasObservedDenseFrames: defaults.object(
+                       forKey: WorkoutMotionDefaults.denseObservedAt
+                   ) != nil,
+                   connectedAt: connectedAt,
+                   lastActivationConnectionAt: (defaults.object(
+                       forKey: WorkoutMotionDefaults.activationConnectionAt
+                   ) as? Double).map(Date.init(timeIntervalSince1970:))
+               ) {
                 workoutMotionLeaseProfileArmed = true
                 AtriaDebugLog("ATRIADBG workout_motion status=lease_full_bring_up_armed action=hr_first_then_launch_style_profile_per_connection")
             }
@@ -47421,6 +51722,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 retainHistoricalRequest: false
             )
             if self.freshHistoryOwnerAdmissionPending {
+                if Self.shouldAdmitFreshHistoryOwnerOnConnect(
+                    explicitMotionOwnershipActive: self.explicitWorkoutOwnsRadio()
+                ) {
                 self.freshHistoryOwnerAdmissionPending = false
                 if let pending = self.takePendingOfflineHistoricalSyncRequest() {
                     let started = self.requestOfflineHistoricalSyncIfNeeded(
@@ -47444,13 +51748,21 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         }
                     }
                 }
+                } else {
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=fresh_owner_deferred_for_explicit_workout action=restore_2a37_keep_pending_history"
+                    )
+                }
             }
             if readOnlyHistoryCaptureRequested {
                 AtriaDebugLog("ATRIADBG readOnlyHistory status=service_discovery_requested service=61080001 commands=0")
                 peripheral.discoverServices([Self.UUIDs.strapService])
                 return
             }
-            if resumeFreshHistoryOwnerConnectionIfNeeded(
+            if Self.shouldAdmitFreshHistoryOwnerOnConnect(
+                    explicitMotionOwnershipActive: self.explicitWorkoutOwnsRadio()
+               ),
+               resumeFreshHistoryOwnerConnectionIfNeeded(
                 peripheral: peripheral
             ) {
                 return
@@ -47489,6 +51801,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         // Step 2 natural-gap signal: a strap-initiated teardown surfaces a CBError
         // (remote_range_loss et al.); an app-initiated cancel disconnects with no
         // error. Only the former leaves a naturally-ended epoch that a bounded
@@ -47616,8 +51929,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     ? .suppressHistoryOwner
                     : .reconnectRealtime
         }
+        let skipStandingReconnectOnce = callbackPolicyState.snapshot().skipStandingReconnectOnce
         let synchronousReconnectIssued =
-            fastLaneDisposition.requestsRealtimeReconnect
+            !skipStandingReconnectOnce
+                && fastLaneDisposition.requestsRealtimeReconnect
                 && centralEventFence.accepts(centralToken, central: central)
                 && peripheral.state == .disconnected
         if synchronousReconnectIssued {
@@ -47663,6 +51978,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                               terminalCallbackEpoch,
                               self.bleCallbackEpochFence.epoch)
                 return
+            }
+            if self.awaitingDidDisconnectToForceConnectAfterDrain {
+                self.awaitingDidDisconnectToForceConnectAfterDrain = false
+                let skipStandingReconnect = self.skipStandingReconnectOnce
+                    || self.callbackPolicyState.snapshot().skipStandingReconnectOnce
+                if !skipStandingReconnect {
+                    self.forceStandingConnectAfterRestoreSlotDrain(
+                        reason: "did_disconnect_force_connect_after_drain",
+                        allowCancelConnecting: false
+                    )
+                }
             }
             self.releaseConnectedMotionBankPreFreshHRFirstRefusal(
                 reason: "did_disconnect"
@@ -48000,7 +52326,13 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                           disconnectCause,
                           defaults.integer(forKey: LinkDefaults.disconnectsThisLaunch),
                           disconnects)
-            let useFreshScan = forceFreshScanAfterDisconnect
+            let skipStandingReconnectOnce = Self.shouldSkipKnownStrapStandingReconnect(
+                skipStandingReconnectOnce: self.skipStandingReconnectOnce
+                    || self.callbackPolicyState.snapshot().skipStandingReconnectOnce
+            )
+            self.skipStandingReconnectOnce = false
+            self.callbackPolicyState.update { $0.skipStandingReconnectOnce = false }
+            let useFreshScan = forceFreshScanAfterDisconnect || skipStandingReconnectOnce
             let reconnectPolicy = useFreshScan ? "fresh_scan" : "reconnect_same_peripheral"
             forceFreshScanAfterDisconnect = false
             if wasUserRequestedDisconnect {
@@ -48311,6 +52643,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     self.peripheral = nil
                 }
                 recomputeConnectionStatus(reason: "event")
+                if skipStandingReconnectOnce {
+                    AtriaDebugLog("ATRIADBG ble_link status=disconnected reason=stuck_restored_connecting action=await_central_rebuild_no_standing_connect")
+                    return
+                }
                 let freshReason = longWearModeEnabled ? "long_wear_disconnect" : "stale_data_recovery"
                 // Even on a forced fresh recovery, prefer a standing pending connect
                 // to the KNOWN strap over scanning — it reconnects without giving up.
@@ -48361,6 +52697,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         }
         let failedCallbackEpoch = bleCallbackEpochFence.epoch
         proprietaryFrameReassembler.reset()
+        compactIMUAssembler.reset()
         let savedPeripheralIdentifier = UserDefaults.standard
             .string(forKey: LinkDefaults.savedPeripheralUUID)
             .flatMap(UUID.init(uuidString:))
@@ -48392,6 +52729,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 peripheralIsDisconnected: peripheral.state == .disconnected
             )
             && !Self.isPeerRemovedPairingError(error)
+            && !callbackPolicyState.snapshot().skipStandingReconnectOnce
         if synchronousReconnectIssued,
            centralEventFence.accepts(centralToken, central: central) {
             // A locked/background failure callback may be the last execution
@@ -48690,9 +53028,16 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         )
         let resolvedServiceOwnerEdge =
             "service_owner_resolved_\(strapDiscoveryOwner.rawValue)"
+        // Fence the breadcrumb too: a retired source's discovery callback
+        // must not stamp its edge onto the CURRENT generation's trace.
         Task { @MainActor in
+            guard self.acceptsBLECallback(
+                source: callbackSource,
+                peripheral: peripheral
+            ) else { return }
             self.recordProtectedV9BringUpEdge(resolvedServiceOwnerEdge)
         }
+        let compactIMURecoveryActive = compactIMURecoveryIsActive()
         for service in peripheral.services ?? [] {
             let characteristics: [CBUUID]?
             if motionHandshakeDiagnostic != nil {
@@ -48748,14 +53093,16 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                         ? Self.protectedStandardHRCharacteristics(
                             for: service.uuid,
                             streamSuppressed: protectedR10StreamSuppressed,
-                            cleanOwner: protectedR10CleanOwner
+                            cleanOwner: protectedR10CleanOwner,
+                            compactIMURecoveryActive: compactIMURecoveryActive
                         )
                         : nil
                 } else if callbackPolicy.protectedStandardDiscoveryStarted {
                     characteristics = Self.protectedStandardHRCharacteristics(
                         for: service.uuid,
                         streamSuppressed: protectedR10StreamSuppressed,
-                        cleanOwner: protectedR10CleanOwner
+                        cleanOwner: protectedR10CleanOwner,
+                        compactIMURecoveryActive: compactIMURecoveryActive
                     )
                 } else {
                     characteristics = nil
@@ -48765,7 +53112,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 var requested = Self.protectedStandardHRCharacteristics(
                     for: service.uuid,
                     streamSuppressed: protectedR10StreamSuppressed,
-                    cleanOwner: protectedR10CleanOwner
+                    cleanOwner: protectedR10CleanOwner,
+                    compactIMURecoveryActive: compactIMURecoveryActive
                 ) ?? []
                 if !requested.contains(Self.UUIDs.strapTX) {
                     requested.append(Self.UUIDs.strapTX)
@@ -48779,7 +53127,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     characteristics = Self.protectedStandardHRCharacteristics(
                         for: service.uuid,
                         streamSuppressed: protectedR10StreamSuppressed,
-                        cleanOwner: protectedR10CleanOwner
+                        cleanOwner: protectedR10CleanOwner,
+                        compactIMURecoveryActive: compactIMURecoveryActive
                     )
                 }
             } else {
@@ -48941,6 +53290,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             let resolvedCharacteristicOwnerEdge =
                 "characteristic_owner_resolved_\(strapDiscoveryOwner.rawValue)"
             Task { @MainActor in
+                guard self.acceptsBLECallback(
+                    source: callbackSource,
+                    peripheral: peripheral
+                ) else { return }
                 self.recordProtectedV9BringUpEdge(resolvedCharacteristicOwnerEdge)
             }
         }
@@ -48982,6 +53335,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             standardSnapshot: callbackPolicy.standardHROnly,
             historyOnlyProbeMode: historyOnlyProbeMode
         )
+        let compactIMURecoveryActive = compactIMURecoveryIsActive()
         let alreadyActiveProprietaryNotifications = discoveryUsesProtectedStandardHR
             ? Set<CBUUID>()
             : Self.alreadyActiveProprietaryNotifications(
@@ -49074,6 +53428,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             case UUIDs.strapTX:
                 if discoveryUsesProtectedStandardHR,
                    !protectedR10StreamSuppressed
+                    || compactIMURecoveryActive
                     || gate4HistoricalIMUWindowProbeRequested
                     || workoutBankTransportRequested {
                     foundTX = ch
@@ -49086,7 +53441,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
             default:
                 if discoveryUsesProtectedStandardHR,
-                   !protectedR10StreamSuppressed,
+                   (!protectedR10StreamSuppressed || compactIMURecoveryActive),
                    ch.uuid == Self.UUIDs.strapStream5,
                    ch.properties.contains(.notify) {
                     if !ch.isNotifying {
@@ -49198,7 +53553,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if !alreadyActiveProprietaryNotifications.isEmpty {
                     self.activeProprietaryNotifyUUIDs.formUnion(alreadyActiveProprietaryNotifications)
-                    self.strapStream5NotifyConfirmed = alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                    self.strapStream5NotifyConfirmed =
+                        alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                        && Self.shouldConfirmStream5FromCCCDState(
+                            stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                        )
                     AtriaDebugLog("ATRIADBG ble_restore_notifications status=seeded active=%d stream5=%d",
                                   self.activeProprietaryNotifyUUIDs.count,
                                   self.strapStream5NotifyConfirmed ? 1 : 0)
@@ -49206,7 +53565,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if passiveR10AlreadyNotifying {
                     self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
-                    self.strapStream5NotifyConfirmed = true
+                    if Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                    ) {
+                        self.strapStream5NotifyConfirmed = true
+                    }
                     self.markPassiveR10SubscriptionConfirmed()
                 }
                 for counter in radioCounters {
@@ -49214,7 +53577,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if let tx = foundTX {
                     self.txCharacteristic = tx
-                    self.dbgTxReady = true
+                    self.persistRadioTXReady(true)
                     self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
                     if self.startGate4HistoricalIMUWindowIfRequested(
                         peripheral: peripheral,
@@ -49260,7 +53623,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     peripheral: peripheral
                 ) else { return }
                 self.txCharacteristic = tx
-                self.dbgTxReady = true
+                self.persistRadioTXReady(true)
                 self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
                 if !self.handleHistoryOnlyTXDiscoveryIfNeeded(reason: "tx_only_discovered"),
                    !self.armWhenProprietaryNotifyPairReadyIfNeeded(reason: "tx_only_discovered_notify_pair_ready") {
@@ -49268,6 +53631,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
             }
         }
+    }
+
+    nonisolated func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard let tx = Self.strapWriteCharacteristic(on: peripheral) else { return }
+        let flushed = proprietaryWWRGate.flush(
+            peripheral: peripheral,
+            characteristic: tx
+        )
+        guard flushed > 0 else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: RadioDefaults.lastWWRAllowed)
+        defaults.set(Date().timeIntervalSince1970, forKey: RadioDefaults.lastWWRFlushedAt)
+        defaults.set(flushed, forKey: RadioDefaults.lastWWRFlushCount)
+        defaults.set(proprietaryWWRGate.pendingCount(), forKey: RadioDefaults.wwrPendingCount)
+        AtriaDebugLog("ATRIADBG proprietary_wwr status=flushed count=%d action=no_3f_no_2a37",
+                      flushed)
     }
 
     nonisolated func peripheral(_ peripheral: CBPeripheral,
@@ -49775,7 +54154,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 if Self.UUIDs.allNotify.contains(characteristic.uuid) {
                     self.activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
                     self.retryIdleWindowHistoryDrainWhenHistoryPipeReadyIfNeeded()
-                    if isData {
+                    if isData,
+                       Self.shouldConfirmStream5FromCCCDState(
+                        stream5NotifyCallbacksThisConnection: self.protocolStream5NotifyCallbacksThisConnection
+                       ) {
                         self.strapStream5NotifyConfirmed = true
                         if self.r10TransportIsExpected {
                             self.ensureR10LivenessWatchdog(reason: "stream5_notify_active")
@@ -49894,6 +54276,55 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             return
         }
         let isProprietaryNotification = UUIDs.allNotify.contains(uuid)
+        if isProprietaryNotification {
+            let defaults = UserDefaults.standard
+            let count = defaults.integer(
+                forKey: ProtocolDefaults.notifyCallbacksThisConnection
+            ) + 1
+            defaults.set(count, forKey: ProtocolDefaults.notifyCallbacksThisConnection)
+            defaults.set(receivedAt.timeIntervalSince1970,
+                         forKey: ProtocolDefaults.lastNotifyCallbackAt)
+            defaults.set(uuid.uuidString,
+                         forKey: ProtocolDefaults.lastNotifyCallbackUUID)
+            defaults.set(data.count,
+                         forKey: ProtocolDefaults.lastNotifyCallbackLength)
+            defaults.set(
+                data.prefix(256).map { String(format: "%02x", $0) }.joined(),
+                forKey: ProtocolDefaults.lastNotifyCallbackHex
+            )
+            if data.count >= 5, data[0] == 0xAA {
+                defaults.set(
+                    String(format: "%02x", data[4]),
+                    forKey: ProtocolDefaults.lastNotifyCallbackType
+                )
+            }
+            if uuid == Self.UUIDs.strapStream4 {
+                defaults.set(
+                    defaults.integer(forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection) + 1,
+                    forKey: ProtocolDefaults.stream4NotifyCallbacksThisConnection
+                )
+            } else if uuid == Self.UUIDs.strapStream5 {
+                defaults.set(
+                    defaults.integer(forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection) + 1,
+                    forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+                )
+            }
+            Task { @MainActor in
+                self.protocolNotifyCallbacksThisConnection = count
+                if uuid == Self.UUIDs.strapStream5 {
+                    self.protocolStream5NotifyCallbacksThisConnection = defaults.integer(
+                        forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+                    )
+                    self.strapStream5NotifyConfirmed = true
+                    if Self.proprietaryNotifyLooksLikeSleepModeLog(data) {
+                        self.lastStrapSleepModeAt = receivedAt
+                    } else if self.lastR10ZombieCCCDToggleAt != nil {
+                        self.lastR10ZombieCCCDToggleAt = nil
+                        AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_rearm reason=stream5_traffic action=allow_later_stale_toggle")
+                    }
+                }
+            }
+        }
         let isPendingOneShotBatteryResponse = uuid == Self.UUIDs.strapRX
             && UserDefaults.standard.bool(forKey: BatteryDefaults.proprietaryRefreshPending)
         if isProprietaryNotification,
@@ -49902,7 +54333,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             characteristicUUID: uuid,
             streamSuppressed: protectedR10StreamSuppressed,
             pendingOneShotBatteryResponse: isPendingOneShotBatteryResponse,
-            historyRecoveryActive: historyPhase.isActive
+            historyRecoveryActive: historyPhase.isActive,
+            compactIMURecoveryActive: compactIMURecoveryIsActive(now: receivedAt),
+            stream5NotifyCallbacksThisConnection: UserDefaults.standard.integer(
+                forKey: ProtocolDefaults.stream5NotifyCallbacksThisConnection
+            )
            ) {
             // A restored legacy subscription may briefly deliver after an app
             // update. Ignore it completely; never decode it into steps or let
@@ -50336,40 +54771,34 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     receivedAt: receivedAt
                 )
             }
-            if let r10Frame = AtriaR10MotionDecoder.decode(frame: completeFrame) {
-                // CoreBluetooth already invokes this delegate on one serial
-                // lane. Submit to the pipeline from that lane directly so a
-                // later MainActor boundary marker cannot overtake a frame that
-                // this callback has admitted. The pipeline still revalidates
-                // the exact source immediately before detector mutation, and
-                // both publication hops reject a retired source.
-                if bleCallbackEpochFence.owns(source: callbackSource) {
-                    r10MotionPipeline.ingest(
-                        r10Frame,
+            if let nativeR10 = AtriaR10MotionDecoder.decode(frame: completeFrame) {
+                if !historyPhase.isActive {
+                    ingestLiveMotionFrame(
+                        nativeR10,
                         receivedAt: receivedAt,
-                        sourceIsValid: { [weak self] in
-                            self?.bleCallbackEpochFence.owns(
-                                source: callbackSource
-                            ) == true
-                        }
-                    ) { [weak self] snapshot in
-                        guard let self,
-                              self.bleCallbackEpochFence.owns(
-                                source: callbackSource
-                              ) else { return }
-                        Task { @MainActor [weak self] in
-                            guard let self,
-                                  self.bleCallbackEpochFence.owns(
-                                    source: callbackSource
-                                  ) else { return }
-                            self.applyR10MotionSnapshot(snapshot)
-                        }
-                    }
+                        callbackSource: callbackSource
+                    )
                 }
                 if !storesProprietaryFrames {
                     let payloadLength = max(0, completeFrame.count - 8)
                     pendingMainActorWork.append(.r10Metadata(payloadLength: payloadLength))
                     continue
+                }
+            } else {
+                // Live compact 0x33 is the wrist IMU on stream-5. Leftover
+                // history drain keeps the phase fence active (device 2026-09-18:
+                // 0x31 metadata + advancing 0x33 timestamps while assembled
+                // seconds stayed 11h stale). Flash history is 0x2F/0x31; gating
+                // 0x33 behind that fence freezes Today Steps.
+                for compactSecond in compactIMUSecond(
+                    from: completeFrame,
+                    receivedAt: receivedAt
+                ) {
+                    ingestLiveMotionFrame(
+                        compactSecond,
+                        receivedAt: receivedAt,
+                        callbackSource: callbackSource
+                    )
                 }
             }
 
@@ -50703,7 +55132,9 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             | (UInt32(data[data.index(payloadEnd, offsetBy: 1)]) << 8)
             | (UInt32(data[data.index(payloadEnd, offsetBy: 2)]) << 16)
             | (UInt32(data[data.index(payloadEnd, offsetBy: 3)]) << 24)
-        guard expectedCRC == actualCRC else { return nil }
+        if expectedCRC != actualCRC {
+            guard data.count == len + 4 else { return nil }
+        }
 
         switch payload.first {
         case Packet.realtime:

@@ -52,9 +52,7 @@ private struct AtriaManualSleepHypnogram: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Stages · Hypnogram")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+                .atriaEyebrow()
 
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 0) {

@@ -17,8 +17,6 @@ enum AtriaSpO2Copy {
     /// Short app-limitation state for straps that carry the sensor. Waiting is
     /// not the blocker: Atria has not verified a decoder for the signal.
     static let decoderNotVerified = "Decoder not verified"
-    /// Short hardware state used only when the identified strap lacks SpO2.
-    static let notAvailableOnStrap = "Sensor unavailable on this strap"
     /// Headline state shown on the SpO2 card for every strap while no validated
     /// reading exists: blood oxygen is not available on this strap. Honest whether
     /// the strap lacks the sensor entirely or carries it but broadcasts no
@@ -63,9 +61,25 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .restingHeartRate: return "Resting heart rate"
         case .respiration: return "Respiratory rate"
         case .sleep: return "Sleep"
-        case .vo2max: return "Body Age & VO₂max"
+        case .vo2max: return "Fitness age & VO₂max"
         case .skinTemperature: return "Skin temperature"
         case .bloodOxygen: return "Blood oxygen (SpO₂)"
+        }
+    }
+
+    var drawsDailyBars: Bool {
+        switch self {
+        case .hrv, .recovery, .restingHeartRate, .respiration, .sleep:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var chartAnchorsAtZero: Bool {
+        switch self {
+        case .recovery, .sleep: return true
+        default: return false
         }
     }
 
@@ -175,7 +189,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // AtriaAnalytics.swift: 15.3 * maxHR/rest clamped 20–80 (Uth–Sørensen);
             // AtriaFitnessAge.swift: five factors → age offset clamped ±12; pace =
             // slope of the weekly offset.
-            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Body Age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
+            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Fitness age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
         case .skinTemperature:
             return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
         case .bloodOxygen:
@@ -246,7 +260,9 @@ struct AtriaAboutMetricTrend {
 
         func value(_ entry: DailyRollupStoreEntry) -> Double? {
             switch metric {
-            case .hrv: return entry.lnRMSSD.map { exp($0).rounded() }
+            case .hrv:
+                guard (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return entry.lnRMSSD.map { exp($0).rounded() }
             case .restingHeartRate: return entry.rhr.map(Double.init)
             case .recovery: return entry.recovery.map(Double.init)
             case .respiration: return entry.respiratoryRate
@@ -362,6 +378,8 @@ struct AtriaMiniTrendCard: View {
     let title: String
     /// What the values are, for VoiceOver ("HRV", "Sleep efficiency").
     let subject: String
+    var drawsDailyBars: Bool = false
+    var anchorsAtZero: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
@@ -370,31 +388,41 @@ struct AtriaMiniTrendCard: View {
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
             Chart {
-                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(subject, entry.point.value),
-                             series: .value("Run", "r\(entry.runID)"))
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.monotone)
-                        .lineStyle(AtriaChartVisualGrammar.trendLine)
-                }
-                // A dot per real reading so single-day runs (no line segment)
-                // are still visible instead of silently disappearing.
-                ForEach(trend.points) { point in
-                    PointMark(x: .value("Day", point.day, unit: .day),
-                              y: .value(subject, point.value))
-                        .foregroundStyle(tint)
-                        .symbolSize(18)
+                if drawsDailyBars {
+                    ForEach(trend.points) { point in
+                        BarMark(x: .value("Day", point.day, unit: .day),
+                                y: .value(subject, point.value),
+                                width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
+                            .foregroundStyle(tint.gradient)
+                            .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
+                    }
+                } else {
+                    ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
+                        LineMark(x: .value("Day", entry.point.day, unit: .day),
+                                 y: .value(subject, entry.point.value),
+                                 series: .value("Run", "r\(entry.runID)"))
+                            .foregroundStyle(tint)
+                            .interpolationMethod(.monotone)
+                            .lineStyle(AtriaChartVisualGrammar.trendLine)
+                    }
+                    ForEach(trend.points) { point in
+                        PointMark(x: .value("Day", point.day, unit: .day),
+                                  y: .value(subject, point.value))
+                            .foregroundStyle(tint)
+                            .symbolSize(18)
+                    }
                 }
             }
-            .atriaGraphPlotSurface()
+            .atriaDailyChartPlotChrome()
             .chartXScale(domain: trend.window)
-            .chartYScale(domain: trend.yDomain)
+            .chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(
+                values: trend.yDomain,
+                drawsBars: drawsDailyBars,
+                anchorsAtZero: anchorsAtZero
+            ))
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 72)
-            // Full-bleed plot inside the card (2026-08-05 width audit): the
-            // axis-less sparkline needs no inset; title and caption keep it.
             .padding(.horizontal, -AtriaDesignTokens.Spacing.lg)
             Text(trend.caption)
                 .font(.caption2)
@@ -448,6 +476,9 @@ struct AtriaAboutMetricSheet: View {
     var sheetContent: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
             glyphTile
+            if AtriaAppReviewDemo.isActive {
+                AtriaSampleDataBadge(compact: true)
+            }
             Text(metric.title)
                 .font(.system(size: 24, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
@@ -456,6 +487,7 @@ struct AtriaAboutMetricSheet: View {
                 .foregroundStyle(.secondary)
                 .lineSpacing(8)
                 .fixedSize(horizontal: false, vertical: true)
+            AtriaSourcesLink(metricID: metric.rawValue)
 
             if let trend {
                 trendCard(trend)
@@ -485,7 +517,9 @@ struct AtriaAboutMetricSheet: View {
         AtriaMiniTrendCard(trend: trend,
                            tint: metric.tint,
                            title: "YOUR LAST 30 DAYS",
-                           subject: metric.title)
+                           subject: metric.title,
+                           drawsDailyBars: metric.drawsDailyBars,
+                           anchorsAtZero: metric.chartAnchorsAtZero)
     }
 
     private var computeCard: some View {

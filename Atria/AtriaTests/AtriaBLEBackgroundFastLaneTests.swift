@@ -12,7 +12,10 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 onboardingPairingPreflight: false,
                 historySkipsDataRange: false,
                 protectedProfileIsEmpty: true,
-                protectedStandardDiscoveryStarted: false
+                protectedStandardDiscoveryStarted: false,
+                skipStandingReconnectOnce: false,
+                deferStandingConnectForRestoreSlotDrain: false,
+                identifiedStandingConnectIssued: false
             )
         )
 
@@ -31,7 +34,10 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
                 onboardingPairingPreflight: true,
                 historySkipsDataRange: true,
                 protectedProfileIsEmpty: false,
-                protectedStandardDiscoveryStarted: true
+                protectedStandardDiscoveryStarted: true,
+                skipStandingReconnectOnce: false,
+                deferStandingConnectForRestoreSlotDrain: false,
+                identifiedStandingConnectIssued: false
             )
         )
     }
@@ -370,9 +376,8 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         ))
         let mainActor = try XCTUnwrap(disconnect.range(of: "Task { @MainActor in"))
         XCTAssertLessThan(synchronousConnect.lowerBound, mainActor.lowerBound)
-        XCTAssertTrue(disconnect.contains(
-            "let synchronousReconnectIssued =\n            fastLaneDisposition.requestsRealtimeReconnect"
-        ))
+        XCTAssertTrue(disconnect.contains("let synchronousReconnectIssued ="))
+        XCTAssertTrue(disconnect.contains("fastLaneDisposition.requestsRealtimeReconnect"))
         XCTAssertTrue(disconnect.contains(
             "&& peripheral.state == .disconnected\n        if synchronousReconnectIssued"
         ))

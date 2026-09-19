@@ -24,6 +24,46 @@ final class AtriaHistoricalReplayIdentityShardTests: XCTestCase {
         XCTAssertFalse(decoded.contains(stableKey: fixture.identities[1].stableKey + "00"))
     }
 
+    func testDuplicateHistoryKeysCollapseToFirstOccurrence() throws {
+        let fixture = try makeFixture(frameCount: 3)
+        let firstLine = try String(contentsOf: fixture.archive, encoding: .utf8)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .first
+            .map(String.init) ?? ""
+        XCTAssertFalse(firstLine.isEmpty)
+        let handle = try FileHandle(forWritingTo: fixture.archive)
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: Data((firstLine + "\n").utf8))
+        try handle.close()
+        let digest = try AtriaHistoricalRetentionTransaction.sha256(of: fixture.archive)
+        let source = replacingSource(fixture.source, rawSHA256: digest, rawRowCount: 4)
+        let shard = try AtriaHistoricalReplayIdentityShard.build(
+            sourceURL: fixture.archive,
+            source: source
+        )
+        XCTAssertEqual(shard.entries.count, 3)
+        XCTAssertEqual(Set(shard.entries.map(\.stableKey)).count, 3)
+        XCTAssertEqual(source.rawRowCount, 4)
+        let ledger = AtriaHistoricalConsumerReceiptLedger(
+            directoryURL: fixture.archive.deletingLastPathComponent()
+                .appendingPathComponent("consumer-receipts")
+        )
+        let published = try AtriaHistoricalReplayIdentityShard.publishReceipt(
+            sourceURL: fixture.archive,
+            source: source,
+            ledger: ledger,
+            settledAt: source.lastTimestamp
+        )
+        XCTAssertEqual(published.receipt.recordCount, 3)
+        let artifact = try Data(contentsOf: published.artifactURL)
+        XCTAssertTrue(try AtriaHistoricalReplayIdentityShard.verifyReceipt(
+            published.receipt,
+            artifact: artifact,
+            sourceURL: fixture.archive,
+            source: source
+        ))
+    }
+
     func testReplayIdentityShardRebuildsIdenticallyFromCompressedArtifact() throws {
         let fixture = try makeFixture(frameCount: 4)
         // The durable identity shard built from the plaintext sealed source.

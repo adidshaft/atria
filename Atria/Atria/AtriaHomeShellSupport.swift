@@ -176,7 +176,7 @@ struct AtriaHomeObservers: View {
     var body: some View {
         Color.clear
             .frame(width: 0, height: 0)
-            .onChange(of: statusStore.state.status) { _, status in
+            .onChange(of: statusStore.state.status, initial: true) { _, status in
                 onStatusChange(status)
             }
             .onChange(of: snapshotStore.diagnosticsReady) { _, ready in

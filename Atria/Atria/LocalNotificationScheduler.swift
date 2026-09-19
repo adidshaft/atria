@@ -4,6 +4,11 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
+    private static func demoNotificationsBlocked(kind: String) -> Bool {
+        guard AtriaAppReviewDemo.isActive else { return false }
+        AtriaDebugLog("ATRIADBG notification_schedule status=suppressed kind=%@ reason=app_review_demo", kind)
+        return true
+    }
     struct LaunchDecisionScope: Equatable {
         let productionCadence: Bool
         let includeSleepReviewDecisions: Bool
@@ -175,6 +180,7 @@ enum LocalNotificationScheduler {
         now: Date = Date(),
         calendar: Calendar = .current
     ) {
+        guard !demoNotificationsBlocked(kind: "sync_nudge") else { return }
         guard AtriaNotificationSettings.load().allows(kind: "sync_nudge") else { return }
         guard let content = syncNudgeContent(
             flushDebtPendingRecords: flushDebtPendingRecords,
@@ -221,6 +227,7 @@ enum LocalNotificationScheduler {
     static func scheduleHealthDeviationIfNeeded(rollups: [DailyRollupStoreEntry],
                                                 now: Date = Date(),
                                                 calendar: Calendar = .current) {
+        guard !demoNotificationsBlocked(kind: "health_deviation") else { return }
         guard AtriaNotificationSettings.load().allows(kind: "health_deviation") else {
             AtriaDebugLog("ATRIADBG notification_skip kind=health_deviation reason=user_disabled")
             return
@@ -268,6 +275,7 @@ enum LocalNotificationScheduler {
                                        sleepDurationSeconds: TimeInterval? = nil,
                                        now: Date = Date(),
                                        calendar: Calendar = .current) {
+        guard !demoNotificationsBlocked(kind: "morning_summary") else { return }
         guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_summary")
             return
@@ -548,6 +556,7 @@ enum LocalNotificationScheduler {
     }
 
     static func scheduleWeeklyReport(_ report: WeeklyReport) {
+        guard !demoNotificationsBlocked(kind: "weekly_report") else { return }
         guard AtriaNotificationSettings.load().allows(kind: "weekly_report") else {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=weekly_report")
             return
@@ -919,6 +928,7 @@ enum LocalNotificationScheduler {
     }
 
     static func scheduleSleepLogged(_ sleep: UserConfirmedSleep, calendar: Calendar = .current) {
+        guard !demoNotificationsBlocked(kind: "sleep_logged") else { return }
         guard AtriaNotificationSettings.load().allows(kind: "sleep_logged") else {
             AtriaDebugLog("ATRIADBG notification_skip kind=sleep_logged reason=user_disabled")
             return
@@ -2606,7 +2616,10 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         AtriaDebugLog("ATRIADBG notification_delivered kind=%@ id=%@ foreground=1",
               kind(for: request.identifier),
               request.identifier)
-        return [.banner, .sound]
+        // .list keeps a foreground delivery findable in Notification Center
+        // after the banner fades; without it the notification vanished
+        // entirely once missed.
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter,

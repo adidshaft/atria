@@ -185,9 +185,7 @@ struct AtriaSleepStageRowStrip: View {
             // The estimate marker stays attached to these rows — mandatory
             // whenever stage-derived pixels render (2.0 invariant).
             Text(AtriaSleepStageRowStripPresentation.headerTitle(isEstimated: isEstimated))
-                .font(.caption2.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
 
             ForEach(rows) { row in
                 stageRow(row)
@@ -200,7 +198,7 @@ struct AtriaSleepStageRowStrip: View {
                 Spacer(minLength: 0)
                 Text(AtriaSleepHypnogramPresentation.clockLabel(windowEnd, calendar: eventCalendar))
             }
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .font(.caption2.weight(.medium).monospacedDigit())
             .foregroundStyle(.tertiary)
 
             // P7: the typical sub-strips are duration-scaled, not wall-clock
@@ -225,9 +223,12 @@ struct AtriaSleepStageRowStrip: View {
                 Text(row.name)
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
+                // 2026-08-29 minimalism pass: the value reads primary, the
+                // unit-ish duration secondary — no stage-tinted text; the dot
+                // and the lanes below carry the stage color.
                 Text("\(row.percent)%")
                     .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                 Text(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -324,7 +325,10 @@ struct AtriaSleepStageRowStrip: View {
                 let mark = Path(roundedRect: CGRect(x: max(0, x), y: 0,
                                                     width: width, height: size.height),
                                 cornerRadius: size.height / 2)
-                context.fill(mark, with: .color(color))
+                // 2026-08-29 minimalism pass: capsules keep the stage color
+                // (they are the data) at reduced opacity so the strip reads
+                // calmer against the neutral text around it.
+                context.fill(mark, with: .color(color.opacity(0.85)))
             }
         }
         .frame(height: 8)
@@ -344,5 +348,95 @@ struct AtriaSleepStageRowStrip: View {
         }
         if let hedge = row.hedgeCaption { parts.append(hedge) }
         return parts.joined(separator: ", ")
+    }
+}
+
+/// Compact hypnogram + four stage chips for one recorded night. Activity
+/// mounts this under that night's row; the Sleep detail sheet uses the
+/// full row strip. Today does not.
+struct AtriaSleepStageCompactStrip: View, Equatable {
+    let night: SleepHistorySnapshot.Night
+    var usesOwnCard: Bool = true
+
+    var body: some View {
+        let segments = night.displayStageSegments
+        let rows = AtriaSleepStageRowStripPresentation.rows(
+            for: segments,
+            windowStart: night.start ?? segments.first?.start ?? Date(),
+            windowEnd: night.end ?? segments.last?.end ?? Date(),
+            isEstimated: night.isEstimatedStageDisplay,
+            tier: night.estimateConfidenceTier
+        )
+        VStack(alignment: .leading, spacing: 8) {
+            if night.isEstimatedStageDisplay {
+                Text(AtriaSleepStageEstimateLabel.title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            if let start = night.start, let end = night.end, !segments.isEmpty {
+                AtriaSleepStageHypnogram(
+                    segments: segments,
+                    start: start,
+                    end: end,
+                    duration: max(night.duration, end.timeIntervalSince(start)),
+                    isEstimate: night.isEstimatedStageDisplay
+                )
+                .frame(height: 36)
+            }
+            HStack(spacing: 8) {
+                ForEach(rows) { row in
+                    VStack(spacing: 4) {
+                        Image(systemName: row.stage.symbolName)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(AtriaSleepStagePalette.color(for: row.stage))
+                            .symbolRenderingMode(.hierarchical)
+                            .accessibilityHidden(true)
+                        Text(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(row.name), \(AtriaSleepStageRowStripPresentation.durationText(minutes: row.minutes))")
+                }
+            }
+        }
+        .padding(.horizontal, usesOwnCard ? 12 : 0)
+        .padding(.vertical, usesOwnCard ? 10 : 4)
+        .modifier(AtriaSleepStageCompactStripCard(enabled: usesOwnCard))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        let rows = AtriaSleepStageRowStripPresentation.rows(
+            for: night.displayStageSegments,
+            windowStart: night.start ?? Date(),
+            windowEnd: night.end ?? Date(),
+            isEstimated: night.isEstimatedStageDisplay
+        )
+        let parts = rows.map {
+            "\($0.name) \(AtriaSleepStageRowStripPresentation.durationText(minutes: $0.minutes))"
+        }
+        let prefix = night.isEstimatedStageDisplay
+            ? AtriaSleepStageEstimateLabel.title
+            : "Sleep stages"
+        return ([prefix] + parts).joined(separator: ". ")
+    }
+}
+
+private struct AtriaSleepStageCompactStripCard: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.atriaInsetCard(tint: Metrics.electricSleep)
+        } else {
+            content
+        }
     }
 }

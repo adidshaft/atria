@@ -93,9 +93,7 @@ struct AtriaMetricProvenanceCard: View {
     private func note(title: String, body: String) -> some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
             Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+                .atriaEyebrow()
             Text(body)
                 .font(.caption)
                 .foregroundStyle(.primary)
