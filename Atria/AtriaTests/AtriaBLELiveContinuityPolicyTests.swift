@@ -168,7 +168,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 attendedRequest: false,
                 nonDestructiveConnectedHistoryAllowed: true
             ),
-            "the legacy automatic prefilter may pass a no-cancel request; the global realtime-owner gate above still defers every new history transport"
+            "same-link 0x69 IMU catch-up may run while 2A37 stays up"
         )
     }
 
