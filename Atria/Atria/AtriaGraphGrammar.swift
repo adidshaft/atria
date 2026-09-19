@@ -160,6 +160,56 @@ enum AtriaChartVisualGrammar {
         return .top
     }
 
+    /// Compact week tick (`F 18`) so a 7-day window never stacks `S S` or
+    /// clips `Sep 18` on a narrow phone. Month windows keep month+day.
+    static func nightAxisLabelText(
+        for mark: Date,
+        domain: ClosedRange<Date>,
+        calendar: Calendar = .current
+    ) -> String {
+        let start = calendar.startOfDay(for: domain.lowerBound)
+        let end = calendar.startOfDay(for: domain.upperBound)
+        let spanDays = max(
+            1,
+            calendar.dateComponents([.day], from: start, to: end).day ?? 1
+        )
+        if spanDays <= 8 {
+            return compactWeekdayDayLabel(for: mark, calendar: calendar)
+        }
+        return mark.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// Weekday initial plus day-of-month (`M 10`, `T 11`). Shared by the
+    /// overnight week axis and the strain/recovery combo so those two
+    /// 7-day surfaces do not invent different tick copy.
+    static func compactWeekdayDayLabel(
+        for day: Date,
+        calendar: Calendar = .current
+    ) -> String {
+        let weekday = day.formatted(.dateTime.weekday(.narrow))
+        let dayOfMonth = calendar.component(.day, from: day)
+        return "\(weekday) \(dayOfMonth)"
+    }
+
+    /// Rounded daily columns. One radius and one relative width so Recovery,
+    /// HRV, Strain, Steps and the combo do not each pick a different bar.
+    static let dailyBarCornerRadius: CGFloat = 4
+    static let dailyBarWidthRatio: CGFloat = 0.58
+    static let inlinePlotHeight: CGFloat = 196
+
+    /// Magnitude bars (recovery %, sleep hours, strain) grow from zero so
+    /// height is the value. Level bars (HRV, RHR, respiration) keep the
+    /// padded min…max domain — the same shape, with the few-unit move still
+    /// readable instead of crushed into the top sliver of a 0-based column.
+    static func plottedYDomain(
+        values: ClosedRange<Double>,
+        drawsBars: Bool,
+        anchorsAtZero: Bool
+    ) -> ClosedRange<Double> {
+        guard drawsBars, anchorsAtZero else { return values }
+        return 0...max(values.upperBound, 1)
+    }
+
     /// Mark density for a SCROLLABLE day-bar chart.
     ///
     /// `.automatic(desiredCount:)` recomputes against whatever is on screen, so
@@ -324,6 +374,73 @@ extension View {
                 .clipShape(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
+        }
+    }
+
+    /// Shared quantity axis for every daily chart: leading, four ticks,
+    /// caption type, no tick marks. Intra-day traces that need custom
+    /// zone labels keep their own axis; everything else comes here.
+    func atriaDailyQuantityYAxis() -> some View {
+        chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel()
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Overnight Day/Week/Month x-axis: label recorded nights, sit edge
+    /// dates inside the plot, and use the same week (`F 18`) / month
+    /// (`Sep 18`) copy on every surface.
+    func atriaOvernightChartXAxis(
+        recordedDays: [Date],
+        domain: ClosedRange<Date>,
+        targetCount: Int = 4
+    ) -> some View {
+        chartXAxis {
+            AxisMarks(
+                preset: .aligned,
+                values: AtriaChartVisualGrammar.nightBarAxisMarks(
+                    days: recordedDays,
+                    targetCount: targetCount,
+                    domain: domain
+                )
+            ) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
+                if let date = value.as(Date.self) {
+                    AxisValueLabel(
+                        anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                            for: date,
+                            domain: domain
+                        )
+                    ) {
+                        Text(AtriaChartVisualGrammar.nightAxisLabelText(
+                            for: date,
+                            domain: domain
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Plot surface plus top headroom in ONE `chartPlotStyle`. Chaining a
+    /// second `chartPlotStyle` replaces the first, which is why the quiet
+    /// fill used to vanish the moment a chart also asked for label room.
+    func atriaDailyChartPlotChrome() -> some View {
+        chartPlotStyle { plot in
+            plot
+                .background(Color.primary.opacity(0.035))
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .padding(.top, 8)
         }
     }
 }

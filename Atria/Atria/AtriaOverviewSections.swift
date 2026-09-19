@@ -2048,27 +2048,28 @@ struct AtriaWeeklyReportSheet: View {
                     ForEach(selectedTrendPoints, id: \.day) { point in
                         BarMark(x: .value("Day", point.day, unit: .day),
                                 y: .value(selectedTrend.rawValue, point.value),
-                                width: .fixed(18))
+                                width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
                             .foregroundStyle(point.tint)
-                            .cornerRadius(4)
+                            .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                     }
                 }
+                .atriaDailyChartPlotChrome()
                 .chartYScale(domain: selectedTrendDomain)
                 .chartXScale(domain: Self.trendWeekXDomain(anchor: displayedReport.generatedAt,
                                                            calendar: reportCalendar) ?? Date()...Date())
-                .chartYAxis {
-                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 4))
-                }
+                .atriaDailyQuantityYAxis()
                 .chartXAxis {
-                    AxisMarks(values: weekDays) { _ in
-                        AxisGridLine()
-                        // Bars only here, and a `unit: .day` bar spans its
-                        // whole day — so the weekday must sit at the middle of
-                        // that span, not at midnight where the bar's left edge
-                        // is. Marks are one day apart, so `centered:` is half
-                        // a day — noon — not half a week.
-                        AxisValueLabel(format: .dateTime.weekday(.abbreviated),
-                                       centered: true)
+                    AxisMarks(values: weekDays) { value in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                        AxisTick().foregroundStyle(.clear)
+                        if let date = value.as(Date.self) {
+                            AxisValueLabel(centered: true) {
+                                Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: date,
+                                                                                   calendar: reportCalendar))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
                 .frame(height: 120)
@@ -3781,6 +3782,18 @@ enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
         }
     }
 
+    /// Bars that name a magnitude from nothing start at zero so height is
+    /// the value. Overnight levels keep the padded min…max domain — same
+    /// bars as Recovery, with the few-unit HRV/RHR move still readable.
+    var chartAnchorsAtZero: Bool {
+        switch self {
+        case .recovery, .sleep, .strain, .sleepPerformance, .sleepEfficiency:
+            return true
+        default:
+            return false
+        }
+    }
+
     var title: String {
         switch self {
         case .recovery: return "Recovery"
@@ -4601,6 +4614,7 @@ struct AtriaMetricDetailSheet: View {
                                        coverageNoun: metric.coverageNoun,
                                        // Open in the form the user just tapped.
                                        defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
+                                       anchorsAtZero: metric.chartAnchorsAtZero,
                                        onDismiss: { showExpandedChart = false })
             }
         }
@@ -4742,8 +4756,6 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Recovery",
-                                // Per-day bar: a 0-100 score; zero is meaningful.
-                                rendersAsDailyBar: true,
                                 unit: "%",
                                 tint: Metrics.electricGreen,
                                 points: recoveryDisplayPointsForSelectedPeriod,
@@ -4919,8 +4931,6 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep duration",
-                                // Per-day bar: hours accumulated from zero.
-                                rendersAsDailyBar: true,
                                 unit: "h",
                                 tint: Metrics.electricSleep,
                                 points: displayedPoints(auto: preparedHistory.sleep[range] ?? [], raw: preparedHistory.sleepRaw[range] ?? []),
@@ -4982,8 +4992,6 @@ struct AtriaMetricDetailSheet: View {
                         }
                     } else {
                         metricChart(title: "Strain",
-                                // Per-day bar: accumulates from 0 each physiological day.
-                                rendersAsDailyBar: true,
                                     unit: "",
                                     tint: Metrics.electricStrain,
                                     points: strainDisplayPointsForSelectedPeriod,
@@ -5009,8 +5017,6 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep sufficiency",
-                                // Per-day bar: percent of need, measured from zero.
-                                rendersAsDailyBar: true,
                                 unit: "%",
                                 tint: Metrics.electricSleep,
                                 points: preparedHistory.sleepPerformance[range] ?? [],
@@ -5086,7 +5092,9 @@ struct AtriaMetricDetailSheet: View {
                     AtriaMiniTrendCard(trend: trend,
                                        tint: Metrics.electricSleep,
                                        title: "LAST 30 NIGHTS",
-                                       subject: "Sleep efficiency")
+                                       subject: "Sleep efficiency",
+                                       drawsDailyBars: true,
+                                       anchorsAtZero: true)
                 } about: {
                     aboutSection
                 }
@@ -6573,7 +6581,6 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private func metricChart(title: String,
-                             rendersAsDailyBar: Bool = false,
                              unit: String,
                              tint: Color,
                              points: [AtriaDetailChartPoint],
@@ -6647,7 +6654,8 @@ struct AtriaMetricDetailSheet: View {
             title: title,
             unit: unit,
             tint: tint,
-            rendersAsDailyBar: rendersAsDailyBar,
+            rendersAsDailyBar: metric.rendersAsDailyBar,
+            anchorsAtZero: metric.chartAnchorsAtZero,
             points: points,
             summary: summary,
             comparison: comparison,
@@ -7046,13 +7054,10 @@ private struct AtriaPreparedMetricChart: View {
     let title: String
     let unit: String
     let tint: Color
-    /// Owner direction 2026-08-25: a metric producing ONE value per day that
-    /// ACCUMULATES from zero is a bar; a per-day LEVEL stays a line. Recovery %,
-    /// sleep hours and sleep performance are magnitudes measured from zero, so a
-    /// bar's reading is literally true for them. Resting HR (~55) and HRV (~60)
-    /// are levels whose zero is never observed — bars from zero would push their
-    /// real few-unit signal into the top sliver of every column.
+    /// Once-a-day metrics draw as bars. Magnitudes grow from zero; levels
+    /// keep a padded domain so a 4 ms HRV move is not a 4% sliver.
     let rendersAsDailyBar: Bool
+    let anchorsAtZero: Bool
     let points: [AtriaDetailChartPoint]
     let summary: AtriaDetailPeriodSummary?
     let comparison: AtriaDetailComparisonSummary?
@@ -7075,6 +7080,7 @@ private struct AtriaPreparedMetricChart: View {
          unit: String,
          tint: Color,
          rendersAsDailyBar: Bool = false,
+         anchorsAtZero: Bool = true,
          points: [AtriaDetailChartPoint],
          summary: AtriaDetailPeriodSummary?,
          comparison: AtriaDetailComparisonSummary?,
@@ -7093,6 +7099,7 @@ private struct AtriaPreparedMetricChart: View {
         self.unit = unit
         self.tint = tint
         self.rendersAsDailyBar = rendersAsDailyBar
+        self.anchorsAtZero = anchorsAtZero
         self.points = points
         self.summary = summary
         self.comparison = comparison
@@ -7261,9 +7268,10 @@ private struct AtriaPreparedMetricChart: View {
                 // needs one datum and a missing day simply draws nothing.
                 ForEach(points) { point in
                     BarMark(x: .value("Day", point.day, unit: .day),
-                            y: .value(title, point.value))
+                            y: .value(title, point.value),
+                            width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
                         .foregroundStyle(point.tint.gradient)
-                        .cornerRadius(3)
+                        .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                 }
             } else {
                 // Split at gaps like the LINE above it. This gradient fill was
@@ -7286,10 +7294,6 @@ private struct AtriaPreparedMetricChart: View {
                 RuleMark(y: .value("Prior average", comparison.priorAverage))
                     .foregroundStyle(.secondary.opacity(0.5))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .annotation(position: .topTrailing, spacing: 2,
-                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                        Text("prior avg \(comparison.priorText)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    }
             }
             // The per-day prior-period ghost line remains intentionally absent:
             // comparison is a real prior average, not an invented historical
@@ -7363,44 +7367,24 @@ private struct AtriaPreparedMetricChart: View {
                     .foregroundStyle(tint).symbolSize(130)
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartXSelection(value: $scrubbedDay)
-        // A bar states "this much, measured from zero". `prepared.domain` pads
-        // around min...max, which is right for a level but would render every
-        // bar as a truncated stub and exaggerate small day-to-day differences.
-        .chartYScale(domain: rendersAsDailyBar
-                     ? 0...max(prepared.domain.upperBound, 1)
-                     : prepared.domain)
+        // A bar states "this much, measured from zero" only when zero is a
+        // real floor. Level metrics keep the padded domain so day-to-day
+        // moves stay readable.
+        .chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(
+            values: prepared.domain,
+            drawsBars: rendersAsDailyBar,
+            anchorsAtZero: anchorsAtZero
+        ))
         .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
-        .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
+        .atriaDailyQuantityYAxis()
         .chartYAxisLabel(unit)
-        .chartXAxis {
-            // Overnight points (bars or lines) must be labeled on recorded
-            // nights. HRV/RHR Week used `.automatic` across Sep 12–18 and
-            // printed 12/14/16/18 under 15/16/18 (device 2026-09-18 16:25).
-            AxisMarks(preset: .aligned, values: AtriaChartVisualGrammar.nightBarAxisMarks(
-                days: points.map(\.day),
-                targetCount: 4,
-                domain: prepared.xDomain ?? fallbackXDomain
-            )) { value in
-                AxisGridLine().foregroundStyle(.quaternary)
-                AxisTick()
-                if let date = value.as(Date.self) {
-                    AxisValueLabel(anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
-                        for: date,
-                        domain: prepared.xDomain ?? fallbackXDomain
-                    )) {
-                        Text(date, format: .dateTime.month(.abbreviated).day())
-                    }
-                }
-            }
-        }
-        // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so
-        // the top axis label and edge points always render fully.
-        .chartPlotStyle { plot in
-            plot.padding(.top, 8)
-        }
-        .frame(height: 210)
+        .atriaOvernightChartXAxis(
+            recordedDays: points.map(\.day),
+            domain: prepared.xDomain ?? fallbackXDomain
+        )
+        .frame(height: AtriaChartVisualGrammar.inlinePlotHeight)
         .onTapGesture(count: 2) {
             if let target = scrubbedDay, let onOpenDay { onOpenDay(target) }
         }

@@ -223,6 +223,47 @@ final class AtriaGraphGrammarTests: XCTestCase {
         ), "no samples means no selection — never a fabricated one")
     }
 
+    func testPlottedYDomainAnchorsMagnitudeBarsAndKeepsLevelRange() {
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 5.5...8.0, drawsBars: true, anchorsAtZero: true
+            ),
+            0...8.0
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 49...64, drawsBars: true, anchorsAtZero: false
+            ),
+            49...64
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.plottedYDomain(
+                values: 49...64, drawsBars: false, anchorsAtZero: true
+            ),
+            49...64
+        )
+    }
+
+    func testWeekAxisLabelsUseWeekdayAndDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let friday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 18))!
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar),
+            friday.formatted(.dateTime.weekday(.narrow)) + " 18"
+        )
+        let week = friday.addingTimeInterval(-6 * 86_400)...friday
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelText(for: friday, domain: week, calendar: calendar),
+            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar)
+        )
+        let month = friday.addingTimeInterval(-29 * 86_400)...friday
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelText(for: friday, domain: month, calendar: calendar),
+            friday.formatted(.dateTime.month(.abbreviated).day())
+        )
+    }
+
     func testScrubSelectionIsGenericOverTheChartsOwnPointType() {
         struct Sample: Equatable { let t: Date; let bpm: Int }
         let base = reference

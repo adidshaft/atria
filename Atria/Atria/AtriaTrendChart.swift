@@ -248,6 +248,7 @@ struct AtriaTrendChartCard: View {
                                    coverageNoun: metric.coverageNoun,
                                    // Open in the form the user just tapped.
                                    defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
+                                   anchorsAtZero: metric.chartAnchorsAtZero,
                                    onDismiss: { showExpandedChart = false })
         }
     }
@@ -480,10 +481,6 @@ struct AtriaTrendChartCard: View {
         return indices.sorted().map { ordered[$0] }
     }
 
-    private var chartXAxisDates: [Date] {
-        Self.compactXAxisDates(prepared.series.map(\.date))
-    }
-
     /// Visible text for each compact tick, deduped so two ticks that format to
     /// the same string can never render as side-by-side identical labels — the
     /// duplicated-axis-label defect from the 2026-07-31 History audit. A date
@@ -498,10 +495,6 @@ struct AtriaTrendChartCard: View {
             previous = label
         }
         return output
-    }
-
-    private var chartXAxisLabels: [Date: String] {
-        Self.compactXAxisLabelTexts(chartXAxisDates)
     }
 
     private var chart: some View {
@@ -546,16 +539,18 @@ struct AtriaTrendChartCard: View {
         AtriaTrendSparseGrammar.chartHeight(observedCount: prepared.series.count)
     }
 
-    /// A bar states "this much, measured from zero". The line domains pad
-    /// around min...max, which is right for a level but would render every bar
-    /// as a truncated stub and exaggerate small day-to-day differences — a
-    /// chart that lies. Anchor bar metrics at zero; leave levels padded.
+    /// A bar states "this much, measured from zero" only when zero is a
+    /// real floor. Level metrics keep the padded domain so a 4 ms HRV move
+    /// is not crushed into the top sliver of a 0-based column.
     private var trendYDomain: ClosedRange<Double> {
         let base = showsPriorComparison
             ? prepared.comparisonYDomain
             : prepared.currentYDomain
-        guard metric.rendersAsDailyBar else { return base }
-        return 0...max(base.upperBound, 1)
+        return AtriaChartVisualGrammar.plottedYDomain(
+            values: base,
+            drawsBars: metric.rendersAsDailyBar,
+            anchorsAtZero: metric.chartAnchorsAtZero
+        )
     }
 
     private var coreChart: some View {
@@ -592,11 +587,12 @@ struct AtriaTrendChartCard: View {
                     // across days the strap never measured. A bar needs one
                     // datum, and a missing day simply draws nothing.
                     BarMark(
-                        x: .value("Date", sample.date),
-                        y: .value(metric.shortLabel, sample.value)
+                        x: .value("Date", sample.date, unit: .day),
+                        y: .value(metric.shortLabel, sample.value),
+                        width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio)
                     )
                     .foregroundStyle(metric.tint.gradient)
-                    .cornerRadius(3)
+                    .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                 } else if trendAreaAllowed {
                     AreaMark(
                         x: .value("Date", sample.date),
@@ -679,40 +675,17 @@ struct AtriaTrendChartCard: View {
                 }
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartXSelection(value: $scrubDate)
-        // Keep the first and last observed dates inside the plot instead of
-        // pinning their labels to its clipped edges. Swift Charts otherwise
-        // suppresses the trailing label on a real two-day series even when
-        // both distinct dates are supplied explicitly.
-        .chartXScale(domain: prepared.xDomain,
-                     range: .plotDimension(startPadding: 18, endPadding: 18))
-        // Hidden prior data must not flatten the current trace. The wider
-        // comparison domain is selected only while that data is visibly drawn.
+        // The trailing window is the axis, not the extent of the data. Edge
+        // date labels sit inside the plot via the shared overnight x-axis.
+        .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: trendYDomain)
-        .chartXAxis {
-            // Labels ride the SAME axis marks as the gridlines (2026-08-01):
-            // the previous parallel Spacer-based HStack guessed a 34pt leading
-            // inset and spread labels evenly regardless of where the gridlines
-            // actually fell, so gappy/short series rendered duplicated or
-            // misaligned date labels under true-position gridlines.
-            AxisMarks(preset: .aligned, values: chartXAxisDates) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                if let date = value.as(Date.self), let label = chartXAxisLabels[date] {
-                    AxisValueLabel(anchor: .top) {
-                        Text(label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                AxisValueLabel().font(.caption2)
-            }
-        }
+        .atriaOvernightChartXAxis(
+            recordedDays: prepared.series.map(\.date),
+            domain: prepared.xDomain
+        )
+        .atriaDailyQuantityYAxis()
 
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(chartAccessibilityLabel)
@@ -1974,16 +1947,15 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Owner direction 2026-08-25: a metric that produces ONE value per day
-    /// and ACCUMULATES from zero is a bar; a per-day LEVEL is a line.
-    ///
-    /// Strain accumulates from 0 every physiological day, so zero is both
-    /// meaningful and routinely observed (a rest day really is ~0) and a bar's
-    /// "magnitude from zero" reading is literally true. Resting HR (~50-60) and
-    /// HRV (~40-70) are levels whose zero is never observed — bars from zero
-    /// would push the real 3-4 bpm signal into the top few percent of every
-    /// column and hide it, so those stay lines against their own baseline.
+    /// Once-a-day values are bars, matching the metric-detail tiles.
+    /// Levels still refuse a zero floor so a 4 bpm / 4 ms move stays visible.
     var rendersAsDailyBar: Bool {
+        switch self {
+        case .strain, .restingHR, .hrv: return true
+        }
+    }
+
+    var chartAnchorsAtZero: Bool {
         switch self {
         case .strain: return true
         case .restingHR, .hrv: return false
