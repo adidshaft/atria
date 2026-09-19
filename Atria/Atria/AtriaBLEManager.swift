@@ -31434,6 +31434,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .waitStream5
     }
 
+    /// Device 224 restored a live HR link and subscribed stream-5, then
+    /// waited forever because 223's post-subscribe 6A stamp survived the
+    /// new CCCD. A 6A older than this subscribe is not this pipe's 6A.
+    nonisolated static func allDayCompactLive6AAfterSubscribeAlreadySent(
+        live6AAfterSubscribeAt: Date?,
+        subscribedAt: Date?
+    ) -> Bool {
+        guard let live6A = live6AAfterSubscribeAt else { return false }
+        guard let subscribed = subscribedAt else { return true }
+        return live6A >= subscribed
+    }
+
     nonisolated static func allDayCompactIMURecoveryShouldWaitForStream5(
         abortAlreadySentThisConnection: Bool,
         stream5NotifyCallbacksThisConnection: Int,
@@ -32241,7 +32253,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let live6AAlready = lastAllDayCompactLive6AAfterCatchUpAt != nil
         let catchUpAge = lastAllDayCompactHistoryCatchUpAt.map { Date().timeIntervalSince($0) }
         let historyCatchUpInProgress = offlineHistoricalSyncInProgress || historyOnlyProbeMode
-        let afterSubscribeAlready = lastAllDayCompactLive6AAfterSubscribeAt != nil
+        let afterSubscribeAlready = Self.allDayCompactLive6AAfterSubscribeAlreadySent(
+            live6AAfterSubscribeAt: lastAllDayCompactLive6AAfterSubscribeAt,
+            subscribedAt: (UserDefaults.standard.object(
+                forKey: RadioDefaults.passiveR10SubscribedAt
+            ) as? Double).map { Date(timeIntervalSince1970: $0) }
+        )
         let subscribeAge = (UserDefaults.standard.object(
             forKey: RadioDefaults.passiveR10SubscribedAt
         ) as? Double).map { Date().timeIntervalSince(Date(timeIntervalSince1970: $0)) }
@@ -32685,7 +32702,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             },
             historyCatchUpInProgress: offlineHistoricalSyncInProgress || historyOnlyProbeMode,
             stream5SubscribeConfirmed: strapStream5NotifyConfirmed,
-            live6AAfterSubscribeAlreadySent: lastAllDayCompactLive6AAfterSubscribeAt != nil,
+            live6AAfterSubscribeAlreadySent: Self.allDayCompactLive6AAfterSubscribeAlreadySent(
+                live6AAfterSubscribeAt: lastAllDayCompactLive6AAfterSubscribeAt,
+                subscribedAt: (defaults.object(
+                    forKey: RadioDefaults.passiveR10SubscribedAt
+                ) as? Double).map { Date(timeIntervalSince1970: $0) }
+            ),
             subscribeAge: (defaults.object(
                 forKey: RadioDefaults.passiveR10SubscribedAt
             ) as? Double).map {
