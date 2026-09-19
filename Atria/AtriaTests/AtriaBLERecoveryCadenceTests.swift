@@ -528,13 +528,45 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "device 202: history_transport_owned after type-32 logs must not block compact 6A"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             AtriaBLEManager.historyOwnsTransportForCompactIMURecovery(
                 historyOwnsTransport: true,
                 stream5NotifyCallbacksThisConnection: 0,
                 compactIMUStale: true,
                 lastNotifyTypeHex: "32"
+            ),
+            "device 207: empty stream-5 on live 2A37 must not let history block 526a14"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true
             )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: true,
+                stream5NotifyCallbacksThisConnection: 214,
+                compactIMUStale: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferConnectedHistoryForLiveCompactIMURecovery(
+                heartRateEpochLive: false,
+                stream5NotifyCallbacksThisConnection: 0,
+                compactIMUStale: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "wait_stream5"),
+            "device 207: wait_stream5 must not start the 45s activation lease"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "526a14")
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldStampAllDayCompactIMUActivation(command: "6a")
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldToggleZombieProprietaryCCCD(
@@ -6236,6 +6268,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         XCTAssertLessThan(journalFlush.lowerBound, ownership.lowerBound,
                           "live workout/session state must be durable before history owns callbacks")
+        XCTAssertTrue(body.contains("emptyStreamNeedsLiveCompactIMURecovery"),
+                      "device 207: automatic history must wait while live 2A37 has an empty IMU pipe")
         XCTAssertFalse(body.contains("flushLifecycleRealtimeState("),
                        "history ownership must not close or reset the active live session")
         XCTAssertFalse(body.contains("cancelPeripheralConnection"),
@@ -12777,7 +12811,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "sitting compact 0x33 on this connection must not silent-refresh 6A/51")
         XCTAssertTrue(refreshBody.contains("silent_stream_compact_restore_2a37"),
                       "a compact IMU write that still queues must reassert 2A37")
-        XCTAssertTrue(refreshBody.contains("526a14"))
+        XCTAssertTrue(refreshBody.contains("shouldStampAllDayCompactIMUActivation"),
+                      "device 207: wait_stream5 must not stamp the 45s activation lease")
         XCTAssertTrue(refreshBody.contains("writeAllDayCompactIMURecovery"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
                       "silent 6A/51 must wait 4s on a new connection before treating IMU as dropped")
