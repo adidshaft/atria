@@ -30548,6 +30548,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastR10ZombieTxRediscoverAt: Date?
     private var lastAllDayCompactAbortAt: Date?
     private var lastAllDayCompactFollowUp6AAt: Date?
+    private var lastAllDayCompactHistoryCatchUpAt: Date?
     private var protectedR10CommandSequenceStartedAt: Date?
     nonisolated static let r10RecoveryRediscoveryMinimumInterval: TimeInterval = 30
     /// Dense R10 is ~1 Hz. Four seconds of silence is a real drop; eight used
@@ -30997,6 +30998,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard followUp6AAlreadySentThisConnection else { return false }
         guard let abortAge else { return true }
         return abortAge >= followUp6ADelay + catchUpDelay
+    }
+
+    /// Device 214 ACK'd 6A on strapRX and stream-5 stayed 0. Glance already
+    /// ran at launch while history was deferred, so nothing restarted the
+    /// 0x69 drain. Kick catch-up once the live attempt has yielded.
+    nonisolated static func shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+        followUp6AAlreadySentThisConnection: Bool,
+        abortAge: TimeInterval?,
+        catchUpAlreadyRequested: Bool,
+        stream5NotifyCallbacksThisConnection: Int,
+        catchUpRetryAge: TimeInterval? = nil,
+        catchUpRetryInterval: TimeInterval = 60
+    ) -> Bool {
+        guard stream5NotifyCallbacksThisConnection == 0 else { return false }
+        guard shouldYieldConnectedHistoryAfterLiveCompactAttempt(
+            followUp6AAlreadySentThisConnection: followUp6AAlreadySentThisConnection,
+            abortAge: abortAge
+        ) else { return false }
+        if !catchUpAlreadyRequested { return true }
+        guard let catchUpRetryAge else { return false }
+        return catchUpRetryAge >= catchUpRetryInterval
     }
 
     nonisolated static func shouldDeferConnectedHistoryForLiveCompactIMURecovery(
@@ -32275,6 +32297,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 heartRateAge: recoveryAges.heartRateAge,
                 imuAge: recoveryAges.imuAge
             )
+            if Self.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: lastAllDayCompactFollowUp6AAt != nil,
+                abortAge: abortAge,
+                catchUpAlreadyRequested: lastAllDayCompactHistoryCatchUpAt != nil,
+                stream5NotifyCallbacksThisConnection: protocolStream5NotifyCallbacksThisConnection,
+                catchUpRetryAge: lastAllDayCompactHistoryCatchUpAt.map {
+                    now.timeIntervalSince($0)
+                }
+            ) {
+                lastAllDayCompactHistoryCatchUpAt = now
+                _ = requestOfflineHistoricalSyncIfNeeded(
+                    reason: "live_compact_yield_catch_up",
+                    allowConnectedAutomaticHandoff: true,
+                    preserveConnectedRealtimeOwner: true
+                )
+            }
             return true
         }
         let commandTaskAge = protectedR10CommandSequenceStartedAt.map {

@@ -562,6 +562,41 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             ),
             "device 213: once abort is 12s old, send 6A instead of another 0x14"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 14,
+                catchUpAlreadyRequested: false,
+                stream5NotifyCallbacksThisConnection: 0
+            ),
+            "device 214: after 6A ACK with stream-5 still 0, start historical IMU catch-up"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 14,
+                catchUpAlreadyRequested: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                catchUpRetryAge: 10
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 14,
+                catchUpAlreadyRequested: true,
+                stream5NotifyCallbacksThisConnection: 0,
+                catchUpRetryAge: 60
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRequestHistoryCatchUpAfterLiveCompactAttempt(
+                followUp6AAlreadySentThisConnection: true,
+                abortAge: 14,
+                catchUpAlreadyRequested: false,
+                stream5NotifyCallbacksThisConnection: 214
+            )
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldResetAllDayCompactIMURecoveryOnConnect()
         )
@@ -13067,6 +13102,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "device 213: sitting skip and fallback 6A must use compact 0x33 age")
         XCTAssertTrue(refreshBody.contains("shouldClearStuckIMUCommandTask"),
                       "device 213: leaked command task blocked the 12s 6A with tx_or_command_task")
+        XCTAssertTrue(refreshBody.contains("shouldRequestHistoryCatchUpAfterLiveCompactAttempt"),
+                      "device 214: 6A ACK with empty stream-5 must start historical IMU catch-up")
+        XCTAssertTrue(refreshBody.contains("live_compact_yield_catch_up"))
         XCTAssertTrue(refreshBody.contains("finishProtectedR10CommandSequence"))
         XCTAssertTrue(refreshBody.contains("loadAllDayCompactIMURecoveryLease"))
         XCTAssertTrue(refreshBody.contains("currentR10LivenessLastMotionAt"),
