@@ -3321,6 +3321,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains("persistProtectedR10FallbackForStream5Callback"))
         XCTAssertTrue(source.contains("clean_owner_stream5_notification_error"))
         XCTAssertTrue(source.contains("clean_owner_stream5_notification_inactive"))
+        XCTAssertTrue(source.contains("shouldArmProtectedStream5InitialProfile"),
+                      "device 217: didConnect must arm stream-5 CCCD during compact recovery even if suppressed")
 
         let cutoverStart = try XCTUnwrap(source.range(
             of: "private func beginProtectedR10LaunchConnectionCutoverIfNeeded"

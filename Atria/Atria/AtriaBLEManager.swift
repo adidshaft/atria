@@ -6234,6 +6234,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || pendingOneShotBatteryResponse
     }
 
+    /// Device 217: compact recovery discovered stream-5, then
+    /// `didConnect` left `protectedR10InitialProfilePeripheralID` nil
+    /// because `pure_hr_v10` still had `streamSuppressed`. The initial
+    /// subscribe helper treated that as mid-link CCCD and skipped, so
+    /// 6A ACK'd on RX with stream-5 callbacks still 0.
+    nonisolated static func shouldArmProtectedStream5InitialProfile(
+        standardHROnlyMode: Bool,
+        historyOnlyProbeMode: Bool,
+        streamSuppressed: Bool,
+        compactIMURecoveryActive: Bool
+    ) -> Bool {
+        guard !historyOnlyProbeMode else { return false }
+        if compactIMURecoveryActive { return true }
+        return standardHROnlyMode && !streamSuppressed
+    }
+
     /// One exhaustive owner decision for strap-service discovery. BOTH
     /// delegate stages (service and characteristic discovery) must route
     /// through this. The 2026-08-13 04:30 IST physical stall (cutover true,
@@ -15166,9 +15182,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ characteristic: CBCharacteristic,
         peripheral: CBPeripheral
     ) {
-        guard standardHROnlyMode,
-              !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed || compactIMURecoveryIsActive(),
+        guard Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+              ),
               characteristic.uuid == Self.UUIDs.strapStream5,
               characteristic.properties.contains(.notify),
               !characteristic.isNotifying else { return }
@@ -15214,9 +15233,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// from that cache so a Release reinstall cannot leave HR healthy while the
     /// motion stream silently stays dormant.
     private func resumeProtectedR10FromRestoredCache(_ peripheral: CBPeripheral) {
-        guard standardHROnlyMode,
-              !historyOnlyProbeMode,
-              !protectedR10StreamSuppressed || compactIMURecoveryIsActive(),
+        guard Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+              ),
               peripheral.state == .connected else { return }
 
         var cachedHR: CBCharacteristic?
@@ -51358,11 +51380,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10ProfileRequestedNotifyUUIDs.removeAll()
             protectedR10ProfileConfirmedNotifyUUIDs.removeAll()
             protectedR10StandardDiscoveryStarted = false
-            protectedR10InitialProfilePeripheralID = standardHROnlyMode
-                && !historyOnlyProbeMode
-                && !protectedR10StreamSuppressed
-                ? peripheral.identifier
-                : nil
+            protectedR10InitialProfilePeripheralID = Self.shouldArmProtectedStream5InitialProfile(
+                standardHROnlyMode: standardHROnlyMode,
+                historyOnlyProbeMode: historyOnlyProbeMode,
+                streamSuppressed: protectedR10StreamSuppressed,
+                compactIMURecoveryActive: compactIMURecoveryIsActive()
+            ) ? peripheral.identifier : nil
             protectedR10InitialProfileNotificationRequested = false
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
