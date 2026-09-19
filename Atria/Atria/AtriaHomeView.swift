@@ -1005,7 +1005,9 @@ struct AtriaHomeView: View {
     // object here would invalidate the entire tab shell on each 30-second
     // evidence refresh even when the visible prompt does not change.
     @State private var motionActivityMonitor = AtriaMotionActivityMonitor()
-    @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
+    private var liveActivityCoordinator: AtriaLiveActivityCoordinator {
+        model.liveActivityCoordinator
+    }
     @State private var livePresenceStartedAt: Date?
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
     @State private var aiCoachHasAPIKey = false
@@ -3513,14 +3515,24 @@ struct AtriaHomeView: View {
         let lastKnownSample = ble.session.last
         let heartRate: Int
         let zone: Metrics.HeartRateZone?
+        // PulseLive freezes while inactive, so a post-install background tick
+        // kept a stale 51 while BLE session.last was already ~76.
+        let resolvedHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
+            heartRate: ble.heartRate,
+            sensorHasContact: ble.hasContact,
+            status: ble.status,
+            latestSampleHeartRate: lastKnownSample?.bpm,
+            latestSampleAt: lastKnownSample?.t,
+            now: now
+        )
         let heldHeartRate = AtriaWorkoutHeartRateHold.displayed(
-            live: pulse.heartRate,
+            live: resolvedHeartRate,
             lastKnown: lastKnownSample?.bpm ?? 0,
             retained: ble.lastKnownDisplayHeartRate
         )
         if heldHeartRate > 0 {
             heartRate = heldHeartRate
-            if pulse.heartRate > 0 {
+            if pulse.heartRate == heldHeartRate, pulse.heartRate > 0 {
                 zone = pulse.heartRateZone
             } else if let rest = store.baseline.restingInt {
                 zone = Metrics.heartRateZone(bpm: heldHeartRate,
@@ -3566,7 +3578,7 @@ struct AtriaHomeView: View {
                 now: now
             )
         } ?? 0
-        let status = model.coreLiveStore.state.status
+        let status = ble.status
         let linkUsable = status == .connected || status == .connecting
         let workoutActive = session != nil
         let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
@@ -10331,8 +10343,14 @@ final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 15
     /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
     var liveWorkoutIsActive = false
+    let liveActivityCoordinator = AtriaLiveActivityCoordinator()
     private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
     private var lastActivityKitCount: Int?
+    private var lastFrozenSceneWidgetPatchAt: Date?
+    private var lastFrozenSceneWidgetHeartRate: Int?
+    private var frozenSceneIdlePresenceStartedAt: Date?
+    private static let frozenSceneWidgetPatchMinimumInterval: TimeInterval = 45
+    private static let frozenSceneWidgetPatchBPMDelta = 4
     /// Charging is a short explicit-evidence lease, not a percentage trend.
     /// The strap can keep reporting rising SOC after physical removal, so the
     /// top-left bolt disappears within 90 seconds unless another accepted
@@ -11867,6 +11885,10 @@ final class AtriaHomeModel {
                 // must still age HR/IMU from the live BLE clocks so a
                 // background install (device 2026-09-17 115) is pullable.
                 self?.publishDiagnosisReport(reason: "core_live")
+                // Pulse/Core stores stay frozen while inactive, so HomeView's
+                // live widget/LA publishers never fire. BLE is still live —
+                // patch widgets and retry idle presence from this lane.
+                self?.publishFrozenSceneLiveSurfaces()
             }
             .store(in: &cancellables)
 
@@ -12338,9 +12360,13 @@ final class AtriaHomeModel {
             .filter { $0.samples <= 0 }
             .sorted { $0.end > $1.end }
             .prefix(5)
-        let lastKnownHR = AtriaWorkoutHeartRateHold.displayed(
-            live: pulse.heartRate,
-            lastKnown: ble.session.last?.bpm ?? 0,
+        let lastKnownHR = Self.diagnosisDisplayedHeartRate(
+            pulseHeartRate: pulse.heartRate,
+            bleHeartRate: ble.heartRate,
+            sensorHasContact: ble.hasContact,
+            status: ble.status,
+            latestSampleHeartRate: ble.session.last?.bpm,
+            latestSampleAt: ble.session.last?.t,
             retained: ble.lastKnownDisplayHeartRate
         )
         let zone = pulse.heartRateZone?.name
@@ -13746,6 +13772,178 @@ final class AtriaHomeModel {
                               status: ble.status,
                               latestSampleHeartRate: ble.session.last?.bpm,
                               latestSampleAt: ble.session.last?.t)
+    }
+
+    /// Frozen PulseLive can keep a stale BPM after install while `session.last`
+    /// is already current. Diagnosis and background widgets must prefer BLE.
+    nonisolated static func diagnosisDisplayedHeartRate(
+        pulseHeartRate: Int,
+        bleHeartRate: Int,
+        sensorHasContact: Bool,
+        status: AtriaBLEManager.Status,
+        latestSampleHeartRate: Int?,
+        latestSampleAt: Date?,
+        retained: Int,
+        now: Date = Date()
+    ) -> Int {
+        let resolved = resolvedLiveHeartRate(
+            heartRate: bleHeartRate,
+            sensorHasContact: sensorHasContact,
+            status: status,
+            latestSampleHeartRate: latestSampleHeartRate,
+            latestSampleAt: latestSampleAt,
+            now: now
+        )
+        if resolved > 0 { return resolved }
+        return AtriaWorkoutHeartRateHold.displayed(
+            live: pulseHeartRate,
+            lastKnown: latestSampleHeartRate ?? 0,
+            retained: retained
+        )
+    }
+
+    func publishFrozenSceneLiveSurfaces() {
+        guard !livePresentationIsCurrentlyAuthorized else { return }
+        publishFrozenSceneWidgetPatchIfNeeded()
+        publishFrozenSceneIdleLiveActivityIfNeeded()
+    }
+
+    private func publishFrozenSceneWidgetPatchIfNeeded(now: Date = Date()) {
+        let heartRate = Self.liveHeartRate(ble: ble)
+        guard heartRate > 0 else { return }
+        let elapsed = lastFrozenSceneWidgetPatchAt.map { now.timeIntervalSince($0) }
+        let meaningfulDelta = lastFrozenSceneWidgetHeartRate.map {
+            abs(heartRate - $0) >= Self.frozenSceneWidgetPatchBPMDelta
+        } ?? true
+        let cadenceReady = elapsed.map { $0 >= Self.frozenSceneWidgetPatchMinimumInterval } ?? true
+        guard cadenceReady || meaningfulDelta else { return }
+        lastFrozenSceneWidgetPatchAt = now
+        lastFrozenSceneWidgetHeartRate = heartRate
+        let core = coreLiveStore.state
+        let dailySteps = core.dailyStepPresentation
+        let steps = dailySteps.count
+        let displayableBatteryLevel = ble.displayableBatteryLevel(now: now)
+        let liveZone: Metrics.HeartRateZone?
+        if let rest = store.baseline.restingInt {
+            liveZone = Metrics.heartRateZone(bpm: heartRate,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+        } else {
+            liveZone = nil
+        }
+        WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
+            heartRate: heartRate,
+            heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? ble.session.last?.t,
+            heartRateZoneIndex: liveZone?.index,
+            heartRateZoneName: liveZone?.name,
+            steps: steps,
+            stepsAreEstimated: steps != nil
+                && (!dailySteps.isValidated
+                    || (dailySteps.source == .verifiedCanonical
+                        && dailySteps.completeness == .partial)),
+            stepsCapturedAt: steps == nil ? nil : dailySteps.capturedAt,
+            stepsSource: WidgetSnapshotPublisher.stepSourceIdentifier(dailySteps.source),
+            stepsCompleteness: WidgetSnapshotPublisher.stepCompletenessIdentifier(
+                dailySteps.completeness
+            ),
+            stepsCoverageFraction: dailySteps.coverageFraction,
+            stepsAuthorityVersion: steps == nil
+                ? nil
+                : WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            stepsValueText: steps == nil ? nil : dailySteps.valueText,
+            stepsStatusText: steps == nil ? nil : dailySteps.detailText,
+            strain: heroStore.state.strain,
+            strainDetail: heroStore.state.strainDetail,
+            strainCapturedAt: ble.lastAcceptedHeartRateAt,
+            batteryLevel: displayableBatteryLevel,
+            batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
+            batteryCorroboratedAt: displayableBatteryLevel == nil
+                ? nil : ble.batteryDisplayCorroboratedAt(now: now),
+            batteryChargeCapturedAt: displayableBatteryLevel != nil
+                && (ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full)
+                ? core.batteryChargeLastVerifiedAt : nil,
+            batteryChargeStatus: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue
+                : ble.batteryChargeStatus.rawValue,
+            batteryChargeText: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.label
+                : ble.batteryChargeStatus.label,
+            reason: "live_hr_frozen_scene"
+        )
+    }
+
+    private func publishFrozenSceneIdleLiveActivityIfNeeded(now: Date = Date()) {
+        guard !liveWorkoutIsActive else { return }
+        let heartRate = Self.liveHeartRate(ble: ble)
+        let status = ble.status
+        let linkUsable = status == .connected || status == .connecting
+        let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+            workoutActive: false,
+            linkUsable: linkUsable,
+            heldHeartRate: heartRate,
+            presenceAlreadyStarted: frozenSceneIdlePresenceStartedAt != nil
+                || liveActivityCoordinator.activityKitCount > 0
+        )
+        if !livePresence {
+            frozenSceneIdlePresenceStartedAt = nil
+            return
+        }
+        if frozenSceneIdlePresenceStartedAt == nil {
+            frozenSceneIdlePresenceStartedAt = now
+        }
+        let dailySteps = coreLiveStore.state.dailyStepPresentation
+        let displayableBatteryLevel = ble.displayableBatteryLevel(now: now)
+        let zone: Metrics.HeartRateZone?
+        if let rest = store.baseline.restingInt {
+            zone = Metrics.heartRateZone(bpm: heartRate,
+                                         rest: rest,
+                                         max: store.profile.maxHR)
+        } else {
+            zone = nil
+        }
+        let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
+        liveActivityCoordinator.update(
+            AtriaLiveActivityCoordinator.Snapshot(
+                isRecording: true,
+                heartRate: heartRate,
+                heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? ble.session.last?.t,
+                sensorHasContact: ble.hasContact,
+                heartRateAvailability: .live,
+                strain: heroStore.state.strain,
+                batteryLevel: displayableBatteryLevel ?? -1,
+                batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
+                batteryChargeCapturedAt: displayableBatteryLevel != nil
+                    && (ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full)
+                    ? coreLiveStore.state.batteryChargeLastVerifiedAt : nil,
+                batteryAvailability: displayableBatteryLevel == nil
+                    ? .unavailable
+                    : (status == .connected ? .live : .reconnecting),
+                batteryChargeStatus: ble.batteryChargeStatus,
+                readingCount: ble.sessionSampleCount,
+                startedAt: frozenSceneIdlePresenceStartedAt ?? now,
+                activityName: "Live",
+                activitySystemImage: "heart.fill",
+                heartRateZoneIndex: zone?.index,
+                heartRateZoneName: zone?.name,
+                steps: dailySteps.count,
+                stepsAreEstimated: dailySteps.count != nil && !dailySteps.isValidated,
+                stepsCapturedAt: dailySteps.count == nil ? nil : dailySteps.capturedAt,
+                stepsAvailability: dailySteps.count == nil ? .unavailable : .live,
+                dailySteps: dailySteps.count,
+                dailyStepsAreEstimated: dailySteps.count != nil && !dailySteps.isValidated,
+                dailyStepsCapturedAt: dailySteps.count == nil ? nil : dailySteps.capturedAt,
+                dailyStepsIsLowerBound: dailySteps.count != nil
+                    && dailySteps.source == .verifiedCanonical
+                    && dailySteps.completeness == .partial,
+                dailyStepGoal: storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000,
+                workoutStrain: 0,
+                isPaused: false,
+                elapsedDuration: 0,
+                showsWorkoutControls: false
+            )
+        )
+        lastActivityKitCount = liveActivityCoordinator.activityKitCount
+        lastLiveActivityDiagnosis = liveActivityCoordinator.lastPublishedSnapshot
     }
 
     nonisolated static func resolvedLiveHeartRate(heartRate: Int,

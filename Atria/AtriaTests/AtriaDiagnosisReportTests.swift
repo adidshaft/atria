@@ -529,6 +529,8 @@ final class AtriaDiagnosisReportTests: XCTestCase {
         XCTAssertTrue(home.contains("idleWindowPending:"))
         XCTAssertTrue(home.contains("liveActivityKitCount: lastActivityKitCount"))
         XCTAssertTrue(home.contains("activityKitCount: liveActivityCoordinator.activityKitCount"))
+        XCTAssertTrue(home.contains("publishFrozenSceneLiveSurfaces()"))
+        XCTAssertTrue(home.contains("diagnosisDisplayedHeartRate("))
         XCTAssertTrue(home.contains("retireStuckIdleWindowLeftoverIfNeeded("))
     }
 

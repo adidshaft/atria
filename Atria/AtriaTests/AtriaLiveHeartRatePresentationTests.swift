@@ -133,6 +133,36 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutHeartRateHold.displayed(live: 0, lastKnown: 0, retained: 0), 0)
     }
 
+    func testDiagnosisPrefersFreshSessionBeatOverFrozenPulse() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let displayed = AtriaHomeModel.diagnosisDisplayedHeartRate(
+            pulseHeartRate: 51,
+            bleHeartRate: 0,
+            sensorHasContact: true,
+            status: .connected,
+            latestSampleHeartRate: 76,
+            latestSampleAt: now.addingTimeInterval(-0.7),
+            retained: 51,
+            now: now
+        )
+        XCTAssertEqual(displayed, 76)
+    }
+
+    func testDiagnosisFallsBackToPulseWhenSessionIsStale() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let displayed = AtriaHomeModel.diagnosisDisplayedHeartRate(
+            pulseHeartRate: 51,
+            bleHeartRate: 0,
+            sensorHasContact: true,
+            status: .connected,
+            latestSampleHeartRate: 76,
+            latestSampleAt: now.addingTimeInterval(-20),
+            retained: 48,
+            now: now
+        )
+        XCTAssertEqual(displayed, 51)
+    }
+
     func testWorkoutSessionBoundaryDoesNotClearDisplayHeartRate() throws {
         let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
