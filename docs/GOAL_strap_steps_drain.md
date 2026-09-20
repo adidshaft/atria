@@ -17,6 +17,21 @@ primary WHOOP metric — treat this as P0.
    read telemetry → correct. Do not ship unsoaked BLE surgery. Do not fake completion.
 5. Keep every gate flag-gated until soak-proven, so the default build is never at risk.
 
+## Related — live compact IMU is a different problem (2026-09-20)
+
+This goal is **flash drain of banked 1 Hz / v24 motion** without breaking live
+HR. Do not conflate it with **live compact `0x33`** on stream-5.
+
+- `2A37` can stay live while compact IMU is stale for hours (build 228).
+- A type-24 `6A` ACK is not IMU. Stream-5 type 30/32 is logs/events, not `0x33`.
+- Overnight `0x16` catch-up after `6A` finished **empty** — that is not a
+  quality-preserving compact dump (`0x34` was never seen). Empty is honest;
+  do not invent steps to close the 15:22→now hole.
+- `0x3F` / `0x51` / unguarded `03+6A+14` still kill or nap this link. Mid-link
+  stream-5 CCCD toggle disconnects this V4.
+- Full ledger: `docs/WHOOP4_PROTOCOL_FINDINGS.md` (2026-09-20 compact IMU).
+  Standing GitHub issues for IMU/widgets stay open (#45 and related).
+
 ## Proven root cause (already established — do not re-litigate)
 - The stuck step total is **app-side, NOT a hardware ceiling.** The flash HOLDS the steps.
 - Device evidence: `historyDrainTelemetry stream5_rx=0 durable_rows=0`, `offline_sync
@@ -28,7 +43,7 @@ primary WHOOP metric — treat this as P0.
   ACK withheld only on `orphan_not_archived`/`spool_open_failed`). Not the bug.
 
 ## Verified protocol (WHOOP4, from device + reference clients whoop-reader/noop/my-whoop)
-- Service `61080000-8d6d-82b8-614a-1c8cb0f8dcc6`.
+- Service `61080001-8d6d-82b8-614a-1c8cb0f8dcc6` (Gen4 Harvard).
 - Drain = `0x22 GET_DATA_RANGE` (returns newest/oldest/backlog + time→offset anchors) →
   `0x16 SEND_HISTORICAL` (payload `[0x00]` = full drain from current/oldest pointer) →
   each `HISTORY_END` ACKed with `HISTORICAL_DATA_RESULT` carrying the chunk's `end_data`

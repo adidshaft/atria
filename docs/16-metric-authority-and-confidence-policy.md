@@ -48,6 +48,7 @@ product surface) must declare, in code and in its PR description:
 | HR zones | HRR boundaries frozen per workout (`AtriaHRRZoneBoundaries`) |
 | Cycle vs civil day | `AtriaHealthMetricAuthority` |
 | SpO2 / skin temp | Research-only; gated by `AtriaResearchProbe` validated-decoder flags per docs/14 |
+| Compact IMU | Live packet `0x33` on stream-5 (`AtriaWhoop4CompactIMUDecoder`). Not a type-24 `6A` ACK. 1 Hz type-47 is a different, lower-quality pipe. |
 
 ## Schema additions under this policy
 
@@ -63,6 +64,9 @@ product surface) must declare, in code and in its PR description:
 - Estimating or displaying HRV from heart-rate-only data.
 - Showing SpO2 or absolute skin temperature as measured values before the
   docs/14 validation protocol passes (generation/firmware-locked).
+- Inventing wrist motion or steps when compact `0x33` is stale and historical
+  catch-up is empty. A `6A` ACK, stream-5 type-30/32 logs, or 1 Hz type-47
+  flash is not compact IMU. See `docs/WHOOP4_PROTOCOL_FINDINGS.md` (2026-09-20).
 - Recomputing historical frozen Sleep Need, Recovery, or zone boundaries with
   later profile data.
 - Population averages as substitutes for personal baselines.

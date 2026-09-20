@@ -10,7 +10,7 @@ claim it cannot prove, it says so.
 | Document | What it is for |
 |---|---|
 | [**SETUP.md**](SETUP.md) | Fresh Mac and iPhone: build, sign, run on device, common errors, and which logs are safe to share. |
-| [**WHOOP4_PROTOCOL_FINDINGS.md**](WHOOP4_PROTOCOL_FINDINGS.md) | The protocol reference. What is decoded, what is not, and the evidence behind each field. |
+| [**WHOOP4_PROTOCOL_FINDINGS.md**](WHOOP4_PROTOCOL_FINDINGS.md) | The protocol reference. What is decoded, what is not, and the evidence behind each field. Includes compact IMU `0x33` vs type-43 R10 vs banked `0x69` (2026-09-20). |
 | [**16-metric-authority-and-confidence-policy.md**](16-metric-authority-and-confidence-policy.md) | The rule that governs the whole app: when a number may be shown, and what to show instead. |
 
 ## Protocol and hardware
