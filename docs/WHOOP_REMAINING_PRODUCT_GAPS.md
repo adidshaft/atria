@@ -1,7 +1,7 @@
 # Remaining WHOOP-Informed Product Gaps
 
 Status: filtered implementation backlog  
-Reviewed: 2026-08-14 (full-replacement directive pass)  
+Reviewed: 2026-08-14 (full-replacement directive pass); IMU pipe split added 2026-09-20 in `docs/WHOOP4_PROTOCOL_FINDINGS.md` (not a gap in this list — compact `0x33` vs type-43 vs `0x69` bank).  
 Scope: Recovery, Strain, Sleep, automatic activity/sleep detection, and the WHOOP screenshots reviewed with those systems
 
 ## Status as of 2026-08-14 (directive WP pass)

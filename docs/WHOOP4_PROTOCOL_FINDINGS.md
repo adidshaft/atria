@@ -2,7 +2,12 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-31 (Asia/Kolkata)
+Last updated: 2026-09-20 (Asia/Kolkata)
+
+Compact IMU (`0x33`) vs type-43 R10 vs banked `0x69` is recorded at
+**2026-09-20 — compact IMU (`0x33`) vs type-43 vs banked `0x69`** near the
+end of this notebook. July type-43 failures remain true; they are a
+different pipe from all-day compact `0x33`.
 
 Raw physical captures stay local and are intentionally ignored because they
 can contain health and device identifiers. Historical `evidence/...` paths in
@@ -231,15 +236,16 @@ Atria's `encodeFrame(_:)` implements this exact layout.
 | `0x03` | 3 | Toggle realtime HR | `01` on, `00` off | **REFERENCE + PHYSICAL.** Standard live-HR arming. Combining it with `0x3F/01` did not keep the high-bandwidth motion stream alive on this link. |
 | `0x0A` | 10 | Set strap clock | firmware-dependent timestamp body | **REFERENCE + PHYSICAL history work.** Mutating; never use casually. |
 | `0x0B` | 11 | Get strap clock | read request | **REFERENCE + PHYSICAL history work.** |
-| `0x14` | 20 | Abort historical transmission | command-specific | **REFERENCE + PHYSICAL history work.** Stops an active history serve. |
+| `0x14` | 20 | Abort historical transmission | command-specific | **REFERENCE + PHYSICAL history work.** Stops an active history serve. September 2026 all-day compact recovery sent `14` *before* `6A` (inverted vs diagnostic `03 → 6A → 14`). Aborting again after the follow-up `6A` blocked historical IMU catch-up (device 210). |
 | `0x16` | 22 | Send historical data | cursor/range body | **REFERENCE + PHYSICAL history work.** Requests the strap's banked records. |
 | `0x17` | 23 | Historical data result/ack | result/cursor body | **REFERENCE + PHYSICAL history work.** History transaction acknowledgement. |
 | `0x1A` | 26 | Get battery level | read request | **REFERENCE + PHYSICAL.** |
 | `0x22` | 34 | Get data range | read request | **REFERENCE + PHYSICAL history work.** Reads available history bounds. |
 | `0x3F` | 63 | Send R10/R11 realtime | `01` on, `00` off | **REFERENCE + PHYSICAL.** Controls the heavy type-43 realtime stream. `STOP_RAW_DATA` does not stop this stream. |
-| `0x51` | 81 | Start raw data | `duration_ms:u32 LE` | **REFERENCE.** Original WHOOP 4 app/decompile research identifies this as a timed capture. The newer NOOP wrapper's `[01]` body is an outdated stub and is now retired in Atria. |
+| `0x51` | 81 | Start raw data | `duration_ms:u32 LE` | **REFERENCE + PHYSICAL FAIL on this iPhone.** Labs/DWL timed capture. On a live `2A37` link it ACK'd on stream-4, contributed to type-32 `"sleep mode for 30 seconds"`, and never produced compact `0x33`. Do not send on production all-day HR. The newer NOOP wrapper's `[01]` body is an outdated stub and is now retired in Atria. |
 | `0x52` | 82 | Stop raw data | `01` | **REFERENCE + PHYSICAL TRANSMISSION; behavior not independently isolated.** Atria physically sent it during bounded-lease teardown. It did not stop `0x3F`; `0x3F/00` remains the verified master switch for that stream. |
-| `0x6A` | 106 | Toggle IMU mode | `01` on, `00` off | **REFERENCE + PHYSICAL.** `0x6A/01` physically opens type-43 delivery. `0x6A/00` alone is not a proven master stop; it must not be treated as a successful production transport. |
+| `0x69` | 105 | Toggle IMU mode historical | `01` on, `00` off | **REFERENCE + PHYSICAL (two outcomes).** July 2026: `69/01` → `69/00` then `0x16` recovered dense **1 Hz type-47/v24** (93/93 seconds). OpenStrap/whoof: same opcode begins historical IMU dump **`0x34`**. September 2026 all-day catch-up: ACK data `03 00 00 00` and **no `0x34`**. Not compact `0x33`. Do not interleave with live `6A` until `0x33` is flowing. |
+| `0x6A` | 106 | Toggle IMU mode | `01` on, `00` off (Gen4 one-byte) | **REFERENCE + PHYSICAL; epoch-dependent.** July 2026 workout/lease: `0x6A/01` opened type-43 R10 and this iPhone hit `CBErrorDomain: 6`. `0x6A/00` did not stop that flood. September 2026 all-day `pure_hr_v10`: a type-24 echo of `6A` on `61080003` is **not** compact `0x33`. Compact-on is only a stream-5 `0x33` frame. |
 
 ## Streams and records
 
@@ -247,7 +253,26 @@ Atria's `encodeFrame(_:)` implements this exact layout.
 
 **PHYSICAL**
 
-The lightweight standard Heart Rate Service characteristic (`0x2A37`) can continue delivering accepted HR without a sustained type-43 raw-motion stream. Gate 1 proved automatic locked reconnect across three real out-of-range/return cycles.
+The lightweight standard Heart Rate Service characteristic (`0x2A37`) can continue delivering accepted HR without a sustained type-43 raw-motion stream **and without compact `0x33`**. Gate 1 proved automatic locked reconnect across three real out-of-range/return cycles. September 2026 build 228: HR age ~0.03 s, widget 63, Live Activity kit=1, compact IMU frozen ~12 h. **Live HR is not proof of live IMU.**
+
+### Compact IMU (`0x33`) on stream-5
+
+**PHYSICAL (2026-09-15 … 2026-09-19) + REFERENCE**
+
+- Packet type `0x33` on CHAR_DATA `61080005` is live 6-axis IMU (OpenStrap/whoof: `REALTIME_IMU_DATA_STREAM`, triggered by `TOGGLE_IMU_MODE 0x6A`).
+- Physical frames on this strap were **152-byte** Harvard packets: type `0x33` \| flags \| u32le device time \| reserved \| u16 accelCount \| u16 gyroCount \| planar int16 LE accel/gyro. Ten samples = one 100 Hz 0.1 s slice. Decoder: `AtriaWhoop4CompactIMUDecoder`.
+- Sitting arrives every ~30–60 s; walking assembles ~8–12 s. That cadence is not an IMU drop.
+- This stream **can stay up for hours without `CBErrorDomain: 6`** (build 192, ~13:27–15:15 IST 2026-09-19). It is not the July type-43 flood.
+- It died after `fresh_accepted_hr_ble_disconnect` ~15:22 IST 2026-09-19. Overnight recovery through build 228 ACK'd `6A` with stream-5 on as type-30/32 and never restarted `0x33`.
+- Live IMU CRC32 often does **not** match ISO-HDLC; the reassembler must admit an isolated complete 152-byte frame or `packetsThisConnection` stays 0 while `0x33` is flowing (2026-09-15).
+
+### Type 30 events and type 32 console logs
+
+**PHYSICAL + REFERENCE**
+
+- `0x30` EVENT belongs on stream-4 (`61080004`). Event `0x3F` / 63 is **extended battery**, not R10. Battery-event parsing that requires `frame[6]==0x03` will ignore these.
+- `0x32` CONSOLE_LOGS is firmware ASCII on stream-5. Proven strings: `"sleep mode for 30 seconds"` after leftover `6A/51` (device 192 15:34); `"T1 Quiet Mode"` / `"Disconnect reason"` (device 202/212). **Not IMU.** `proprietaryNotifyLooksLikeSleepModeLog` keys on type `0x32` plus the substring `sleep mode`.
+- Stream-5 callback count > 0 with last type 30/32 and `protocol_imu_frames=0` means the data mux is in event/log mode, not compact IMU (devices 202, 212, 227).
 
 ### Type 43 / R10-R11 realtime
 
@@ -4197,3 +4222,187 @@ POSITIVE STILL REQUIRED**
   required before the value can be presented as exact.
 - Evidence:
   `evidence/2026-07-31-reconnect-motion-maintenance-physical/`.
+
+## 2026-09-20 — compact IMU (`0x33`) vs type-43 vs banked `0x69`
+
+**PHYSICAL + REFERENCE + CODE.** Last overnight evidence: Release **228**
+(`d31edb0a`) on CoreDevice `3803F5B6-1666-56D3-A71A-62F131F6CE3B`, official
+WHOOP not listed. This section does not reopen July type-43 leases.
+
+### Problem
+
+Atria already has live standard HR (`2A37`). Compact IMU is packet **`0x33` on
+stream-5**: 100 Hz accel+gyro used for sitting/walking, steps, widgets, Live
+Activity motion. That stream last assembled ~15:22 IST 2026-09-19, then stayed
+dead while HR stayed live. Historical catch-up finished **empty**, so the hole
+was not backfilled. Empty catch-up is honest: do not invent motion.
+
+### Three pipes (do not conflate)
+
+| Pipe | Packet | Starts with | Rate | This iPhone |
+|---|---|---|---|---|
+| Live compact | `0x33` on `61080005` | `6A/01` | 100 Hz slices, 152 B | Hours of live traffic Sep 15–19; dead after 15:22 disconnect through build 228 |
+| Heavy live R10 | `0x2B` type-43 | `3F/01` and/or `6A/01` in a **workout/lease** epoch | ~1.9 KB/s | Always `CBErrorDomain: 6` in ~6–8 s (July Gate 4) |
+| Banked 1 Hz | type-47 / v24 via `0x16` | `69/01` then `69/00`, then flash drain | 1 Hz accel | July PASS (93/93 seconds). Quality drop vs compact |
+| Historical IMU dump | `0x34` on stream-5 | `69` (OpenStrap/whoof) | same class as `0x33` | **Never observed** on this strap |
+
+Quality-preserving catch-up is `0x34`, not type-47. Type-47 is honest coarse
+motion.
+
+GATT: TX `61080002`, RX ACKs `61080003` (`0x24`), events `61080004` (`0x30`),
+data `61080005` (`0x2F` / `0x32` / `0x33` / `0x34`). Production all-day owner
+is `pure_hr_v10`. Mid-link stream-5 CCCD toggle disconnects this V4; only
+initial-discovery CCCD is safe.
+
+Harvard command response: `[0x24][respSeq][cmdEcho][requestSeq][data…]`.
+Successful `GET_CLOCK` data starts `0x01`. History result codes: `0=FAILURE`,
+`1=SUCCESS`, `2=PENDING`, `3=UNSUPPORTED`. Overnight IMU ACKs:
+
+- `6A` `aa0c00fc24126a0400010000e9de72b5` → data **`00 01 00 00`** (failure, or
+  enabled=0). Diagnosis treated any `6A` echo as compact-on.
+- `69` `…24ed690003000000…` → data **`03 00 00 00`** (looks unsupported).
+
+**HYPOTHESIS (unused signal):** those bodies are NAKs. Compact-on is only a
+stream-5 `0x33` (or `0x34`) frame.
+
+External: OpenStrap `cmd_toggle_imu` is one-byte `[01]`/`[00]` (matches Atria
+Gen4). Optical toggles are two-byte `[REVISION, enable]`; a single `[01]` is
+read as revision-only and **no data flows**. Maverick `6A` uses a longer body;
+that is the wrong generation. Official Strength Trainer sends `6A` and `0x33`
+flows **during a workout**, not proven 24/7. Official connect also does HELLO,
+feature flags, device config, `0x16` — all-day recovery does none of that.
+`SET_DP_TYPE` / `FORCE_DP_TYPE` (`0x34`/`0x35` as commands) were never sent.
+
+### July 2026 — Gate 4 live type-43 (still binding)
+
+Every high-rate live attempt failed the link. Workout HR was preserved; steps
+were not fabricated. Full write-ups remain in the 2026-07-26 experiment log
+above. Short table:
+
+| Experiment | Result |
+|---|---|
+| `3F/01 + 6A/01` | FAIL timeout |
+| `3F/01` only | FAIL no sustained R10 |
+| `51` + `6A` (wrong 1-byte 51, then duration-shaped 51) | FAIL `CBError 6` |
+| **`6A/01` isolated** (no 51, no 3F) | FAIL — 6A alone opened type-43 |
+| `6A/01` then `6A/00`; same + `3F/00` | FAIL — neither stop prevented timeout |
+| Official compact `03/01 → 6A/01 → 14/00` (utility and main queue) | FAIL ~3 s R10 then `CBError 6` |
+| NOOP keeper `3F/01 → 03/01` every 2 s | FAIL |
+| Command-free reconnect after timeout | FAIL — mode persists on the strap |
+| Passive R10 after gym, no new activate | 69 frames / 68 s then timeout |
+
+**Do not send `3F` / `51` / unguarded `03+6A+14` on a live `2A37` link.**
+
+`0x69` bank + `0x16` drain is the only physically sealed motion transport:
+97 type-47 rows, 93/93 unique seconds. Gate 4 live-lease remains FAIL; all-day
+tick authority was later withdrawn/reopened separately.
+
+### September 2026 — compact `0x33` existed, then died
+
+- 2026-09-15: CRC-valid 152-byte `0x33` on stream-5. Early bugs hid it:
+  counters gated on launch-args; live IMU CRC32 ≠ ISO-HDLC.
+- 2026-09-17–18: live IMU ~6–8 s with live HR; sitting 46 s must not 6A/51-storm;
+  walking assembled ~8.7 s must not use the 4 s dense gate.
+- Build **192** 2026-09-19 ~13:27–15:15: compact live for hours.
+- ~15:22: died after `fresh_accepted_hr_ble_disconnect`. Compact clock frozen.
+- 15:34: leftover **`6A/51`** → stream-5 type-32 `"sleep mode for 30 seconds"`.
+  Cover-live `51` is spent.
+- 15:56: stream-4 type-24 (6A ACKs) must not look like a live stream-5 pipe.
+
+`0x33` is a survivable stream (hours), distinct from July type-43 (seconds then
+death). Wrist-off / LED-off is **not** a firmware reboot. `REBOOT_STRAP 0x1D`
+was not used that night.
+
+### Overnight 2026-09-19–20 — app recovery ladder (builds 199–228)
+
+Each build fixed an app reason `6A`/`0x33` never got a fair chance. **227**
+took that chance: stream-5 CCCD on, this-connection `6A`, 68 stream-5 notifies
+that were type 30/32, compact still 15:22, catch-up empty.
+
+| Build | App bug | Physical after the fix |
+|---|---|---|
+| 199 | Labs `51` / stream-4 6A counted as IMU | 6A ACK, stream-5 = 0 |
+| 202 | `52/6A/14` restored stream-5 as type-32; history owned the pipe | Follow-up 6A only; still logs, no `0x33` |
+| 204 | 6A every 45 s napped the strap | One 6A after abort; no `0x33` |
+| 205–209 | wait-for-stream5 hung; 6A never went out | `14` then one 6A at 12 s; stream-5 still 0 |
+| 210–216 | abort retry blocked catch-up; launch-pending skipped 6A; mixed clocks; catch-up deferred | 6A ACK; `0x16` empty; 2A37 kept |
+| 217 | `didConnect` nil'd stream-5 profile ID while suppressed | 6A ACK, CCCD still off |
+| 218–219 | 6A before CCCD; subscribe status overwrite; `69` blocked 6A | subscribe without post-subscribe 6A |
+| 220–224 | persist-subscribe false CCCD; reconnect watchdog cancelled live `didConnect` | 224: stable epoch + live HR |
+| 225–226 | old `Live6AAfterSubscribeAt` / `69` retry blocked 6A | still missed 6A (confirm flag) |
+| **227** | this-epoch subscribe = CCCD-on | **6A ACK, 68× type 30/32, no `0x33`** |
+| **228** | 227 then 6A-stormed on 30/32 | no storm; HR live; compact stale; 6A stamped 1 s **before** subscribe |
+
+All-day recovery command order was `14` → wait 12 s → `6A` → kick `69`/`16` →
+another `6A`. That inverts July's `03 → 6A → 14` and interleaves a competing
+IMU mode. Evidence dirs: `evidence/2026-09-20-goal-220-imu` … `-228-hold`.
+GitHub #45 comments track the overnight; do not close #45/#21/#22/#5.
+
+### What 227/228 proved
+
+1. Live `2A37` ≠ live IMU.
+2. Type-43 cannot be sustained on this iPhone (July, unchanged).
+3. Compact `0x33` *can* run for hours without killing BLE (192).
+4. That stream died at the 15:22 disconnect and did not resume through 228.
+5. A type-24 `6A` echo is not `0x33`.
+6. Stream-5 can be live as 30/32 with compact dead.
+7. `0x16` catch-up after 6A finished empty.
+8. `51`/`3F` on this link → sleep-mode and/or controller timeout.
+9. Mid-link stream-5 CCCD toggle → disconnects.
+10. 1 Hz `69` bank works (July) and is not compact.
+
+Parser/accept bugs that **did** hide live `0x33` earlier (launch-arg counters,
+CRC-invalid isolated 152 B frames, history-phase gate on `0x33`) were already
+fixed and were **not** the 227 failure: compact recovery admits stream-5 while
+stale, and 68 sparse 30/32 frames are not a 10-packet sitting IMU burst.
+
+### Open hypotheses (still need a controlled test)
+
+- **H1** `6A`/`69` ACK data means IMU off / 69 unsupported.
+- **H2** `69` catch-up owns the IMU mux; need `69/00` before live `6A`.
+- **H3** IMU engine quiet/wedged since 15:22; needs `REBOOT_STRAP 0x1D`.
+- **H4** All-day `0x33` may be a leaked workout mode, not a 24/7 firmware mode.
+- **H5** `6A` in `pure_hr_v10` needs proprietary `03` — **unsafe** without a
+  kill-switch; July `03+6A+14` opened type-43.
+- **H6** CHAR_DATA DP type stuck on events/logs; `SET_DP_TYPE` untested.
+- **H7** 228 6A-before-subscribe is a real race and **not sufficient** (227
+  already 6A'd after CCCD).
+
+### Next experiments (one change per run)
+
+Success = stream-5 type `33`, `imu_frames` climbing, compact age < 60 s sitting,
+`2A37` still accepted, no `CBError 6`. Stop at the first pass.
+
+0. Instrument `0x24` data bytes and a type histogram (not last-notify-wins);
+   decode `0x32` ASCII.
+1. `69/00` → wait until stream-5 is idle of 30/32 → one `6A/01` **after**
+   this-epoch subscribe. No abort-first, no catch-up.
+2. `REBOOT_STRAP 0x1D` (after clearing persistent optical flags) then E1 on a
+   clean initial-discovery CCCD.
+3. Versioned two-byte `6A [01, 01]` only if ACK data still looks off.
+4. Isolated `SET_DP_TYPE` / `FORCE_DP_TYPE` only if CHAR_DATA stays on 30/32.
+5. Quality catch-up only after live is settled: look for `0x34`. If `69` ACK
+   stays `03…`, do not claim quality catch-up exists.
+6. Optional: official Strength Trainer as a **liveness probe** only, then kill
+   WHOOP. Keep it off unless that test is explicit.
+
+**Not in the series:** `51`, `3F`, unguarded `03+6A+14`, 6A storms, mid-link
+CCCD, `0x9A`.
+
+### Code pins (not a physical pass)
+
+`AtriaBLESchema.Cmd.officialGen4CompactMotionBodies` is `03/01, 6A/01, 14/00`
+and is diagnostic-only. All-day recovery is `allDayCompactIMURecoveryStep`:
+`14` then one `6A`, wait after this-CCCD 6A when stream-5 is type 30/32
+(`stream5IsLiveWithoutCompactIMU`). `shouldConfirmStream5FromCCCDState` is
+callbacks > 0 (device 199: `isNotifying` ≠ IMU). Tests:
+`AtriaBLERecoveryCadenceTests` device 192…228 pins.
+
+### How to read a future “it works”
+
+- **Live fix:** last stream-5 type `33`, `imu_frames` climbing, compact assembled
+  age < 60 s sitting, `2A37` still accepted, no `CBError 6`.
+- **Quality catch-up:** `0x34` covering the 15:22 hole, decoded by the compact
+  assembler.
+- **Not a fix:** another `6A` hex on `61080003`; stream-5 type 30/32; empty
+  `0x16`; type-47 1 Hz filling Today steps (useful, different product).
