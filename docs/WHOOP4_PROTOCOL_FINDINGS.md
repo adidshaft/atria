@@ -4688,3 +4688,17 @@ unset**, **face=`00` unset**, tail `00 00 00 00`. Side is already set →
 **Conclusion:** With clock repaired and wrist **side already RIGHT**, post-clock
 `69/01` still does not open historical `0x34` or compact `0x33` on this Mac
 link. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — SET/FORCE_DP body still unpublished; product decoder already accepts `0x33`
+
+**Air path blocked (no TX this turn).** Exhaustive search of `agent-tools/*.txt`,
+`docs/`, and on-disk `evidence/` found **no** observed Harvard command frame
+`AA | len | crc8 | 23 | seq | opcode 0x34|0x35 | payload | crc32` for
+`SET_DP_TYPE` / `FORCE_DP_TYPE` — OpenStrap names the opcodes only and has no
+`cmd_*` helper. Invented DP bodies remain banned. Prior Mac facts still hold:
+post-clock `6A/01` type-24 status `00`, `69` unsupported/refused for quality
+catch-up, zero live `AA 94 00 B5 33`. **Product path OK:**
+`AtriaWhoop4CompactIMUDecoder` + `nativeCompactIMUDurableFrame` +
+`compactIMUSecond` → `ingestLiveMotionFrame` already admit the Sep 15–style
+152-byte fixture in `AtriaWhoop4CompactIMUTests` (planar 10+10, daily-step
+assembler); no decoder change. Goal remains open.
