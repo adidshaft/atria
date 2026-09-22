@@ -4745,3 +4745,5 @@ Mac CoreBluetooth reconnect. Subscribed `61080007` + `2A37` + `61080003`
 **Conclusion:** Local text does not authorize a refusal follow-up payload, and
 this Mac reconnect did not emit a stream-7 security-success line, so `6A`
 stayed blocked. Compact IMU still off. Holder left on `2A37`.
+
+Overnight Mac recorder (TX=0): `tools/strap-mac/overnight_watch.py` → `/tmp/atria-ble/overnight.jsonl`.
