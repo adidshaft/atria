@@ -56512,14 +56512,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     receivedAt: receivedAt
                 )
             }
-            if let nativeR10 = AtriaR10MotionDecoder.decode(frame: completeFrame) {
-                if !historyPhase.isActive {
-                    ingestLiveMotionFrame(
-                        nativeR10,
-                        receivedAt: receivedAt,
-                        callbackSource: callbackSource
-                    )
-                }
+            if AtriaR10MotionDecoder.decode(frame: completeFrame) != nil {
+                // Keep decoding leftover type-2B / R10 for archive and
+                // metadata. Do not ingest it into the live strap-step
+                // pipeline: Today steps, workouts, widgets, and history
+                // must come only from compact 0x33 (compactIMUSecond below).
                 if !storesProprietaryFrames {
                     let payloadLength = max(0, completeFrame.count - 8)
                     pendingMainActorWork.append(.r10Metadata(

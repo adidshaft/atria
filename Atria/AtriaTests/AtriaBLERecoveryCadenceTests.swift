@@ -2329,14 +2329,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(value.contains("recordNativeR10MotionFrame("))
         XCTAssertTrue(value.contains("compactIMUSecond("))
         XCTAssertTrue(value.contains("ingestLiveMotionFrame("))
-        XCTAssertTrue(
-            value.contains("if !historyPhase.isActive {\n                    ingestLiveMotionFrame("),
-            "history-channel R10 must not increment today's live step coordinate"
-        )
         XCTAssertTrue(value.contains("for compactSecond in compactIMUSecond("))
         XCTAssertFalse(
             value.contains("else if !historyPhase.isActive"),
             "leftover history metadata must not freeze compact IMU ingest"
+        )
+        // R10/2B may still decode for archive/metadata, but only compact
+        // 0x33 seconds may call ingestLiveMotionFrame for the daily product.
+        let r10DecodeRange = try XCTUnwrap(value.range(
+            of: "AtriaR10MotionDecoder.decode(frame: completeFrame)"
+        ))
+        let compactIngestRange = try XCTUnwrap(value.range(
+            of: "for compactSecond in compactIMUSecond("
+        ))
+        let betweenR10AndCompact = String(
+            value[r10DecodeRange.upperBound..<compactIngestRange.lowerBound]
+        )
+        XCTAssertFalse(
+            betweenR10AndCompact.contains("ingestLiveMotionFrame("),
+            "leftover R10/2B must not feed Today strap steps while compact 0x33 is the product source"
+        )
+        XCTAssertTrue(
+            String(value[compactIngestRange.lowerBound...]).contains("ingestLiveMotionFrame("),
+            "compact 0x33 seconds remain the only live motion ingest into the step pipeline"
         )
         let r10Start = try XCTUnwrap(source.range(
             of: "private nonisolated func ingestLiveMotionFrame("
@@ -2369,6 +2384,55 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             r10Ingress.components(separatedBy: "bleCallbackEpochFence.owns").count - 1,
             3,
             "R10 ingress, pipeline publication, and MainActor publication must each remain fenced"
+        )
+    }
+
+    /// Product rule: leftover type-2B / R10 may still be decoded and archived,
+    /// but only compact `0x33` seconds may enter `ingestLiveMotionFrame` for
+    /// Today steps / workouts / widgets. R10 decoder stays; it just cannot
+    /// satisfy the daily strap-step product.
+    func testOnlyCompact33SecondsIngestIntoLiveStrapStepPipeline() throws {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        let valueStart = try XCTUnwrap(source.range(
+            of: "didUpdateValueFor characteristic: CBCharacteristic, error: Error?"
+        ))
+        let valueEnd = try XCTUnwrap(source.range(
+            of: "/// Applies complete proprietary callback batches in delegate-entry order.",
+            range: valueStart.upperBound..<source.endIndex
+        ))
+        let value = String(source[valueStart.lowerBound..<valueEnd.lowerBound])
+
+        XCTAssertTrue(
+            value.contains("AtriaR10MotionDecoder.decode(frame: completeFrame)"),
+            "R10 decoder must remain for archive/metadata"
+        )
+        XCTAssertTrue(
+            value.contains("recordNativeR10MotionFrame("),
+            "native R10 archive path must remain"
+        )
+        let decodeRange = try XCTUnwrap(value.range(
+            of: "AtriaR10MotionDecoder.decode(frame: completeFrame)"
+        ))
+        let compactLoop = try XCTUnwrap(value.range(
+            of: "for compactSecond in compactIMUSecond("
+        ))
+        XCTAssertFalse(
+            String(value[decodeRange.upperBound..<compactLoop.lowerBound])
+                .contains("ingestLiveMotionFrame("),
+            "R10/2B must not call ingestLiveMotionFrame"
+        )
+        let compactTail = String(value[compactLoop.lowerBound...])
+        XCTAssertTrue(
+            compactTail.contains("ingestLiveMotionFrame(\n                        compactSecond,"),
+            "only compactIMUSecond frames may ingest into the live step pipeline"
+        )
+        XCTAssertFalse(
+            value.contains("ingestLiveMotionFrame(\n                        nativeR10,"),
+            "native R10 frames must not be the daily strap-step source"
         )
     }
 
