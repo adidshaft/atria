@@ -4606,3 +4606,34 @@ iPhone Bluetooth was **OFF**. Strap `ADIDSHAFT'S WHO`
   CCCD-subscribes does **not** inherit or spontaneously receive compact
   `0x33` (or any stream-5 type) on this strap/epoch. Passive listen alone is
   insufficient. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — Mac GET_CLOCK / body-location / conditional SET_CLOCK+6A
+
+**PHYSICAL FAIL for compact IMU (clock repair did not unlock 0x33).** Mac
+CoreBluetooth; iPhone Bluetooth OFF. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). Subscribed `2A37` + `61080003` +
+`61080005`. No `9A` / `51` / `1D` / `60` / invented SET/FORCE_DP.
+
+1. **GET_CLOCK `0x0B` / payload `00`** (write with response). Type-24:
+   `aa140003247d0b0101ea9aeb01500d0000000000ca7c7d24` → Harvard body after
+   `[24][respSeq][0B][reqSeq]` is `01 ea9aeb01 500d0000 000000` (status
+   `01` = success). u32 LE after status = **32217834** →
+   **1971-01-08T21:23:54Z** (absurd; outside 2024–2027).
+2. **GET_BODY_LOCATION `0x54` / payload `00`** (OpenStrap published
+   `cmd_get_body_location`). Type-24:
+   `aa100057247e540200010000000000001d5ac8f4` → data `00 01 00 00 00 00 00 00`
+   (status `00`).
+3. **SET_CLOCK `0x0A`** sent because clock was absurd: body u32 epoch
+   `1790076300` + u32 pad `0` →
+   `aa10005723030a8c65b26a00000000009e16559c`. ACK type-24 data `01 00 00 00`
+   (status `01`).
+4. **One `6A/01`** after SET_CLOCK (required by this experiment). Type-24
+   `aa0c00fc24806a0400010000fcb925cd` → data `00 01 00 00` (same refuse /
+   `other_00` as prior Mac shots). Listen **15 s**: compact `0x33`
+   (`AA 94 00 B5 33` @ 152 B) = **0**. No type `2B` → no `3F/00`.
+5. Latest `2A37` after probe / holder reclaim: **81** bpm (probe window last
+   **71**; brief `0000` during SET_CLOCK/6A).
+
+**Conclusion:** Repairing an absurd strap RTC with published SET_CLOCK does
+**not** change the `6A/01` refuse body or start compact realtime IMU on this
+fixture. Goal remains open. Holder left on `2A37`.
