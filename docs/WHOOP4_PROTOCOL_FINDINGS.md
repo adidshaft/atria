@@ -4488,3 +4488,46 @@ IMU. SET/FORCE_DP_TYPE remain unused-on-wire and **blocked**. Evidence:
 - Listen 12 s after `6A`: compact `0x33` = **0** (no `AA 94 00 B5 33`). Type `2B` = **26** (+ raw continuation chunks). Packet-type counts at listen_done: `2a37` 14, `24` 2, `2b` 26, `raw` 176.
 - Cleanup: `3F/00` + `6A/00` (yes). Last HR bpm **89**. Holder restarted (pid 32096).
 - **Interpretation:** Opening the R10/`2B` pipe before `6A` does not convert traffic to compact `0x33` on this strap/epoch. `6A` while `3F` is on still returns status `00` and leaves only `2B`. Do not escalate.
+
+### 2026-09-22 — Mac: no remaining published command starts compact `0x33`
+
+**SOURCE REVIEW + NO TX (deliberate).** OpenStrap dump
+`agent-tools/f16b82b7-b69f-4990-b039-1ccb1b54aec6.txt` vs Mac fails above.
+
+#### How OpenStrap starts “IMU” vs packet `0x33`
+
+| Concept | OpenStrap | Distinct from `SEND_R10` `0x3F`? |
+|---|---|---|
+| Live IMU enable | `enable_live_streams(imu=True)` → `SEND_R10_R11_REALTIME 0x3F/01` then `TOGGLE_IMU_MODE 0x6A/01` (one-byte `[01]`) | **No.** Compact and R10 share this pair. |
+| Packet `REALTIME_IMU_DATA_STREAM 0x33` | Decode-only (`parse_realtime_accel` / `imu_stream`) | Arrival type, not a separate start opcode. |
+| Packet `REALTIME_RAW_DATA 0x2B` / R10 | Same live-enable path; heavy stream | What this Mac link actually gets from `3F`/`6A`. |
+| Historical IMU `0x34` | `TOGGLE_IMU_MODE_HISTORICAL 0x69` | Different pipe (bank/`0x34`), not compact realtime. |
+| `SET_DP_TYPE 0x34` / `FORCE_DP_TYPE 0x35` | Opcodes only; **no** `cmd_*` helper, **no** published body | Not eligible without inventing a payload (hard ban). |
+| Two-byte optical toggles | `0x6B`/`0x6C`/`0x99`/`0x9A` = `[REVISION, enable]` in `TWO_BYTE_TOGGLES` | Optical / banned `0x9A`, not IMU mux. `0x6A` is **not** in that set. |
+
+OpenStrap never documents a command that selects stream-5 `0x33` instead of `0x2B`. The reference client treats `0x33` as something that may appear after the same `3F`/`6A` arming used for R10.
+
+#### Published IMU-adjacent payloads this Mac link already fired
+
+| Sequence | Result on this strap |
+|---|---|
+| `6A/01` alone / after hello | type-24 status `00` body `01 00 00`, zero `0x33` |
+| `03/01` then `6A` | proprietary `0x28` HR; `6A` status `00` |
+| `3F/01` then `6A` on first `2B` | `26×` type `2B`; `6A` status `00`; commit `33ba1af9` |
+| `69/00` then `6A` | `69` status `03` unsupported; `6A` status `00` |
+| History drain (never `0x31` sub 3) → abort `14/00` → `6A` | `6A` status `00`; commit `3094c45b` |
+
+Hard bans still apply: `0x9A`, `0x51`, `0x1D`, invented SET/FORCE_DP, `0x60`, and second copies of the rows above.
+
+#### Remaining published candidates considered and rejected
+
+- **`69/01`**: published, but OpenStrap/Atria map it to historical IMU / type-47 banking — not compact `0x33`. Not a compact-start command.
+- **`6A [01,01]`**: conjectured in earlier notes; **not** published for Harvard (`cmd_toggle_imu` is one-byte; `6A` ∉ `TWO_BYTE_TOGGLES`).
+- **`0x6B`/`0x6C`**: published optical payloads; do not claim IMU mux.
+- **SET/FORCE_DP**: opcode-only; body unpublished → blocked.
+
+#### Run decision
+
+**Sent: none.** No `6A` this turn (no type-24). Compact `0x33` count = **0** (no listen window opened). Latest `2A37` HR **84** bpm (holder pid 32393; samples 84–87 during reconnect).
+
+**Conclusion:** On Harvard firmware as published by OpenStrap, there is **no remaining known-payload command** that starts compact realtime `0x33` (`AA 94 00 B5 33`) short of (a) the official app’s workout/session path that has never been captured on this fixture, or (b) an **unpublished** `SET_DP_TYPE` / `FORCE_DP_TYPE` body. Do not shotgun further opcodes to fill the gap. Goal remains open; holder left on `2A37`.
