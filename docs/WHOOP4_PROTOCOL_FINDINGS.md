@@ -4637,3 +4637,54 @@ CoreBluetooth; iPhone Bluetooth OFF. Strap `ADIDSHAFT'S WHO`
 **Conclusion:** Repairing an absurd strap RTC with published SET_CLOCK does
 **not** change the `6A/01` refuse body or start compact realtime IMU on this
 fixture. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — Mac decode 0x54 → skip 0x7B → 69/01 after valid clock
+
+**PHYSICAL FAIL for compact `0x33` and for historical IMU `0x34`.** Same Mac
+link / strap / UUID as the clock probe. iPhone BT OFF. Subscribed `2A37` +
+`61080003` + `61080005`. Did **not** re-send bare `0x54`, `6A` alone, `SET_CLOCK`,
+`69/00`, history drain, `9A`/`51`/`1D`/`60`, or invented SET_DP.
+
+**OpenStrap 0x54 decode (quoted).** OpenStrap names the opcode
+`GET_BODY_LOCATION_AND_STATUS = 0x54` and builds the request with
+`cmd_get_body_location` → payload `b"\x00"`. There is **no** dedicated
+`0x54` branch in `parse_command_response`. Placement field meanings come from
+the published SELECT_WRIST schema / enums, and on-wrist from realtime HR:
+
+```text
+class Wrist(IntEnum):
+    RIGHT = 1
+    LEFT = 2
+class BodyLimb(IntEnum):
+    BICEP = 1
+    WRIST = 2
+class BodySide(IntEnum):
+    INSIDE = 1
+    OUTSIDE = 2
+# body placement
+def cmd_select_wrist(side=Wrist.LEFT, limb=BodyLimb.WRIST, face=BodySide.OUTSIDE, seq=0):
+    return build_command(seq, Cmd.SELECT_WRIST, bytes([int(side), int(limb), int(face)]))
+# REALTIME_DATA … [18] off-wrist flag (0 = on-wrist) [19] body location.
+```
+
+Prior type-24 data `00 01 00 00 00 00 00 00` (status `00`), same status-first
+framing as GET_CLOCK: **status=`00`**, **side=`01` = RIGHT**, **limb=`00`
+unset**, **face=`00` unset**, tail `00 00 00 00`. Side is already set →
+**do not send `SELECT_WRIST 0x7B`** (would guess a different wrist).
+
+1. **Command sent:** one published `TOGGLE_IMU_MODE_HISTORICAL 69/01`
+   (`aa0800a82301690183553951`). Type-24 ACK
+   `aa0c00fc24816901030000004f8a5136` → data **`03 00 00 00`** (status `03`;
+   same refuse-class body seen on the September all-day `69/01` bank that
+   produced no `0x34`).
+2. Listen **20 s** (2A37 kept on):
+   - compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**
+   - historical IMU stream `0x34` = **0**
+   - type-47 = **0**
+   - `2B` = **0**
+   - other stream types = **none** → no `14/00` abort (abort only on non-34 flood)
+3. Latest `2A37` HR during probe: **100** bpm.
+
+**Conclusion:** With clock repaired and wrist **side already RIGHT**, post-clock
+`69/01` still does not open historical `0x34` or compact `0x33` on this Mac
+link. Goal remains open. Holder left on `2A37`.
