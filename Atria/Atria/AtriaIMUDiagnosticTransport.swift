@@ -130,6 +130,8 @@ enum AtriaIMUDiagnosticTransport {
     private static var native34Count = 0
     private static var equalQuality34Count = 0
     private static var liveCompactDeviceTimestamps: [UInt32] = []
+    /// Typed `0x33` frames that fail planar decode (not checksum-exception trailers).
+    private static var compactCorruptCount = 0
     private static var nativeR10Count = 0
     private static var nativeR11Count = 0
     private static var withheldHistoryCount = 0
@@ -450,6 +452,7 @@ enum AtriaIMUDiagnosticTransport {
         native34Count = 0
         equalQuality34Count = 0
         liveCompactDeviceTimestamps = []
+        compactCorruptCount = 0
         nativeR10Count = 0
         nativeR11Count = 0
         withheldHistoryCount = 0
@@ -1319,6 +1322,7 @@ enum AtriaIMUDiagnosticTransport {
                 "native_33": compact33Count,
                 "native_34": native34Count,
                 "equal_quality_34": equalQuality34Count,
+                "corrupt_count": compactCorruptCount,
                 "live_continuity_gate": AtriaWhoop4CompactIMUCoverageGate.evaluateContinuity(
                     deviceTimestamps: liveCompactDeviceTimestamps,
                     provenance: .live
@@ -1414,6 +1418,7 @@ enum AtriaIMUDiagnosticTransport {
         native34Count = 0
         equalQuality34Count = 0
         liveCompactDeviceTimestamps = []
+        compactCorruptCount = 0
         nativeR10Count = 0
         nativeR11Count = 0
         withheldHistoryCount = 0
@@ -1458,6 +1463,10 @@ enum AtriaIMUDiagnosticTransport {
                         liveCompactDeviceTimestamps.count - 20_000
                     )
                 }
+            } else {
+                // Typed 0x33 that cannot yield planar samples — not a
+                // checksum-exception trailer (those still decode).
+                compactCorruptCount += 1
             }
         case .native34: native34Count += 1
         case .nativeR10, .nativeR11:
@@ -1750,6 +1759,7 @@ enum AtriaIMUDiagnosticTransport {
             native34Count = 0
             equalQuality34Count = 0
             liveCompactDeviceTimestamps = []
+            compactCorruptCount = 0
             nativeR10Count = 0
             nativeR11Count = 0
             withheldHistoryCount = 0

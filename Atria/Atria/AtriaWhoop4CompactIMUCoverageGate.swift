@@ -25,6 +25,8 @@ enum AtriaWhoop4CompactIMUCoverageGate {
         let frameCount: Int
         let adjacentPairs: Int
         let pairsWithinOneSecond: Int
+        /// Device-time seconds absent between adjacent stamps (Δt − 1 when Δt > 1).
+        let missingCount: Int
         let medianDeltaSeconds: Double?
         let maxDeltaSeconds: UInt32?
         let passed: Bool
@@ -37,6 +39,7 @@ enum AtriaWhoop4CompactIMUCoverageGate {
                 "required_live_frames": requiredLiveFrames,
                 "adjacent_pairs": adjacentPairs,
                 "pairs_within_1s": pairsWithinOneSecond,
+                "missing_count": missingCount,
                 "passed": passed,
                 "reason": reason,
             ]
@@ -77,6 +80,10 @@ enum AtriaWhoop4CompactIMUCoverageGate {
             }
         }
         let withinOne = deltas.filter { $0 <= maximumAdjacentDeviceDeltaSeconds }.count
+        let missingCount = deltas.reduce(0) { partial, delta in
+            guard delta > maximumAdjacentDeviceDeltaSeconds else { return partial }
+            return partial + Int(delta - maximumAdjacentDeviceDeltaSeconds)
+        }
         let median = Self.median(deltas)
         let maxDelta = deltas.max()
         let liveEnough = provenance.allowsContinuityPass
@@ -98,6 +105,7 @@ enum AtriaWhoop4CompactIMUCoverageGate {
             frameCount: sorted.count,
             adjacentPairs: deltas.count,
             pairsWithinOneSecond: withinOne,
+            missingCount: missingCount,
             medianDeltaSeconds: median,
             maxDeltaSeconds: maxDelta,
             passed: liveEnough,

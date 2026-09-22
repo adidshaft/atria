@@ -1326,12 +1326,57 @@ final class AtriaIMUDiagnosticTransportTests: XCTestCase {
         let live = snapshot["live_continuity_gate"] as? [String: Any]
         XCTAssertEqual(live?["passed"] as? Bool, false)
         XCTAssertEqual(live?["frame_count"] as? Int, 0)
+        XCTAssertEqual(live?["missing_count"] as? Int, 0)
+        XCTAssertEqual(snapshot["corrupt_count"] as? Int, 0)
         let backfill = snapshot["equal_quality_backfill_gate"] as? [String: Any]
         XCTAssertEqual(backfill?["passed"] as? Bool, false)
         XCTAssertEqual(backfill?["equal_quality_34"] as? Int, 0)
         let hist = snapshot["hist_lastNotify_continuity_gate"] as? [String: Any]
         XCTAssertEqual(hist?["passed"] as? Bool, false)
         XCTAssertEqual(hist?["provenance"] as? String, "hist_lastNotify")
+    }
+
+    /// Sep 15 152-byte fixture stores a device stamp; a typed-but-undecodable
+    /// `0x33` increments corrupt_count so a 10-minute stretch is not silent.
+    func testCompact33FixtureRecordsStampAndCorruptCountSeparately() {
+        let liveStationaryFrame = Data(hex:
+            "aa9400b5330100006d8ce1018840580695010100030568000a000a00" +
+            "3dfa23fa30fa3cfa37fa2dfa30fa39fa2ffa25fac0f7c3f7bff7c7f7" +
+            "b5f7b1f7a9f7a8f7bff7bbf785f38ff38bf390f39af392f39af38df3" +
+            "95f395f30a000b000800040002000e000900050004000800fdfffcff" +
+            "fdfff9fff9ff0000fdfffcfffbfffcfffefffefffdfffffffffffeff" +
+            "fffffffffeffffff6b07b094"
+        )
+        AtriaIMUDiagnosticTransport.armQuietLease(arguments: quiet)
+        AtriaIMUDiagnosticTransport.recordAssembledFrame(
+            liveStationaryFrame,
+            connectionEpoch: 1,
+            historyActive: false
+        )
+        var stamp = liveStationaryFrame
+        // Device time +41s so missing_count = Δt − 1 = 40.
+        stamp[8] = 0x96  // 31_558_765 + 41 = 31_558_806
+        stamp[9] = 0x8c
+        stamp[10] = 0xe1
+        stamp[11] = 0x01
+        AtriaIMUDiagnosticTransport.recordAssembledFrame(
+            stamp,
+            connectionEpoch: 1,
+            historyActive: false
+        )
+        let undecodable = encodeFrame([AtriaBLEManager.Packet.imu, 0x01])
+        AtriaIMUDiagnosticTransport.recordAssembledFrame(
+            undecodable,
+            connectionEpoch: 1,
+            historyActive: false
+        )
+        let snapshot = AtriaIMUDiagnosticTransport.snapshot()
+        XCTAssertEqual(snapshot["compact_33"] as? Int, 3)
+        XCTAssertEqual(snapshot["corrupt_count"] as? Int, 1)
+        let live = snapshot["live_continuity_gate"] as? [String: Any]
+        XCTAssertEqual(live?["frame_count"] as? Int, 2)
+        XCTAssertEqual(live?["missing_count"] as? Int, 40)
+        XCTAssertEqual(live?["passed"] as? Bool, false)
     }
 
     func testPersistedLeaseIntentRearmsWithoutArgvAndBlocks6A() {
@@ -1567,5 +1612,19 @@ final class AtriaIMUDiagnosticTransportTests: XCTestCase {
             "evidence/2026-09-20-imu-241-lastpacket-1924/lastPacketHex.bin"
         )
         return try Data(contentsOf: url)
+    }
+}
+
+private extension Data {
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        self.init(bytes)
     }
 }
