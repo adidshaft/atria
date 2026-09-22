@@ -4702,3 +4702,46 @@ catch-up, zero live `AA 94 00 B5 33`. **Product path OK:**
 `compactIMUSecond` → `ingestLiveMotionFrame` already admit the Sep 15–style
 152-byte fixture in `AtriaWhoop4CompactIMUTests` (planar 10+10, daily-step
 assembler); no decoder change. Goal remains open.
+
+### 2026-09-22 — Mac: IMU ACK `00 01 00 00` text search + bond-gated 6A
+
+**Two independent checks. Compact air success still only `AA 94 00 B5 33` @ 152 B.
+Goal remains open.** iPhone Bluetooth OFF. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). No `9A` / `51` / `1D` / `60` / `69` /
+invented SET_DP/FORCE_DP / bare ungated `6A`.
+
+#### 1) Dump + docs: what does IMU toggle `00 01 00 00` / status `0x00` mean?
+
+Searched OpenStrap dump
+(`agent-tools/f16b82b7-b69f-4990-b039-1ccb1b54aec6.txt`) and local docs:
+
+- OpenStrap `parse_command_response` has **no** `TOGGLE_IMU_MODE` / `0x6A`
+  branch and **no** sentence that maps response body `00 01 00 00` or status
+  `0x00` to a follow-up command.
+- Docs/Harvard notes: overnight IMU ACK data `00 01 00 00` is glossed as
+  **(failure, or enabled=0)**; product `FirmwareStatus` names byte `0x00` as
+  `other_00` (fixture `toggleIMUModeOther00Fixture`). History-result codes
+  `0=FAILURE` are about `0x17`, not a named IMU recovery TX.
+- **No text names one follow-up command with an exact payload.** Per gate:
+  **sent nothing** from this search (no guessed follow-up, no `6A`).
+
+#### 2) Bond-gated reconnect (stream-7 ASCII → maybe one `6A/01`)
+
+Mac CoreBluetooth reconnect. Subscribed `61080007` + `2A37` + `61080003`
+(+ `61080005` only so compact/`2B` would be visible). **No TX during the first
+15 s.**
+
+- Stream-7 notify count = **0** for the full bond window (no ASCII, no
+  `PM_EVT_CONN_SEC_SUCCEEDED`, no `PM_EVT_CONN_SEC_FAILED` / BONDING error
+  line for this connection).
+- **Bond result:** `no_stream7_ascii` — `stream-7 silent for bond window`.
+- **`6A` sent:** **no** (gate requires this-connection
+  `PM_EVT_CONN_SEC_SUCCEEDED`; silent stream-7 is not success; prior iPhone
+  peer bond lines are not reused).
+- Listen for `0x33` after gated `6A`: **N/A** (no `6A`). Compact `0x33` count
+  = **0**. Type `2B` = 0 → no `3F/00`.
+- Probe-window latest `2A37` HR: **75** bpm (15 samples, ~75–78).
+
+**Conclusion:** Local text does not authorize a refusal follow-up payload, and
+this Mac reconnect did not emit a stream-7 security-success line, so `6A`
+stayed blocked. Compact IMU still off. Holder left on `2A37`.
