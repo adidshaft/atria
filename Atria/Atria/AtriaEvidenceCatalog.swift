@@ -156,6 +156,20 @@ enum AtriaEvidenceCatalog {
                 "Atria has not verified those Bluetooth decoders, so it does not publish a temperature deviation or an SpO₂ percentage."
             ],
             metricIDs: ["skinTemperature", "bloodOxygen"]
+        ),
+        AtriaEvidenceSource(
+            id: "aha-afib-patient-2023",
+            title: "Atrial Fibrillation",
+            authorsPublisher: "American Heart Association",
+            year: 2023,
+            locator: "https://www.heart.org/en/health-topics/atrial-fibrillation",
+            lastReviewed: lastReviewed,
+            supports: [
+                "Atrial fibrillation is an irregular heart rhythm that a physician diagnoses, typically with ECG.",
+                "Consumer optical pulse timing is not an electrocardiogram and cannot diagnose AFib.",
+                "People with rhythm questions should talk to a physician."
+            ],
+            metricIDs: ["irregularRhythm"]
         )
     ]
 

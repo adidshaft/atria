@@ -357,6 +357,12 @@ deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
 copy_from_container "Documents/learned-insights-v1.json" "$evidence_dir/learned-insights-v1.json" "learned_insights" || true
 copy_from_container "Documents/atria-diagnosis-v1.json" "$evidence_dir/atria-diagnosis-v1.json" "diagnosis" || true
+copy_from_container "Documents/atria-imu-diagnostic-raw-v1.jsonl" \
+  "$evidence_dir/atria-imu-diagnostic-raw-v1.jsonl" \
+  "imu_diagnostic_raw" || true
+copy_from_container "Documents/atria-imu-diagnostic-summary-v1.json" \
+  "$evidence_dir/atria-imu-diagnostic-summary-v1.json" \
+  "imu_diagnostic_summary" || true
 copy_from_container "Documents/atria-pending-deeplink-v1.txt" "$evidence_dir/atria-pending-deeplink-v1.txt" "pending_deeplink" || true
 copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
   "$evidence_dir/historical-archive.catalog-v2.json" \
@@ -1001,6 +1007,10 @@ def emit_offline_sync_preferences():
     print(f"r10_zombie_cccd_toggle_at={pref(prefs, 'r10.zombieCCCDToggleAt', 'none')}")
     print(f"r10_zombie_kick_skip_reason={pref(prefs, 'r10.zombieKickSkipReason', 'none') or 'none'}")
     print(f"r10_zombie_tx_rediscover_at={pref(prefs, 'r10.zombieTxRediscoverAt', 'none')}")
+    print(f"imu_quiet_lease_armed={bool_int(pref(prefs, 'radio.imuQuietLeaseArmed'))}")
+    imu_lease_at = pref(prefs, "radio.imuQuietLeaseArmedAt")
+    imu_lease_age = max(0.0, now - float(imu_lease_at)) if isinstance(imu_lease_at, (int, float)) and imu_lease_at > 0 else -1.0
+    print(f"imu_quiet_lease_armed_age_s={imu_lease_age:.1f}")
     imu_recovery_at = pref(prefs, "radio.lastIMURecoveryAt")
     imu_recovery_age = max(0.0, now - float(imu_recovery_at)) if isinstance(imu_recovery_at, (int, float)) and imu_recovery_at > 0 else -1.0
     print(f"imu_recovery_command={pref(prefs, 'radio.lastIMURecoveryCommand', 'none') or 'none'}")
@@ -1033,6 +1043,11 @@ def emit_offline_sync_preferences():
     print(f"live_imu_frame_age_s={live_imu_age:.1f}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
     print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
+    print(f"protocol_last_packet_length={int(pref(prefs, 'protocol.lastPacketLength', 0) or 0)}")
+    last_packet_hex = pref(prefs, "protocol.lastPacketHex", "") or ""
+    print(f"protocol_last_packet_hex_len={len(last_packet_hex)}")
+    print(f"protocol_last_packet_hex_has_harvard_33={int('aa9400b533' in last_packet_hex.lower())}")
+    print(f"protocol_last_packet_hex={last_packet_hex or 'none'}")
     compact_rot_at = pref(prefs, "compactIMU.lastRotationAt")
     compact_rot_age = max(0.0, now - float(compact_rot_at)) if isinstance(compact_rot_at, (int, float)) and compact_rot_at > 0 else -1.0
     print(f"compact_imu_rotation_mean_dps={float(pref(prefs, 'compactIMU.lastRotationMeanDps', -1) or -1):.3f}")

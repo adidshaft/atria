@@ -48,7 +48,7 @@ final class AtriaLiveSignalTruthTests: XCTestCase {
             status: .connected,
             streamState: .silentUnknown,
             hasRecentHeartRate: false
-        ), "No signal")
+        ), "Connected")
         XCTAssertEqual(AtriaLiveSignalTruth.detailText(
             status: .connected,
             streamState: .silentUnknown,
@@ -58,7 +58,7 @@ final class AtriaLiveSignalTruthTests: XCTestCase {
             status: .connected,
             streamState: .silentUnknown,
             hasRecentHeartRate: false
-        ), .attention)
+        ), .waiting)
 
         XCTAssertEqual(AtriaLiveSignalTruth.valueText(
             status: .connected,

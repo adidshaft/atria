@@ -2326,6 +2326,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(value.contains("callbackSource: callbackSource"),
                       "HR and realtime queue elements must retain callback source")
         XCTAssertTrue(value.contains("AtriaR10MotionDecoder.decode(frame: completeFrame)"))
+        XCTAssertTrue(value.contains("recordNativeR10MotionFrame("))
         XCTAssertTrue(value.contains("compactIMUSecond("))
         XCTAssertTrue(value.contains("ingestLiveMotionFrame("))
         XCTAssertTrue(
@@ -13208,6 +13209,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(packetFresh ?? -1, 1, accuracy: 0.01)
+        XCTAssertNil(
+            AtriaBLEManager.liveIMUEvidenceAgeSeconds(
+                rawFrameAt: now.addingTimeInterval(-1),
+                compactSecondAt: nil,
+                compactPacketAt: nil,
+                now: now
+            ),
+            "R10 type-2B must not count as compact 0x33 evidence"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldRefreshIMUOnLiveHeartRateFallback(
                 owner: .pureHRV10,
@@ -15663,6 +15673,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "notify_requested_",
             "notify_confirmed_",
             "sequence_preflight_blocked_read_only_history",
+            "sequence_preflight_blocked_imu_quiet_lease",
             "sequence_preflight_blocked_proof_inactive",
             "sequence_preflight_blocked_command_in_flight",
             "sequence_preflight_blocked_already_sent_local",
@@ -15699,6 +15710,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let source = try managerSource()
         XCTAssertTrue(source.contains("crc32_mismatch_admitted"))
         XCTAssertTrue(source.contains("data.prefix(256)"))
+        XCTAssertTrue(source.contains("ProtocolDefaults.lastPacketHex"))
         XCTAssertTrue(source.contains("ProtocolDefaults.lastNotifyCallbackType"))
         XCTAssertTrue(source.contains("protocolDiagnosticsPersistenceEnabled = true"))
         XCTAssertTrue(

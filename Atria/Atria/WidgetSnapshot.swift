@@ -1770,7 +1770,12 @@ enum WidgetSnapshotPublisher {
                 liveActiveSession: ble.liveStrapStepResearchTodayCount
             ),
             liveCumulative: ble.liveStrapStepResearchTodayCount,
-            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: now,
+                cycleStart: physiologicalCycle.start
+            )?.count ?? 0,
+            cycleStart: physiologicalCycle.start,
+            now: now
         )
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -2405,7 +2410,8 @@ enum WidgetSnapshotPublisher {
             if let capturedAt = presentation.capturedAt {
                 AtriaHeldDailyStepFloor.persistLiveGyroToday(
                     count: count,
-                    capturedAt: capturedAt
+                    capturedAt: capturedAt,
+                    cycleStart: cycleStart
                 )
             }
         }

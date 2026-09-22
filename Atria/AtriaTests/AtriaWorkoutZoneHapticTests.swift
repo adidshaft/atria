@@ -175,6 +175,41 @@ final class AtriaWorkoutZoneHapticTests: XCTestCase {
             historyOnlyProbeEnabled: false,
             explicitWorkoutHaptic: true
         ), "the exception is command-level, not a generic proprietary-write bypass")
+        XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleIMUMode,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false,
+            explicitDiagnosticIMUEnable: true
+        ), "the isolated 6A/01 trial must reach the strap in standard-HR radio mode")
+        XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleIMUModeHistorical,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false,
+            explicitDiagnosticIMUEnable: true
+        ), "the diagnostic exception is 6A only, not 69 banking")
+        XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaIMUDiagnosticTransport.softwareResetOpcode,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false,
+            explicitDiagnosticIMUEnable: true
+        ), "the 6A exception must not open 0x1D")
+        XCTAssertTrue(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaIMUDiagnosticTransport.softwareResetOpcode,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false,
+            explicitDiagnosticSoftwareReset: true
+        ), "the isolated 0x1D/00 trial must reach the strap in standard-HR radio mode")
+        XCTAssertFalse(AtriaBLEManager.shouldAllowProtectedTransportCommand(
+            command: AtriaBLEManager.Cmd.toggleIMUMode,
+            standardHROnlyMode: true,
+            historyOnlyProbeEnabled: false,
+            explicitWorkoutHaptic: false,
+            explicitDiagnosticSoftwareReset: true
+        ), "the reset exception is 0x1D only, not 6A")
     }
 
     func testPendingIntentDecodesPayloadWrittenBeforeZoneTargetsExisted() throws {

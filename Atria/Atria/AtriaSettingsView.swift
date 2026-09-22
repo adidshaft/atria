@@ -1,5 +1,22 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
+
+final class AtriaLeftoverFlushBoard: ObservableObject {
+    enum Tone {
+        case idle, working, good, warn, bad
+    }
+
+    @Published var running = false
+    @Published var phase = "Ready"
+    @Published var result = "Tap Flush leftover motion. The lines below change only when the strap answers."
+    @Published var strap = "Not checked yet"
+    @Published var heartRate = "Not checked yet"
+    @Published var commands = "Not sent"
+    @Published var listen = "Off"
+    @Published var packets = "None yet"
+    @Published var tone: Tone = .idle
+}
 
 /// Coalesces high-frequency profile controls (notably Stepper repeats) into one
 /// durable store update. `flush` is called by every navigation/dismiss boundary,
@@ -304,6 +321,9 @@ struct AtriaSettingsView: View {
     let onVerifyBackup: (() async -> SessionBackupStatus)?
     let onRestoreBackup: ((URL) async -> SessionBackupStatus?)?
     let onForgetStrap: (() -> Void)?
+    let flushBoard: AtriaLeftoverFlushBoard
+    let onFlushLeftover: () -> Void
+    let onRestoreHeartRate: () -> Void
     /// The developer validation surface is intentionally a factory. Building
     /// its large observation graph while the Settings sheet is animating can
     /// miss the scene watchdog on a device with a live strap stream.
@@ -410,6 +430,9 @@ struct AtriaSettingsView: View {
          onVerifyBackup: (() async -> SessionBackupStatus)? = nil,
          onRestoreBackup: ((URL) async -> SessionBackupStatus?)? = nil,
          onForgetStrap: (() -> Void)? = nil,
+         flushBoard: AtriaLeftoverFlushBoard = AtriaLeftoverFlushBoard(),
+         onFlushLeftover: @escaping () -> Void = {},
+         onRestoreHeartRate: @escaping () -> Void = {},
          researchValidationContent: (() -> AnyView)? = nil,
          onExitDeveloperMode: @escaping () -> Void = {}) {
         self.profile = profile
@@ -450,6 +473,9 @@ struct AtriaSettingsView: View {
         self.onVerifyBackup = onVerifyBackup
         self.onRestoreBackup = onRestoreBackup
         self.onForgetStrap = onForgetStrap
+        self.flushBoard = flushBoard
+        self.onFlushLeftover = onFlushLeftover
+        self.onRestoreHeartRate = onRestoreHeartRate
         self.researchValidationContent = researchValidationContent
         self.onExitDeveloperMode = onExitDeveloperMode
         _draft = State(initialValue: profile)
@@ -769,8 +795,7 @@ struct AtriaSettingsView: View {
     @ViewBuilder
     private var strapSettingsContent: some View {
         radioModeSection
-        // The all-day motion default is destination-only: its observer lives
-        // in a scope on the Strap page, never on the Settings hub frame.
+        leftoverFlushSection
         AtriaStrapMotionDefaultsScope { allDayMotionEnabled in
             allDayMotionSection(allDayMotionEnabled: allDayMotionEnabled)
         }
@@ -784,6 +809,14 @@ struct AtriaSettingsView: View {
             }
         }
         sensorAvailabilitySection
+    }
+
+    private var leftoverFlushSection: some View {
+        AtriaLeftoverFlushControls(
+            board: flushBoard,
+            onFlush: onFlushLeftover,
+            onRestore: onRestoreHeartRate
+        )
     }
 
     private func allDayMotionSection(allDayMotionEnabled: Binding<Bool>) -> some View {
@@ -2557,5 +2590,86 @@ struct AtriaTrackedBehaviorsSettingsView: View {
                 trackedRaw = AtriaTrackedBehaviors.serialize(ordered)
             }
         )
+    }
+}
+
+private struct AtriaLeftoverFlushControls: View {
+    @ObservedObject var board: AtriaLeftoverFlushBoard
+    let onFlush: () -> Void
+    let onRestore: () -> Void
+
+    var body: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(board.phase)
+                    .font(.title3.weight(.semibold))
+                Text(board.result)
+                    .font(.subheadline)
+                    .foregroundStyle(resultColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+
+            flushFact("Strap", board.strap)
+            flushFact("Heart rate", board.heartRate)
+            flushFact("Commands", board.commands)
+            flushFact("Motion listen", board.listen)
+            flushFact("Packets", board.packets)
+
+            Button {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                onFlush()
+            } label: {
+                Text(board.running ? "Flushing…" : "Flush leftover motion")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .disabled(board.running)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+            .listRowBackground(Color.clear)
+
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                onRestore()
+            } label: {
+                Text("Restore heart rate")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            .tint(.red)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+        } header: {
+            Text("Flush leftover")
+        } footer: {
+            Text("These lines update while the flush runs. Packets are what the strap actually sent.")
+        }
+    }
+
+    private var resultColor: Color {
+        switch board.tone {
+        case .idle: return .secondary
+        case .working: return .primary
+        case .good: return .green
+        case .warn: return .orange
+        case .bad: return .red
+        }
+    }
+
+    private func flushFact(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
     }
 }

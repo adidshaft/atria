@@ -9,9 +9,9 @@ enum AtriaOnboardingHistoryBootstrapPolicy {
     /// prove (and could lose a user's only copy of a night).
     enum FreshStartPolicy {
         static let title = "Start a new Atria timeline"
-        static let summary = "Atria starts live collection first and queues existing strap records for a safe idle window."
-        static let disclosure = "Live collection starts as soon as Atria verifies a secure strap signal. Existing records stay on the strap until they can be imported without interrupting current heart-rate or motion transmission; verified replay pages are acknowledged only after they are saved on this iPhone. Atria does not send a physical-erase command."
-        static let interruptionDisclosure = "If the queued import is interrupted, Atria resumes it later. It never disconnects live tracking or discards unseen strap data to force a fresh start."
+        static let summary = "Live heart rate first. Older records import later, without interrupting it."
+        static let disclosure = "Live collection starts once the strap signal is verified. Existing records stay on the strap until import will not interrupt heart rate. Verified replay pages are acknowledged only after they are saved on this iPhone. Atria does not send a physical-erase command."
+        static let interruptionDisclosure = "If import stops, Atria resumes it later. It never disconnects live tracking or discards unseen strap data to force a fresh start."
         static let liveReadyDetail = "Ready · live tracking stays on while existing history waits for a safe idle window"
 
         static func completionDetail(importedRows: Int) -> String {
@@ -116,7 +116,7 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
             if snapshot.phase != .complete && snapshot.phase != .failed {
                 transition(to: .waitingForStrap,
                            peripheralIdentifier: snapshot.peripheralIdentifier,
-                           detail: "Waiting for a fresh strap signal")
+                           detail: "Waiting for your strap")
             }
             return
         }
@@ -125,25 +125,28 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
             return
         }
         // Standard 2A37 HR does not prove access to WHOOP's protected command
-        // channel. Always give the exact read-only 22/00 preflight its one
-        // connection-scoped opportunity before the history owner starts.
-        ble.requestOnboardingPairingPreflightIfNeeded()
-        if ble.onboardingPairingPreflightInFlight {
-            if snapshot.phase != .complete && snapshot.phase != .failed {
-                transition(
-                    to: .waitingForStrap,
-                    peripheralIdentifier: peripheralIdentifier,
-                    detail: "Verifying secure strap access — accept Pair if iPhone asks"
-                )
+        // channel. Give the exact read-only 22/00 preflight its one
+        // connection-scoped opportunity before the history owner starts,
+        // except during a quiet diagnostic lease which blocks proprietary TX.
+        if !AtriaIMUDiagnosticTransport.isQuietLeaseActive() {
+            ble.requestOnboardingPairingPreflightIfNeeded()
+            if ble.onboardingPairingPreflightInFlight {
+                if snapshot.phase != .complete && snapshot.phase != .failed {
+                    transition(
+                        to: .waitingForStrap,
+                        peripheralIdentifier: peripheralIdentifier,
+                        detail: "Confirming strap access"
+                    )
+                }
+                return
             }
-            return
         }
-        guard ble.currentConnectionHasFreshHeartRate else {
+        guard ble.onboardingLiveHeartRateThisConnection else {
             if snapshot.phase != .complete && snapshot.phase != .failed {
                 transition(
                     to: .waitingForStrap,
                     peripheralIdentifier: peripheralIdentifier,
-                    detail: "Connected — waiting for a fresh strap signal"
+                    detail: "Waiting for your strap"
                 )
             }
             return
@@ -292,7 +295,7 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
         transition(to: .waitingForStrap,
                    peripheralIdentifier: snapshot.peripheralIdentifier,
                    importedRows: snapshot.importedRows,
-                   detail: "Waiting for a fresh strap signal")
+                   detail: "Waiting for your strap")
         if ble.status != .connected {
             ble.startScan(reason: "onboarding_primary_connect")
         }

@@ -6,7 +6,21 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     static let schemaVersion = 2
     static let enableArgument = "--atria-enable-step-calibration"
     static let disableArgument = "--atria-disable-step-calibration"
+    static let importArchivedArgument = "--atria-import-archived-compact-33"
+    static let materializeSamplesArgument = "--atria-materialize-compact-33-samples"
+    static let importFilename = "atria-compact-33-historical-import-v1.jsonl"
+    static let importConsumedKey = "atria.compactIMU.historicalImport.v1.consumed"
+    static let materializeConsumedKey = "atria.compactIMU.historicalSamples.v1.consumed"
+    static let sampleSchemaVersion = 1
     static let captureUntilDefaultsKey = "atria.strapStepCalibration.captureUntil"
+
+    /// Honest provenance for already-captured Harvard `0x33` bytes.
+    /// Never use these labels for live stream-5 gait.
+    enum CompactIMUImportProvenance: String, Sendable {
+        case lastNotifySnapshot = "hist_lastNotify"
+        case evidenceArchive = "hist_evidence"
+        case historical = "hist_import"
+    }
     /// A calibration is an attended controlled walk, not a week-long radio
     /// mode. Raw evidence remains retained for seven days.
     static let defaultArmDuration: TimeInterval = 30 * 60
@@ -149,6 +163,35 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
     /// R10 (0x2B/0x0A) is the observed high-rate stream; 0x33 remains accepted
     /// for firmware variants that expose the smaller realtime IMU packet.
     static func canonicalValidatedMotionFrame(from data: Data) -> Data? {
+        nativeCompactIMUDurableFrame(from: data)?.frame
+            ?? crcValidatedR10MotionFrame(from: data)
+    }
+
+    /// Live Harvard `0x33` on this strap often has a trailer that does not
+    /// match ISO-HDLC CRC32 (device 2026-09-15: 152-byte frames, `imuFrames`
+    /// stayed 0). Keep those complete frames. Label checksum exceptions in
+    /// `source`; do not treat them as CRC-valid R10.
+    static func nativeCompactIMUDurableFrame(
+        from data: Data
+    ) -> (frame: Data, checksumValid: Bool)? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 9, bytes[0] == 0xAA else { return nil }
+        let declaredLength = Int(bytes[1]) | (Int(bytes[2]) << 8)
+        let frameLength = declaredLength + 4
+        guard declaredLength >= 5,
+              bytes.count == frameLength,
+              bytes[3] == crc8([bytes[1], bytes[2]]) else { return nil }
+        let payload = Array(bytes[4..<declaredLength])
+        guard payload.first == 0x33 else { return nil }
+        let expectedCRC = crc32(payload)
+        let actualCRC = UInt32(bytes[declaredLength])
+            | (UInt32(bytes[declaredLength + 1]) << 8)
+            | (UInt32(bytes[declaredLength + 2]) << 16)
+            | (UInt32(bytes[declaredLength + 3]) << 24)
+        return (Data(bytes[0..<frameLength]), expectedCRC == actualCRC)
+    }
+
+    private static func crcValidatedR10MotionFrame(from data: Data) -> Data? {
         let bytes = [UInt8](data)
         guard bytes.count >= 9, bytes[0] == 0xAA else { return nil }
         let declaredLength = Int(bytes[1]) | (Int(bytes[2]) << 8)
@@ -158,7 +201,7 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
               bytes[3] == crc8([bytes[1], bytes[2]]) else { return nil }
         let payload = Array(bytes[4..<declaredLength])
         let isR10 = payload.count >= 2 && payload[0] == 0x2B && payload[1] == 0x0A
-        guard isR10 || payload.first == 0x33 else { return nil }
+        guard isR10 else { return nil }
         let expectedCRC = crc32(payload)
         let actualCRC = UInt32(bytes[declaredLength])
             | (UInt32(bytes[declaredLength + 1]) << 8)
@@ -168,19 +211,229 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         return Data(bytes[0..<frameLength])
     }
 
+    static func crcValidatedNativeR10MotionFrame(from data: Data) -> Data? {
+        crcValidatedR10MotionFrame(from: data)
+    }
+
     func recordMotionFrame(_ data: Data, source: String, receivedAt: Date = Date()) {
         guard let frame = Self.canonicalValidatedMotionFrame(from: data) else { return }
         recordValidatedMotionFrame(frame, source: source, receivedAt: receivedAt)
     }
 
+    /// Always-on compact IMU store. Independent of the attended calibration
+    /// window that records CRC-valid R10.
+    func recordNativeCompactIMUFrame(
+        _ data: Data,
+        source: String,
+        receivedAt: Date = Date()
+    ) {
+        guard let admitted = Self.nativeCompactIMUDurableFrame(from: data) else { return }
+        let labeledSource = admitted.checksumValid
+            ? Self.sanitizedSource(source)
+            : Self.sanitizedSource(source) + "+checksum_exception"
+        recordValidatedMotionFrame(
+            admitted.frame,
+            source: labeledSource,
+            receivedAt: receivedAt
+        )
+    }
+
+    /// Persist an already-captured Harvard `0x33` frame with historical
+    /// provenance. Rejects leftover R10 `2B`. Does not mark live 100 Hz,
+    /// increment `imuFrames`, or call the live assembler.
+    @discardableResult
+    func importProvenanceTaggedCompactIMUFrame(
+        _ data: Data,
+        provenance: CompactIMUImportProvenance,
+        capturedAt: Date
+    ) -> Bool {
+        guard Self.nativeCompactIMUDurableFrame(from: data) != nil else { return false }
+        recordNativeCompactIMUFrame(
+            data,
+            source: provenance.rawValue,
+            receivedAt: capturedAt
+        )
+        return true
+    }
+
+    /// One-shot Documents JSONL import when `--atria-import-archived-compact-33`
+    /// is present. Lines are `{hex, provenance}` last-value snapshots.
+    @discardableResult
+    func importArchivedCompactIMUFileIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        documentsURL: URL? = nil,
+        defaults: UserDefaults = .standard,
+        now: Date = Date()
+    ) -> Int {
+        guard arguments.contains(Self.importArchivedArgument) else { return 0 }
+        if defaults.bool(forKey: Self.importConsumedKey) { return 0 }
+        let root = documentsURL
+            ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        guard let root else { return 0 }
+        let url = root.appendingPathComponent(Self.importFilename)
+        let imported = importArchivedCompactIMUJSONL(from: url, capturedAt: now)
+        if imported > 0 {
+            defaults.set(true, forKey: Self.importConsumedKey)
+        }
+        return imported
+    }
+
+    @discardableResult
+    func importArchivedCompactIMUJSONL(
+        from url: URL,
+        capturedAt: Date = Date()
+    ) -> Int {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        var imported = 0
+        var seen = Set<Data>()
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let payload = trimmed.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: payload),
+                  let dict = object as? [String: Any],
+                  let hex = dict["hex"] as? String,
+                  let frame = Self.dataFromLowerHex(hex),
+                  let provenance = CompactIMUImportProvenance(
+                    rawValue: (dict["provenance"] as? String) ?? ""
+                  ) else { continue }
+            guard seen.insert(frame).inserted else { continue }
+            if importProvenanceTaggedCompactIMUFrame(
+                frame,
+                provenance: provenance,
+                capturedAt: capturedAt
+            ) {
+                imported += 1
+            }
+        }
+        if imported > 0 {
+            flushSynchronouslyForTesting()
+            _ = materializeDecodedCompactIMUSamplesFromArchive()
+        }
+        return imported
+    }
+
+    /// Decode already-stored `hist_*` Harvard `0x33` envelopes into scalar
+    /// sample rows. Never labels them live, 100 Hz, or gait-stream.
+    @discardableResult
+    func materializeDecodedCompactIMUSamplesIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        defaults: UserDefaults = .standard
+    ) -> Int {
+        guard arguments.contains(Self.materializeSamplesArgument) else { return 0 }
+        if defaults.bool(forKey: Self.materializeConsumedKey) { return 0 }
+        let count = materializeDecodedCompactIMUSamplesFromArchive()
+        if count > 0 {
+            defaults.set(true, forKey: Self.materializeConsumedKey)
+        }
+        return count
+    }
+
+    @discardableResult
+    func materializeDecodedCompactIMUSamplesFromArchive() -> Int {
+        flushSynchronouslyForTesting()
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        let envelopes = files.filter {
+            $0.pathExtension == "csv"
+                && $0.lastPathComponent.hasPrefix("strap-imu-")
+                && !$0.lastPathComponent.hasPrefix("strap-imu-samples-")
+        }
+        var lines: [String] = []
+        var seen = Set<String>()
+        for url in envelopes {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for rawLine in text.split(whereSeparator: \.isNewline).dropFirst() {
+                let parts = rawLine.split(separator: ",", maxSplits: 5, omittingEmptySubsequences: false)
+                guard parts.count == 6 else { continue }
+                let source = String(parts[2])
+                guard source.hasPrefix("hist_"), parts[3] == "33" else { continue }
+                guard let receivedMS = Int64(parts[1]),
+                      let frame = Self.dataFromLowerHex(String(parts[5])),
+                      let packet = AtriaWhoop4CompactIMUDecoder.decode(frame: frame) else {
+                    continue
+                }
+                let count = min(packet.acceleration.count, packet.rotationRate.count)
+                for index in 0..<count {
+                    let key = "\(packet.deviceTimestamp).\(index)"
+                    guard seen.insert(key).inserted else { continue }
+                    let accel = packet.acceleration[index]
+                    let gyro = packet.rotationRate[index]
+                    lines.append(
+                        "\(Self.sampleSchemaVersion),\(receivedMS),\(source),\(packet.deviceTimestamp),\(index),"
+                            + "\(accel.x),\(accel.y),\(accel.z),"
+                            + "\(gyro.x),\(gyro.y),\(gyro.z)\n"
+                    )
+                }
+            }
+        }
+        guard !lines.isEmpty else { return 0 }
+        let filename = "strap-imu-samples-\(Self.utcDayKey(for: Date()))-\(Self.unixMilliseconds(Date()))-\(launchID).csv"
+        let url = directoryURL.appendingPathComponent(filename)
+        let header = "schema_version,received_at_unix_ms,provenance,device_ts,sample_index,ax,ay,az,gx,gy,gz\n"
+        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        try? (header + lines.joined()).write(to: url, atomically: true, encoding: .utf8)
+        return lines.count
+    }
+
+    /// Device timestamps from imported last-notify compact `0x33` envelopes.
+    /// Used by the coverage gate; never treated as live 100 Hz.
+    func lastNotifyCompactIMUDeviceTimestamps() -> [UInt32] {
+        flushSynchronouslyForTesting()
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        var stamps = Set<UInt32>()
+        for url in files where url.pathExtension == "csv"
+            && url.lastPathComponent.hasPrefix("strap-imu-")
+            && !url.lastPathComponent.hasPrefix("strap-imu-samples-") {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for rawLine in text.split(whereSeparator: \.isNewline).dropFirst() {
+                let parts = rawLine.split(separator: ",", maxSplits: 5, omittingEmptySubsequences: false)
+                guard parts.count == 6,
+                      String(parts[2]).hasPrefix("hist_lastNotify"),
+                      parts[3] == "33",
+                      let frame = Self.dataFromLowerHex(String(parts[5])),
+                      let packet = AtriaWhoop4CompactIMUDecoder.decode(frame: frame) else {
+                    continue
+                }
+                stamps.insert(packet.deviceTimestamp)
+            }
+        }
+        return stamps.sorted()
+    }
+
+    /// Always-on native R10 (`2B/0A`) store. Independent of the attended
+    /// calibration window and of Harvard compact `0x33`.
+    func recordNativeR10MotionFrame(
+        _ data: Data,
+        source: String,
+        receivedAt: Date = Date()
+    ) {
+        guard let frame = Self.crcValidatedR10MotionFrame(from: data) else { return }
+        recordValidatedMotionFrame(frame, source: source, receivedAt: receivedAt)
+    }
+
     /// The BLE parser has already checked framing and CRC before this path.
+    private static func compactIMUDeviceTimestampMS(_ frame: Data) -> Int64? {
+        guard let packet = AtriaWhoop4CompactIMUDecoder.decode(frame: frame),
+              packet.deviceTimestamp > 0 else { return nil }
+        return Int64(packet.deviceTimestamp) * 1_000
+    }
+
     func recordValidatedMotionFrame(_ frame: Data, source: String, receivedAt: Date) {
         let row = PendingRow(receivedAt: receivedAt,
                              source: Self.sanitizedSource(source),
                              frame: frame)
-        let deviceTimestampMS = AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: frame).flatMap {
-            $0 > 0 ? Int64($0) * 1_000 : nil
-        }
+        let deviceTimestampMS = Self.compactIMUDeviceTimestampMS(frame)
+            ?? AtriaR10MotionDecoder.validatedDeviceTimestamp(frame: frame).flatMap {
+                $0 > 0 ? Int64($0) * 1_000 : nil
+            }
         queue.async { [self] in
             pendingRows.append(row)
             pendingBytes += row.estimatedBytes
@@ -440,6 +693,21 @@ final class AtriaStrapCalibrationArchive: @unchecked Sendable {
         }
         return pairs
     }()
+
+    private static func dataFromLowerHex(_ hex: String) -> Data? {
+        let cleaned = hex.filter(\.isHexDigit)
+        guard cleaned.count >= 18, cleaned.count.isMultiple(of: 2) else { return nil }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(cleaned.count / 2)
+        var index = cleaned.startIndex
+        while index < cleaned.endIndex {
+            let next = cleaned.index(index, offsetBy: 2)
+            guard let value = UInt8(cleaned[index..<next], radix: 16) else { return nil }
+            bytes.append(value)
+            index = next
+        }
+        return Data(bytes)
+    }
 
     private static func lowercaseHex(_ data: Data) -> String {
         var bytes: [UInt8] = []

@@ -172,7 +172,7 @@ final class AtriaConnectionSurfaceAgreementTests: XCTestCase {
         switch state {
         case .live: return "Live"
         case .warming: return "Waiting"
-        case .silentUnknown: return "No signal"
+        case .silentUnknown: return "Connected"
         case .unknown: return "Pending"
         case .lowBatteryShutoff: return "Charge strap"
         case .lowBatteryReducedDetail: return "Low battery"

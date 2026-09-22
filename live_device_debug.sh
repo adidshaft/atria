@@ -2756,7 +2756,15 @@ else:
         "--device", device_id,
         "--terminate-existing",
         "--console",
+    ])
+    if os.environ.get("ATRIA_IMU_QUIET_LEASE") == "1":
+        cmd.extend([
+            "--environment-variables",
+            json.dumps({"ATRIA_IMU_QUIET_LEASE": "1"}),
+        ])
+    cmd.extend([
         bundle_id,
+        "--",
     ])
     if auto_capture:
         cmd.extend(["--atria-auto-capture", "--atria-capture-label", capture_label])
@@ -2821,6 +2829,23 @@ else:
         cmd.append("--atria-analytics-calibration-audit")
     if not quiet_ble_logs:
         cmd.append("--atria-log-ble-frames")
+    if os.environ.get("ATRIA_IMU_QUIET_LEASE") == "1":
+        cmd.append("--atria-imu-quiet-lease")
+        cmd.extend([
+            "--atria-imu-record-seconds",
+            os.environ.get("ATRIA_IMU_RECORD_SECONDS", "240"),
+        ])
+        enable_after = os.environ.get("ATRIA_IMU_ENABLE_AFTER_SECONDS", "").strip()
+        if enable_after:
+            cmd.extend(["--atria-imu-enable-after-seconds", enable_after])
+            emit(f"HARNESS_IMU_ENABLE_AFTER_SECONDS seconds={enable_after} action=one_6a01_after_quiet_baseline")
+        if os.environ.get("ATRIA_IMU_SOFTWARE_RESET") == "1":
+            cmd.append("--atria-imu-software-reset")
+            reset_after = os.environ.get("ATRIA_IMU_RESET_AFTER_SECONDS", "30").strip() or "30"
+            cmd.extend(["--atria-imu-reset-after-seconds", reset_after])
+            emit(f"HARNESS_IMU_SOFTWARE_RESET delay_s={reset_after} action=one_1d00_then_wait_new_epoch_for_6a")
+        cmd.append("--atria-enable-debug-logs")
+        emit("HARNESS_IMU_QUIET_LEASE status=enabled action=block_proprietary_tx_and_mid_link_cccd preserve_2a37=1")
     if full_protocol_mode:
         cmd.append("--atria-full-protocol-mode")
     if standard_hr_only:
@@ -3329,8 +3354,20 @@ if not replay_log and leave_running and not pull_only:
         "xcrun", "devicectl", "device", "process", "launch",
         "--device", device_id,
         "--terminate-existing",
-        bundle_id,
     ]
+    if os.environ.get("ATRIA_IMU_QUIET_LEASE") == "1":
+        keepalive_cmd.extend([
+            "--environment-variables",
+            json.dumps({"ATRIA_IMU_QUIET_LEASE": "1"}),
+        ])
+    keepalive_cmd.extend([bundle_id, "--"])
+    if os.environ.get("ATRIA_IMU_QUIET_LEASE") == "1":
+        keepalive_cmd.extend([
+            "--atria-imu-quiet-lease",
+            "--atria-imu-record-seconds",
+            os.environ.get("ATRIA_IMU_RECORD_SECONDS", "240"),
+            "--atria-enable-debug-logs",
+        ])
     emit("HARNESS_LEAVE_RUNNING_ARGS=" + " ".join(shlex.quote(part) for part in keepalive_cmd))
     result = subprocess.run(
         keepalive_cmd,

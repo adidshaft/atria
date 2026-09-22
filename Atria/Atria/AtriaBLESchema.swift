@@ -261,6 +261,10 @@ extension AtriaBLEManager {
         static let lastIMURecoveryIMUAge = "atria.radio.lastIMURecoveryIMUAge"
         static let lastIMURecoverySkipReason = "atria.radio.lastIMURecoverySkipReason"
         static let lastIMURecoverySkipAt = "atria.radio.lastIMURecoverySkipAt"
+        static let imuQuietLeaseArmed = "atria.radio.imuQuietLeaseArmed"
+        static let imuQuietLeaseArmedAt = "atria.radio.imuQuietLeaseArmedAt"
+        static let imuQuietLeaseRunID = "atria.radio.imuQuietLeaseRunID"
+        static let imuQuietLeasePID = "atria.radio.imuQuietLeasePID"
         /// Wall-clock abort `0x14` / follow-up `6A` so a reconnect does not
         /// restart the 12s live attempt or block historical IMU catch-up.
         static let allDayCompactAbortAt = "atria.radio.allDayCompactAbortAt"
@@ -565,6 +569,9 @@ extension AtriaBLEManager {
         static let lastPacketType = "atria.protocol.lastPacketType"
         static let lastPacketKind = "atria.protocol.lastPacketKind"
         static let lastPacketLength = "atria.protocol.lastPacketLength"
+        /// Reassembled proprietary payload hex when `lastPacketLength` > 256.
+        /// lastNotifyCallbackHex stays capped at 256 B. Never an IMU label.
+        static let lastPacketHex = "atria.protocol.lastPacketHex"
         static let packetsThisConnection = "atria.protocol.packetsThisConnection"
         static let lastPacketAt = "atria.protocol.lastPacketAt"
         static let notifyCallbacksThisConnection = "atria.protocol.notifyCallbacksThisConnection"

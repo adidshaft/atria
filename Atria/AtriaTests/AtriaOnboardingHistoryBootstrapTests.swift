@@ -140,7 +140,7 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
             of: "ble.requestOnboardingPairingPreflightIfNeeded()"
         )?.lowerBound)
         let freshGate = try XCTUnwrap(bootstrap.range(
-            of: "guard ble.currentConnectionHasFreshHeartRate else"
+            of: "guard ble.onboardingLiveHeartRateThisConnection else"
         )?.lowerBound)
         let continuityCompletion = try XCTUnwrap(bootstrap.range(
             of: "if ble.status == .connected"
@@ -154,6 +154,8 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         XCTAssertLessThan(request, inFlightReturn)
         XCTAssertLessThan(inFlightReturn, freshGate)
         XCTAssertLessThan(freshGate, continuityCompletion)
+        XCTAssertTrue(bootstrap.contains("AtriaIMUDiagnosticTransport.isQuietLeaseActive()"),
+                      "quiet diagnostic lease must skip blocked 22/00 pairing preflight")
         let safeBranchEnd = try XCTUnwrap(bootstrap.range(
             of: "guard transition(to: .importing",
             range: continuityCompletion..<bootstrap.endIndex

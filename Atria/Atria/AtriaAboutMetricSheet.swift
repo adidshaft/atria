@@ -49,6 +49,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     case vo2max
     case skinTemperature
     case bloodOxygen
+    case irregularRhythm
 
     var id: String { rawValue }
 
@@ -64,6 +65,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max: return "Fitness age & VO₂max"
         case .skinTemperature: return "Skin temperature"
         case .bloodOxygen: return "Blood oxygen (SpO₂)"
+        case .irregularRhythm: return AtriaIrregularRhythmCopy.title
         }
     }
 
@@ -94,6 +96,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max: return "figure.run"
         case .skinTemperature: return "thermometer.medium"
         case .bloodOxygen: return "lungs.fill"
+        case .irregularRhythm: return "heart.text.clipboard"
         }
     }
 
@@ -112,6 +115,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max: return Metrics.electricStrain
         case .skinTemperature: return .orange
         case .bloodOxygen: return .secondary
+        case .irregularRhythm: return .secondary
         }
     }
 
@@ -135,6 +139,8 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria has not yet verified the Bluetooth decoder, so it does not currently publish a temperature value."
         case .bloodOxygen:
             return "Blood-oxygen saturation is the percentage of your hemoglobin carrying oxygen. It normally sits in the high 90s at rest."
+        case .irregularRhythm:
+            return AtriaIrregularRhythmCopy.educationalDefinition
         }
     }
 
@@ -147,7 +153,9 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
 
     /// Section label above the middle card.
     var computeCardTitle: String {
-        showsWhyBlank ? "WHY IT'S BLANK" : "HOW ATRIA COMPUTES IT"
+        if showsWhyBlank { return "WHY IT'S BLANK" }
+        if self == .irregularRhythm { return "WHAT THE STRAP CAN SEE" }
+        return "HOW ATRIA COMPUTES IT"
     }
 
     /// Middle card body. For every computed metric this describes the REAL
@@ -194,6 +202,8 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
         case .bloodOxygen:
             return AtriaSpO2Copy.whyBlank
+        case .irregularRhythm:
+            return "\(AtriaIrregularRhythmCopy.notECG) Atria can look at clean beat-to-beat pulse timing from the standard heart-rate stream. If that window is too short, gappy, mixed with unverified sources, or looks like ordinary breathing variation, it stays blank. A dense window whose successive differences look irregular — and not just discarded noise — can show irregular rhythm signs. That is research information, not a diagnosis, and it is never an ECG or an AFib result."
         }
     }
 
@@ -223,6 +233,8 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             return "Decoder not verified. If enabled after validation, this remains a sleep-only relative signal — not core temperature or a fever check — kept on your device and never written to Health."
         case .bloodOxygen:
             return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
+        case .irregularRhythm:
+            return "\(AtriaIrregularRhythmCopy.cannotDiagnose) \(AtriaIrregularRhythmCopy.talkToADoctor) Atria will not invent a rhythm finding from sparse heart-rate samples."
         }
     }
 }
@@ -269,7 +281,7 @@ struct AtriaAboutMetricTrend {
             case .sleep: return entry.sleepSeconds.flatMap { $0 > 0 ? $0 / 3_600 : nil }
             case .skinTemperature: return entry.skinTemperatureDeviationCelsius
             case .vo2max: return entry.fitnessAgeDelta.map(Double.init)
-            case .stress, .bloodOxygen: return nil
+            case .stress, .bloodOxygen, .irregularRhythm: return nil
             }
         }
 
@@ -361,7 +373,7 @@ struct AtriaAboutMetricTrend {
             return "\(signed(lo, decimals: 1)) to \(signed(hi, decimals: 1)) °C vs your baseline"
         case .vo2max:
             return "\(signed(lo, decimals: 0)) to \(signed(hi, decimals: 0)) yr vs calendar age"
-        case .stress, .bloodOxygen:
+        case .stress, .bloodOxygen, .irregularRhythm:
             return ""
         }
     }
@@ -494,6 +506,9 @@ struct AtriaAboutMetricSheet: View {
             }
             computeCard
             honestyCard
+            if metric == .irregularRhythm {
+                AtriaIrregularRhythmNoteCard()
+            }
 
             Text("General guidance, not medical advice.")
                 .font(.caption2.weight(.semibold))

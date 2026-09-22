@@ -12,11 +12,23 @@ final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
     struct Scope: Equatable, Sendable {
         let historyGeneration: UInt64?
         let historyServeToken: UInt64?
+        let connectionEpoch: UInt64
 
         static let realtime = Scope(
             historyGeneration: nil,
-            historyServeToken: nil
+            historyServeToken: nil,
+            connectionEpoch: 0
         )
+
+        init(
+            historyGeneration: UInt64? = nil,
+            historyServeToken: UInt64? = nil,
+            connectionEpoch: UInt64 = 0
+        ) {
+            self.historyGeneration = historyGeneration
+            self.historyServeToken = historyServeToken
+            self.connectionEpoch = connectionEpoch
+        }
     }
 
     private let lock = NSLock()

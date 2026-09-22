@@ -1576,6 +1576,10 @@ struct AtriaHealthScreen: View {
         .accessibilityHint("Opens a guided paced-breathing session tracked from heart rate.")
     }
 
+    private var irregularRhythmAssessment: AtriaIrregularRhythmAssessment.Result {
+        AtriaIrregularRhythmAssessment.evaluate(samples: pulseStore.state.recentRRSamples)
+    }
+
     private func healthMonitorCard(live: AtriaHealthMonitorLiveProjection) -> some View {
         let currentMetrics = currentMetricProjection(live: live)
         return VStack(alignment: .leading, spacing: 14) {
@@ -1716,6 +1720,13 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })
+                AtriaHealthMetricRow(title: AtriaIrregularRhythmCopy.title,
+                                     value: irregularRhythmAssessment.headline,
+                                     detail: irregularRhythmAssessment.detail,
+                                     systemImage: AtriaAboutMetric.irregularRhythm.glyph,
+                                     tint: .secondary,
+                                     layout: .compactTile,
+                                     onTap: { educationTopic = .irregularRhythm })
             }
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).

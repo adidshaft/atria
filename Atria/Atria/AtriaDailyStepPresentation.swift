@@ -7,6 +7,59 @@ import Foundation
 /// is set. Resolved from a plain input snapshot so it is unit-testable with no
 /// BLE state. `unavailableInCurrentTransport` requires the exact terminal
 /// conjunction; anything short of that fails closed to `stale`/`unknown`.
+/// Product surfaces must keep compact `0x33` and leftover native R10 separate.
+/// Compact recovery (live `0x33`, then continuity and equal-quality `0x34`)
+/// is the required route. Native `2B/0A` R10 is an alternative under evaluation:
+/// it may describe only intervals that actually arrived, never a compact pass,
+/// and never a 1 Hz historical bank stretched to 100 Hz.
+enum AtriaStrapMotionProductRoute: Equatable, Sendable {
+    case compactLive
+    case nativeR10Observed
+    case historicalGravity1Hz
+    case unspecified
+
+    static func resolve(validationState: String) -> Self {
+        switch validationState {
+        case "r10_live_validated",
+             "r10_live_preliminary",
+             "r10_live_calibrating",
+             "passive_r10_unavailable":
+            return .nativeR10Observed
+        case "whoop4_historical_gravity_1hz",
+             AtriaHistoricalStepRecovery.Provenance.whoop4HistoricalGravity1Hz.rawValue:
+            return .historicalGravity1Hz
+        case "compact_33_live", "validated":
+            return .compactLive
+        default:
+            return .unspecified
+        }
+    }
+
+    var liveDetailText: String {
+        switch self {
+        case .compactLive:
+            return "Today so far · live"
+        case .nativeR10Observed:
+            return "Today so far · native stream"
+        case .historicalGravity1Hz:
+            return "1 Hz history · not 100 Hz gait"
+        case .unspecified:
+            return "Today so far · live"
+        }
+    }
+
+    var liveEstimateDetailText: String {
+        switch self {
+        case .historicalGravity1Hz:
+            return "1 Hz history · not 100 Hz gait"
+        case .nativeR10Observed:
+            return "Today so far · estimate"
+        case .compactLive, .unspecified:
+            return "Today so far · estimate"
+        }
+    }
+}
+
 enum AtriaStrapMotionAvailability: Equatable, Sendable {
     /// Fresh validated R10/IMU/live-motion evidence exists.
     case live
@@ -87,22 +140,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// Keep this aligned with the strap-steps freshness tile.
     static let liveEvidenceMaximumAge: TimeInterval = 15
 
-    /// BLE capture can sit on the prior cycle after a wake while Today still
-    /// has an in-cycle merge. Stamp `now` so resolve can hold that number
-    /// instead of dropping the widget to missing.
+    /// Keep the sensor observation time. Publication, widget refresh, HR, and
+    /// reconnect must not mint a fresh capture clock. A prior-cycle stamp stays
+    /// prior-cycle so resolve can show unavailable/held instead of fake liveness.
     static func inCycleCaptureClock(
         liveCapturedAt: Date?,
         cycleStart: Date,
         now: Date,
         presentedCount: Int
     ) -> Date? {
-        if let liveCapturedAt,
-           liveCapturedAt >= cycleStart.addingTimeInterval(-1),
-           liveCapturedAt <= now.addingTimeInterval(5) {
-            return liveCapturedAt
-        }
-        guard presentedCount > 0 else { return liveCapturedAt }
-        return now
+        _ = (cycleStart, now, presentedCount)
+        return liveCapturedAt
     }
 
     /// An in-cycle live step estimate may raise the shown total above the
@@ -115,11 +163,25 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     static let liveEstimateCoverageCeiling: Double = 0.6
 
     /// Physiological cadence ceiling for a standalone live estimate shown with NO
-    /// drained floor to sanity-check against (2026-08-22, owner-approved). Sustained
-    /// human step cadence tops out near 3–3.5 steps/s (elite running); 3.5 is a
-    /// generous backstop so a preliminary/blown-up live model can never render an
-    /// absurd hero number. Caps highs only; an undercount is left honest.
+    /// drained floor to sanity-check against. Sustained human step cadence tops
+    /// out near 3–3.5 steps/s (elite running). Counts above this for the open
+    /// cycle are withheld — never shown as today's total and never replaced
+    /// with the ceiling as if it were an observed walk.
     static let liveEstimateMaxStepsPerSecond: Double = 3.5
+
+    static func plausibleOpenCycleStepCount(
+        count: Int,
+        windowStart: Date,
+        capturedAt: Date?
+    ) -> Int? {
+        let steps = max(0, count)
+        guard steps > 0 else { return 0 }
+        let clock = capturedAt ?? windowStart
+        let elapsed = max(0, clock.timeIntervalSince(windowStart))
+        let ceiling = Int((elapsed * liveEstimateMaxStepsPerSecond).rounded())
+        guard steps <= ceiling else { return nil }
+        return steps
+    }
 
     enum Completeness: Equatable, Sendable {
         case complete
@@ -191,6 +253,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// (default) preserves the existing progress wording for every caller that
     /// does not classify motion; the call site sets it from the BLE snapshot.
     var motionAvailability: AtriaStrapMotionAvailability? = nil
+    /// Compact vs leftover native R10 vs 1 Hz history. Default unspecified
+    /// keeps older callers on compact-shaped "live" wording only when the
+    /// count is independently validated.
+    var productRoute: AtriaStrapMotionProductRoute = .unspecified
 
     /// Overrides the forward-looking "fills in as your strap syncs" line when the
     /// exact motion authority proves it will not. The verified count/coverage are
@@ -204,6 +270,19 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case .unknown:
             return "Counted so far — updates when motion syncs."
         case .live, .catchingUp, .qualifying, .stale, .none:
+            return nil
+        }
+    }
+
+    /// Compact recovery is still required. Native leftover R10 and 1 Hz
+    /// history must not be described as gap fill or compact gait.
+    var productHonestyFootnote: String? {
+        switch productRoute {
+        case .nativeR10Observed:
+            return "Observed native motion only while frames arrive. Not compact 0x33 gait."
+        case .historicalGravity1Hz:
+            return "1 Hz history is not 100 Hz gait and is not equal-quality backfill."
+        case .compactLive, .unspecified:
             return nil
         }
     }
@@ -269,7 +348,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 }
                 return "Last count · motion syncing"
             }
-            return isValidated ? "Today so far · live" : "Today so far · estimate"
+            return isValidated
+                ? productRoute.liveDetailText
+                : productRoute.liveEstimateDetailText
         default:
             switch unavailabilityReason {
             case .priorCycleReceiptOnly:
@@ -450,12 +531,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             liveCapturedAt: liveCapturedAt,
             now: now
         )
-        let mergedLiveCount = max(livePositive, heldPositive)
+        let mergedCandidate = max(livePositive, heldPositive)
         let mergedLiveCapturedAt: Date? = {
             if heldPositive > livePositive { return heldCapturedAt }
             if livePositive > 0 { return liveCapturedAt }
             return heldCapturedInCycle ? heldCapturedAt : liveCapturedAt
         }()
+        let mergedLiveCount = Self.plausibleOpenCycleStepCount(
+            count: mergedCandidate,
+            windowStart: activeWindowStart,
+            capturedAt: mergedLiveCapturedAt
+        ) ?? 0
         let liveCapturedInCycle = mergedLiveCapturedAt.map {
             $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
         } ?? false
@@ -465,6 +551,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             } ?? false
         let liveIsValidated = WidgetSnapshotPublisher.strapStepsAreValidated(
             state: liveValidationState
+        )
+        let resolvedProductRoute = AtriaStrapMotionProductRoute.resolve(
+            validationState: liveValidationState
         )
         let physiologicalMatching = usesPhysiologicalOpenWindow
             ? canonicalDays.filter {
@@ -521,7 +610,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                              isValidated: true,
                              capturedAt: liveCapturedAt,
                              coverageFraction: nil,
-                             isOpenCycle: true)
+                             isOpenCycle: true,
+                             productRoute: resolvedProductRoute)
             }
             return .init(day: dayStart,
                          count: exact,
@@ -578,7 +668,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isValidated: true,
                          capturedAt: mergedLiveCapturedAt,
                          coverageFraction: nil,
-                         isOpenCycle: isOpenDay)
+                         isOpenCycle: isOpenDay,
+                         productRoute: resolvedProductRoute)
         }
         // A same-cycle live detector coordinate is a real observed count for
         // today even when it is no longer inside the strict live-freshness
@@ -655,7 +746,8 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // steps" / "Today so far · estimate", never an exact count. The former
         // concern (an unvalidated count could be arbitrarily wrong) is bounded by a
         // physiological cadence clamp: the estimate cannot exceed what is humanly
-        // possible in the elapsed active window. Only reached when there is no
+        // possible in the elapsed active window. An over-ceiling count is
+        // withheld rather than rewritten as the ceiling. Only reached when there is no
         // partial (the raise-above-floor path above already owns the stuck-low case)
         // and a FRESH in-cycle live coordinate exists; HR-only radio mode has
         // liveCount==0, so this never fires there and the honest states below stand.
@@ -673,19 +765,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             && mergedLiveCount > 0
             && !hasUnresolvedMotionReceipt
         if liveEstimateEligible {
-            let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
-            let cadenceCeiling = Int(
-                (elapsedActiveSeconds * liveEstimateMaxStepsPerSecond).rounded()
-            )
-            let clampedLive = min(max(0, mergedLiveCount), cadenceCeiling)
             return .init(day: dayStart,
-                         count: clampedLive,
+                         count: mergedLiveCount,
                          completeness: .partial,
                          source: .live,
                          isValidated: false,
                          capturedAt: mergedLiveCapturedAt,
                          coverageFraction: nil,
-                         isOpenCycle: isOpenDay)
+                         isOpenCycle: isOpenDay,
+                         productRoute: resolvedProductRoute)
         }
         let liveHoldEligible = liveAuthorityQualified
             && isOpenDay
@@ -693,20 +781,16 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             && mergedLiveCount > 0
             && !hasUnresolvedMotionReceipt
         if liveHoldEligible {
-            let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
-            let cadenceCeiling = Int(
-                (elapsedActiveSeconds * liveEstimateMaxStepsPerSecond).rounded()
-            )
-            let clampedLive = min(max(0, mergedLiveCount), cadenceCeiling)
             return .init(day: dayStart,
-                         count: clampedLive,
+                         count: mergedLiveCount,
                          completeness: .partial,
                          source: .live,
                          isValidated: false,
                          capturedAt: mergedLiveCapturedAt,
                          coverageFraction: nil,
                          unavailabilityReason: .heldWhileMotionSyncing,
-                         isOpenCycle: isOpenDay)
+                         isOpenCycle: isOpenDay,
+                         productRoute: resolvedProductRoute)
         }
         // No in-cycle count to hold and no drained floor: keep the specific
         // unavailable reasons below (still-validating / no receipt / prior cycle).
@@ -792,6 +876,7 @@ enum AtriaHeldDailyStepFloor {
     static let capturedKey = "atria.steps.heldDailyCapturedAt"
     static let liveGyroTodayCountKey = "atria.steps.liveGyroTodayCount"
     static let liveGyroTodayCapturedKey = "atria.steps.liveGyroTodayCapturedAt"
+    static let liveGyroTodayCycleKey = "atria.steps.liveGyroTodayCycleStart"
 
     static func persist(count: Int,
                         cycleStart: Date,
@@ -827,6 +912,9 @@ enum AtriaHeldDailyStepFloor {
         defaults.removeObject(forKey: countKey)
         defaults.removeObject(forKey: capturedKey)
         defaults.set(cycleStart.timeIntervalSince1970, forKey: cycleKey)
+        defaults.removeObject(forKey: liveGyroTodayCountKey)
+        defaults.removeObject(forKey: liveGyroTodayCapturedKey)
+        defaults.removeObject(forKey: liveGyroTodayCycleKey)
     }
 
     static func storedCycleMatches(_ cycleStart: Date?,
@@ -900,11 +988,24 @@ enum AtriaHeldDailyStepFloor {
 
     static func persistLiveGyroToday(count: Int,
                                      capturedAt: Date,
+                                     cycleStart: Date? = nil,
                                      defaults: UserDefaults = .standard,
                                      calendar: Calendar = .current) {
         let incoming = max(0, count)
+        guard incoming > 0 else { return }
+        if let cycleStart {
+            guard capturedAt >= cycleStart.addingTimeInterval(-5),
+                  AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                    count: incoming,
+                    windowStart: cycleStart,
+                    capturedAt: capturedAt
+                  ) != nil else {
+                return
+            }
+        }
         if let existing = loadLiveGyroToday(
             now: capturedAt,
+            cycleStart: cycleStart,
             defaults: defaults,
             calendar: calendar
         ), incoming < existing.count {
@@ -912,18 +1013,40 @@ enum AtriaHeldDailyStepFloor {
         }
         defaults.set(incoming, forKey: liveGyroTodayCountKey)
         defaults.set(capturedAt.timeIntervalSince1970, forKey: liveGyroTodayCapturedKey)
+        if let cycleStart {
+            defaults.set(cycleStart.timeIntervalSince1970, forKey: liveGyroTodayCycleKey)
+        }
     }
 
     static func loadLiveGyroToday(
         now: Date = Date(),
+        cycleStart: Date? = nil,
         defaults: UserDefaults = .standard,
         calendar: Calendar = .current
     ) -> (count: Int, capturedAt: Date)? {
         let count = defaults.integer(forKey: liveGyroTodayCountKey)
         guard count > 0,
               let captured = (defaults.object(forKey: liveGyroTodayCapturedKey) as? Double)
-                .map(Date.init(timeIntervalSince1970:)),
-              calendar.isDate(captured, inSameDayAs: now) else {
+                .map(Date.init(timeIntervalSince1970:)) else {
+            return nil
+        }
+        if let cycleStart {
+            if captured < cycleStart.addingTimeInterval(-5) { return nil }
+            let storedCycle = defaults.double(forKey: liveGyroTodayCycleKey)
+            if storedCycle > 0,
+               abs(storedCycle - cycleStart.timeIntervalSince1970) >= 1 {
+                return nil
+            }
+            guard AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                count: count,
+                windowStart: cycleStart,
+                capturedAt: captured
+            ) != nil else {
+                return nil
+            }
+            return (count, captured)
+        }
+        guard calendar.isDate(captured, inSameDayAs: now) else {
             return nil
         }
         return (count, captured)

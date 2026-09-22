@@ -20,5 +20,7 @@ final class AtriaSleepReviewLargeTypeTests: XCTestCase {
         // it follows the same rule.
         let range = try XCTUnwrap(card.range(of: "Text(rangeText)"))
         XCTAssertTrue(String(card[range.lowerBound...].prefix(300)).contains(".lineLimit(reviewDynamicTypeSize >= .xxLarge ? 2 : 1)"))
+        XCTAssertTrue(card.contains("EventCivilTime.sleepWindowText("))
+        XCTAssertTrue(card.contains("wakeDay: night.day"))
     }
 }

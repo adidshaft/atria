@@ -66,6 +66,10 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         let source = try source("AtriaOnboardingFlow.swift")
 
         XCTAssertTrue(source.contains("private func onboardingHeader"))
+        XCTAssertTrue(source.contains(".scrollDismissesKeyboard(.interactively)"))
+        XCTAssertTrue(source.contains("ToolbarItemGroup(placement: .keyboard)"))
+        XCTAssertTrue(source.contains("Button(\"Done\") { dismissKeyboard() }"),
+                      "Number pads have no return key; onboarding must offer Done")
         XCTAssertTrue(source.contains(".accessibilityElement(children: .combine)"))
         // 2026-07-31: the strap page went image-led (StrapSetupShowcase), so its
         // "Connect your strap" onboardingHeader was removed; the remaining pages

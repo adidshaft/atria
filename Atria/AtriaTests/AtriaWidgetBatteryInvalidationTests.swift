@@ -2105,7 +2105,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             calendar: calendar
         )
         XCTAssertTrue(validated.isValidated)
-        XCTAssertEqual(validated.detailText, "Today so far · live")
+        XCTAssertEqual(validated.detailText, "Today so far · native stream")
+        XCTAssertEqual(validated.productRoute, .nativeR10Observed)
 
         // The point of the test's name: the widget must not compute its own
         // answer. Identical inputs, identical output, because the widget
