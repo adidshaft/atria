@@ -67,6 +67,15 @@ enum AtriaR10MotionDecoder {
         return u32LE(payload, timestampOffset)
     }
 
+    /// Payload bytes `[3:5]` little-endian. Quiet-236 same-second frames
+    /// increment this field; subsecond meaning is UNVERIFIED.
+    static func unverifiedCandidateSequence(payload: [UInt8]) -> UInt16? {
+        guard payload.count >= 5,
+              payload[0] == packetType,
+              payload[1] == recordType else { return nil }
+        return UInt16(payload[3]) | (UInt16(payload[4]) << 8)
+    }
+
     static func decode(payload: [UInt8]) -> AtriaR10MotionFrame? {
         guard payload.count >= minimumPayloadBytes,
               payload[0] == packetType,

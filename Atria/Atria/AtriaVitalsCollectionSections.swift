@@ -314,6 +314,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
     case respiration
     case stress
     case sleep
+    case irregularRhythm
 
     var id: String { rawValue }
 
@@ -325,6 +326,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         case .respiration: return "Respiratory rate"
         case .stress: return "Stress"
         case .sleep: return "Sleep"
+        case .irregularRhythm: return AtriaIrregularRhythmCopy.title
         }
     }
 
@@ -341,6 +343,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         case .respiration: return .respiration
         case .stress: return .stress
         case .sleep: return .sleep
+        case .irregularRhythm: return .irregularRhythm
         }
     }
 

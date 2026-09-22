@@ -15,7 +15,7 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertTrue(status.isLive)
         XCTAssertTrue(status.isValidated)
         XCTAssertEqual(status.tileValue, "842")
-        XCTAssertEqual(status.tileDetail, "Live strap count")
+        XCTAssertEqual(status.tileDetail, "Native stream count")
         XCTAssertEqual(status.lastMotionText, "motion 12s ago")
     }
 
@@ -167,8 +167,8 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
             now: now
         )
 
-        XCTAssertEqual(live.glanceDetail(liveFallback: "Today so far · live"),
-                       "Today so far · live")
+        XCTAssertEqual(live.glanceDetail(liveFallback: "Today so far · native stream"),
+                       "Today so far · native stream")
         XCTAssertEqual(live.liveStripTitle(zoneLabel: "Z3 Aerobic", hasPulse: true),
                        "Live · Z3 Aerobic")
         XCTAssertEqual(live.liveStripStepSuffix(valueText: "962", hasCount: true),
@@ -188,5 +188,32 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertTrue(stale.liveStripStepAccessibility(count: 962).contains("held"))
         XCTAssertTrue(stale.wearerGuidance?.contains("do not need to keep it open") ?? false)
         XCTAssertTrue(stale.wearerGuidance?.contains("Close the official WHOOP app") ?? false)
+        XCTAssertTrue(stale.wearerGuidance?.contains("not compact wrist motion") ?? false)
+        XCTAssertFalse(stale.wearerGuidance?.contains("6A") ?? true)
+    }
+
+    func testHeartRateLivenessDoesNotFreshenStaleNativeMotion() {
+        let status = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_validated",
+            capturedAt: now.addingTimeInterval(-180),
+            now: now
+        )
+        XCTAssertEqual(status.freshness, .stale)
+        XCTAssertEqual(status.liveStripTitle(zoneLabel: "Z2", hasPulse: true),
+                       "HR live · Z2")
+        XCTAssertNotEqual(status.tileDetail, "Native stream count")
+        XCTAssertNotEqual(status.tileDetail, "Live strap count")
+    }
+
+    func testCompactValidatedTileRemainsLiveStrapCount() {
+        let status = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "validated",
+            capturedAt: now.addingTimeInterval(-12),
+            now: now
+        )
+        XCTAssertEqual(status.productRoute, .compactLive)
+        XCTAssertEqual(status.tileDetail, "Live strap count")
     }
 }

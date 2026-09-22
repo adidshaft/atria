@@ -450,6 +450,7 @@ private final class AtriaProprietaryWWRGate: @unchecked Sendable {
         lock.withLock {
             if pending.count >= Self.maximumPendingFrames {
                 pending.removeFirst()
+                AtriaIMUDiagnosticTransport.recordOverflow(reason: "wwr_queue_drop")
             }
             pending.append(frame)
         }
@@ -497,6 +498,57 @@ private final class AtriaProprietaryWWRGate: @unchecked Sendable {
 
     func reset() {
         lock.withLock { pending.removeAll(keepingCapacity: true) }
+    }
+}
+
+private enum AtriaLeftoverFlushStep: Sendable {
+    case idle
+    case pauseHeartRate
+    case resetListen
+    case listen
+    case restoreHeartRate
+}
+
+private struct AtriaLeftoverFlushTally: Sendable {
+    var active = false
+    var step: AtriaLeftoverFlushStep = .idle
+    var generation: UInt64 = 0
+    var pendingFrames: [Data] = []
+    var proofUntil: Date?
+    var connected = false
+    var hrNotifyConfirmedOff = false
+    var hrNotifyConfirmedOn = false
+    var hrNotifyError: String?
+    var stream5ConfirmedOn = false
+    var stream5ConfirmedOff = false
+    var stream5Error: String?
+    var wroteStop = false
+    var wroteAbort = false
+    var writeBlockedReason: String?
+    var hrSamples = 0
+    var frames = 0
+    var compact33 = 0
+    var backfill34 = 0
+    var leftover2B = 0
+    var other = 0
+    var lastPacket = "none"
+    var lastUIPublish: TimeInterval = 0
+}
+
+private final class AtriaLeftoverFlushMeter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tally = AtriaLeftoverFlushTally()
+
+    func mutate(_ body: (inout AtriaLeftoverFlushTally) -> Void) {
+        lock.lock()
+        body(&tally)
+        lock.unlock()
+    }
+
+    func read<T>(_ body: (AtriaLeftoverFlushTally) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(tally)
     }
 }
 
@@ -890,7 +942,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private enum PendingProprietaryMainActorWork {
-        case r10Metadata(payloadLength: Int)
+        case r10Metadata(payloadLength: Int, diagnosticFrame: Data?)
         case frame(
             Data,
             parsedUpdate: ParsedProprietaryUpdate?,
@@ -1325,6 +1377,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               lastAcceptedHRAt >= connectedAt else { return false }
         return Date().timeIntervalSince(lastAcceptedHRAt) <= 15
     }
+
+    /// First-run setup only. A connected strap is enough to leave the connect
+    /// page. Heart rate often lags pairing; requiring a 15-second accepted-HR
+    /// window left the UI stuck on "Waiting for a fresh signal" while linked.
+    var onboardingLiveHeartRateThisConnection: Bool {
+        status == .connected
+    }
     private var sessionAwaitingUnexpectedReconnect = false
     private nonisolated static let workoutHRArtifactJumpBPM = 50
     private nonisolated static let workoutHRArtifactConfirmBPM = 15
@@ -1720,6 +1779,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastRRBeatTime: Date?
     private var lastRRExportElapsedMS: Int?
     private var launchAutomationApplied = false
+    private var diagnosticSingleEnableTask: Task<Void, Never>?
+    private var diagnosticOfficialGen4Task: Task<Void, Never>?
+    private var diagnosticAllDayRecoveryTask: Task<Void, Never>?
+    private var diagnosticSoftwareResetTask: Task<Void, Never>?
     private var autoStopCaptureWhenReady = false
     private var autoStopCaptureAfterSeconds: TimeInterval = 0
     private var autoCaptureDelaySeconds: TimeInterval = 0
@@ -2567,6 +2630,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// least one durable missing-range ledger window.
     private var offlineHistoricalSyncResolvedGapCoverage = false
     @Published private(set) var standardHROnlyEnabled = UserDefaults.standard.bool(forKey: RadioDefaults.standardHROnly)
+    let leftoverFlushBoard = AtriaLeftoverFlushBoard()
+    private var leftoverFlushTask: Task<Void, Never>?
+    private var leftoverFlushGeneration: UInt64 = 0
+    nonisolated private let leftoverFlushMeter = AtriaLeftoverFlushMeter()
     @Published private(set) var longWearModeEnabled = UserDefaults.standard.bool(forKey: LongWearDefaults.enabled)
     @Published private(set) var collectionProfile = CollectionProfile.load()
     private nonisolated var standardHROnlyMode: Bool {
@@ -2947,6 +3014,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var workoutAutoSaveTask: Task<Void, Never>?
     private var longWearSupervisorTask: Task<Void, Never>?
     private var activeLongWearSupervisorConfig: LongWearSupervisorConfig?
+    /// Scene-update watchdog work must not run synchronously inside
+    /// `handleInteractiveForeground`. Coalesce refreshes onto the next turn.
+    private var interactiveForegroundLongWearTask: Task<Void, Never>?
     private var noDataWatchdogTask: Task<Void, Never>?
     private var hrContinuityWatchdogTask: Task<Void, Never>?
     private var rrPresenceWatchdogTask: Task<Void, Never>?
@@ -3557,6 +3627,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var gate4HistoricalIMUWindowTask: Task<Void, Never>?
     private var gate4HistoricalIMUWindowIssued = false
     private var workoutHistoricalMotionBankArmed = false
+    /// Firmware outcome for the last 69/6A attempt. Submission is not armed.
+    private var pendingHistoricalIMUCommand:
+        (opcode: UInt8, sequence: UInt8, intent: String)?
+    private var lastHistoricalIMUAttemptState:
+        AtriaWhoop4CommandResponse.AttemptState = .missingResponse
     /// `69/01` arms firmware state on one physical BLE connection only.
     /// Persisted `enabled` means the product still wants banking; it is not
     /// proof that a replacement connection has received the command.
@@ -3593,6 +3668,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let processLaunchStartedAt = Date()
     nonisolated private static let workoutHistoricalMotionBankEnabledKey =
         "atria.workoutHistoricalMotionBank.enabled"
+    nonisolated private static let historicalIMUFirmwareOutcomeKey =
+        "atria.whoop4.historicalIMU.firmwareOutcome"
     /// Durable site tag for terminal-materialization checkpoint failures
     /// (2026-08-05): publicationCheckpointMissing has a dozen throw sites and
     /// the persisted diagnostic carried no context — a five-day wedge was
@@ -4833,20 +4910,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) == nil
     }
 
-    /// Same clock diagnosis uses: newest of R10 / assembled compact second /
-    /// native 0x33 packet. Sitting skip can leave assembled stale while
-    /// packets still flow; those packets must not look like an IMU drop.
+    /// Compact 0x33 only. R10 type-2B after `0x3F` is not native IMU.
+    /// Sitting skip can leave assembled stale while packets still flow.
     nonisolated static func liveIMUEvidenceAgeSeconds(
         rawFrameAt: Date?,
         compactSecondAt: Date?,
         compactPacketAt: Date?,
         now: Date
     ) -> TimeInterval? {
-        guard let captured = [rawFrameAt, compactSecondAt, compactPacketAt]
+        _ = rawFrameAt
+        guard let captured = [compactSecondAt, compactPacketAt]
             .compactMap({ $0 }).max(),
               now >= captured else { return nil }
         return now.timeIntervalSince(captured)
     }
+
+    /// Production standard-HR must not write `0x3F/01`. That flood occupies
+    /// stream-5 with type-2B R10 and is PLAN-BLOCKED for compact 0x33.
+    nonisolated static var protectedStandardHRAllowsR10RealtimeFlood: Bool { false }
 
     /// `pure_hr_v10` fallback keeps 2A37 by suppressing R10. Compact 0x33 then
     /// idles off and nothing writes 6A/51 (device 2026-09-18: packets stopped
@@ -5595,6 +5676,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason,
                       Int(now.timeIntervalSince1970),
                       peripheral.identifier.uuidString)
+        AtriaIMUDiagnosticTransport.noteNewConnectionEpoch(bleCallbackEpochFence.epoch)
+        scheduleDiagnosticSingleIMUEnableIfRequested()
     }
 
     private func acceptsBLECallback(
@@ -5714,6 +5797,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func beginProtectedR10BringUpForCurrentEpoch(peripheral: CBPeripheral,
                                                           reason: String) {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=protected_r10_bring_up_blocked reason=%@", reason)
+            return
+        }
         guard self.peripheral?.identifier == peripheral.identifier,
               peripheral.state == .connected,
               denseBringUpIsWanted,
@@ -6553,6 +6640,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         debugForceUnknownStrapGeneration = false
 #endif
         super.init()
+        AtriaIMUDiagnosticTransport.armQuietLease(arguments: arguments)
+        scheduleDiagnosticSoftwareResetIfRequested(arguments: arguments)
+        scheduleDiagnosticSingleIMUEnableIfRequested(arguments: arguments)
 #if DEBUG
         // Reconciliation is a bookkeeping-only process mode. Return before
         // motion-bank repair, archive warmup, session restoration, or
@@ -8264,6 +8354,486 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         applyStandardHROnly(enabled: enabled, persist: true, reconnect: true, reason: "user_toggle")
     }
 
+    /// User control: stop live HR, turn off the stuck R10 pipe, listen out the
+    /// leftover dump, then restore heart rate. Does not erase strap flash.
+    func flushLeftoverMotion() {
+        leftoverFlushTask?.cancel()
+        leftoverFlushGeneration &+= 1
+        let generation = leftoverFlushGeneration
+        let stamp = Self.leftoverFlushClock.string(from: Date())
+        leftoverFlushBoard.running = true
+        leftoverFlushBoard.tone = .working
+        leftoverFlushBoard.phase = "Starting"
+        leftoverFlushBoard.result = "\(stamp) · Button pressed. Pausing heart rate."
+        leftoverFlushBoard.strap = "Checking"
+        leftoverFlushBoard.heartRate = "Pause requested"
+        leftoverFlushBoard.commands = "Sending"
+        leftoverFlushBoard.listen = "Not started"
+        leftoverFlushBoard.packets = "None yet"
+        guard let peripheral, peripheral.state == .connected else {
+            leftoverFlushMeter.mutate {
+                $0 = AtriaLeftoverFlushTally()
+                $0.generation = generation
+            }
+            leftoverFlushBoard.running = false
+            leftoverFlushBoard.tone = .bad
+            leftoverFlushBoard.phase = "Strap not connected"
+            leftoverFlushBoard.strap = "Not connected"
+            leftoverFlushBoard.heartRate = "Unchanged"
+            leftoverFlushBoard.commands = "Not sent"
+            leftoverFlushBoard.listen = "Off"
+            leftoverFlushBoard.packets = "None"
+            leftoverFlushBoard.result = "\(stamp) · Connect the strap, then tap Flush again."
+            return
+        }
+        let tx = Self.strapWriteCharacteristic(on: peripheral)
+        var frames: [Data] = []
+        var writeBlockedReason: String?
+        if let tx, tx.properties.contains(.writeWithoutResponse) {
+            for command in [Cmd.sendR10R11Realtime, Cmd.abortHistoricalTransmits] {
+                let sequence = cmdSeq
+                cmdSeq &+= 1
+                frames.append(encodeFrame([Packet.command, sequence, command, 0x00]))
+            }
+        } else {
+            writeBlockedReason = "Command characteristic missing. Nothing was sent."
+        }
+        leftoverFlushMeter.mutate {
+            $0 = AtriaLeftoverFlushTally()
+            $0.active = true
+            $0.step = .pauseHeartRate
+            $0.connected = true
+            $0.generation = generation
+            $0.pendingFrames = frames
+            $0.writeBlockedReason = writeBlockedReason
+        }
+        let meter = leftoverFlushMeter
+        centralQueue.async { [weak self] in
+            self?.beginLeftoverFlushByPausingHeartRate(peripheral: peripheral)
+            let snapshot = meter.read { $0 }
+            Task { @MainActor [weak self] in
+                self?.publishLeftoverFlushBoard(snapshot, generation: generation, terminal: false)
+            }
+        }
+        leftoverFlushTask = Task { @MainActor [weak self] in
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled,
+                      self.leftoverFlushGeneration == generation else { return }
+                let step = self.leftoverFlushMeter.read { $0.step }
+                if step == .listen { break }
+                self.leftoverFlushBoard.phase = step == .resetListen
+                    ? "Restarting motion listen"
+                    : "Waiting for heart rate to turn off"
+            }
+            guard let self, self.leftoverFlushGeneration == generation else { return }
+            let step = self.leftoverFlushMeter.read { $0.step }
+            guard step == .listen else {
+                self.leftoverFlushMeter.mutate {
+                    $0.active = false
+                    $0.step = .idle
+                }
+                self.leftoverFlushBoard.running = false
+                self.leftoverFlushBoard.tone = .bad
+                if step == .resetListen {
+                    self.leftoverFlushBoard.phase = "Motion listen did not restart"
+                    self.leftoverFlushBoard.result = "\(stamp) · Heart rate turned off, but motion listen did not come back on."
+                } else {
+                    self.leftoverFlushBoard.phase = "Heart rate stayed on"
+                    self.leftoverFlushBoard.heartRate = "Notify did not turn off"
+                    self.leftoverFlushBoard.result = "\(stamp) · The strap never confirmed heart rate off, so motion listen did not start."
+                }
+                return
+            }
+            for remaining in stride(from: 12, through: 1, by: -1) {
+                guard !Task.isCancelled, self.leftoverFlushGeneration == generation else { return }
+                self.leftoverFlushBoard.phase = "Listening · \(remaining)s left"
+                try? await Task.sleep(for: .seconds(1))
+            }
+            self.finishLeftoverFlush(generation: generation)
+        }
+    }
+
+    func restoreHeartRateAfterFlush() {
+        leftoverFlushTask?.cancel()
+        leftoverFlushGeneration &+= 1
+        let generation = leftoverFlushGeneration
+        let stamp = Self.leftoverFlushClock.string(from: Date())
+        leftoverFlushBoard.running = false
+        leftoverFlushBoard.tone = .working
+        leftoverFlushBoard.phase = "Restoring heart rate"
+        leftoverFlushBoard.result = "\(stamp) · Turning the live heart-rate signal back on."
+        guard let peripheral, peripheral.state == .connected else {
+            leftoverFlushBoard.phase = "Strap not connected"
+            leftoverFlushBoard.strap = "Not connected"
+            leftoverFlushBoard.heartRate = "Reconnect the strap"
+            leftoverFlushBoard.result = "\(stamp) · The strap is not connected, so heart rate cannot come back yet."
+            leftoverFlushBoard.tone = .bad
+            return
+        }
+        leftoverFlushMeter.mutate {
+            $0.active = true
+            $0.step = .restoreHeartRate
+            $0.generation = generation
+            $0.connected = true
+            $0.proofUntil = Date().addingTimeInterval(8)
+        }
+        centralQueue.async { [weak self] in
+            self?.restoreHeartRateOnCentralQueue(peripheral: peripheral)
+        }
+        leftoverFlushBoard.strap = "Connected"
+        leftoverFlushBoard.heartRate = "On requested, waiting for the strap to confirm"
+        leftoverFlushBoard.listen = "Off requested"
+        leftoverFlushBoard.result = "\(stamp) · Heart-rate notify is requested. This line changes again when the strap confirms it."
+    }
+
+    private func finishLeftoverFlush(generation: UInt64) {
+        guard leftoverFlushGeneration == generation, let peripheral else { return }
+        leftoverFlushMeter.mutate {
+            $0.step = .restoreHeartRate
+            $0.proofUntil = Date().addingTimeInterval(8)
+        }
+        centralQueue.async { [weak self] in
+            self?.restoreHeartRateOnCentralQueue(peripheral: peripheral)
+            let published = self?.leftoverFlushMeter.read { $0 }
+            Task { @MainActor [weak self] in
+                guard let self, let published else { return }
+                self.publishLeftoverFlushBoard(published, generation: generation, terminal: false)
+                self.leftoverFlushBoard.phase = "Restoring heart rate"
+            }
+        }
+    }
+
+    nonisolated private func beginLeftoverFlushByPausingHeartRate(peripheral: CBPeripheral) {
+        guard peripheral.state == .connected else { return }
+        guard let heartRate = Self.strapNotifyCharacteristic(UUIDs.heartRateMeasure, on: peripheral) else {
+            leftoverFlushMeter.mutate { $0.hrNotifyError = "Heart rate characteristic missing" }
+            return
+        }
+        if heartRate.isNotifying {
+            peripheral.setNotifyValue(false, for: heartRate)
+        } else {
+            continueLeftoverFlushAfterHeartRateOff(peripheral: peripheral)
+        }
+    }
+
+    nonisolated private func continueLeftoverFlushAfterHeartRateOff(peripheral: CBPeripheral) {
+        guard peripheral.state == .connected else { return }
+        let stream5 = Self.strapNotifyCharacteristic(UUIDs.strapStream5, on: peripheral)
+        let tx = Self.strapWriteCharacteristic(on: peripheral)
+        var frames: [Data] = []
+        var accepted = false
+        leftoverFlushMeter.mutate { tally in
+            guard tally.step == .pauseHeartRate else { return }
+            accepted = true
+            frames = tally.pendingFrames
+            tally.pendingFrames = []
+            if stream5?.isNotifying == true {
+                tally.step = .resetListen
+            } else {
+                tally.step = .listen
+            }
+        }
+        guard accepted else { return }
+        if let tx, tx.properties.contains(.writeWithoutResponse) {
+            for frame in frames {
+                peripheral.writeValue(frame, for: tx, type: .withoutResponse)
+            }
+            leftoverFlushMeter.mutate {
+                $0.wroteStop = !frames.isEmpty
+                $0.wroteAbort = frames.count > 1
+            }
+        }
+        guard let stream5, stream5.properties.contains(.notify) else { return }
+        if stream5.isNotifying {
+            peripheral.setNotifyValue(false, for: stream5)
+        } else {
+            peripheral.setNotifyValue(true, for: stream5)
+        }
+    }
+
+    nonisolated private func restoreHeartRateOnCentralQueue(peripheral: CBPeripheral) {
+        guard peripheral.state == .connected else { return }
+        if let stream5 = Self.strapNotifyCharacteristic(UUIDs.strapStream5, on: peripheral),
+           stream5.isNotifying {
+            peripheral.setNotifyValue(false, for: stream5)
+            return
+        }
+        if let heartRate = Self.strapNotifyCharacteristic(UUIDs.heartRateMeasure, on: peripheral),
+           !heartRate.isNotifying {
+            peripheral.setNotifyValue(true, for: heartRate)
+        }
+    }
+
+    nonisolated private func noteLeftoverFlushInbound(uuid: CBUUID, data: Data) {
+        let heartRateUUID = Self.UUIDs.heartRateMeasure
+        let stream5UUID = Self.UUIDs.strapStream5
+        let update: (AtriaLeftoverFlushTally, UInt64)? = leftoverFlushMeter.read { tally in
+            guard tally.active else { return nil }
+            return (tally, tally.generation)
+        }
+        guard update != nil else { return }
+        var shouldPublish = false
+        var generation: UInt64 = 0
+        leftoverFlushMeter.mutate { tally in
+            guard tally.active else { return }
+            if uuid == heartRateUUID, tally.step == .listen {
+                tally.hrSamples += 1
+            } else if uuid == stream5UUID {
+                tally.frames += 1
+                let bytes = [UInt8](data.prefix(5))
+                if bytes.count >= 5, bytes[0] == 0xAA {
+                    switch bytes[4] {
+                    case 0x33: tally.compact33 += 1
+                    case 0x34: tally.backfill34 += 1
+                    case 0x2B: tally.leftover2B += 1
+                    default: tally.other += 1
+                    }
+                    tally.lastPacket = String(format: "%02X · %d bytes", bytes[4], data.count)
+                } else {
+                    tally.other += 1
+                    let prefix = data.prefix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
+                    tally.lastPacket = "unframed \(data.count) bytes · \(prefix)"
+                }
+            } else {
+                return
+            }
+            let now = Date().timeIntervalSince1970
+            shouldPublish = now - tally.lastUIPublish >= 0.25
+                || tally.frames == 1
+                || tally.hrSamples == 1
+                || tally.compact33 == 1
+            if shouldPublish {
+                tally.lastUIPublish = now
+                generation = tally.generation
+            }
+        }
+        guard shouldPublish else { return }
+        let snapshot = leftoverFlushMeter.read { $0 }
+        Task { @MainActor [weak self] in
+            self?.publishLeftoverFlushBoard(snapshot, generation: generation, terminal: false)
+        }
+    }
+
+    nonisolated private func noteLeftoverFlushNotifyState(
+        peripheral: CBPeripheral,
+        uuid: CBUUID,
+        notifying: Bool,
+        error: String?
+    ) {
+        let heartRateUUID = Self.UUIDs.heartRateMeasure
+        let stream5UUID = Self.UUIDs.strapStream5
+        var matched = false
+        var generation: UInt64 = 0
+        var advanceAfterHeartRateOff = false
+        var enableStream5 = false
+        var enableHeartRate = false
+        var terminal = false
+        leftoverFlushMeter.mutate { tally in
+            let relevant = tally.active || (tally.proofUntil ?? .distantPast) > Date()
+            guard relevant else { return }
+            if uuid == heartRateUUID {
+                if let error {
+                    tally.hrNotifyError = error
+                } else if notifying {
+                    tally.hrNotifyConfirmedOn = true
+                    if tally.step == .restoreHeartRate {
+                        tally.step = .idle
+                        tally.active = false
+                        terminal = true
+                    }
+                } else {
+                    tally.hrNotifyConfirmedOff = true
+                    if tally.step == .pauseHeartRate {
+                        advanceAfterHeartRateOff = true
+                    }
+                }
+            } else if uuid == stream5UUID {
+                if let error {
+                    tally.stream5Error = error
+                } else if notifying {
+                    tally.stream5ConfirmedOn = true
+                    if tally.step == .resetListen {
+                        tally.step = .listen
+                    }
+                } else {
+                    tally.stream5ConfirmedOff = true
+                    if tally.step == .resetListen {
+                        enableStream5 = true
+                    } else if tally.step == .restoreHeartRate {
+                        enableHeartRate = true
+                    }
+                }
+            } else {
+                return
+            }
+            matched = true
+            generation = tally.generation
+        }
+        guard matched else { return }
+        let snapshot = leftoverFlushMeter.read { $0 }
+        let needsRadio = advanceAfterHeartRateOff || enableStream5 || enableHeartRate
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.publishLeftoverFlushBoard(snapshot, generation: generation, terminal: terminal)
+            guard needsRadio else { return }
+            self.centralQueue.async { [weak self] in
+                guard let self else { return }
+                if advanceAfterHeartRateOff {
+                    self.continueLeftoverFlushAfterHeartRateOff(peripheral: peripheral)
+                }
+                if enableStream5,
+                   let stream5 = Self.strapNotifyCharacteristic(stream5UUID, on: peripheral),
+                   stream5.properties.contains(.notify) {
+                    peripheral.setNotifyValue(true, for: stream5)
+                }
+                if enableHeartRate,
+                   let heartRate = Self.strapNotifyCharacteristic(heartRateUUID, on: peripheral) {
+                    peripheral.setNotifyValue(true, for: heartRate)
+                }
+            }
+        }
+    }
+
+    private func publishLeftoverFlushBoard(
+        _ tally: AtriaLeftoverFlushTally,
+        generation: UInt64,
+        terminal: Bool
+    ) {
+        guard leftoverFlushGeneration == generation else { return }
+        let lines = Self.leftoverFlushLines(tally, terminal: terminal)
+        leftoverFlushBoard.strap = lines.strap
+        leftoverFlushBoard.heartRate = lines.heartRate
+        leftoverFlushBoard.commands = lines.commands
+        leftoverFlushBoard.listen = lines.listen
+        leftoverFlushBoard.packets = lines.packets
+        leftoverFlushBoard.result = lines.result
+        leftoverFlushBoard.tone = lines.tone
+        if terminal {
+            leftoverFlushBoard.running = false
+            leftoverFlushBoard.phase = "Finished"
+            let feedback = UINotificationFeedbackGenerator()
+            feedback.notificationOccurred(lines.tone == .good ? .success : .warning)
+        }
+    }
+
+    private static let leftoverFlushClock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        formatter.dateStyle = .none
+        return formatter
+    }()
+
+    private struct LeftoverFlushLines {
+        var strap: String
+        var heartRate: String
+        var commands: String
+        var listen: String
+        var packets: String
+        var result: String
+        var tone: AtriaLeftoverFlushBoard.Tone
+    }
+
+    private static func leftoverFlushLines(
+        _ tally: AtriaLeftoverFlushTally,
+        terminal: Bool
+    ) -> LeftoverFlushLines {
+        let stamp = leftoverFlushClock.string(from: Date())
+        let strap = tally.connected ? "Connected" : "Not connected"
+        let heartRate: String
+        if let error = tally.hrNotifyError {
+            heartRate = "Notify failed: \(error)"
+        } else if tally.hrSamples > 0 {
+            heartRate = "Notify stayed on · \(tally.hrSamples) samples during the listen"
+        } else if tally.hrNotifyConfirmedOff && !terminal {
+            heartRate = "Paused · strap confirmed notify off · 0 samples"
+        } else if terminal && tally.hrNotifyConfirmedOn {
+            heartRate = "Back on · strap confirmed"
+        } else if terminal {
+            heartRate = tally.hrNotifyConfirmedOff
+                ? "Was paused · turn-on requested, waiting for confirmation"
+                : "Pause was not confirmed"
+        } else if tally.hrNotifyConfirmedOn {
+            heartRate = "On · strap confirmed"
+        } else {
+            heartRate = "Pause requested, waiting for the strap"
+        }
+        let commands: String
+        if let reason = tally.writeBlockedReason {
+            commands = reason
+        } else if tally.wroteStop && tally.wroteAbort {
+            commands = "Queued 3F/00 and 14/00. The radio has no delivery receipt."
+        } else {
+            commands = "Not sent"
+        }
+        let listen: String
+        if let error = tally.stream5Error {
+            listen = "Failed: \(error)"
+        } else if tally.stream5ConfirmedOn && !terminal {
+            listen = "On · strap confirmed"
+        } else if terminal && tally.stream5ConfirmedOff {
+            listen = "Off · strap confirmed"
+        } else if terminal {
+            listen = tally.stream5ConfirmedOn
+                ? "Was on · turn-off requested"
+                : "On was not confirmed"
+        } else {
+            listen = "Requested, waiting for the strap"
+        }
+        let packets: String
+        if tally.frames == 0 {
+            packets = "None"
+        } else {
+            packets = "\(tally.frames) total · leftover 2B \(tally.leftover2B) · compact 33 \(tally.compact33) · backfill 34 \(tally.backfill34) · last \(tally.lastPacket)"
+        }
+        let result: String
+        let tone: AtriaLeftoverFlushBoard.Tone
+        if !tally.connected {
+            result = "\(stamp) · The strap is not connected."
+            tone = .bad
+        } else if tally.compact33 > 0 {
+            result = "\(stamp) · Compact IMU arrived. Type 33 is the live wrist motion."
+            tone = .good
+        } else if tally.leftover2B > 0 {
+            result = terminal
+                ? "\(stamp) · Finished. Leftover type 2B arrived. Compact IMU did not."
+                : "\(stamp) · Leftover type 2B is arriving. Compact IMU has not."
+            tone = .warn
+        } else if tally.frames > 0 {
+            result = terminal
+                ? "\(stamp) · Finished. Motion arrived, but it was not compact IMU."
+                : "\(stamp) · Motion packets are arriving, but not compact IMU."
+            tone = .warn
+        } else if tally.hrSamples > 0 {
+            result = "\(stamp) · Heart rate is still arriving, so the pause did not stick."
+            tone = .bad
+        } else if tally.writeBlockedReason != nil {
+            result = "\(stamp) · The stop command never left the phone."
+            tone = .bad
+        } else if terminal {
+            result = "\(stamp) · Finished. Listened 12 seconds. The strap sent no motion packets."
+            tone = .warn
+        } else if tally.stream5ConfirmedOn {
+            result = "\(stamp) · Listening. The strap has not sent motion yet."
+            tone = .working
+        } else if tally.wroteStop {
+            result = "\(stamp) · Stop queued. Waiting for the strap to confirm listen."
+            tone = .working
+        } else {
+            result = "\(stamp) · Starting."
+            tone = .working
+        }
+        return LeftoverFlushLines(
+            strap: strap,
+            heartRate: heartRate,
+            commands: commands,
+            listen: listen,
+            packets: packets,
+            result: result,
+            tone: tone
+        )
+    }
+
     /// Enables the bounded raw-motion archive immediately for an in-app step
     /// calibration run. Normally the production protected connection already
     /// carries R10 on stream 5. If the disconnect-storm fuse isolated motion,
@@ -8530,6 +9100,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         startLongWearMode(rest: rest, maxHR: maxHR, reason: "persisted")
     }
 
+    private func scheduleInteractiveForegroundLongWearRefresh(
+        rest: Int,
+        maxHR: Int,
+        reason: String
+    ) {
+        guard longWearModeEnabled else { return }
+        interactiveForegroundLongWearTask?.cancel()
+        interactiveForegroundLongWearTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled, let self else { return }
+            guard self.longWearModeEnabled else { return }
+            guard UIApplication.shared.applicationState == .active else {
+                AtriaDebugLog(
+                    "ATRIADBG long_wear_mode refresh_deferred reason=background reason_tag=%@",
+                    reason
+                )
+                return
+            }
+            self.startLongWearMode(rest: rest, maxHR: maxHR, reason: reason)
+            self.interactiveForegroundLongWearTask = nil
+        }
+    }
+
     private func startLongWearMode(rest: Int, maxHR: Int, reason: String) {
         let defaults = UserDefaults.standard
         let checkpointSeconds = defaults.object(forKey: LongWearDefaults.checkpointInterval) as? Double ?? 60
@@ -8561,7 +9155,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         let label = defaults.string(forKey: LongWearDefaults.label) ?? "All-day wear"
         captureLabel = label
-        restoreActiveSessionJournalIfNeeded(reason: reason)
         let config = LongWearSupervisorConfig(
             label: label,
             rest: rest,
@@ -8575,6 +9168,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             rrPresenceTimeout: max(20, min(acceptedHRWatchdogTimeout * 2, 120)),
             acceptedHRTimeout: acceptedHRWatchdogTimeout
         )
+        if longWearSupervisorTask != nil, activeLongWearSupervisorConfig == config {
+            ensureForegroundKeepaliveWatchdog(reason: reason)
+            AtriaDebugLog(
+                "ATRIADBG long_wear_mode enabled=1 reason=%@ action=keep_existing_supervisor rest_hr=%d max_hr=%d",
+                reason,
+                rest,
+                maxHR
+            )
+            return
+        }
+        if reason != "scene_active_foreground" {
+            restoreActiveSessionJournalIfNeeded(reason: reason)
+        }
         cacheDutyCycleRestHR(rest)
         scheduleLongWearSupervisor(config: config)
         ensureForegroundKeepaliveWatchdog(reason: reason)
@@ -8787,7 +9393,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // starts when not already running.
         ensureForegroundKeepaliveWatchdog(reason: "scene_active")
         if longWearModeEnabled {
-            startLongWearMode(rest: rest, maxHR: maxHR, reason: "scene_active_foreground")
+            scheduleInteractiveForegroundLongWearRefresh(
+                rest: rest,
+                maxHR: maxHR,
+                reason: "scene_active_foreground"
+            )
         }
         reassertHeartRateNotificationsIfConnected(reason: "scene_active")
         reassertR10NotificationIfConnected(reason: "scene_active")
@@ -8840,6 +9450,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func reassertHeartRateNotificationsIfConnected(reason: String) {
+        if leftoverFlushMeter.read({ $0.active }) {
+            AtriaDebugLog("ATRIADBG ble_notify_reassert status=skipped reason=%@ detail=leftover_flush_holds_2a37", reason)
+            return
+        }
         if motionHandshakeDiagnostic != nil {
             recordMotionHandshakeEvidence(event: "foreground_hr_reassert_blocked", detail: reason)
             return
@@ -8981,11 +9595,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 heartRateNotifying: hrEpochLive,
                 packetsThisConnection: protocolStream5NotifyCallbacksThisConnection,
                 connectedAge: connectedAge,
-                lastRefreshAge: lastRefreshAge
+                lastRefreshAge: lastRefreshAge,
+                diagnosticQuietLeaseActive:
+                    AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair()
             ) {
                 lastR10ZombieCCCDRefreshAt = now
                 lastR10NotifyRepairAt = now
-                peripheral.setNotifyValue(true, for: stream5)
+                _ = setNotifyValueAudited(
+                    true,
+                    for: stream5,
+                    peripheral: peripheral,
+                    phase: .midLinkRepair,
+                    reason: "zombie_cccd_refresh"
+                )
                 _ = enableMissingProtectedCompanionNotifications(
                     peripheral: peripheral,
                     refreshEvenIfNotifying: true
@@ -9004,11 +9626,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connected: true,
             isNotifying: stream5.isNotifying,
             lastRepairAt: lastR10NotifyRepairAt,
-            now: now
+            now: now,
+            diagnosticQuietLeaseActive:
+                AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair()
         ) else { return }
         lastR10NotifyRepairAt = now
         strapStream5NotifyConfirmed = false
-        peripheral.setNotifyValue(true, for: stream5)
+        _ = setNotifyValueAudited(
+            true,
+            for: stream5,
+            peripheral: peripheral,
+            phase: .midLinkRepair,
+            reason: "stream5_notify_repair"
+        )
         AtriaDebugLog("ATRIADBG r10_notify_repair status=requested reason=%@ action=enable_stream5_no_reconnect",
                       reason)
     }
@@ -9022,6 +9652,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Skipping the toggle there left 6A/51 napping the strap while stream-4
     /// type-24 still counted as proprietary traffic.
     private func kickZombieProprietaryStreamIfNeeded(now: Date, reason: String) {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            UserDefaults.standard.set(
+                "imu_quiet_lease",
+                forKey: RadioDefaults.zombieKickSkipReason
+            )
+            return
+        }
         let hrLive = Self.heartRateEpochAllowsIMURefresh(
             characteristicNotifying: heartRateCharacteristic?.isNotifying == true,
             lastAcceptedHRAge: (lastAcceptedHRAt ?? lastRawHRNotificationAt)
@@ -9072,7 +9709,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             alreadyToggledThisConnection: lastR10ZombieCCCDToggleAt != nil,
             imuAge: imuAge,
             sittingSkipFresh: sittingSkipFresh,
-            lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) }
+            lastToggleAge: lastR10ZombieCCCDToggleAt.map { now.timeIntervalSince($0) },
+            diagnosticQuietLeaseActive:
+                AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair()
         )
         guard shouldToggle else {
             persistSkip(
@@ -9113,7 +9752,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forKey: RadioDefaults.zombieCCCDToggleAt
         )
         strapStream5NotifyConfirmed = false
-        peripheral.setNotifyValue(false, for: stream5)
+        _ = setNotifyValueAudited(
+            false,
+            for: stream5,
+            peripheral: peripheral,
+            phase: .midLinkRepair,
+            reason: "zombie_cccd_toggle_off"
+        )
         AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_off reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
                       reason)
         Task { @MainActor [weak self, weak peripheral] in
@@ -9133,7 +9778,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 .first(where: { $0.uuid == Self.UUIDs.strapService })?
                 .characteristics?
                 .first(where: { $0.uuid == Self.UUIDs.strapStream5 }) else { return }
-            peripheral.setNotifyValue(true, for: stream5)
+            _ = self.setNotifyValueAudited(
+                true,
+                for: stream5,
+                peripheral: peripheral,
+                phase: .midLinkRepair,
+                reason: "zombie_cccd_toggle_on"
+            )
             self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
             AtriaDebugLog("ATRIADBG r10_notify_repair status=zombie_cccd_toggle_on reason=%@ action=stream5_only_no_2a37_no_3f_no_reconnect",
                           reason)
@@ -9247,6 +9898,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         now: Date = Date()
     ) -> HeartRateNotificationEnableDisposition {
+        if leftoverFlushMeter.read({ $0.active }) {
+            AtriaDebugLog("ATRIADBG ble_notify_enable status=skipped reason=%@ detail=leftover_flush_holds_2a37", reason)
+            return .unavailable
+        }
         let supportsNotifications = characteristic.properties.contains(.notify)
             || characteristic.properties.contains(.indicate)
         let disposition = heartRateNotificationEnableGate.disposition(
@@ -11613,6 +12268,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         treatAsNaturalGap: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
         let arguments = ProcessInfo.processInfo.arguments
+        if AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments) {
+            return .none
+        }
         let idleFlag = Self.idleWindowHistoryDrainIsEnabled(arguments: arguments)
         let naturalFlag = arguments.contains("--atria-natural-gap-drain-enable")
         guard idleFlag || naturalFlag else { return .none }
@@ -14231,6 +14889,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func sendMotionHandshakeSingleR10ActivationIfReady() {
         guard !readOnlyHistoryCaptureRequested else { return }
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            return
+        }
         guard let diagnostic = motionHandshakeDiagnostic,
               diagnostic.sendSingleR10Activation,
               !motionHandshakeActivationSent else { return }
@@ -14275,6 +14936,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// reduce airtime because exact steps need R10 IMU, not raw optical data.
     private func sendMotionHandshakeR10IMUSequenceIfReady() {
         guard !readOnlyHistoryCaptureRequested else { return }
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            return
+        }
         guard let diagnostic = motionHandshakeDiagnostic,
               diagnostic.useResponseEventDataProfile,
               diagnostic.sendR10IMUSequence,
@@ -14323,7 +14987,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 event: "activation_3f01_sent",
                 detail: "wwr_seq_\(r10Sequence)_bytes_\(r10Frame.count)"
             )
-            peripheral.writeValue(r10Frame, for: txCharacteristic, type: .withoutResponse)
+            _ = self.writeProprietaryWithoutResponse(r10Frame, reason: "handshake_3f")
 
             try? await Task.sleep(for: .milliseconds(120))
             guard !Task.isCancelled, peripheral.state == .connected else { return }
@@ -14336,7 +15000,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 event: "activation_6a01_sent",
                 detail: "wwr_seq_\(imuSequence)_bytes_\(imuFrame.count)"
             )
-            peripheral.writeValue(imuFrame, for: txCharacteristic, type: .withoutResponse)
+            _ = self.writeProprietaryWithoutResponse(imuFrame, reason: "handshake_6a")
             defaults.set(Date().timeIntervalSince1970,
                          forKey: "atria.motionHandshake.r10IMUSequenceCompletedAt")
             self.motionHandshakeCommandSequenceTask = nil
@@ -14457,10 +15121,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }), let characteristic = protectedR10ProfileCharacteristics[nextUUID] {
             protectedR10ProfileRequestedNotifyUUIDs.insert(nextUUID)
             recordProtectedV9BringUpEdge("notify_requested_\(nextUUID.uuidString)")
-            peripheral.setNotifyValue(true, for: characteristic)
-            incrementRadioCounter(RadioDefaults.customNotifyEnabled,
-                                  reason: "protected_v9_initial_profile")
-            dbgSubsReq += 1
+            if setNotifyValueAudited(
+                true,
+                for: characteristic,
+                peripheral: peripheral,
+                phase: .initialDiscovery,
+                reason: "protected_v9_initial_profile"
+            ) {
+                incrementRadioCounter(RadioDefaults.customNotifyEnabled,
+                                      reason: "protected_v9_initial_profile")
+                dbgSubsReq += 1
+            }
             AtriaDebugLog("ATRIADBG protected_r10 status=profile_subscribe_requested owner=v9 ch=%@ action=ordered_once",
                           nextUUID.uuidString)
             return
@@ -14513,6 +15184,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func sendProtectedR10ResponseEventDataSequenceIfReady(peripheral: CBPeripheral) {
         guard !readOnlyHistoryCaptureRequested else {
             recordProtectedV9BringUpEdge("sequence_preflight_blocked_read_only_history")
+            return
+        }
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_imu_quiet_lease")
+            UserDefaults.standard.set(
+                "connect_imu_commands_inhibited",
+                forKey: RadioDefaults.lastIMURecoverySkipReason
+            )
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: RadioDefaults.lastIMURecoverySkipAt
+            )
             return
         }
         guard protectedR10ResponseEventDataProofIsActive else {
@@ -14593,9 +15278,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             let imuFrame = encodeFrame([
                 Packet.command, imuSequence, Cmd.toggleIMUMode, 0x01
             ])
-            peripheral.writeValue(imuFrame,
-                                  for: txCharacteristic,
-                                  type: .withoutResponse)
+            self.writeProprietaryWithoutResponse(
+                imuFrame,
+                reason: "protected_profile_6a"
+            )
             self.scheduleGate4IMUOnlyProbeStop(
                 peripheral: peripheral,
                 txCharacteristic: txCharacteristic,
@@ -14622,13 +15308,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 rawSequence = self.cmdSeq
                 self.cmdSeq &+= 1
-                peripheral.writeValue(
+                self.writeProprietaryWithoutResponse(
                     encodeFrame(
                         [Packet.command, rawSequence, Cmd.startRawData]
                             + Cmd.rawCaptureDurationPayload()
                     ),
-                    for: txCharacteristic,
-                    type: .withoutResponse
+                    reason: "protected_profile_51"
                 )
                 sentCommands = "6a01,51_duration_le"
             } else {
@@ -14746,6 +15431,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func sendProtectedR10ActivationIfReady() {
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            return
+        }
+        guard Self.protectedStandardHRAllowsR10RealtimeFlood else {
+            AtriaDebugLog("ATRIADBG protected_r10 status=activation_suppressed cmd=3f action=plan_blocked_keep_stream5_for_compact_imu")
+            return
+        }
         let cleanProofActive = protectedR10CleanOwner == .protectedV7
             && protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
@@ -14797,6 +15491,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func sendProtectedR10ActivationNowIfReady() {
         guard !readOnlyHistoryCaptureRequested else { return }
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            return
+        }
         let cleanProofActive = protectedR10CleanOwner == .protectedV7
             && protectedR10CleanOwnerProofIsActive
         guard motionHandshakeDiagnostic == nil,
@@ -14842,6 +15541,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             guard decision == .sendSingleLeasedActivation else { return }
         }
+        guard Self.protectedStandardHRAllowsR10RealtimeFlood else {
+            AtriaDebugLog("ATRIADBG protected_r10 status=activation_suppressed cmd=3f action=plan_blocked_keep_stream5_for_compact_imu")
+            return
+        }
 
         protectedR10ActivationSent = true
         protectedR10FramesAfterActivation = 0
@@ -14857,7 +15560,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set("activation_sent", forKey: RadioDefaults.passiveR10Status)
         AtriaDebugLog("ATRIADBG protected_r10 status=activation_sent cmd=3f data=01 mode=wwr seq=%d action=single_write",
                       Int(sequence))
-        peripheral.writeValue(frame, for: txCharacteristic, type: .withoutResponse)
+        writeProprietaryWithoutResponse(frame, reason: "protected_r10_3f")
 
         protectedR10MissingFrameTask?.cancel()
         protectedR10MissingFrameTask = Task { @MainActor [weak self] in
@@ -15190,16 +15893,89 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// on an established link and must never mutate its CCCD.
     private func requestProtectedR10InitialProfileNotificationIfAllowed(
         _ characteristic: CBCharacteristic,
-        peripheral: CBPeripheral
+        peripheral: CBPeripheral,
+        phase: AtriaIMUDiagnosticTransport.NotifyPhase = .initialDiscovery
     ) {
+        guard characteristic.uuid == Self.UUIDs.strapStream5,
+              characteristic.properties.contains(.notify) else { return }
+        if AtriaIMUDiagnosticTransport.isQuietLeaseActive() {
+            if characteristic.isNotifying {
+                AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                    alreadyNotifying: true
+                )
+                _ = AtriaIMUDiagnosticTransport.notifyDecision(
+                    uuid: characteristic.uuid,
+                    enable: true,
+                    phase: phase,
+                    alreadyNotifying: true
+                )
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=stream5_inherited phase=%@ action=skip_already_notifying",
+                    phase.rawValue
+                )
+                return
+            }
+            if phase == .restoration {
+                let decision = AtriaIMUDiagnosticTransport.notifyDecision(
+                    uuid: characteristic.uuid,
+                    enable: true,
+                    phase: .restoration,
+                    alreadyNotifying: false
+                )
+                AtriaIMUDiagnosticTransport.recordNotifyState(
+                    characteristic: characteristic.uuid,
+                    notifying: false,
+                    error: decision.reason,
+                    phase: .restoration,
+                    allowed: false
+                )
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=stream5_subscribe_skipped phase=restoration action=quiet_lease_initial_or_restored"
+                )
+                return
+            }
+            if AtriaIMUDiagnosticTransport.isStopR10Then6ARequested(),
+               !AtriaIMUDiagnosticTransport.stopR10AlreadyConsumed() {
+                sendStopR10ThenCompactBeforeStream5(
+                    characteristic: characteristic,
+                    peripheral: peripheral
+                )
+                return
+            }
+            if AtriaIMUDiagnosticTransport.isHelloThen6ARequested(),
+               !AtriaIMUDiagnosticTransport.singleEnableAlreadyConsumed() {
+                sendCompactEnableBeforeStream5Subscribe(
+                    characteristic: characteristic,
+                    peripheral: peripheral
+                )
+                return
+            }
+            if setNotifyValueAudited(
+                true,
+                for: characteristic,
+                peripheral: peripheral,
+                phase: .initialDiscovery,
+                reason: "quiet_lease_link_up_notify_once"
+            ) {
+                AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                    alreadyNotifying: false
+                )
+                incrementRadioCounter(RadioDefaults.customNotifyEnabled,
+                                      reason: "quiet_lease_link_up_notify_once")
+                dbgSubsReq += 1
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=stream5_subscribe_requested phase=initialDiscovery action=link_up_notify_once"
+                )
+                scheduleOfficialGen4CompactOnStream5LinkUp()
+            }
+            return
+        }
         guard Self.shouldArmProtectedStream5InitialProfile(
                 standardHROnlyMode: standardHROnlyMode,
                 historyOnlyProbeMode: historyOnlyProbeMode,
                 streamSuppressed: protectedR10StreamSuppressed,
                 compactIMURecoveryActive: compactIMURecoveryIsActive()
               ),
-              characteristic.uuid == Self.UUIDs.strapStream5,
-              characteristic.properties.contains(.notify),
               !characteristic.isNotifying else { return }
         guard protectedR10InitialProfilePeripheralID == peripheral.identifier else {
             AtriaDebugLog("ATRIADBG protected_r10 status=stream5_inactive action=skip_mid_link_cccd_mutation owner=%@ state=%@",
@@ -15217,7 +15993,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         guard !protectedR10InitialProfileNotificationRequested else { return }
         protectedR10InitialProfileNotificationRequested = true
-        peripheral.setNotifyValue(true, for: characteristic)
+        if setNotifyValueAudited(
+            true,
+            for: characteristic,
+            peripheral: peripheral,
+            phase: .initialDiscovery,
+            reason: "protected_r10_initial_profile"
+        ) {
+            AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                alreadyNotifying: false
+            )
+        }
         incrementRadioCounter(RadioDefaults.customNotifyEnabled,
                               reason: "protected_r10_initial_profile")
         dbgSubsReq += 1
@@ -15308,12 +16094,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     strapStream5NotifyConfirmed = true
                 }
                 markPassiveR10SubscriptionConfirmed()
+                AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                    alreadyNotifying: true
+                )
             } else {
                 requestProtectedR10InitialProfileNotificationIfAllowed(
                     cachedStream5,
-                    peripheral: peripheral
+                    peripheral: peripheral,
+                    phase: .restoration
                 )
             }
+        } else {
+            AtriaIMUDiagnosticTransport.recordSetupFailureIfStream5Missing(
+                hasStream5: false
+            )
         }
         if let cachedBattery {
             batteryLevelCharacteristic = cachedBattery
@@ -17437,6 +18231,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func quietIdleWindowStream5ForPostACKRangeProbe() {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            return
+        }
         guard let peripheral, peripheral.state == .connected else { return }
         for service in peripheral.services ?? []
             where service.uuid == Self.UUIDs.strapService {
@@ -22901,6 +23698,407 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && error.code == CBError.peerRemovedPairingInformation.rawValue
     }
 
+    private func scheduleDiagnosticSoftwareResetIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) {
+        guard AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments),
+              AtriaIMUDiagnosticTransport.isSoftwareResetRequested(arguments: arguments),
+              let delay = AtriaIMUDiagnosticTransport.resetAfterSeconds(arguments: arguments) else {
+            return
+        }
+        diagnosticSoftwareResetTask?.cancel()
+        diagnosticSoftwareResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.sendDiagnosticSoftwareReset(reason: "reset_after_seconds")
+        }
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=software_reset_scheduled delay_s=%.0f action=one_1d00_then_wait_new_epoch_for_6a",
+            delay
+        )
+    }
+
+    private func sendDiagnosticSoftwareReset(reason: String) {
+        guard AtriaIMUDiagnosticTransport.hasInitialStream5() else {
+            AtriaIMUDiagnosticTransport.record(
+                kind: "setup_failure",
+                reason: "software_reset_skipped_stream5_missing"
+            )
+            AtriaIMUDiagnosticTransport.persistSummary()
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=software_reset_unsent reason=%@ action=no_1d_against_unknown_pipe",
+                          reason)
+            return
+        }
+        AtriaIMUDiagnosticTransport.armSoftwareReset()
+        AtriaDebugLog("ATRIADBG imu_diagnostic status=software_reset_attempt reason=%@", reason)
+        let sent = sendCommand(
+            AtriaIMUDiagnosticTransport.softwareResetOpcode,
+            AtriaIMUDiagnosticTransport.softwareResetPayload,
+            mode: .withoutResponse
+        )
+        if sent {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=software_reset_tx reason=%@ action=await_new_epoch_then_one_6a01",
+                          reason)
+            diagnosticSoftwareResetTask?.cancel()
+            diagnosticSoftwareResetTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(90))
+                guard let self, !Task.isCancelled else { return }
+                if AtriaIMUDiagnosticTransport.softwareResetStillOnSameEpoch() {
+                    AtriaIMUDiagnosticTransport.record(
+                        kind: "software_reset_no_new_epoch",
+                        reason: "no_6a_on_unrebooted_link"
+                    )
+                    AtriaIMUDiagnosticTransport.persistSummary()
+                    AtriaDebugLog("ATRIADBG imu_diagnostic status=software_reset_no_new_epoch action=no_6a_on_unrebooted_link")
+                }
+            }
+        } else {
+            AtriaIMUDiagnosticTransport.record(
+                kind: "setup_failure",
+                reason: "software_reset_write_rejected_or_unready"
+            )
+            AtriaIMUDiagnosticTransport.persistSummary()
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=software_reset_unsent reason=%@ action=no_6a",
+                          reason)
+        }
+    }
+
+    private func scheduleDiagnosticSingleIMUEnableIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) {
+        guard AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments),
+              !AtriaIMUDiagnosticTransport.isOfficialGen4CompactRequested(arguments: arguments),
+              let delay = AtriaIMUDiagnosticTransport.enableAfterSeconds(arguments: arguments) else {
+            return
+        }
+        if AtriaIMUDiagnosticTransport.isSoftwareResetRequested(arguments: arguments),
+           !AtriaIMUDiagnosticTransport.shouldScheduleSingleEnableAfterSoftwareReset() {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=single_6a01_deferred action=wait_software_reset_new_epoch")
+            return
+        }
+        diagnosticSingleEnableTask?.cancel()
+        diagnosticSingleEnableTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.sendDiagnosticSingleIMUEnable(reason: "enable_after_seconds")
+        }
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=single_6a01_scheduled delay_s=%.0f action=one_enable_after_quiet_baseline",
+            delay
+        )
+    }
+
+    private func scheduleDiagnosticOfficialGen4CompactIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) {
+        guard AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments),
+              AtriaIMUDiagnosticTransport.isOfficialGen4CompactRequested(arguments: arguments) else {
+            return
+        }
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=official_gen4_pending action=send_on_stream5_link_up_not_launch_timer"
+        )
+    }
+
+    /// Turn the leftover R10 pipe off, arm compact IMU, then subscribe.
+    private func sendStopR10ThenCompactBeforeStream5(
+        characteristic: CBCharacteristic,
+        peripheral: CBPeripheral
+    ) {
+        guard AtriaIMUDiagnosticTransport.armStopR10Then6A() else { return }
+        let stopped = sendCommand(Cmd.sendR10R11Realtime, [0x00], mode: .withoutResponse)
+        let enabled = sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withoutResponse)
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=stop_r10_then_6a stopped=%d enabled=%d action=subscribe_after_400ms",
+            stopped ? 1 : 0,
+            enabled ? 1 : 0
+        )
+        diagnosticOfficialGen4Task?.cancel()
+        diagnosticOfficialGen4Task = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected else { return }
+            if self.setNotifyValueAudited(
+                true,
+                for: characteristic,
+                peripheral: peripheral,
+                phase: .initialDiscovery,
+                reason: "quiet_lease_link_up_notify_once"
+            ) {
+                AtriaIMUDiagnosticTransport.markInitialStream5Established(alreadyNotifying: false)
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=stream5_subscribe_after_stop_r10")
+            }
+        }
+    }
+
+    /// Leftover R10 starts as soon as stream-5 notifications turn on. Write
+    /// compact enable first, then subscribe, so the dump cannot preempt it.
+    private func sendCompactEnableBeforeStream5Subscribe(
+        characteristic: CBCharacteristic,
+        peripheral: CBPeripheral
+    ) {
+        AtriaIMUDiagnosticTransport.armSingleEnable()
+        let sent = sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withoutResponse)
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=6a_before_stream5 sent=%d action=subscribe_after_400ms",
+            sent ? 1 : 0
+        )
+        diagnosticOfficialGen4Task?.cancel()
+        diagnosticOfficialGen4Task = Task { @MainActor [weak self, weak peripheral] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard let self, let peripheral, !Task.isCancelled,
+                  peripheral.state == .connected else { return }
+            if self.setNotifyValueAudited(
+                true,
+                for: characteristic,
+                peripheral: peripheral,
+                phase: .initialDiscovery,
+                reason: "quiet_lease_link_up_notify_once"
+            ) {
+                AtriaIMUDiagnosticTransport.markInitialStream5Established(alreadyNotifying: false)
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=stream5_subscribe_after_6a action=link_up_notify_once"
+                )
+            }
+        }
+    }
+
+    /// Strap times out stream-5 in ~5 s if IMU mode is still off. Send the
+    /// documented sequence immediately after the legal connect-time subscribe.
+    private func scheduleOfficialGen4CompactOnStream5LinkUp() {
+        guard AtriaIMUDiagnosticTransport.isQuietLeaseActive() else { return }
+        if AtriaIMUDiagnosticTransport.singleEnableAlreadyConsumed() { return }
+        if AtriaIMUDiagnosticTransport.isHelloThen6ARequested() {
+            diagnosticOfficialGen4Task?.cancel()
+            diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled else { return }
+                guard AtriaIMUDiagnosticTransport.armHelloThen6A() else { return }
+                guard self.peripheral?.state == .connected else { return }
+                let helloSent = self.sendCommand(0x23, [0x00], mode: .withResponse)
+                guard helloSent else { return }
+                for _ in 0..<30 {
+                    if self.writeCompletionLedger.pending.isEmpty { break }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled, self.peripheral?.state == .connected,
+                      self.writeCompletionLedger.pending.isEmpty else {
+                    AtriaIMUDiagnosticTransport.record(
+                        kind: "setup_failure",
+                        reason: "hello_write_still_pending_blocked_6a"
+                    )
+                    return
+                }
+                let imuSent = self.sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withResponse)
+                if !imuSent {
+                    AtriaIMUDiagnosticTransport.record(
+                        kind: "setup_failure",
+                        reason: "6a_with_response_unsent"
+                    )
+                }
+            }
+            return
+        }
+        if AtriaIMUDiagnosticTransport.isRev1IMURequested() {
+            diagnosticOfficialGen4Task?.cancel()
+            diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled, self.peripheral?.state == .connected else { return }
+                guard AtriaIMUDiagnosticTransport.armRev1IMU() else { return }
+                _ = self.sendCommand(Cmd.toggleIMUMode, [0x01, 0x01], mode: .withoutResponse)
+            }
+            return
+        }
+        if AtriaIMUDiagnosticTransport.isReleaseHistoricalThen6ARequested() {
+            diagnosticOfficialGen4Task?.cancel()
+            diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard let self, !Task.isCancelled else { return }
+                self.sendDiagnosticReleaseHistoricalThen6A(reason: "stream5_link_up")
+            }
+            return
+        }
+        guard AtriaIMUDiagnosticTransport.isOfficialGen4CompactRequested() else {
+            return
+        }
+        diagnosticOfficialGen4Task?.cancel()
+        diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self, !Task.isCancelled else { return }
+            self.sendDiagnosticOfficialGen4CompactMotionEnable(reason: "stream5_link_up")
+        }
+    }
+
+    private func scheduleDiagnosticAllDayRecoveryIfRequested(
+        arguments: [String] = ProcessInfo.processInfo.arguments
+    ) {
+        guard AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments),
+              AtriaIMUDiagnosticTransport.isAllDayRecoveryRequested(arguments: arguments),
+              let delay = AtriaIMUDiagnosticTransport.allDayRecoveryAfterSeconds(arguments: arguments)
+                ?? AtriaIMUDiagnosticTransport.enableAfterSeconds(arguments: arguments)
+                    .map({ $0 + 150 }) else {
+            return
+        }
+        diagnosticAllDayRecoveryTask?.cancel()
+        diagnosticAllDayRecoveryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            guard AtriaIMUDiagnosticTransport.compact33CountSnapshot() == 0 else {
+                AtriaIMUDiagnosticTransport.record(
+                    kind: "allday_recovery_skipped",
+                    reason: "compact_33_already_live"
+                )
+                AtriaIMUDiagnosticTransport.persistSummary()
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=allday_recovery_skipped action=compact_33_already_live")
+                return
+            }
+            self.sendDiagnosticAllDayAbortThen6AEnable(reason: "allday_recovery_after_seconds")
+        }
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=allday_recovery_scheduled delay_s=%.0f action=1400_wait_12s_6a01_if_no_33",
+            delay
+        )
+    }
+
+    /// Exactly one 6A/01 after the quiet baseline. Production recovery
+    /// writers stay blocked; this is the isolated live-enable trial.
+    private func sendDiagnosticSingleIMUEnable(reason: String) {
+        AtriaIMUDiagnosticTransport.armSingleEnable()
+        AtriaDebugLog("ATRIADBG imu_diagnostic status=single_6a01_attempt reason=%@", reason)
+        let sent = sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withoutResponse)
+        if sent {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=single_6a01_tx reason=%@ action=await_native_33_not_ack",
+                          reason)
+        } else {
+            AtriaIMUDiagnosticTransport.record(
+                kind: "setup_failure",
+                reason: "single_6a01_write_rejected_or_unready"
+            )
+            AtriaIMUDiagnosticTransport.persistSummary()
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=single_6a01_unsent reason=%@ action=no_retry",
+                          reason)
+        }
+    }
+
+    /// Historical IMU off, then one live `6A/01`. Does not send `03` or `14`.
+    private func sendDiagnosticReleaseHistoricalThen6A(reason: String) {
+        guard AtriaIMUDiagnosticTransport.armReleaseHistoricalThen6A() else {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=release_hist_skipped reason=%@ action=sequence_already_consumed",
+                          reason)
+            return
+        }
+        AtriaDebugLog("ATRIADBG imu_diagnostic status=release_hist_attempt reason=%@ cmds=6900,6a01", reason)
+        diagnosticOfficialGen4Task?.cancel()
+        diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+            guard let self, !Task.isCancelled, self.peripheral?.state == .connected else { return }
+            let offSent = self.sendCommand(
+                Cmd.toggleIMUModeHistorical,
+                [0x00],
+                mode: .withoutResponse
+            )
+            guard offSent else {
+                AtriaIMUDiagnosticTransport.record(
+                    kind: "setup_failure",
+                    reason: "release_hist_6900_unsent"
+                )
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled, self.peripheral?.state == .connected else { return }
+            _ = self.sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withoutResponse)
+        }
+    }
+
+    /// Documented Gen4 compact motion sequence after the quiet baseline.
+    /// `03/01 → 6A/01 → 14/00` from `AtriaBLESchema.Cmd.officialGen4CompactMotionBodies`.
+    private func sendDiagnosticOfficialGen4CompactMotionEnable(reason: String) {
+        guard AtriaIMUDiagnosticTransport.armOfficialGen4Compact() else {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=official_gen4_skipped reason=%@ action=sequence_already_consumed",
+                          reason)
+            return
+        }
+        AtriaDebugLog("ATRIADBG imu_diagnostic status=official_gen4_attempt reason=%@", reason)
+        diagnosticOfficialGen4Task?.cancel()
+        diagnosticOfficialGen4Task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var sentAll = true
+            for (index, body) in Cmd.officialGen4CompactMotionBodies.enumerated() {
+                guard !Task.isCancelled,
+                      self.peripheral?.state == .connected else {
+                    sentAll = false
+                    break
+                }
+                let sent = self.sendCommand(body[0], Array(body.dropFirst()), mode: .withoutResponse)
+                if !sent {
+                    sentAll = false
+                    break
+                }
+                if index < Cmd.officialGen4CompactMotionBodies.count - 1 {
+                    try? await Task.sleep(for: .milliseconds(120))
+                }
+            }
+            if sentAll {
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=official_gen4_tx reason=%@ cmds=0301,6a01,1400 action=await_native_33_not_ack",
+                    reason
+                )
+            } else {
+                AtriaIMUDiagnosticTransport.record(
+                    kind: "setup_failure",
+                    reason: "official_gen4_write_rejected_or_unready"
+                )
+                AtriaIMUDiagnosticTransport.persistSummary()
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=official_gen4_unsent reason=%@ action=no_retry",
+                    reason
+                )
+            }
+        }
+    }
+
+    /// All-day recovery: abort historical transmits, wait 12 s, then one 6A/01.
+    private func sendDiagnosticAllDayAbortThen6AEnable(reason: String) {
+        AtriaIMUDiagnosticTransport.armAllDayAbortThen6A()
+        AtriaDebugLog("ATRIADBG imu_diagnostic status=allday_recovery_attempt reason=%@", reason)
+        diagnosticAllDayRecoveryTask?.cancel()
+        diagnosticAllDayRecoveryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            guard !Task.isCancelled, self.peripheral?.state == .connected else { return }
+            let abortSent = self.sendCommand(
+                Cmd.abortHistoricalTransmits,
+                [0x00],
+                mode: .withoutResponse
+            )
+            guard abortSent else {
+                AtriaIMUDiagnosticTransport.record(
+                    kind: "setup_failure",
+                    reason: "allday_recovery_1400_write_rejected_or_unready"
+                )
+                AtriaIMUDiagnosticTransport.persistSummary()
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=allday_recovery_unsent reason=%@ action=1400_blocked",
+                              reason)
+                return
+            }
+            try? await Task.sleep(for: .seconds(Self.allDayCompactIMUFollowUp6ADelay))
+            guard !Task.isCancelled, self.peripheral?.state == .connected else { return }
+            let imuSent = self.sendCommand(Cmd.toggleIMUMode, [0x01], mode: .withoutResponse)
+            if imuSent {
+                AtriaDebugLog(
+                    "ATRIADBG imu_diagnostic status=allday_recovery_tx reason=%@ cmds=1400,6a01 action=await_native_33_not_ack",
+                    reason
+                )
+            } else {
+                AtriaIMUDiagnosticTransport.record(
+                    kind: "setup_failure",
+                    reason: "allday_recovery_6a01_write_rejected_or_unready"
+                )
+                AtriaIMUDiagnosticTransport.persistSummary()
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=allday_recovery_unsent reason=%@ action=6a01_blocked",
+                              reason)
+            }
+        }
+    }
+
     func applyLaunchAutomation(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard !launchAutomationApplied else { return }
         launchAutomationApplied = true
@@ -22908,6 +24106,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         resetSampleDiagnosticsForDebugLaunch(arguments: arguments)
         resetProtocolDiagnosticsForDebugLaunch(arguments: arguments)
         resetRadioDiagnosticsForLaunch()
+        if AtriaIMUDiagnosticTransport.isQuietLeaseActive(arguments: arguments) {
+            AtriaIMUDiagnosticTransport.armQuietLease(arguments: arguments)
+            scheduleDiagnosticSoftwareResetIfRequested(arguments: arguments)
+            scheduleDiagnosticOfficialGen4CompactIfRequested(arguments: arguments)
+            scheduleDiagnosticAllDayRecoveryIfRequested(arguments: arguments)
+            scheduleDiagnosticSingleIMUEnableIfRequested(arguments: arguments)
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=quiet_lease_armed action=block_proprietary_tx_and_mid_link_cccd preserve_2a37=1")
+        }
         applyCoexistenceRiskForDebugLaunch(arguments: arguments)
         applyOfflineSyncForDebugLaunch(arguments: arguments)
         idleWindowConsumeToNowConsent =
@@ -30455,6 +31661,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historyPhase: AtriaBLEHistoryTransportPhaseFence.Snapshot
     ) {
         guard payload.first == 0x24 else { return }
+        handleHistoricalIMUCommandResponse(payload)
         handleProprietaryBatteryCommandResponse(payload)
         handleReadOnlyHistoryRangeResponse(payload)
         handleOneShotHistoryTrimCommandResponse(payload)
@@ -30466,6 +31673,71 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         handleHistoricalACKCommandResponse(payload, generation: generation)
         handleProductionHistoryReadPreflightResponse(payload, generation: generation)
         logDataRangeCommandResponse(payload)
+    }
+
+    private func handleHistoricalIMUCommandResponse(_ payload: [UInt8]) {
+        guard let parsed = AtriaWhoop4CommandResponse.parsePayload(payload) else { return }
+        let pending = pendingHistoricalIMUCommand
+        let state = AtriaWhoop4CommandResponse.correlate(
+            submittedOpcode: pending?.opcode ?? parsed.opcode,
+            submittedSequence: pending?.sequence ?? parsed.echoedRequestSequence,
+            response: parsed
+        )
+        lastHistoricalIMUAttemptState = state
+        if pending == nil || pending?.opcode != parsed.opcode
+            || pending?.sequence != parsed.echoedRequestSequence {
+            lastHistoricalIMUAttemptState = .unmatchedResponse
+        }
+        if parsed.opcode == Cmd.toggleIMUModeHistorical
+            || parsed.opcode == Cmd.toggleIMUMode {
+            UserDefaults.standard.set(
+                parsed.status?.rawLabel ?? "missing_status",
+                forKey: Self.historicalIMUFirmwareOutcomeKey
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG imu_diagnostic status=type24 opcode=%02x echo_seq=%d response_seq=%d firmware=%@ attempt=%@ native_samples=0",
+            parsed.opcode,
+            Int(parsed.echoedRequestSequence),
+            Int(parsed.responseSequence),
+            parsed.status?.rawLabel ?? "missing",
+            lastHistoricalIMUAttemptState.rawValue
+        )
+        if parsed.opcode == Cmd.toggleIMUMode {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=6a_response firmware=%@ action=await_native_33_not_ack",
+                          parsed.status?.rawLabel ?? "missing")
+        }
+        guard parsed.opcode == Cmd.toggleIMUModeHistorical,
+              let pending,
+              pending.opcode == parsed.opcode,
+              pending.sequence == parsed.echoedRequestSequence else {
+            return
+        }
+        pendingHistoricalIMUCommand = nil
+        if pending.intent == "arm" {
+            if AtriaWhoop4CommandResponse.mayMarkHistoricalIMUBankArmed(state),
+               let peripheral {
+                let armedAt = Date()
+                workoutHistoricalMotionBankArmed = true
+                workoutHistoricalMotionBankArmedConnectionStartedAt = connectedAt
+                AtriaWhoop4MotionBankCoverageLedger.open(
+                    at: armedAt,
+                    strapIdentifier: peripheral.identifier.uuidString
+                )
+                AtriaMotionBankDutyCycleDiag.note("armed")
+                let defaults = UserDefaults.standard
+                defaults.set(true, forKey: Self.workoutHistoricalMotionBankEnabledKey)
+                defaults.set(false, forKey: Self.workoutHistoricalMotionBankStopPendingKey)
+                defaults.set(armedAt.timeIntervalSince1970,
+                             forKey: Self.workoutHistoricalMotionBankArmedAtKey)
+                AtriaDebugLog("ATRIADBG workout_motion_bank status=armed cmd=6901 seq=%d firmware_state=accepted",
+                              Int(parsed.echoedRequestSequence))
+            } else {
+                AtriaDebugLog("ATRIADBG workout_motion_bank status=arm_rejected seq=%d firmware_state=%@ action=no_retry_no_armed_label",
+                              Int(parsed.echoedRequestSequence),
+                              state.rawValue)
+            }
+        }
     }
 
     private func handleOneShotHistoryTrimCommandResponse(_ payload: [UInt8]) {
@@ -30990,8 +32262,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         isNotifying: Bool,
         lastRepairAt: Date?,
         now: Date,
-        minimumInterval: TimeInterval = r10NotifyRepairMinimumInterval
+        minimumInterval: TimeInterval = r10NotifyRepairMinimumInterval,
+        diagnosticQuietLeaseActive: Bool = false
     ) -> Bool {
+        guard !diagnosticQuietLeaseActive else { return false }
         guard expected, connected, !isNotifying else { return false }
         guard let lastRepairAt else { return true }
         return now.timeIntervalSince(lastRepairAt) >= minimumInterval
@@ -31008,8 +32282,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedAge: TimeInterval,
         lastRefreshAge: TimeInterval?,
         minimumConnectedAge: TimeInterval = 6,
-        minimumRefreshInterval: TimeInterval = 45
+        minimumRefreshInterval: TimeInterval = 45,
+        diagnosticQuietLeaseActive: Bool = false
     ) -> Bool {
+        guard !diagnosticQuietLeaseActive else { return false }
         guard connected, heartRateNotifying, packetsThisConnection == 0 else { return false }
         guard connectedAge >= minimumConnectedAge else { return false }
         if let lastRefreshAge, lastRefreshAge >= 0,
@@ -31042,8 +32318,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         imuAge: TimeInterval? = nil,
         sittingSkipFresh: Bool = false,
         lastToggleAge: TimeInterval? = nil,
-        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval
+        minimumRetoggleInterval: TimeInterval = r10LivenessRearmMinimumInterval,
+        diagnosticQuietLeaseActive: Bool = false
     ) -> Bool {
+        guard !diagnosticQuietLeaseActive else { return false }
         guard connected, heartRateNotifying else { return false }
         guard connectedAge >= minimumConnectedAge else { return false }
         if sittingSkipFresh { return false }
@@ -31569,15 +32847,55 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static func strapWriteCharacteristic(
         on peripheral: CBPeripheral
     ) -> CBCharacteristic? {
+        strapNotifyCharacteristic(UUIDs.strapTX, on: peripheral)
+    }
+
+    nonisolated static func strapNotifyCharacteristic(
+        _ uuid: CBUUID,
+        on peripheral: CBPeripheral
+    ) -> CBCharacteristic? {
         peripheral.services?
             .first(where: { $0.uuid == UUIDs.strapService })?
             .characteristics?
-            .first(where: { $0.uuid == UUIDs.strapTX })
+            .first(where: { $0.uuid == uuid })
     }
 
     private func persistRadioTXReady(_ ready: Bool) {
         dbgTxReady = ready
         UserDefaults.standard.set(ready, forKey: RadioDefaults.txReady)
+    }
+
+    @discardableResult
+    private func setNotifyValueAudited(
+        _ enabled: Bool,
+        for characteristic: CBCharacteristic,
+        peripheral: CBPeripheral,
+        phase: AtriaIMUDiagnosticTransport.NotifyPhase,
+        reason: String
+    ) -> Bool {
+        let decision = AtriaIMUDiagnosticTransport.notifyDecision(
+            uuid: characteristic.uuid,
+            enable: enabled,
+            phase: phase,
+            alreadyNotifying: characteristic.isNotifying
+        )
+        AtriaIMUDiagnosticTransport.recordNotifyState(
+            characteristic: characteristic.uuid,
+            notifying: enabled,
+            error: decision.allow ? nil : decision.reason,
+            phase: phase,
+            allowed: decision.allow
+        )
+        guard decision.allow else {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=notify_blocked ch=%@ enable=%d phase=%@ reason=%@",
+                          characteristic.uuid.uuidString,
+                          enabled ? 1 : 0,
+                          phase.rawValue,
+                          decision.reason)
+            return false
+        }
+        peripheral.setNotifyValue(enabled, for: characteristic)
+        return true
     }
 
     /// Write 6A/51 and other IMU commands on the CoreBluetooth queue so a full
@@ -31587,6 +32905,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ frame: Data,
         reason: String
     ) -> Bool {
+        let parsed = AtriaIMUDiagnosticTransport.commandFromHarvardFrame(frame)
+        let decision = AtriaIMUDiagnosticTransport.writeDecision(
+            opcode: parsed?.opcode,
+            payload: parsed?.payload ?? [],
+            reason: reason
+        )
+        AtriaIMUDiagnosticTransport.recordTX(
+            allowed: decision.allow,
+            reason: decision.reason,
+            frame: frame
+        )
+        guard decision.allow else {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=tx_blocked reason=%@ action=no_proprietary_write",
+                          decision.reason)
+            return false
+        }
         guard let peripheral, peripheral.state == .connected else { return false }
         let gate = proprietaryWWRGate
         let defaults = UserDefaults.standard
@@ -31647,12 +32981,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         standardHROnlyMode: Bool,
         historyOnlyProbeEnabled: Bool,
         explicitWorkoutHaptic: Bool,
-        onboardingPairingPreflight: Bool = false
+        onboardingPairingPreflight: Bool = false,
+        explicitDiagnosticIMUEnable: Bool = false,
+        explicitDiagnosticOfficialGen4: Bool = false,
+        explicitDiagnosticAllDayRecovery: Bool = false,
+        explicitDiagnosticSoftwareReset: Bool = false,
+        explicitDiagnosticReleaseHistorical: Bool = false,
+        explicitDiagnosticHello: Bool = false,
+        explicitDiagnosticStopR10: Bool = false
     ) -> Bool {
         !standardHROnlyMode
             || historyOnlyProbeEnabled
             || (explicitWorkoutHaptic && command == Cmd.runHapticsPattern)
             || (onboardingPairingPreflight && command == Cmd.getDataRange)
+            || (explicitDiagnosticIMUEnable && command == Cmd.toggleIMUMode)
+            || (explicitDiagnosticHello && command == 0x23)
+            || (explicitDiagnosticOfficialGen4
+                && (command == Cmd.toggleRealtimeHR
+                    || command == Cmd.toggleIMUMode
+                    || command == Cmd.abortHistoricalTransmits))
+            || (explicitDiagnosticAllDayRecovery
+                && (command == Cmd.abortHistoricalTransmits
+                    || command == Cmd.toggleIMUMode))
+            || (explicitDiagnosticSoftwareReset
+                && command == AtriaIMUDiagnosticTransport.softwareResetOpcode)
+            || (explicitDiagnosticReleaseHistorical
+                && (command == Cmd.toggleIMUModeHistorical
+                    || command == Cmd.toggleIMUMode))
     }
 
     /// Send a COMMAND packet on CMD_TO_STRAP: [0x23, seq, cmd, data...].
@@ -31727,6 +33082,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return false
             }
         }
+        let diagnosticWrite = AtriaIMUDiagnosticTransport.writeDecision(
+            opcode: cmd,
+            payload: data,
+            reason: "sendCommand",
+            consumeSingleEnable: false
+        )
+        if !diagnosticWrite.allow {
+            AtriaIMUDiagnosticTransport.recordTX(
+                allowed: false,
+                reason: diagnosticWrite.reason,
+                frame: encodeFrame([Packet.command, cmdSeq, cmd] + data)
+            )
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=tx_blocked cmd=%02x reason=%@",
+                          cmd,
+                          diagnosticWrite.reason)
+            return false
+        }
         guard motionHandshakeDiagnostic == nil else {
             recordMotionHandshakeEvidence(event: "proprietary_tx_blocked",
                                           detail: String(format: "cmd_%02x", cmd))
@@ -31737,9 +33109,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             standardHROnlyMode: standardHROnlyMode,
             historyOnlyProbeEnabled: historyOnlyProbeEnabled,
             explicitWorkoutHaptic: explicitWorkoutHaptic,
-            onboardingPairingPreflight: onboardingPairingPreflight
+            onboardingPairingPreflight: onboardingPairingPreflight,
+            explicitDiagnosticIMUEnable: diagnosticWrite.reason == "explicit_single_6a01"
+                || diagnosticWrite.reason == "explicit_allday_recovery_6a01"
+                || diagnosticWrite.reason == "explicit_6a_rev1"
+                || diagnosticWrite.reason == "explicit_hello_then_6a_6a01",
+            explicitDiagnosticOfficialGen4: diagnosticWrite.reason
+                .hasPrefix("explicit_official_gen4_"),
+            explicitDiagnosticAllDayRecovery: diagnosticWrite.reason
+                .hasPrefix("explicit_allday_recovery_"),
+            explicitDiagnosticSoftwareReset: diagnosticWrite.reason == "explicit_software_reset",
+            explicitDiagnosticReleaseHistorical: diagnosticWrite.reason
+                .hasPrefix("explicit_release_hist_"),
+            explicitDiagnosticHello: diagnosticWrite.reason == "explicit_hello_then_6a_2300",
+            explicitDiagnosticStopR10: diagnosticWrite.reason
+                .hasPrefix("explicit_stop_r10_")
         ) else {
             incrementRadioCounter(RadioDefaults.realtimeStartSkipped, reason: "standard_hr_only_write_blocked")
+            AtriaIMUDiagnosticTransport.recordTX(
+                allowed: false,
+                reason: "standard_hr_only_write_blocked",
+                frame: encodeFrame([Packet.command, cmdSeq, cmd] + data)
+            )
             AtriaDebugLog("ATRIADBG writeSkip mode=%@ reason=standard_hr_only_no_strap_writes cmd=%02x",
                   mode.rawValue, cmd)
             dbgWrite = "standard hr only blocked"
@@ -31777,6 +33168,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 dbgWrite = "wwr unsupported"
                 return false
             }
+            let consume = AtriaIMUDiagnosticTransport.writeDecision(
+                opcode: cmd,
+                payload: data,
+                reason: "sendCommand_withoutResponse",
+                consumeSingleEnable: true
+            )
+            if !consume.allow {
+                AtriaIMUDiagnosticTransport.recordTX(
+                    allowed: false,
+                    reason: consume.reason,
+                    frame: frame
+                )
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=tx_blocked cmd=%02x reason=%@",
+                              cmd,
+                              consume.reason)
+                return false
+            }
+            AtriaIMUDiagnosticTransport.recordTX(
+                allowed: true,
+                reason: consume.reason,
+                frame: frame
+            )
             persistRadioTXReady(true)
             writeProprietaryWithoutResponse(frame, reason: String(format: "cmd_%02x", cmd))
         case .withResponse:
@@ -31797,6 +33210,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 dbgWrite = "wr single-flight pending"
                 return false
             }
+            let consume = AtriaIMUDiagnosticTransport.writeDecision(
+                opcode: cmd,
+                payload: data,
+                reason: "sendCommand_withResponse",
+                consumeSingleEnable: true
+            )
+            if !consume.allow {
+                AtriaIMUDiagnosticTransport.recordTX(
+                    allowed: false,
+                    reason: consume.reason,
+                    frame: frame
+                )
+                return false
+            }
+            AtriaIMUDiagnosticTransport.recordTX(
+                allowed: true,
+                reason: consume.reason,
+                frame: frame
+            )
             p.writeValue(frame, for: tx, type: .withResponse)
         }
         if let authorizedFastDrainSession {
@@ -32258,6 +33690,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     @discardableResult
     private func writeAllDayCompactIMURecovery(reason: String) async -> String {
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            UserDefaults.standard.set(
+                "connect_imu_commands_inhibited",
+                forKey: RadioDefaults.lastIMURecoverySkipReason
+            )
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: RadioDefaults.lastIMURecoverySkipAt
+            )
+            return "inhibited"
+        }
         loadAllDayCompactIMURecoveryLease()
         let typeHex = UserDefaults.standard.string(
             forKey: ProtocolDefaults.lastNotifyCallbackType
@@ -32406,6 +33851,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date,
         reason: String
     ) -> Bool {
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            return false
+        }
         let defaults = UserDefaults.standard
         let txReady = peripheral?.state == .connected
             && txCharacteristic?.properties.contains(.writeWithoutResponse) == true
@@ -32454,7 +33904,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .characteristics?
             .first(where: { $0.uuid == Self.UUIDs.strapStream5 }),
            !stream5.isNotifying {
-            peripheral.setNotifyValue(true, for: stream5)
+            _ = setNotifyValueAudited(
+                true,
+                for: stream5,
+                peripheral: peripheral,
+                phase: .midLinkRepair,
+                reason: "cover_live_stream5"
+            )
         }
         let recoveryAges = imuRecoveryTriggerSnapshot(now: now)
         protectedR10CommandSequenceStartedAt = Date()
@@ -32609,8 +34065,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     .first(where: { $0.uuid == uuid }),
                   characteristic.properties.contains(.notify) else { continue }
             if characteristic.isNotifying, !refreshEvenIfNotifying { continue }
-            peripheral.setNotifyValue(true, for: characteristic)
-            enabled += 1
+            if setNotifyValueAudited(
+                true,
+                for: characteristic,
+                peripheral: peripheral,
+                phase: refreshEvenIfNotifying ? .midLinkRepair : .initialDiscovery,
+                reason: "companion_notify"
+            ) {
+                enabled += 1
+            }
         }
         return enabled
     }
@@ -32625,6 +34088,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String
     ) -> Bool {
         guard !readOnlyHistoryCaptureRequested else { return false }
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            UserDefaults.standard.set(
+                "imu_quiet_lease",
+                forKey: RadioDefaults.lastIMURecoverySkipReason
+            )
+            UserDefaults.standard.set(
+                now.timeIntervalSince1970,
+                forKey: RadioDefaults.lastIMURecoverySkipAt
+            )
+            return false
+        }
         loadAllDayCompactIMURecoveryLease()
         let defaults = UserDefaults.standard
         let lastActivationAt = (defaults.object(
@@ -32840,7 +34316,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 heartRateNotifying: hrEpochLive,
                 packetsThisConnection: self.protocolStream5NotifyCallbacksThisConnection,
                 connectedAge: connectedAge,
-                lastRefreshAge: lastRefreshAge
+                lastRefreshAge: lastRefreshAge,
+                diagnosticQuietLeaseActive:
+                    AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair()
             )
             if zombie {
                 self.lastR10ZombieCCCDRefreshAt = writeAt
@@ -32942,6 +34420,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     @discardableResult
     private func retryProtectedR10ShortBurstIfEligible(now: Date, reason: String) -> Bool {
         guard !readOnlyHistoryCaptureRequested else { return false }
+        if AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+            standardHROnlyMode: standardHROnlyMode
+        ) {
+            return false
+        }
         guard !protectedR10AllDayMinimalProof else {
             AtriaDebugLog("ATRIADBG protected_r10 status=short_burst_retry_suppressed reason=%@ owner=all_day_minimal_stream5",
                           reason)
@@ -33090,6 +34573,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func evaluateR10Liveness(now: Date = Date(), reason: String) {
         persistLiveMotionEpoch(now: now)
+        if AtriaIMUDiagnosticTransport.isQuietLeaseActive() {
+            AtriaDebugLog(
+                "ATRIADBG r10_watchdog status=observed mode=quiet_lease reason=%@ action=preserve_2a37_no_stream5_cccd_no_6a",
+                reason
+            )
+            return
+        }
         flushPendingProprietaryWWRIfNeeded(reason: "\(reason)_wwr_leftover")
         // The 60 s cadence doubles as the lease's lifecycle safety net: it
         // re-adopts a persisted workout lease after foreground/background or
@@ -33788,6 +35278,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// stream rather than risking a battery-heavy orphan after an interrupted
     /// workout.
     private func stopWorkoutRawMotionIfConnected(reason: String) {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=workout_raw_stop_blocked reason=%@", reason)
+            return
+        }
         guard let peripheral,
               peripheral.state == .connected,
               let txCharacteristic,
@@ -34147,6 +35641,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         prioritizePresentCaptureOverProcessRetry: Bool = false
     ) {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            noteMotionBankDutyCycle("imu_quiet_lease")
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=69_arm_blocked reason=%@", reason)
+            return
+        }
+        if UserDefaults.standard.string(forKey: Self.historicalIMUFirmwareOutcomeKey)
+            == AtriaWhoop4CommandResponse.FirmwareStatus.unsupported.rawLabel {
+            noteMotionBankDutyCycle("firmware_unsupported")
+            AtriaDebugLog("ATRIADBG workout_motion_bank status=arm_skipped reason=%@ firmware=unsupported action=no_retry",
+                          reason)
+            return
+        }
         let now = Date()
         let manualWorkoutActive =
             AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
@@ -34426,41 +35932,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             noteMotionBankDutyCycle("wr_pending")
             return
         }
-        let armedAt = Date()
-        let persistedWasEnabled = defaults.bool(
-            forKey: Self.workoutHistoricalMotionBankEnabledKey
-        )
-        let persistedArmedAt = defaults.double(
-            forKey: Self.workoutHistoricalMotionBankArmedAtKey
-        )
         let sequence = cmdSeq
         cmdSeq &+= 1
-        peripheral.writeValue(
-            encodeFrame([
-                Packet.command,
-                sequence,
-                Cmd.toggleIMUModeHistorical,
-                0x01,
-            ]),
-            for: txCharacteristic,
-            type: .withoutResponse
+        let frame = encodeFrame([
+            Packet.command,
+            sequence,
+            Cmd.toggleIMUModeHistorical,
+            0x01,
+        ])
+        pendingHistoricalIMUCommand = (
+            opcode: Cmd.toggleIMUModeHistorical,
+            sequence: sequence,
+            intent: "arm"
         )
-        workoutHistoricalMotionBankArmed = true
-        workoutHistoricalMotionBankArmedConnectionStartedAt = connectedAt
-        AtriaWhoop4MotionBankCoverageLedger.open(
-            at: persistedWasEnabled && persistedArmedAt > 0
-                ? Date(timeIntervalSince1970: persistedArmedAt)
-                : armedAt,
-            strapIdentifier: peripheral.identifier.uuidString
-        )
-        AtriaMotionBankDutyCycleDiag.note("armed")
-        defaults.set(true, forKey: Self.workoutHistoricalMotionBankEnabledKey)
-        defaults.set(false, forKey: Self.workoutHistoricalMotionBankStopPendingKey)
-        if !persistedWasEnabled || persistedArmedAt <= 0 {
-            defaults.set(armedAt.timeIntervalSince1970,
-                         forKey: Self.workoutHistoricalMotionBankArmedAtKey)
+        lastHistoricalIMUAttemptState = .writeSubmitted
+        guard writeProprietaryWithoutResponse(frame, reason: "historical_imu_arm") else {
+            pendingHistoricalIMUCommand = nil
+            lastHistoricalIMUAttemptState = .missingResponse
+            AtriaDebugLog("ATRIADBG workout_motion_bank status=arm_write_blocked seq=%d reason=%@ firmware_state=missing",
+                          Int(sequence),
+                          reason)
+            return
         }
-        AtriaDebugLog("ATRIADBG workout_motion_bank status=armed cmd=6901 seq=%d reason=%@ source=whoop4_v24",
+        AtriaDebugLog("ATRIADBG workout_motion_bank status=arm_submitted cmd=6901 seq=%d reason=%@ firmware_state=write_submitted action=await_type24",
                       Int(sequence),
                       reason)
     }
@@ -34960,6 +36454,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func stopWorkoutHistoricalMotionBankIfPossible(
         reason: String
     ) -> AtriaWhoop4MotionBankCoverageLedger.OffloadTicket? {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=69_stop_blocked reason=%@", reason)
+            return nil
+        }
+        if UserDefaults.standard.string(forKey: Self.historicalIMUFirmwareOutcomeKey)
+            == AtriaWhoop4CommandResponse.FirmwareStatus.unsupported.rawLabel {
+            AtriaDebugLog("ATRIADBG workout_motion_bank status=stop_skipped reason=%@ firmware=unsupported action=rejected_off_does_not_clear_mux",
+                          reason)
+            return nil
+        }
         let defaults = UserDefaults.standard
         let wasEnabled = workoutHistoricalMotionBankArmed
             || defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey)
@@ -37243,6 +38747,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         peripheral: CBPeripheral,
         txCharacteristic: CBCharacteristic
     ) -> Bool {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            return false
+        }
         guard gate4HistoricalIMUWindowProbeRequested,
               !gate4HistoricalIMUWindowIssued,
               peripheral.state == .connected,
@@ -37785,6 +39292,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     /// It never toggles a CCCD, reconnects, or starts the unstable 3F flood.
     private func sendWorkoutMotionActivationPair(now: Date, reason: String) {
         guard !readOnlyHistoryCaptureRequested else { return }
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            AtriaDebugLog("ATRIADBG imu_diagnostic status=workout_activation_blocked reason=%@", reason)
+            return
+        }
         guard !historyOnlyProbeMode, !offlineHistoricalSyncInProgress else { return }
         let calibrationHoldActive =
             workoutMotionCalibrationHoldUntil.map { now < $0 } == true
@@ -41711,6 +43222,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         guard let type = payload.first else { return }
         let body = Array(payload.dropFirst())
         recordProtocolPacket(type: type, length: payload.count)
+        if let hex = AtriaWhoop4CompactIMUDecoder.diagnosticOversizedLastPacketHex(
+            payloadLength: payload.count,
+            frame: Data(fullFrame),
+            type: type
+        ), protocolDiagnosticsPersistenceEnabled {
+            UserDefaults.standard.set(hex, forKey: ProtocolDefaults.lastPacketHex)
+        }
         if type == Packet.event,
            let reading = Self.parseBatteryLevelEventFrame(fullFrame) {
                 guard Self.batteryEventMayUpdateProjection(
@@ -41837,7 +43355,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
 
     private func recordDecodedR10Metadata(sourceUUID: CBUUID,
                                           payloadLength: Int,
-                                          receivedAt: Date) {
+                                          receivedAt: Date,
+                                          diagnosticFrame: Data? = nil) {
         dbgPropFrames += 1
         let type = Packet.realtimeRaw
         let signature = "\(sourceUUID.uuidString.prefix(8).suffix(2)):\(String(format: "%02x", type))"
@@ -41846,6 +43365,15 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             dbgLast = dbgTypeSet.sorted().joined(separator: " ")
         }
         recordProtocolPacket(type: type, length: payloadLength)
+        if let diagnosticFrame,
+           let hex = AtriaWhoop4CompactIMUDecoder.diagnosticOversizedLastPacketHex(
+            payloadLength: payloadLength,
+            frame: diagnosticFrame,
+            type: type
+           ),
+           protocolDiagnosticsPersistenceEnabled {
+            UserDefaults.standard.set(hex, forKey: ProtocolDefaults.lastPacketHex)
+        }
         r10MotionFrameCount += 1
         recordValidR10MotionEvidence(receivedAt: receivedAt)
         recordMotionHandshakeR10EvidenceIfNeeded(receivedAt: receivedAt,
@@ -41936,7 +43464,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         ) {
             clearAllDayCompactIMURecoveryLease()
         }
-        if r10TransportIsExpected {
+        if r10TransportIsExpected,
+           !AtriaIMUDiagnosticTransport.isQuietLeaseActive() {
             ensureR10LivenessWatchdog(reason: "live_imu_frame")
         }
         if let previous = lastR10MotionFrameAt, receivedAt < previous { return }
@@ -42244,6 +43773,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     }
 
     private func sendProprietaryBatteryRefreshCommand() {
+        if AtriaIMUDiagnosticTransport.shouldBlockMidLinkNotifyRepair() {
+            failProprietaryBatteryRefresh(reason: "imu_quiet_lease")
+            return
+        }
         guard !readOnlyHistoryCaptureRequested else {
             failProprietaryBatteryRefresh(reason: "read_only_history_capture")
             return
@@ -42437,7 +43970,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         protocolLastPacketType = String(format: "%02x", type)
         protocolLastPacketKind = Self.packetKind(type)
         protocolLastPacketLength = length
-        if type == Packet.imu || type == Packet.realtimeRaw {
+        if type == Packet.imu {
             protocolIMUFrameCount += 1
         } else if type == 0x32 {
             protocolDiagnosticFrameCount += 1
@@ -50349,10 +51882,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             dayBaseline: strapStepResearchDayBaseline
         )
         let persistCount = strapStepResearchCycleStart == nil ? todayCount : cycleCount
-        let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+        let liveGyroToday = AtriaHeldDailyStepFloor.loadLiveGyroToday(
+            now: now,
+            cycleStart: strapStepResearchCycleStart
+        )?.count ?? 0
         AtriaHeldDailyStepFloor.persistLiveGyroToday(
             count: persistCount,
-            capturedAt: now
+            capturedAt: now,
+            cycleStart: strapStepResearchCycleStart
         )
         let publishedToday = Self.publishedLiveStrapStepTodayCount(
             cycleOrDayCount: persistCount,
@@ -50399,7 +51936,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             // still held the walk (1944).
             let restoredToday = max(
                 AtriaHeldDailyStepFloor.load(cycleStart: start)?.count ?? 0,
-                AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
+                AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now, cycleStart: start)?.count ?? 0
             )
             strapStepResearchCycleBaseline = Self.cycleBaselinePreservingRestoredToday(
                 sessionCount: strapStepResearchCount,
@@ -52244,6 +53781,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 : nil
             defaults.set(disconnectCause, forKey: LinkDefaults.lastDisconnectCause)
             defaults.set(disconnectNow.timeIntervalSince1970, forKey: LinkDefaults.lastDisconnectAt)
+            if let nsError = error as NSError? {
+                AtriaIMUDiagnosticTransport.noteStream5DrivenConnectionTimeout(
+                    domain: nsError.domain,
+                    code: nsError.code
+                )
+            }
             defaults.set(max(0, disconnects - linkDisconnectCountAtLaunch),
                          forKey: LinkDefaults.disconnectsThisLaunch)
             let atriaOwnedOfflineSyncDisconnect = offlineHistoricalSyncInProgress
@@ -53522,12 +55065,49 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     } else {
                         passiveR10AlreadyNotifying = true
                     }
-                } else if discoveryUsesProtectedStandardHR, UUIDs.allNotify.contains(ch.uuid) {
+                } else if AtriaIMUDiagnosticTransport.isExtraNotifyLinkUpActive(),
+                          AtriaIMUDiagnosticTransport.extraNotifyUUIDs.contains(ch.uuid),
+                          ch.properties.contains(.notify) {
+                    // Connect-time 03/04/07 only. Not a Harvard command and
+                    // not a mid-link stream-5 rewrite. Record skip vs allow
+                    // so a silent standard-HR skip cannot hide a missed 07.
+                    if bleCallbackEpochFence.accepts(
+                        source: callbackSource,
+                        peripheralConnected: peripheral.state == .connected
+                    ) {
+                        let decision = AtriaIMUDiagnosticTransport.notifyDecision(
+                            uuid: ch.uuid,
+                            enable: true,
+                            phase: .initialDiscovery,
+                            alreadyNotifying: ch.isNotifying
+                        )
+                        AtriaIMUDiagnosticTransport.recordNotifyState(
+                            characteristic: ch.uuid,
+                            notifying: ch.isNotifying || decision.allow,
+                            error: decision.allow ? nil : decision.reason,
+                            phase: .initialDiscovery,
+                            allowed: decision.allow
+                        )
+                        if decision.allow {
+                            peripheral.setNotifyValue(true, for: ch)
+                            requestedCustomNotifyCount += 1
+                            radioCounters.append(
+                                (RadioDefaults.customNotifyEnabled, "extra_notify_link_up")
+                            )
+                        }
+                    }
+                } else if discoveryUsesProtectedStandardHR,
+                          UUIDs.allNotify.contains(ch.uuid),
+                          !AtriaIMUDiagnosticTransport.shouldRequestExtraNotifyAtLinkUp(
+                            uuid: ch.uuid,
+                            alreadyNotifying: ch.isNotifying
+                          ) {
                     // Do not mutate proprietary CCCDs while protecting 2A37.
                     // Enabling stream 5 and later disabling the restored
                     // subscription both caused repeated physical disconnects.
                     // A fresh restoration namespace plus an ingest guard below
-                    // leaves these characteristics entirely untouched.
+                    // leaves these characteristics entirely untouched, except
+                    // a one-shot extra-UUID link-up subscribe when armed.
                     skippedCustomNotify = true
                     radioCounters.append((RadioDefaults.customNotifySkipped, "standard_hr_only"))
                 } else if UUIDs.allNotify.contains(ch.uuid),
@@ -53544,9 +55124,24 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                                 source: callbackSource,
                                 peripheralConnected: peripheral.state == .connected
                               ) {
-                        peripheral.setNotifyValue(true, for: ch)
-                        requestedCustomNotifyCount += 1
-                        radioCounters.append((RadioDefaults.customNotifyEnabled, "full_protocol"))
+                        let decision = AtriaIMUDiagnosticTransport.notifyDecision(
+                            uuid: ch.uuid,
+                            enable: true,
+                            phase: .initialDiscovery,
+                            alreadyNotifying: ch.isNotifying
+                        )
+                        AtriaIMUDiagnosticTransport.recordNotifyState(
+                            characteristic: ch.uuid,
+                            notifying: true,
+                            error: decision.allow ? nil : decision.reason,
+                            phase: .initialDiscovery,
+                            allowed: decision.allow
+                        )
+                        if decision.allow {
+                            peripheral.setNotifyValue(true, for: ch)
+                            requestedCustomNotifyCount += 1
+                            radioCounters.append((RadioDefaults.customNotifyEnabled, "full_protocol"))
+                        }
                     }
                 }
             }
@@ -53628,6 +55223,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.activeProprietaryNotifyUUIDs.formUnion(alreadyActiveProprietaryNotifications)
                     self.strapStream5NotifyConfirmed =
                         alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                    if self.strapStream5NotifyConfirmed {
+                        AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                            alreadyNotifying: true
+                        )
+                    }
                     AtriaDebugLog("ATRIADBG ble_restore_notifications status=seeded active=%d stream5=%d",
                                   self.activeProprietaryNotifyUUIDs.count,
                                   self.strapStream5NotifyConfirmed ? 1 : 0)
@@ -53637,7 +55237,15 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     self.activeProprietaryNotifyUUIDs.insert(Self.UUIDs.strapStream5)
                     self.strapStream5NotifyConfirmed = true
                     self.markPassiveR10SubscriptionConfirmed()
+                    AtriaIMUDiagnosticTransport.markInitialStream5Established(
+                        alreadyNotifying: true
+                    )
                 }
+                AtriaIMUDiagnosticTransport.recordSetupFailureIfStream5Missing(
+                    hasStream5: protectedStream5NeedingInitialSubscribe != nil
+                        || alreadyActiveProprietaryNotifications.contains(Self.UUIDs.strapStream5)
+                        || passiveR10AlreadyNotifying
+                )
                 for counter in radioCounters {
                     self.incrementRadioCounter(counter.key, reason: counter.reason)
                 }
@@ -53740,6 +55348,20 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 return
             }
             self.dbgWrite = msg
+            AtriaIMUDiagnosticTransport.recordWriteCallback(
+                characteristic: characteristic.uuid,
+                error: error?.localizedDescription,
+                sequence: self.writeCompletionLedger.pending.first?.sequence,
+                opcode: self.writeCompletionLedger.pending.first?.command
+            )
+            if let pending = self.pendingHistoricalIMUCommand {
+                self.lastHistoricalIMUAttemptState = error == nil
+                    ? .writeCompleted : .missingResponse
+                AtriaDebugLog("ATRIADBG imu_diagnostic status=write_cb opcode=%02x seq=%d firmware_state=%@",
+                              pending.opcode,
+                              Int(pending.sequence),
+                              self.lastHistoricalIMUAttemptState.rawValue)
+            }
             if let error {
                 let nsError = error as NSError
                 let defaults = UserDefaults.standard
@@ -53974,6 +55596,12 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         let short = String(characteristic.uuid.uuidString.prefix(8))
         let notifying = characteristic.isNotifying
         let err = error?.localizedDescription
+        noteLeftoverFlushNotifyState(
+            peripheral: peripheral,
+            uuid: characteristic.uuid,
+            notifying: notifying,
+            error: err
+        )
         let isData = characteristic.uuid == UUIDs.strapStream5
         if characteristic.uuid == Self.UUIDs.heartRateMeasure {
             let fastLaneDefaults = UserDefaults.standard
@@ -54205,7 +55833,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             } else if !notifying,
                       self.pendingNotifyReenableUUIDs.remove(characteristic.uuid) != nil {
                 if Self.shouldEnableNotifications(isNotifying: characteristic.isNotifying) {
-                    peripheral.setNotifyValue(true, for: characteristic)
+                    _ = self.setNotifyValueAudited(
+                        true,
+                        for: characteristic,
+                        peripheral: peripheral,
+                        phase: .midLinkRepair,
+                        reason: "reenable_after_off"
+                    )
                     AtriaDebugLog("ATRIADBG ble_notify_reassert status=reenable_after_off ch=%@",
                                   characteristic.uuid.uuidString)
                 } else {
@@ -54341,6 +55975,13 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                           uuid.uuidString)
             return
         }
+        noteLeftoverFlushInbound(uuid: uuid, data: data)
+        AtriaIMUDiagnosticTransport.recordRX(
+            characteristic: uuid,
+            bytes: data,
+            connectionEpoch: callbackSource.epoch,
+            wall: receivedAt
+        )
         let isProprietaryNotification = UUIDs.allNotify.contains(uuid)
         if isProprietaryNotification {
             let defaults = UserDefaults.standard
@@ -54805,14 +56446,29 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
         }
 
-        let completeFrames = proprietaryFrameReassembler.feed(
-            data,
-            source: frameSource,
-            scope: .init(
-                historyGeneration: historyPhase.generation,
-                historyServeToken: historyPhase.serveToken
+        let completeFrames = AtriaWhoop4CompactIMUDecoder.completeFrames(
+            isolatedNotify: data,
+            reassembled: proprietaryFrameReassembler.feed(
+                data,
+                source: frameSource,
+                scope: .init(
+                    historyGeneration: historyPhase.generation,
+                    historyServeToken: historyPhase.serveToken,
+                    connectionEpoch: callbackSource.epoch
+                )
             )
         )
+        let incompleteTail = proprietaryFrameReassembler.bufferedByteCount(source: frameSource)
+        if incompleteTail > 0 {
+            AtriaIMUDiagnosticTransport.noteIncompleteTail(bytes: incompleteTail)
+        }
+        for completeFrame in completeFrames {
+            AtriaIMUDiagnosticTransport.recordAssembledFrame(
+                completeFrame,
+                connectionEpoch: callbackSource.epoch,
+                historyActive: historyPhase.isActive
+            )
+        }
         guard !completeFrames.isEmpty else { return }
         Task { @MainActor in
             guard self.acceptsBLECallback(
@@ -54830,7 +56486,26 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         var pendingMainActorWork: [PendingProprietaryMainActorWork] = []
         pendingMainActorWork.reserveCapacity(completeFrames.count)
         for completeFrame in completeFrames {
-            if let captureUntil, receivedAt <= captureUntil {
+            if AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+                from: completeFrame
+            ) != nil {
+                AtriaStrapCalibrationArchive.shared.recordNativeCompactIMUFrame(
+                    completeFrame,
+                    source: AtriaIMUDiagnosticTransport.durableCompactIMUSource(
+                        characteristic: uuid,
+                        stream5Label: frameSource
+                    ),
+                    receivedAt: receivedAt
+                )
+            } else if AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame(
+                from: completeFrame
+            ) != nil {
+                AtriaStrapCalibrationArchive.shared.recordNativeR10MotionFrame(
+                    completeFrame,
+                    source: frameSource,
+                    receivedAt: receivedAt
+                )
+            } else if let captureUntil, receivedAt <= captureUntil {
                 AtriaStrapCalibrationArchive.shared.recordMotionFrame(
                     completeFrame,
                     source: frameSource,
@@ -54847,7 +56522,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 }
                 if !storesProprietaryFrames {
                     let payloadLength = max(0, completeFrame.count - 8)
-                    pendingMainActorWork.append(.r10Metadata(payloadLength: payloadLength))
+                    pendingMainActorWork.append(.r10Metadata(
+                        payloadLength: payloadLength,
+                        diagnosticFrame: payloadLength > 256 ? completeFrame : nil
+                    ))
                     continue
                 }
             } else {
@@ -54927,10 +56605,11 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             return
         }
         for work in batch.work {
-                if case let .r10Metadata(payloadLength) = work {
+                if case let .r10Metadata(payloadLength, diagnosticFrame) = work {
                     recordDecodedR10Metadata(sourceUUID: batch.characteristicUUID,
                                              payloadLength: payloadLength,
-                                             receivedAt: batch.receivedAt)
+                                             receivedAt: batch.receivedAt,
+                                             diagnosticFrame: diagnosticFrame)
                     continue
                 }
                 guard case let .frame(

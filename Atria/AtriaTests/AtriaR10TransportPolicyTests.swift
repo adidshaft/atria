@@ -227,6 +227,11 @@ final class AtriaR10TransportPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("assignIfChanged(\\.liveStrapMotionCapturedAt, receivedAt)"))
         XCTAssertTrue(source.contains("recordValidR10MotionEvidence(receivedAt: receivedAt)"))
         XCTAssertTrue(source.contains("forKey: RadioDefaults.passiveR10LastValidAt"))
+        XCTAssertFalse(AtriaBLEManager.protectedStandardHRAllowsR10RealtimeFlood)
+        XCTAssertTrue(
+            source.contains("guard Self.protectedStandardHRAllowsR10RealtimeFlood else"),
+            "standard-HR must not write 0x3F/01 onto stream-5"
+        )
     }
 
     func testKnownR10TransportBoundaryRetiresOnlyLiveFreshnessUntilNewFrame() throws {

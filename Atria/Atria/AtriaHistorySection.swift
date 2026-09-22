@@ -1559,12 +1559,14 @@ struct AtriaHistoryDayDetailSheet: View {
     }
 
     private func nightWindowText(_ night: SleepHistorySnapshot.Night) -> String {
-        guard let start = night.start, let end = night.end else { return "Window building" }
-        let calendar = EventCivilTime.eventCalendar(timeZoneIdentifier: night.eventTimeZoneIdentifier,
-                                                    fallback: .current)
-        var style = Date.FormatStyle(date: .omitted, time: .shortened)
-        style.timeZone = calendar.timeZone
-        return "\(start.formatted(style)) – \(end.formatted(style))"
+        EventCivilTime.sleepWindowText(
+            start: night.start,
+            end: night.end,
+            wakeDay: night.day,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            timeSeparator: " – ",
+            fallback: "Window building"
+        )
     }
 
     private var recoveryRow: some View {

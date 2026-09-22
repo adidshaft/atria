@@ -73,6 +73,8 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
                 policy: AtriaGeneratedArtifactRetention.portableWorkoutExports
             )
             AtriaStrapCalibrationArchive.shared.scheduleRetentionPrune()
+            _ = AtriaStrapCalibrationArchive.shared.importArchivedCompactIMUFileIfRequested()
+            _ = AtriaStrapCalibrationArchive.shared.materializeDecodedCompactIMUSamplesIfRequested()
         }
         return true
     }
@@ -704,12 +706,37 @@ struct AtriaApp: App {
             }
             ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                            maxHR: store.profile.maxHR)
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket),
+                  AtriaForegroundDeferredWorkAuthority
+                    .environmentIsAuthorized(
+                        sceneIsActive: scenePhase == .active,
+                        applicationIsActive:
+                            UIApplication.shared.applicationState == .active,
+                        historicalProjectionIsBackgrounded:
+                            AtriaHistoricalProjectionForegroundGate.isBackgrounded
+                    ) else {
+                foregroundBLETransitionAuthority.deferForLostAuthority(ticket)
+                foregroundBLETransitionTask = nil
+                return
+            }
             _ = ble.offerConnectedRawCatchUpPublicationYieldIfNeeded(
                 reason: "scene_active_after_interactive_frame"
             )
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket) else {
+                return
+            }
             store.resumeDeferredForegroundArchiveWork(
                 reason: "scene_active_after_interactive_frame"
             )
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket) else {
+                return
+            }
             ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
                 reason: "scene_active_after_interactive_frame"
             )
@@ -1410,6 +1437,7 @@ struct AtriaApp: App {
         arguments.contains { argument in
             guard argument.hasPrefix("--atria-") else { return false }
             return argument != "--atria-enable-debug-logs"
+                && !AtriaIMUDiagnosticTransport.isDiagnosticLaunchArgument(argument)
         }
     }
 

@@ -338,8 +338,6 @@ struct OnboardingConnectionStatusView: View {
 
     private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
 
-    private var hasFreshHeartRate: Bool { ble.currentConnectionHasFreshHeartRate }
-
     private var bluetoothRecovery: AtriaOnboardingBluetoothRecovery {
         AtriaOnboardingBluetoothRecovery(status: ble.status,
                                           permissionDenied: ble.bluetoothPermissionDenied)
@@ -353,7 +351,7 @@ struct OnboardingConnectionStatusView: View {
                         statusIcon
                         statusCopy
                     }
-                    if hasFreshHeartRate {
+                    if ble.heartRate > 0 {
                         heartRateReading
                     }
                 }
@@ -362,7 +360,7 @@ struct OnboardingConnectionStatusView: View {
                     statusIcon
                     statusCopy
                     Spacer(minLength: 8)
-                    if hasFreshHeartRate {
+                    if ble.heartRate > 0 {
                         heartRateReading
                     }
                 }
@@ -437,8 +435,8 @@ struct OnboardingConnectionStatusView: View {
         case .scanning, .disconnected: return "Searching for your strap…"
         case .connecting: return "Connecting…"
         case .connected:
-            if hasFreshHeartRate { return "Live" }
-            return isHealthyContact ? "Confirming live data…" : "Put the strap back on"
+            if ble.heartRate > 0 { return "Live" }
+            return isHealthyContact ? "Waiting for heart rate" : "Put the strap on"
         }
     }
 
@@ -454,10 +452,10 @@ struct OnboardingConnectionStatusView: View {
         case .scanning, .disconnected: return "Make sure the strap is on your wrist."
         case .connecting: return "Linking to your strap."
         case .connected:
-            if hasFreshHeartRate { return "Atria is reading fresh heart-rate data." }
+            if ble.heartRate > 0 { return "Heart rate is coming through." }
             return isHealthyContact
-                ? "The Bluetooth link is connected; Atria is waiting for a fresh strap sample."
-                : "Pairing can take up to 3 minutes. The blue light stops when it finishes; then wear the strap snugly."
+                ? "Wear it snugly. A beat should show up in a few seconds."
+                : "Pairing can take a couple of minutes. Wear it snugly when the blue light stops."
         }
     }
 
@@ -468,7 +466,7 @@ struct OnboardingConnectionStatusView: View {
         switch ble.status {
         case .poweredOff: return "bolt.slash.fill"
         case .scanning, .disconnected, .connecting: return "dot.radiowaves.left.and.right"
-        case .connected: return hasFreshHeartRate ? "checkmark.circle.fill" : "waveform.path.ecg"
+        case .connected: return ble.heartRate > 0 ? "checkmark.circle.fill" : "waveform.path.ecg"
         }
     }
 
@@ -477,7 +475,7 @@ struct OnboardingConnectionStatusView: View {
         case .poweredOff: return .red
         case .scanning, .disconnected: return .blue
         case .connecting: return .yellow
-        case .connected: return hasFreshHeartRate ? .green : .orange
+        case .connected: return ble.heartRate > 0 ? .green : .orange
         }
     }
 }

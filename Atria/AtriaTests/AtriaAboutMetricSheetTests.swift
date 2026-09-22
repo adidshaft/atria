@@ -96,9 +96,32 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("Decoder not verified"))
 
         for metric in AtriaAboutMetric.allCases
-            where metric != .bloodOxygen && metric != .skinTemperature {
+            where metric != .bloodOxygen && metric != .skinTemperature && metric != .irregularRhythm {
             XCTAssertFalse(metric.showsWhyBlank, "\(metric) should be a computed metric")
             XCTAssertEqual(metric.computeCardTitle, "HOW ATRIA COMPUTES IT")
         }
+        XCTAssertFalse(AtriaAboutMetric.irregularRhythm.showsWhyBlank)
+        XCTAssertEqual(AtriaAboutMetric.irregularRhythm.computeCardTitle, "WHAT THE STRAP CAN SEE")
+    }
+
+    func testIrregularRhythmCopyNeverClaimsDiagnosisOrECG() {
+        let metric = AtriaAboutMetric.irregularRhythm
+        let corpus = [
+            metric.title,
+            metric.definition,
+            metric.computeCardBody,
+            metric.honestyNote,
+            AtriaIrregularRhythmCopy.cannotDiagnose,
+            AtriaIrregularRhythmCopy.notECG,
+            AtriaIrregularRhythmCopy.talkToADoctor,
+            AtriaIrregularRhythmCopy.watchLikeCaution,
+            AtriaIrregularRhythmCopy.insufficient,
+        ].joined(separator: " ")
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("diagnosed with AFib"))
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("you have AFib"))
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("FDA"))
+        XCTAssertTrue(corpus.contains(AtriaIrregularRhythmCopy.cannotDiagnose))
+        XCTAssertTrue(metric.computeCardBody.localizedCaseInsensitiveContains("not an ECG"))
+        XCTAssertTrue(metric.honestyNote.contains("cannot diagnose AFib"))
     }
 }

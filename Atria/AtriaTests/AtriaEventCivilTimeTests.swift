@@ -227,4 +227,56 @@ final class AtriaEventCivilTimeTests: XCTestCase {
         XCTAssertEqual(SessionStore.morningMetricDay(for: value, calendar: Self.utcCalendar),
                        date(2026, 7, 9, 0))
     }
+
+    func testSleepWindowTextUsesTodayYesterdayAndWakeDates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let locale = Locale(identifier: "en_US")
+        let now = date(2026, 9, 20, 21, 30, timeZone: "Asia/Kolkata")
+        let todayStart = date(2026, 9, 19, 23, 10, timeZone: "Asia/Kolkata")
+        let todayEnd = date(2026, 9, 20, 7, 18, timeZone: "Asia/Kolkata")
+        let yesterdayStart = date(2026, 9, 18, 23, 0, timeZone: "Asia/Kolkata")
+        let yesterdayEnd = date(2026, 9, 19, 6, 45, timeZone: "Asia/Kolkata")
+        let olderStart = date(2026, 9, 11, 22, 30, timeZone: "Asia/Kolkata")
+        let olderEnd = date(2026, 9, 12, 6, 10, timeZone: "Asia/Kolkata")
+
+        let todayText = EventCivilTime.sleepWindowText(
+            start: todayStart,
+            end: todayEnd,
+            wakeDay: todayEnd,
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            now: now,
+            outputCalendar: calendar,
+            locale: locale,
+            fallback: "missing"
+        )
+        XCTAssertTrue(todayText.hasPrefix("Today · "), todayText)
+        XCTAssertFalse(todayText.contains("Sep"), todayText)
+
+        let yesterdayText = EventCivilTime.sleepWindowText(
+            start: yesterdayStart,
+            end: yesterdayEnd,
+            wakeDay: yesterdayEnd,
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            now: now,
+            outputCalendar: calendar,
+            locale: locale,
+            fallback: "missing"
+        )
+        XCTAssertTrue(yesterdayText.hasPrefix("Yesterday · "), yesterdayText)
+
+        let olderText = EventCivilTime.sleepWindowText(
+            start: olderStart,
+            end: olderEnd,
+            wakeDay: olderEnd,
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            now: now,
+            outputCalendar: calendar,
+            locale: locale,
+            fallback: "missing"
+        )
+        XCTAssertFalse(olderText.hasPrefix("Today"), olderText)
+        XCTAssertFalse(olderText.hasPrefix("Yesterday"), olderText)
+        XCTAssertTrue(olderText.contains("Sep 12") || olderText.contains("12 Sep"), olderText)
+    }
 }

@@ -223,6 +223,15 @@ final class AtriaLiveHeartRatePresentationTests: XCTestCase {
             ),
             4
         )
+        XCTAssertNil(
+            AtriaHomeModel.diagnosisIMUAgeSeconds(
+                motionCapturedAt: now.addingTimeInterval(-1),
+                compactAssembledAt: nil,
+                compactPacketAt: nil,
+                now: now
+            ),
+            "R10 type-2B must not report live native IMU while 0x33 is absent"
+        )
         XCTAssertEqual(
             AtriaHomeModel.diagnosisIMUAgeSeconds(
                 motionCapturedAt: nil,

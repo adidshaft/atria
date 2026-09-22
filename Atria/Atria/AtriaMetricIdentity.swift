@@ -121,6 +121,7 @@ extension AtriaAboutMetric {
         case .vo2max: return .vo2max
         case .skinTemperature: return .bodyTemp
         case .bloodOxygen: return .bloodOxygen
+        case .irregularRhythm: return .hrv
         }
     }
 }

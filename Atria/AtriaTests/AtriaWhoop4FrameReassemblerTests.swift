@@ -1,4 +1,5 @@
 import XCTest
+import CryptoKit
 @testable import Atria
 
 final class AtriaWhoop4FrameReassemblerTests: XCTestCase {
@@ -145,5 +146,76 @@ final class AtriaWhoop4FrameReassemblerTests: XCTestCase {
                 historyServeToken: nextPage.serveToken
             )
         ).isEmpty)
+    }
+
+    func testFragmentsDoNotJoinAcrossConnectionEpochsAndCoalesceToSameSHA() throws {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 {
+            url.deleteLastPathComponent()
+        }
+        url.appendPathComponent(
+            "evidence/2026-09-20-imu-241-lastpacket-1924/lastPacketHex.bin"
+        )
+        let frame = try Data(contentsOf: url)
+        let expectedSHA = SHA256.hash(data: frame)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        XCTAssertTrue(expectedSHA.hasPrefix("71c578743f680643"))
+
+        func sha(_ data: Data) -> String {
+            SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+
+        let chunks = [228, 244, 180, frame.count]
+        for chunk in chunks {
+            let reassembler = AtriaWhoop4FrameReassembler()
+            var output: [Data] = []
+            var offset = 0
+            while offset < frame.count {
+                let end = min(frame.count, offset + chunk)
+                output += reassembler.feed(
+                    frame.subdata(in: offset..<end),
+                    source: "stream5",
+                    scope: .init(connectionEpoch: 9)
+                )
+                offset = end
+            }
+            XCTAssertEqual(output, [frame], "chunk \(chunk)")
+            XCTAssertEqual(sha(output[0]), expectedSHA)
+        }
+
+        let mixed = AtriaWhoop4FrameReassembler()
+        XCTAssertTrue(mixed.feed(
+            frame.prefix(228),
+            source: "stream5",
+            scope: .init(connectionEpoch: 9)
+        ).isEmpty)
+        XCTAssertEqual(
+            mixed.feed(
+                frame.dropFirst(228),
+                source: "stream5",
+                scope: .init(connectionEpoch: 9)
+            ),
+            [frame]
+        )
+
+        let crossEpoch = AtriaWhoop4FrameReassembler()
+        XCTAssertTrue(crossEpoch.feed(
+            frame.prefix(244),
+            source: "stream5",
+            scope: .init(connectionEpoch: 9)
+        ).isEmpty)
+        XCTAssertTrue(
+            crossEpoch.feed(
+                frame.dropFirst(244),
+                source: "stream5",
+                scope: .init(connectionEpoch: 10)
+            ).isEmpty,
+            "must not join fragments across connection epochs"
+        )
+        XCTAssertEqual(
+            crossEpoch.feed(frame, source: "stream5", scope: .init(connectionEpoch: 10)),
+            [frame]
+        )
     }
 }

@@ -4406,3 +4406,64 @@ callbacks > 0 (device 199: `isNotifying` ≠ IMU). Tests:
   assembler.
 - **Not a fix:** another `6A` hex on `61080003`; stream-5 type 30/32; empty
   `0x16`; type-47 1 Hz filling Today steps (useful, different product).
+
+### 2026-09-20 — isolated 6A, reboot+6A, and WHOOP probe (wired recheck)
+
+**PHYSICAL FAIL + UNVERIFIED official liveness**
+
+- Quiet 2A37 lease PASS (build 229). Isolated Gen4 `6A/01` (build 231) TX
+  `aa0800a823006a01776cd67b`, type-24 `aa0c00fc24976a00000100007cbddc9a`
+  status `00` (`other_00`), native `0x33`/`0x34`/`0x2B` = 0, HR continued.
+- Software reset `0x1D/00` (build 233) dropped the link (`CBErrorDomain:6`);
+  one post-reboot `6A/01` had no type-24 in the recorder and still zero
+  `0x33`. Unexpected writes 0.
+- On-air `61080007` type `08` this day: ASCII `hboylston` / `h17.2.2.0` /
+  `kharvard_r10` (step 4 JSONL, 14:15:42 IST). That is not the July
+  `i41.17.6.0` / `gharvard` enumeration. Post-reboot stream-7 was not
+  recaptured.
+- Official WHOOP is **not installed** on this iPhone (apps: Alter, Atria 233,
+  Fizz, Zook). Strength Trainer connect/start/stop/disconnect was not
+  captured. Operator has **no WHOOP subscription and will not purchase one**;
+  the official liveness probe is closed. PacketLogger.app 26.0.0 is present;
+  host-side `btlogger` on iOS 27 failed. July `03/01 → 6A/01 → 14/00` remains
+  blocked (type-43).
+- September `0x33` was an inherited mux, not a logged 6A start. 6A ± reboot
+  does not reproduce it. Stop command escalation. Evidence:
+  `evidence/2026-09-20-astra-usb-recheck/step5-whoop-probe/RESULTS.md` and
+  `SEP15-MATCHING-GEN.md` (inrange-36 type `0x31` at 01:29 IST → inrange-37/38
+  native 152-byte `0x33`; last prefs `6A` stamp 14 Jul; last `51` cover 8 Sep).
+- 20 Sep 15:41 IST **fresh wipe + strap off/on + quiet 240 s** (build 233 PID
+  26178): prefs deleted, no `6A`, stream-5 subscribed, **zero** stream-5 RX,
+  native `0x33` = 0, HR live. Stream-7 type `08` in one epoch: both
+  `hboylston`/`h17.2.2.0` **and** `gharvard`/`i41.17.6.0` (both
+  `kharvard_r10`). Evidence: `step5-fresh-reset/RESULTS.md`. Do not send
+  July `03+6A+14` from the second identity.
+
+### 2026-09-20 — leftover stream-5 `0x2B` does not become compact `0x33` while idle
+
+**PHYSICAL FAIL (passive, TX=0).** Build 239, ~14 min pulls 13:19–13:32Z.
+Last notify type stayed `2b` on `61080005` (9/9), `imuFrames=0`,
+`compactIMU.lastPacketAt` unset. Stream-5 callbacks climbed ~1345→12401 then
+`CBErrorDomain:6` (disconnects 2→5) and resumed as `2b`. 2A37 hrAge 0.4–1.3 s.
+15 Sep’s type-31→33 inheritance did **not** recur. Leftover R10 is not compact
+IMU. SET/FORCE_DP_TYPE remain unused-on-wire and **blocked**. Evidence:
+`evidence/2026-09-20-astra-usb-recheck/step5-passive-2b-watch/`.
+
+### 2026-09-20 — reassembled lastPacket 1924 is not a nested `0x33` (and is not on disk)
+
+**PHYSICAL FAIL (passive, TX=0).** Build 240 PID 27354. `lastPacketType=2b` **length 1924** is the reassembled R10 **payload count**, not the 244/228 B GATT notify in `lastNotifyCallbackHex` (capped at 256 B). House-arrest found **no 1924-byte buffer**. Diagnostic JSONL is stale (`native_33=0`). Three notify tails vs inrange-38 `AA 94 00 B5 33`: offset 4 = `E0` / `0E` / `00`. Inner `0x33` **no**. Evidence: `evidence/2026-09-20-imu-240-lastpacket-1924/`.
+
+### 2026-09-20 — build 241 lastPacketHex 1928 B is type `2B`, not nested `0x33`
+
+**PHYSICAL FAIL (passive, TX=0).** Build 241 PID 27574. House-arrest pulled full `lastPacketHex` (3856 hex chars / **1928 B**, prefs length 1920). Prefix `aa 84 07 f7 2b` is 16-bit LE length `0x0784`=1924 + checksum `F7` + type **`2B`**, not compact `AA 94 00 B5 33` (8-bit len `0x94`, 152 B). Zero `AA 94 00 B5` hits. `imuFrames=0`, `native_33=0`, `compactIMU.lastPacketAt` unset — `recordNativeCompactIMUFrame` did not run. Last notify still `2B` 228 B on `61080005`. 2A37 notifying (`standardHROnly`). Do **not** promote 2B. Evidence: `evidence/2026-09-20-imu-241-lastpacket-1924/`.
+
+### 2026-09-22 — Mac central can command this strap; 6A still does not start `0x33`
+
+**PHYSICAL FAIL for compact IMU. Command channel PASS.** iPhone app stopped. Strap advertises as `ADIDSHAFT'S WHO`. A direct Mac CoreBluetooth session, with notifications confirmed on before the first write, gets `didWrite` with a nil error in about 200 ms. Earlier “timeouts” were clients giving up before that callback.
+
+- Hello `0x23/00` type-24 is status `01` (accepted), 144-byte body.
+- `6A/01` type-24 is `24 .. 6a .. 00 01 00 00` (status `00`, `other_00`). Native `0x33` = 0. Same non-start as the iPhone fixture.
+- `03/01` type-24 status `02` (pending). Stream-5 then sends ~1 Hz type `0x28` (proprietary realtime heart), while `2A37` stays live. Not IMU.
+- `3F/01` type-24 status `02`, then stream-5 type `2B` (`aa8407f72b` / `aa88070b2b`). `3F/00` stops it. Compact `0x33` = 0. `2A37` stayed live (`005e`).
+- A single heart-rate CCCD off reads back `0000` and the samples stop. Stacking that off with another notify in the same turn is what the iPhone flush failed to confirm.
+- Do not treat type `0x28` or type `2B` as compact IMU.

@@ -344,13 +344,14 @@ private struct AtriaSleepReviewCard: View {
     }
 
     private var rangeText: String {
-        if let start = night.start, let end = night.end {
-            return "\(start.formatted(date: .omitted, time: .shortened)) - \(end.formatted(date: .omitted, time: .shortened))"
-        }
-        if let start = night.start {
-            return "Started \(start.formatted(date: .omitted, time: .shortened))"
-        }
-        return night.confirmationText
+        EventCivilTime.sleepWindowText(
+            start: night.start,
+            end: night.end,
+            wakeDay: night.day,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            timeSeparator: " - ",
+            fallback: night.confirmationText
+        )
     }
 
     private var subtitleText: String {
@@ -1474,7 +1475,9 @@ enum AtriaLiveSignalTruth {
             case .lowBatteryReducedDetail:
                 return "Low battery"
             case .silentUnknown:
-                return "No signal"
+                // BLE is up. "No signal" reads as a broken strap after pairing
+                // when the wearer is simply waiting for the first accepted beat.
+                return "Connected"
             case .live, .warming, .unknown:
                 return "Waiting"
             }
@@ -1542,9 +1545,9 @@ enum AtriaLiveSignalTruth {
         // An attributed charging/off-wrist state is expected, not a fault.
         if attribution != .none { return .waiting }
         switch streamState {
-        case .lowBatteryShutoff, .lowBatteryReducedDetail, .silentUnknown:
+        case .lowBatteryShutoff, .lowBatteryReducedDetail:
             return .attention
-        case .live, .warming, .unknown:
+        case .silentUnknown, .live, .warming, .unknown:
             return .waiting
         }
     }
@@ -2600,16 +2603,17 @@ struct AtriaStrapStepLiveStatus: Equatable {
     let isValidated: Bool
     let freshness: Freshness
     let motionAge: TimeInterval?
+    let productRoute: AtriaStrapMotionProductRoute
 
     var isLive: Bool { freshness == .live }
 
     /// What to do when motion is not live. BLE can keep running in the
     /// background (`bluetooth-central`); the wearer should not have to keep
-    /// Atria open. Closing official WHOOP and staying in range is the
-    /// actual radio hygiene. This is not a promise that silent seconds will
-    /// be reconstructed — 6A/51 re-arms the live stream going forward.
+    /// Atria open. Closing official WHOOP and staying in range is radio
+    /// hygiene. Heart rate staying live does not freshen stale motion.
+    /// Leftover native R10 is not compact `0x33` gait.
     static let delayedMotionGuidance =
-        "Keep the phone nearby with Bluetooth on. Atria can stay in the background — you do not need to keep it open. Close the official WHOOP app if it is running."
+        "Keep the phone nearby with Bluetooth on. Atria can stay in the background — you do not need to keep it open. Close the official WHOOP app if it is running. Live heart rate is not compact wrist motion."
 
     var wearerGuidance: String? {
         isLive ? nil : Self.delayedMotionGuidance
@@ -2627,7 +2631,14 @@ struct AtriaStrapStepLiveStatus: Equatable {
     var tileDetail: String {
         switch freshness {
         case .live:
-            return isValidated ? "Live strap count" : "Live estimate"
+            switch productRoute {
+            case .nativeR10Observed:
+                return isValidated ? "Native stream count" : "Live estimate"
+            case .historicalGravity1Hz:
+                return "1 Hz history · not 100 Hz gait"
+            case .compactLive, .unspecified:
+                return isValidated ? "Live strap count" : "Live estimate"
+            }
         case .stale:
             return count > 0
                 ? "Last count · \(lastMotionText)"
@@ -2690,11 +2701,15 @@ struct AtriaStrapStepLiveStatus: Equatable {
             && WidgetSnapshotPublisher.strapStepsAreValidated(
                 state: validationState
             )
+        let productRoute = AtriaStrapMotionProductRoute.resolve(
+            validationState: validationState
+        )
         guard let capturedAt else {
             return Self(count: safeCount,
                         isValidated: isValidated,
                         freshness: safeCount > 0 ? .stale : .unavailable,
-                        motionAge: nil)
+                        motionAge: nil,
+                        productRoute: productRoute)
         }
 
         let age = now.timeIntervalSince(capturedAt)
@@ -2702,13 +2717,15 @@ struct AtriaStrapStepLiveStatus: Equatable {
             return Self(count: safeCount,
                         isValidated: isValidated,
                         freshness: safeCount > 0 ? .stale : .unavailable,
-                        motionAge: nil)
+                        motionAge: nil,
+                        productRoute: productRoute)
         }
 
         return Self(count: safeCount,
                     isValidated: isValidated,
                     freshness: age <= liveWindow ? .live : .stale,
-                    motionAge: max(0, age))
+                    motionAge: max(0, age),
+                    productRoute: productRoute)
     }
 
     static func persistedMotionDate(defaults: UserDefaults = .standard) -> Date? {
@@ -2843,9 +2860,10 @@ struct AtriaStrapStepsDetailSheet: View {
                                 // actually keeps the live stream healthy.
                                 Text(status.wearerGuidance
                                      ?? presentation.motionAvailabilityFootnote
+                                     ?? presentation.productHonestyFootnote
                                      ?? (presentation.source == .live
-                                         ? "Counting so far — grows as you move."
-                                         : "Counted so far — fills in as your strap syncs."))
+                                         ? "Counting so far while compact wrist motion is live."
+                                         : "Counted so far. Gaps are not filled from heart rate or 1 Hz history."))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }

@@ -457,10 +457,10 @@ struct AtriaOnboardingFlow: View {
                 if let recoveryTitle = bluetoothRecovery.primaryActionTitle {
                     return recoveryTitle
                 }
-                if ble.onboardingPairingPreflightInFlight { return "Verifying secure access…" }
-                if historyBootstrap.isWorking { return "Preparing your strap…" }
-                if historyBootstrap.snapshot.phase == .failed { return "Retry secure import" }
-                return ble.status == .connected ? "Waiting for a fresh signal…" : "Connect"
+                if ble.onboardingPairingPreflightInFlight { return "Confirming strap…" }
+                if historyBootstrap.isWorking { return "Setting up…" }
+                if historyBootstrap.snapshot.phase == .failed { return "Retry" }
+                return ble.onboardingLiveHeartRateThisConnection ? "Continue" : "Connect"
             case .you: return "Continue"
             case .rings: return "Continue"
             case .behaviors: return "Continue"
@@ -547,7 +547,13 @@ struct AtriaOnboardingFlow: View {
                         }
                     }
                 }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { dismissKeyboard() }
+                        .fontWeight(.semibold)
+                }
             }
+            .scrollDismissesKeyboard(.interactively)
             .fileImporter(isPresented: $backupImportPresented,
                           allowedContentTypes: backupArchiveTypes,
                           allowsMultipleSelection: false) { result in
@@ -559,20 +565,23 @@ struct AtriaOnboardingFlow: View {
                     PrimaryActionButton(ble: ble,
                                         historyBootstrap: historyBootstrap,
                                         step: step) {
+                        dismissKeyboard()
                         if step == .strap,
                            onboardingBluetoothRecovery == .permissionDenied {
                             openApplicationSettings()
                         } else if step == .strap, !onboardingStrapIsReady {
-                            // “Connect” must be an honest action. A transport
-                            // connection can precede bond completion and the
-                            // first usable sample, so never advance until this
-                            // exact strap has produced fresh heart-rate data.
+                            // A connected strap is enough to leave this page.
+                            // Bootstrap still records the link; do not wait for
+                            // a 15-second accepted-HR window that never arrives.
                             if historyBootstrap.snapshot.phase == .failed {
                                 historyBootstrap.retry()
                             } else if ble.status != .connected {
                                 ble.startScan(reason: "onboarding_primary_connect")
                             } else {
                                 historyBootstrap.startOrResumeIfPossible()
+                                if historyBootstrap.isCompleteForCurrentStrap {
+                                    move(to: .you)
+                                }
                             }
                         } else if step.isLast {
                             if onboardingStrapIsReady {
@@ -621,7 +630,17 @@ struct AtriaOnboardingFlow: View {
         step == .nickname || step == .rings || step == .cycle
     }
 
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+    }
+
     private func move(to next: Step) {
+        dismissKeyboard()
         if reduceMotion {
             step = next
         } else {
@@ -654,39 +673,23 @@ struct AtriaOnboardingFlow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
             onboardingRingCard
-            // The ring is a layout preview. Its empty values match the real
-            // fresh-install state rather than inventing first-run readings.
-            Text("Your numbers appear here after your first night of wear.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
             NavigationLink {
                 AtriaCompatibleHardwareScreen()
             } label: {
-                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
-                    .font(.subheadline.weight(.semibold))
+                Label("Compatible hardware", systemImage: "applewatch.radiowaves.left.and.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
             .frame(minHeight: 44)
             .accessibilityIdentifier("atria.onboarding.hardware-signals")
             Button(AtriaAppReviewDemo.exploreButtonTitle) {
                 onAppReviewDemo()
             }
-            .font(.headline.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .accessibilityIdentifier("atria.onboarding.explore-sample-data")
             .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
-            Text("No account, strap, Bluetooth, or internet required. Every screen is marked Sample data.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Picker("Center metric", selection: $focusMetric) {
-                ForEach(OnboardingFocusMetric.allCases) { metric in
-                    Text(metric.title).tag(metric)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(minHeight: 44)
-            .accessibilityHint("Selects the metric shown in the center of the ring")
             if onRestoreBackup != nil {
                 // Restoring a backup is the rare path — a returning user, not
                 // a new one. It previously sat directly under the picker as a
@@ -737,10 +740,9 @@ struct AtriaOnboardingFlow: View {
             Text("Welcome to Atria")
                 .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Your strap becomes a calm, honest readiness coach. What should we call you?")
+            Text("What should we call you?")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
                 TextField("Nickname", text: $nicknameDraft)
@@ -748,6 +750,7 @@ struct AtriaOnboardingFlow: View {
                     .autocorrectionDisabled()
                     .submitLabel(.done)
                     .frame(minHeight: 44)
+                    .onSubmit { dismissKeyboard() }
                     .onChange(of: nicknameDraft) { _, newValue in
                         AtriaOnboardingPersonalization.persistNickname(newValue)
                     }
@@ -755,10 +758,9 @@ struct AtriaOnboardingFlow: View {
             .padding(16)
             .atriaCard(emphasis: .soft)
 
-            Text("Optional — used only for a friendlier greeting on this phone.")
+            Text("Optional.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
@@ -776,7 +778,7 @@ struct AtriaOnboardingFlow: View {
             Text("Choose your rings")
                 .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Pick what the three rings track, and which one sits in the center. You can change this anytime from Customize Today.")
+            Text("Three rings. Change anytime in Customize.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -866,10 +868,9 @@ struct AtriaOnboardingFlow: View {
             Text("Cycle tracking")
                 .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
-            Text("Track your cycle alongside recovery. Your own store, kept separate from research sharing — always.")
+            Text("Off by default. Stays on this phone.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
                 Toggle(isOn: Binding(
@@ -880,15 +881,12 @@ struct AtriaOnboardingFlow: View {
                         .font(.subheadline.weight(.semibold))
                 }
                 .tint(Self.cycleHue)
-                Text("Off by default.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
             .padding(16)
             .atriaCard(emphasis: .soft)
 
             DisclosureGroup {
-                Text("Turn it on any time from Journal. Phase-aware notes are estimates, never a diagnosis, and never leave this phone.")
+                Text("Estimates only. Stays on this phone. Not a diagnosis.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1004,9 +1002,9 @@ struct AtriaOnboardingFlow: View {
 
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Take the strap off, wait for its green sensor lights to stop, then tap the top repeatedly until the side light pulses blue. Close WHOOP first. Atria securely asks iPhone to pair — accept the system prompt, put the strap back on snugly, and keep it nearby. The strap stops its blue light when pairing finishes — Atria does not force the light off.")
+                    Text("Strap off. Wait until the green lights stop. Tap the top until the side light pulses blue. Tap Pair, then put the strap back on.")
                         .accessibilityLabel("Pairing instructions")
-                    Text("If this strap was already paired with WHOOP or another phone: open iPhone Settings → Bluetooth, forget the WHOOP device, and force-quit the official WHOOP app. Then pulse blue as above. Atria cannot factory-reset WHOOP flash.")
+                    Text("Already paired elsewhere? Settings → Bluetooth → forget that device, then pulse blue again.")
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure)
                     Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
@@ -1016,7 +1014,7 @@ struct AtriaOnboardingFlow: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 6)
             } label: {
-                Label("Pairing steps & how your data is handled",
+                Label("Pairing help",
                       systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
             }
@@ -1036,6 +1034,11 @@ struct AtriaOnboardingFlow: View {
         }
         .onChange(of: ble.heartRate) { _, _ in
             historyBootstrap.startOrResumeIfPossible()
+        }
+        .onChange(of: historyBootstrap.snapshot.phase) { _, phase in
+            if phase == .complete, onboardingStrapIsReady, step == .strap {
+                move(to: .you)
+            }
         }
         .onChange(of: ble.onboardingPairingPreflightInFlight) { wasInFlight, isInFlight in
             guard wasInFlight, !isInFlight else { return }
@@ -1057,7 +1060,7 @@ struct AtriaOnboardingFlow: View {
                 Text(historyBootstrap.snapshot.detail)
                     .font(.footnote.weight(.semibold))
             }
-            Text("Keep Atria open and the strap nearby. If iPhone asks to pair, tap Pair.")
+            Text("Keep the strap nearby. Tap Pair if iPhone asks.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .complete:
@@ -1102,9 +1105,7 @@ struct AtriaOnboardingFlow: View {
                 optionalNumericProfileField("Height", value: heightBinding, suffix: "cm")
                 optionalNumericProfileField("Weight", value: weightBinding, suffix: "kg")
 
-                // Nothing said why any of this is asked, or that most of it can
-                // be skipped. Age and sex are the two that do real work here.
-                Text("Age and sex shape your heart-rate zones. Height and weight only sharpen calorie estimates — leave them blank if you would rather not.")
+                Text("Age and sex set heart-rate zones. Height and weight are optional.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1117,7 +1118,7 @@ struct AtriaOnboardingFlow: View {
     private var behaviorsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
             onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
-            Text("Pick the behaviors you want to log each morning. Your check-in shows only these — you can add or remove them anytime from Journal or Settings.")
+            Text("Morning log. Change anytime in Journal.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             ForEach(behaviorGroups, id: \.title) { group in
@@ -1163,15 +1164,11 @@ struct AtriaOnboardingFlow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(selected ? .cyan : .secondary)
                     .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tag.label)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(selected ? .primary : .secondary)
-                    Text(tag.prompt)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(tag.label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.caption)
@@ -1202,17 +1199,15 @@ struct AtriaOnboardingFlow: View {
         trackedBehaviorsRaw = AtriaTrackedBehaviors.serialize(ordered)
     }
 
-    // Ring preview only. The focus selector lives in the metric list below
-    // (whatThisIsPage) — before this, the same Recovery/Sleep/Strain choice was
-    // offered three times (ring taps, these pills, AND the list), which read as
-    // repetitive. The ring stays tappable, so nothing is lost.
+    // Ring preview. Tap a ring to change the center metric; the old extra
+    // Recovery/Sleep/Strain picker on this page was removed as duplicate copy.
     private var onboardingRingCard: some View {
         ZStack {
             OnboardingMetricAccents()
             AtriaTriRing(slots: onboardingRingSlots,
                          centerValue: focusMetric.centerValue,
                          centerState: focusMetric.title,
-                         accessibilitySummary: "Preview ring focused on \(focusMetric.title). Choose a focus below.",
+                         accessibilitySummary: "Preview ring focused on \(focusMetric.title). Tap a ring to change the center metric.",
                          actions: [
                             .sleep: { moveFocus(to: .sleep) },
                             .recovery: { moveFocus(to: .recovery) },
@@ -1259,20 +1254,15 @@ struct AtriaOnboardingFlow: View {
                 expectationStep(icon: "moon.fill",
                                 tint: .indigo,
                                 title: "Tonight",
-                                detail: "Wear your strap to sleep — it captures your night automatically.")
-                // 2026-09-02: the engine scores recovery from the first saved
-                // sleep on a provisional baseline; trusted baselines take
-                // `PersonalBaseline.trustedMinimumSamples` (14) nights, the
-                // same "of 14 nights" the metric heroes count. The page said
-                // the score "kicks in after 3–4 nights", which matched neither.
+                                detail: "Sleep with the strap on.")
                 expectationStep(icon: "sunrise.fill",
                                 tint: .orange,
                                 title: "Tomorrow morning",
-                                detail: "Your first sleep review to confirm, and a first recovery score.")
+                                detail: "Review last night. First recovery score.")
                 expectationStep(icon: "chart.line.uptrend.xyaxis",
                                 tint: .green,
                                 title: "Over the first two weeks",
-                                detail: "Scores firm up as Atria learns your baseline.",
+                                detail: "Scores settle to your baseline.",
                                 isLast: true)
             }
             .padding(18)

@@ -716,6 +716,406 @@ final class AtriaWhoop4CompactIMUTests: XCTestCase {
             )
         )
     }
+
+    func testIsolatedNotifySurvivesStream5LeftoverWithoutPromotingR10() {
+        // Physical inrange-38 lastNotifyCallbackHex. A stalled stream-5
+        // header (declared length 2000) keeps the reassembler from emitting
+        // the next isolated 152-byte 0x33 GATT notify.
+        var stalled: [UInt8] = [0xAA, 0xD0, 0x07]
+        stalled.append(crc8([0xD0, 0x07]))
+        stalled.append(contentsOf: [0x32, 0x00, 0x01, 0x02, 0x03, 0x04])
+        let reassembler = AtriaWhoop4FrameReassembler()
+        XCTAssertTrue(reassembler.feed(Data(stalled), source: "stream5").isEmpty)
+
+        let reassembled = reassembler.feed(liveStationaryFrame, source: "stream5")
+        XCTAssertFalse(
+            reassembled.contains(liveStationaryFrame),
+            "a stalled stream-5 header must not swallow the isolated 0x33 notify"
+        )
+        XCTAssertTrue(reassembled.isEmpty)
+
+        let admitted = AtriaWhoop4CompactIMUDecoder.completeFrames(
+            isolatedNotify: liveStationaryFrame,
+            reassembled: reassembled
+        )
+        XCTAssertEqual(admitted, [liveStationaryFrame])
+        XCTAssertNotNil(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
+
+        var r10 = [UInt8](repeating: 0, count: 1_288)
+        r10[0] = 0x2B
+        r10[1] = 0x0A
+        let r10Frame = encodeFrame(r10)
+        XCTAssertEqual(
+            AtriaWhoop4CompactIMUDecoder.completeFrames(
+                isolatedNotify: r10Frame,
+                reassembled: [r10Frame]
+            ),
+            [r10Frame],
+            "R10 type-2B must not be relabeled as compact IMU"
+        )
+        XCTAssertNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: r10Frame)
+        )
+    }
+
+    func testBuild240Stream5Type2BNotifyIsNotNestedHarvard33() {
+        // Physical lastNotifyCallbackHex from evidence/2026-09-20-imu-240-store
+        // (244 B, stream-5, lastPacketKind realtime_raw_r10_r11). Gyro/accel
+        // samples in this body are not compact IMU.
+        let live2B = Data(hex:
+            "1701fb00e000c700b300a10091008d009500a200b500cc00e400f000" +
+            "f800fc00fb00ec00d400ca00bb00a00089008b009b00b000c900d000" +
+            "c30088003800e0fff1ff3d00410009000b00510062004c0026000b00" +
+            "f7ffeffff7ff0e0036005e0056002d00f8ffc4ff84ff68ff5aff72ff" +
+            "7bff91ff89009300b300c700b5008d005a001c00fbffd7ffa7ff71ff" +
+            "44ff2dff3fff73ff8aff9cffb8ffccffc9ffc7ffc4ff9cff7aff45ff" +
+            "f9fec3feb4fecefee9fe1dff6effacffefff1c0028001a00faffcdff" +
+            "8dff59ff42ff39ff3bff4fff55ff3dff26ff26ff3fff67ff99ffcfff" +
+            "0300260036002f001000e8ffbaff9dff9affaeff"
+        )
+        XCTAssertEqual(live2B.count, 244)
+        XCTAssertNotEqual(live2B.first, 0xAA)
+        XCTAssertFalse(live2B.contains(0x33),
+                       "no inner type byte 0x33 in the 240 2B notify")
+        XCTAssertNil(AtriaWhoop4CompactIMUDecoder.decode(frame: live2B))
+        XCTAssertNil(AtriaWhoop4CompactIMUDecoder.decode(payload: [UInt8](live2B)))
+        XCTAssertNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: live2B)
+        )
+        XCTAssertEqual(
+            AtriaWhoop4CompactIMUDecoder.completeFrames(
+                isolatedNotify: live2B,
+                reassembled: []
+            ),
+            [],
+            "must not admit R10 2B as isolated compact 0x33"
+        )
+        XCTAssertEqual(
+            live2B.prefix(8),
+            Data(hex: "1701fb00e000c700"),
+            "offset 0 is R10 fragment, not AA 94 00 B5 33"
+        )
+        XCTAssertEqual(liveStationaryFrame[4], 0x33)
+        XCTAssertNotEqual(live2B[4], 0x33)
+        XCTAssertEqual(live2B[4], 0xE0, "store 240 notify offset 4 is E0, not type 33")
+        XCTAssertTrue(
+            AtriaWhoop4CompactIMUDecoder.nestedCompactIMUFrames(in: live2B).isEmpty
+        )
+    }
+
+    func testSplicedInrange38Inside1924Type2BIsExtractedAndPersisted() throws {
+        var payload = [UInt8](repeating: 0x11, count: 1_924)
+        payload[0] = 0x2B
+        payload[1] = 0x0A
+        let spliceAt = 480
+        payload.replaceSubrange(
+            spliceAt..<(spliceAt + liveStationaryFrame.count),
+            with: [UInt8](liveStationaryFrame)
+        )
+        let outer = encodeFrame(payload)
+        XCTAssertEqual(payload.count, 1_924)
+        XCTAssertEqual(
+            AtriaWhoop4CompactIMUDecoder.nestedCompactIMUFrames(in: Data(payload)),
+            [liveStationaryFrame]
+        )
+        let admitted = AtriaWhoop4CompactIMUDecoder.completeFrames(
+            isolatedNotify: Data(payload.prefix(244)),
+            reassembled: [outer]
+        )
+        XCTAssertTrue(admitted.contains(liveStationaryFrame))
+        XCTAssertTrue(admitted.contains(outer))
+        XCTAssertNotNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+                from: liveStationaryFrame
+            )
+        )
+        XCTAssertNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: outer),
+            "outer 2B Harvard must not be labeled IMU"
+        )
+
+        var checksumException = liveStationaryFrame
+        let last = checksumException.index(before: checksumException.endIndex)
+        checksumException[last] ^= 0xff
+        payload.replaceSubrange(
+            spliceAt..<(spliceAt + checksumException.count),
+            with: [UInt8](checksumException)
+        )
+        XCTAssertEqual(
+            AtriaWhoop4CompactIMUDecoder.nestedCompactIMUFrames(in: Data(payload)),
+            [checksumException]
+        )
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-nested-33-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = AtriaStrapCalibrationArchive(
+            directoryURL: directory,
+            flushInterval: 60,
+            maximumBufferedBytes: 1_024 * 1_024
+        )
+        for frame in AtriaWhoop4CompactIMUDecoder.completeFrames(
+            isolatedNotify: Data(),
+            reassembled: [Data(payload)]
+        ) {
+            archive.recordNativeCompactIMUFrame(
+                frame,
+                source: "stream5",
+                receivedAt: Date(timeIntervalSince1970: 1_750_000_000)
+            )
+        }
+        archive.flushSynchronouslyForTesting()
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        let csv = try XCTUnwrap(files.first { $0.pathExtension == "csv" })
+        let text = try String(contentsOf: csv, encoding: .utf8)
+        XCTAssertTrue(text.contains("checksum_exception"), text)
+        XCTAssertTrue(text.contains(",33,"), text)
+        XCTAssertFalse(text.contains(",2b,"), text)
+        XCTAssertFalse(text.contains(",2B,"), text)
+    }
+
+    func testPure239240Type2BHexIsNotAdmittedAsCompact33() {
+        // Physical 240 store notify (244 B). Gym/store leftover is type 2B
+        // samples, not Harvard 0x33. Offset 4 is E0, not 33.
+        let store240 = Data(hex:
+            "1701fb00e000c700b300a10091008d009500a200b500cc00e400f000" +
+            "f800fc00fb00ec00d400ca00bb00a00089008b009b00b000c900d000" +
+            "c30088003800e0fff1ff3d00410009000b00510062004c0026000b00" +
+            "f7ffeffff7ff0e0036005e0056002d00f8ffc4ff84ff68ff5aff72ff" +
+            "7bff91ff89009300b300c700b5008d005a001c00fbffd7ffa7ff71ff" +
+            "44ff2dff3fff73ff8aff9cffb8ffccffc9ffc7ffc4ff9cff7aff45ff" +
+            "f9fec3feb4fecefee9fe1dff6effacffefff1c0028001a00faffcdff" +
+            "8dff59ff42ff39ff3bff4fff55ff3dff26ff26ff3fff67ff99ffcfff" +
+            "0300260036002f001000e8ffbaff9dff9affaeff"
+        )
+        XCTAssertEqual(store240.count, 244)
+        XCTAssertEqual(store240[4], 0xE0)
+        var like1924 = Data(count: 1_924)
+        like1924[0] = 0x2B
+        like1924[1] = 0x0A
+        let tile = [UInt8](store240)
+        var offset = 2
+        while offset + tile.count <= like1924.count {
+            like1924.replaceSubrange(offset..<(offset + tile.count), with: tile)
+            offset += tile.count
+        }
+        like1924[2] = 0x00
+        like1924[3] = 0x00
+        like1924[4] = 0x00
+        XCTAssertEqual(like1924[4], 0x00, "pull-style leftover at offset 4 is 00, not 33")
+        XCTAssertNil(
+            like1924.range(
+                of: Data(AtriaWhoop4CompactIMUDecoder.harvardCompactIMUSync)
+            )
+        )
+        XCTAssertTrue(
+            AtriaWhoop4CompactIMUDecoder.nestedCompactIMUFrames(in: like1924).isEmpty
+        )
+        XCTAssertEqual(
+            AtriaWhoop4CompactIMUDecoder.completeFrames(
+                isolatedNotify: store240,
+                reassembled: [like1924]
+            ),
+            [like1924]
+        )
+        XCTAssertNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: store240)
+        )
+        XCTAssertNil(
+            AtriaWhoop4CompactIMUDecoder.diagnosticOversizedLastPacketHex(
+                payloadLength: 244,
+                frame: store240,
+                type: 0x2B
+            )
+        )
+        let oversized = AtriaWhoop4CompactIMUDecoder.diagnosticOversizedLastPacketHex(
+            payloadLength: 1_924,
+            frame: like1924,
+            type: 0x2B
+        )
+        XCTAssertEqual(oversized?.count, 1_924 * 2)
+        XCTAssertNil(
+            AtriaWhoop4CompactIMUDecoder.diagnosticOversizedLastPacketHex(
+                payloadLength: 1_924,
+                frame: liveStationaryFrame,
+                type: 0x33
+            ),
+            "oversized dump must not take the IMU label"
+        )
+    }
+
+    func testHistoricalInner0x33IsNotA0x2fReplayRow() {
+        let inner = Array(liveStationaryFrame.dropFirst(4).prefix(144))
+        XCTAssertEqual(inner.first, 0x33)
+        let decoded = AtriaWhoop4HistoricalRecordDecoder.decode(inner)
+        guard case .failure(let failure) = decoded else {
+            return XCTFail("0x33 must not decode as historical 0x2f")
+        }
+        XCTAssertEqual(failure.reason, .unexpectedPacketType(0x33))
+    }
+
+    func testProvenanceTaggedImportStoresLastNotify33AndRejectsR10() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-hist-33-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = AtriaStrapCalibrationArchive(
+            directoryURL: directory,
+            flushInterval: 60,
+            maximumBufferedBytes: 1_024 * 1_024
+        )
+        XCTAssertTrue(
+            archive.importProvenanceTaggedCompactIMUFrame(
+                liveStationaryFrame,
+                provenance: .lastNotifySnapshot,
+                capturedAt: Date(timeIntervalSince1970: 1_789_000_000)
+            )
+        )
+        let leftoverR10 = Data(hex:
+            "aa8407f72b0a2911789501fb73e901602b805440013e00000000000000000000"
+        )
+        XCTAssertFalse(
+            archive.importProvenanceTaggedCompactIMUFrame(
+                leftoverR10,
+                provenance: .lastNotifySnapshot,
+                capturedAt: Date(timeIntervalSince1970: 1_789_000_000)
+            ),
+            "leftover R10 must stay leftover R10"
+        )
+        let compactHex = liveStationaryFrame.map { String(format: "%02x", $0) }.joined()
+        let jsonl = directory.appendingPathComponent("import.jsonl")
+        try """
+        {"hex":"\(compactHex)","provenance":"hist_lastNotify"}
+        {"hex":"aa8407f72b0a2911789501fb","provenance":"hist_lastNotify"}
+        {"hex":"\(compactHex)","provenance":"stream5"}
+        """.write(to: jsonl, atomically: true, encoding: .utf8)
+        XCTAssertEqual(
+            archive.importArchivedCompactIMUJSONL(from: jsonl),
+            1,
+            "JSONL imports one unique lastNotify 33 and skips 2B / live labels"
+        )
+        archive.flushSynchronouslyForTesting()
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        let csvs = files.filter { $0.pathExtension == "csv" }
+        XCTAssertFalse(csvs.isEmpty)
+        let text = try csvs.map { try String(contentsOf: $0, encoding: .utf8) }.joined()
+        XCTAssertTrue(text.contains("hist_lastNotify"), text)
+        XCTAssertTrue(text.contains(",33,"), text)
+        XCTAssertFalse(text.contains("stream5"), text)
+        XCTAssertFalse(text.contains(",2b,"), text)
+        XCTAssertEqual(text.split(whereSeparator: \.isNewline).filter { $0.contains(",33,") }.count, 2)
+    }
+
+    func testImportLaunchFlagIsRequiredAndConsumedOnce() throws {
+        let documents = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-hist-docs-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: documents) }
+        let compactHex = liveStationaryFrame.map { String(format: "%02x", $0) }.joined()
+        let jsonl = documents.appendingPathComponent(
+            AtriaStrapCalibrationArchive.importFilename
+        )
+        try "{\"hex\":\"\(compactHex)\",\"provenance\":\"hist_lastNotify\"}\n"
+            .write(to: jsonl, atomically: true, encoding: .utf8)
+        let archive = AtriaStrapCalibrationArchive(
+            directoryURL: documents.appendingPathComponent("archive", isDirectory: true),
+            flushInterval: 60,
+            maximumBufferedBytes: 1_024 * 1_024
+        )
+        let suite = "atria-hist-import-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(
+            archive.importArchivedCompactIMUFileIfRequested(
+                arguments: [],
+                documentsURL: documents,
+                defaults: defaults
+            ),
+            0
+        )
+        XCTAssertEqual(
+            archive.importArchivedCompactIMUFileIfRequested(
+                arguments: [AtriaStrapCalibrationArchive.importArchivedArgument],
+                documentsURL: documents,
+                defaults: defaults
+            ),
+            1
+        )
+        XCTAssertEqual(
+            archive.importArchivedCompactIMUFileIfRequested(
+                arguments: [AtriaStrapCalibrationArchive.importArchivedArgument],
+                documentsURL: documents,
+                defaults: defaults
+            ),
+            0,
+            "second launch must not duplicate last-value rows"
+        )
+    }
+
+    func testMaterializeWritesHistLastNotifyScalarRowsAndSkipsR10() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-samples-33-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = AtriaStrapCalibrationArchive(
+            directoryURL: directory,
+            flushInterval: 60,
+            maximumBufferedBytes: 1_024 * 1_024
+        )
+        XCTAssertTrue(
+            archive.importProvenanceTaggedCompactIMUFrame(
+                liveStationaryFrame,
+                provenance: .lastNotifySnapshot,
+                capturedAt: Date(timeIntervalSince1970: 1_789_000_000)
+            )
+        )
+        archive.flushSynchronouslyForTesting()
+        try "2,1789000000000,stream5,2b,0a,aa8407f72b0a\n"
+            .write(
+                to: directory.appendingPathComponent("strap-imu-r10.csv"),
+                atomically: true,
+                encoding: .utf8
+            )
+        let count = archive.materializeDecodedCompactIMUSamplesFromArchive()
+        XCTAssertEqual(count, 10)
+        let samples = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .first { $0.lastPathComponent.hasPrefix("strap-imu-samples-") }
+        )
+        let text = try String(contentsOf: samples, encoding: .utf8)
+        XCTAssertTrue(text.contains("hist_lastNotify"), text)
+        XCTAssertTrue(text.contains(",31558765,0,"), text)
+        XCTAssertFalse(text.contains("stream5"), text)
+        XCTAssertFalse(text.contains("100hz"), text)
+        XCTAssertFalse(text.contains("gait"), text)
+        XCTAssertEqual(text.split(whereSeparator: \.isNewline).filter { $0.contains("hist_lastNotify") }.count, 10)
+        let suite = "atria-samples-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(
+            archive.materializeDecodedCompactIMUSamplesIfRequested(arguments: [], defaults: defaults),
+            0
+        )
+        XCTAssertEqual(
+            archive.materializeDecodedCompactIMUSamplesIfRequested(
+                arguments: [AtriaStrapCalibrationArchive.materializeSamplesArgument],
+                defaults: defaults
+            ),
+            10
+        )
+        XCTAssertEqual(
+            archive.materializeDecodedCompactIMUSamplesIfRequested(
+                arguments: [AtriaStrapCalibrationArchive.materializeSamplesArgument],
+                defaults: defaults
+            ),
+            0
+        )
+    }
 }
 
 private extension Data {

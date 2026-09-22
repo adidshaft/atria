@@ -84,6 +84,68 @@ struct EventCivilTime {
         }
         return days
     }
+
+    /// Wake/end civil day in the event time zone: Today, Yesterday, or a date.
+    static func relativeWakeDayLabel(
+        wakeDay: Date,
+        now: Date,
+        eventTimeZoneIdentifier: String?,
+        outputCalendar: Calendar,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String {
+        let calendar = eventCalendar(timeZoneIdentifier: eventTimeZoneIdentifier,
+                                     fallback: outputCalendar)
+        let wakeStart = calendar.startOfDay(for: wakeDay)
+        let todayStart = calendar.startOfDay(for: now)
+        if calendar.isDate(wakeStart, inSameDayAs: todayStart) {
+            return "Today"
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: todayStart),
+           calendar.isDate(wakeStart, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
+        var style = Date.FormatStyle(date: .abbreviated, time: .omitted)
+        style.calendar = calendar
+        style.timeZone = calendar.timeZone
+        style.locale = locale
+        return wakeStart.formatted(style)
+    }
+
+    /// Sleep suggestion/history window. Times stay in the event zone; the
+    /// day label is the wake/end civil day so a list of nights is not only times.
+    static func sleepWindowText(
+        start: Date?,
+        end: Date?,
+        wakeDay: Date,
+        eventTimeZoneIdentifier: String?,
+        now: Date = Date(),
+        outputCalendar: Calendar = .current,
+        locale: Locale = .autoupdatingCurrent,
+        timeSeparator: String = "–",
+        fallback: String
+    ) -> String {
+        let calendar = eventCalendar(timeZoneIdentifier: eventTimeZoneIdentifier,
+                                     fallback: outputCalendar)
+        let anchor = end ?? start ?? wakeDay
+        let dayLabel = relativeWakeDayLabel(
+            wakeDay: anchor,
+            now: now,
+            eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+            outputCalendar: outputCalendar,
+            locale: locale
+        )
+        var timeStyle = Date.FormatStyle(date: .omitted, time: .shortened)
+        timeStyle.calendar = calendar
+        timeStyle.timeZone = calendar.timeZone
+        timeStyle.locale = locale
+        if let start, let end {
+            return "\(dayLabel) · \(start.formatted(timeStyle))\(timeSeparator)\(end.formatted(timeStyle))"
+        }
+        if let start {
+            return "Started \(dayLabel) · \(start.formatted(timeStyle))"
+        }
+        return fallback
+    }
 }
 
 /// The live performance window is physiological, not a civil calendar day.
@@ -58300,8 +58362,14 @@ private struct HistorySleepReviewCTA: View, Equatable {
     }
 
     private var timeText: String {
-        guard let start = night.start, let end = night.end else { return night.confirmationText }
-        return "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))"
+        EventCivilTime.sleepWindowText(
+            start: night.start,
+            end: night.end,
+            wakeDay: night.day,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            timeSeparator: "-",
+            fallback: night.confirmationText
+        )
     }
 
     private var progress: Double {

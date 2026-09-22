@@ -18,10 +18,76 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         let r11Frame = encodeFrame([0x2B, 0x0B] + [UInt8](repeating: 0, count: 1_286))
         XCTAssertNil(AtriaStrapCalibrationArchive.canonicalValidatedMotionFrame(from: r11Frame))
 
+        var corruptR10 = r10Frame
+        let r10Last = corruptR10.index(before: corruptR10.endIndex)
+        corruptR10[r10Last] ^= 0xff
+        XCTAssertNil(AtriaStrapCalibrationArchive.canonicalValidatedMotionFrame(from: corruptR10))
+
         var corruptFrame = imuFrame
         let finalIndex = corruptFrame.index(before: corruptFrame.endIndex)
         corruptFrame[finalIndex] ^= 0xff
-        XCTAssertNil(AtriaStrapCalibrationArchive.canonicalValidatedMotionFrame(from: corruptFrame))
+        let admitted = AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: corruptFrame)
+        XCTAssertEqual(admitted?.frame, corruptFrame)
+        XCTAssertEqual(admitted?.checksumValid, false)
+        XCTAssertEqual(
+            AtriaStrapCalibrationArchive.canonicalValidatedMotionFrame(from: corruptFrame),
+            corruptFrame,
+            "complete Harvard 0x33 with a checksum exception must still persist"
+        )
+    }
+
+    func testHarvard152ByteCompactIMUPersistsWithoutMatchingCRC32() throws {
+        // Physical 15 Sep stream-5 notify (inrange-38). Decoder accepts it.
+        // Current ISO-HDLC CRC32 matches this trailer; the durable store must
+        // still keep a complete 0x33 when the trailer does not.
+        let liveStationaryFrame = Data(hex:
+            "aa9400b5330100006d8ce1018840580695010100030568000a000a00" +
+            "3dfa23fa30fa3cfa37fa2dfa30fa39fa2ffa25fac0f7c3f7bff7c7f7" +
+            "b5f7b1f7a9f7a8f7bff7bbf785f38ff38bf390f39af392f39af38df3" +
+            "95f395f30a000b000800040002000e000900050004000800fdfffcff" +
+            "fdfff9fff9ff0000fdfffcfffbfffcfffefffefffdfffffffffffeff" +
+            "fffffffffeffffff6b07b094"
+        )
+        XCTAssertEqual(liveStationaryFrame.count, 152)
+        let admittedValid = AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+            from: liveStationaryFrame
+        )
+        XCTAssertEqual(admittedValid?.frame, liveStationaryFrame)
+        XCTAssertEqual(admittedValid?.checksumValid, true)
+        XCTAssertNotNil(AtriaWhoop4CompactIMUDecoder.decode(frame: liveStationaryFrame))
+
+        var checksumExceptionFrame = liveStationaryFrame
+        let last = checksumExceptionFrame.index(before: checksumExceptionFrame.endIndex)
+        checksumExceptionFrame[last] ^= 0xff
+        let admittedException = AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+            from: checksumExceptionFrame
+        )
+        XCTAssertEqual(admittedException?.frame, checksumExceptionFrame)
+        XCTAssertEqual(admittedException?.checksumValid, false)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-compact-imu-durable-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = AtriaStrapCalibrationArchive(directoryURL: directory,
+                                                   flushInterval: 60,
+                                                   maximumBufferedBytes: 1_024 * 1_024)
+        archive.recordNativeCompactIMUFrame(
+            checksumExceptionFrame,
+            source: "stream5",
+            receivedAt: Date(timeIntervalSince1970: 1_750_000_000)
+        )
+        archive.flushSynchronouslyForTesting()
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        let csv = try XCTUnwrap(files.first { $0.pathExtension == "csv" })
+        let text = try String(contentsOf: csv, encoding: .utf8)
+        XCTAssertTrue(text.contains("checksum_exception"), text)
+        XCTAssertTrue(text.contains(",33,"), text)
+        let quality = archive.captureQuality(
+            startMS: 31_558_765_000,
+            endMS: 31_558_766_000
+        )
+        XCTAssertEqual(quality.decodedFrames, 1)
     }
 
     func testCalibrationWindowPersistsAcrossLaunchesAndExpires() throws {
@@ -242,6 +308,50 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
     }
 
+    func testNativeR10PersistsWithoutCalibrationWindowUsing241Fixture() throws {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 {
+            url.deleteLastPathComponent()
+        }
+        url.appendPathComponent(
+            "evidence/2026-09-20-imu-241-lastpacket-1924/lastPacketHex.bin"
+        )
+        let frame = try Data(contentsOf: url)
+        XCTAssertEqual(
+            AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame(from: frame),
+            frame
+        )
+        XCTAssertNil(
+            AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(from: frame),
+            "2B/0A must not be labeled Harvard 0x33"
+        )
+        XCTAssertNotNil(AtriaR10MotionDecoder.decode(frame: frame))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-native-r10-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let archive = AtriaStrapCalibrationArchive(
+            directoryURL: directory,
+            flushInterval: 60,
+            maximumBufferedBytes: 1_024 * 1_024
+        )
+        archive.recordNativeR10MotionFrame(
+            frame,
+            source: "stream5",
+            receivedAt: Date(timeIntervalSince1970: 1_790_000_000)
+        )
+        archive.flushSynchronouslyForTesting()
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertEqual(files.count, 1)
+        let contents = try String(contentsOf: XCTUnwrap(files.first), encoding: .utf8)
+        XCTAssertTrue(contents.contains(",2b,0a,"))
+        XCTAssertTrue(contents.contains(frame.map { String(format: "%02x", $0) }.joined()))
+        archive.closeSynchronouslyForTesting()
+    }
+
     private func r10Frame(deviceTimestamp: UInt32) -> Data {
         var payload = [UInt8](repeating: 0, count: 1_288)
         payload[0] = AtriaR10MotionDecoder.packetType
@@ -251,5 +361,19 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         payload[9] = UInt8((deviceTimestamp >> 16) & 0xff)
         payload[10] = UInt8((deviceTimestamp >> 24) & 0xff)
         return encodeFrame(payload)
+    }
+}
+
+private extension Data {
+    init(hex: String) {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            bytes.append(UInt8(hex[index..<next], radix: 16) ?? 0)
+            index = next
+        }
+        self.init(bytes)
     }
 }

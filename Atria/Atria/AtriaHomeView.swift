@@ -1837,6 +1837,9 @@ struct AtriaHomeView: View {
                                   return store.sessionBackupStatus()
                               },
                               onForgetStrap: { ble.forgetSavedStrap(reason: "user_settings") },
+                              flushBoard: ble.leftoverFlushBoard,
+                              onFlushLeftover: { ble.flushLeftoverMotion() },
+                              onRestoreHeartRate: { ble.restoreHeartRateAfterFlush() },
                               researchValidationContent: developerModeEnabled ? {
                                   AnyView(researchValidationContent)
                               } : nil,
@@ -10775,7 +10778,7 @@ final class AtriaHomeModel {
             case .lowBatteryReducedDetail:
                 return "Low battery"
             case .silentUnknown:
-                return "No signal"
+                return "Connected"
             case .warming:
                 return "Waiting"
             case .unknown:
@@ -10817,7 +10820,7 @@ final class AtriaHomeModel {
             case .lowBatteryShutoff, .lowBatteryReducedDetail:
                 return "battery.25percent"
             case .silentUnknown:
-                return "heart.slash"
+                return "link"
             case .warming:
                 return "waveform.path.ecg"
             case .unknown:
@@ -12580,7 +12583,12 @@ final class AtriaHomeModel {
                 widgetCreatedAt: publishedWidget?.createdAt,
                 widgetSteps: publishedWidget?.steps,
                 todaySteps: core.dailyStepPresentation.count
-                    ?? AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count,
+                    ?? AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                        cycleStart: AtriaPhysiologicalCycle.current(
+                            now: now,
+                            confirmedSleeps: store.confirmedSleeps
+                        ).start
+                    )?.count,
                 widgetStrain: publishedWidget?.strain,
                 todayStrain: heroStore.state.strain,
                 heldStrain: AtriaHeldDayStrainFloor.load(
@@ -13754,7 +13762,11 @@ final class AtriaHomeModel {
                 liveActiveSession: ble.liveStrapStepResearchTodayCount
             ),
             liveCumulative: ble.liveStrapStepResearchTodayCount,
-            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday()?.count ?? 0
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                cycleStart: savedAggregate.cycleStart
+            )?.count ?? 0,
+            cycleStart: savedAggregate.cycleStart,
+            now: Date()
         )
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -13821,7 +13833,8 @@ final class AtriaHomeModel {
             if let capturedAt = dailyStepPresentation.capturedAt {
                 AtriaHeldDailyStepFloor.persistLiveGyroToday(
                     count: count,
-                    capturedAt: capturedAt
+                    capturedAt: capturedAt,
+                    cycleStart: savedAggregate.cycleStart
                 )
             }
         }
@@ -13885,7 +13898,8 @@ final class AtriaHomeModel {
         return saved + newSinceCheckpoint
     }
 
-    /// Live IMU gyro is the open-cycle source. Saved-session sums use the
+    /// Native leftover R10 gyro is the open-cycle source while compact `0x33`
+    /// is absent. That is not fulfillment of compact gait. Saved-session sums use the
     /// gyro-cadence coordinate only; accelerometer-peak leftovers stay on
     /// `strapStepResearchCount` and must not become Today's floor. IMU drop
     /// (`live == 0`) keeps the gyro saved floor so a reconnect does not flash "--".
@@ -13893,9 +13907,30 @@ final class AtriaHomeModel {
     /// relaunch (device 2026-09-17: 167 vs 1944).
     nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
                                                         liveCumulative: Int,
-                                                        liveGyroToday: Int = 0) -> Int {
-        let live = max(0, liveCumulative, liveGyroToday)
-        if live > 0 { return live }
+                                                        liveGyroToday: Int = 0,
+                                                        cycleStart: Date? = nil,
+                                                        now: Date = Date()) -> Int {
+        let live = max(0, liveCumulative)
+        let gyro = max(0, liveGyroToday)
+        let combined = max(live, gyro)
+        if let cycleStart {
+            if let plausible = AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                count: combined,
+                windowStart: cycleStart,
+                capturedAt: now
+            ) {
+                return plausible
+            }
+            if let plausibleLive = AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                count: live,
+                windowStart: cycleStart,
+                capturedAt: now
+            ), plausibleLive > 0 {
+                return plausibleLive
+            }
+            return 0
+        }
+        if combined > 0 { return combined }
         return max(0, savedMerge)
     }
 
@@ -14163,18 +14198,19 @@ final class AtriaHomeModel {
         return now.timeIntervalSince(captured)
     }
 
-    /// Compact 0x33 is live IMU on WHOOP 4. Diagnosis used only R10
-    /// `lastAcceptedMotionFrameAt`, so a post-install pull showed Connected
-    /// HR with missing IMU while type-33 packets were already flowing.
-    /// Sitting skip then left assembled-seconds stale while packets still
-    /// arrived (device 2026-09-18: assembled 2437s, last notify type 33).
+    /// Compact 0x33 is live IMU on WHOOP 4. R10 type-2B after `0x3F`
+    /// must not masquerade as native IMU: diagnosis uses only compact
+    /// 0x33 packet / assembled-second clocks. Sitting skip can leave
+    /// assembled seconds stale while packets still arrive (device
+    /// 2026-09-18: assembled 2437s, last notify type 33).
     nonisolated static func diagnosisIMUAgeSeconds(
         motionCapturedAt: Date?,
         compactAssembledAt: Date?,
         compactPacketAt: Date? = nil,
         now: Date
     ) -> Double? {
-        guard let captured = [motionCapturedAt, compactAssembledAt, compactPacketAt]
+        _ = motionCapturedAt
+        guard let captured = [compactAssembledAt, compactPacketAt]
             .compactMap({ $0 }).max(),
               now >= captured else { return nil }
         return now.timeIntervalSince(captured)
@@ -15689,7 +15725,7 @@ enum AtriaTopStatusProjection {
                 switch input.strapStreamState {
                 case .live: tone = .green
                 case .lowBatteryShutoff, .lowBatteryReducedDetail: tone = .yellow
-                case .silentUnknown: tone = .orange
+                case .silentUnknown: tone = .cyan
                 case .warming, .unknown: tone = .cyan
                 }
             }

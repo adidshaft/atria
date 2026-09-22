@@ -103,6 +103,82 @@ enum AtriaWhoop4CompactIMUDecoder {
             | (UInt32(bytes[offset + 2]) << 16)
             | (UInt32(bytes[offset + 3]) << 24)
     }
+
+    /// Physical inrange-38 Harvard header: `AA 94 00 B5` then type `33`.
+    /// Declared length 0x94 + 4-byte trailer = 152 bytes.
+    static let harvardCompactIMUSync: [UInt8] = [0xAA, 0x94, 0x00, 0xB5]
+    static let compactIMUFrameByteCount = 152
+
+    /// Stream-5 leftover (0x32 / 0x2B / 0x31) can sit in the reassembler when a
+    /// complete 152-byte `0x33` GATT notify arrives. Concatenation fails CRC and
+    /// is not an isolated buffer, so `packetsThisConnection` / `imuFrames`
+    /// stayed 0 while `lastNotifyCallbackHex` already held the frame
+    /// (device 2026-09-15 inrange-38). Admit that notify without inventing
+    /// samples. Never promote type `0x2B`.
+    ///
+    /// Build 240 also reassembled a 1924-byte type-2B payload that prefs could
+    /// not dump (lastNotify capped at 256 B). If a real 152-byte `0x33` is ever
+    /// concatenated inside that stream-5 buffer, extract it. Pure 2B with no
+    /// `AA 94 00 B5 33` stays rejected.
+    static func completeFrames(
+        isolatedNotify: Data,
+        reassembled: [Data]
+    ) -> [Data] {
+        var frames = reassembled
+        if AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+            from: isolatedNotify
+        ) != nil, !frames.contains(isolatedNotify) {
+            frames.insert(isolatedNotify, at: 0)
+        }
+        for buffer in [isolatedNotify] + reassembled {
+            for nested in nestedCompactIMUFrames(in: buffer) {
+                if !frames.contains(nested) {
+                    frames.insert(nested, at: 0)
+                }
+            }
+        }
+        return frames
+    }
+
+    /// Scan a reassembled or leftover buffer for isolated inrange-38 frames.
+    /// Requires the four-byte Harvard sync, type `0x33`, and exact 152 bytes.
+    static func nestedCompactIMUFrames(in buffer: Data) -> [Data] {
+        let bytes = [UInt8](buffer)
+        guard bytes.count >= compactIMUFrameByteCount else { return [] }
+        var frames: [Data] = []
+        var index = 0
+        let lastStart = bytes.count - compactIMUFrameByteCount
+        while index <= lastStart {
+            if bytes[index] == harvardCompactIMUSync[0],
+               bytes[index + 1] == harvardCompactIMUSync[1],
+               bytes[index + 2] == harvardCompactIMUSync[2],
+               bytes[index + 3] == harvardCompactIMUSync[3],
+               bytes[index + 4] == packetType {
+                let slice = Data(bytes[index..<(index + compactIMUFrameByteCount)])
+                if AtriaStrapCalibrationArchive.nativeCompactIMUDurableFrame(
+                    from: slice
+                ) != nil {
+                    frames.append(slice)
+                    index += compactIMUFrameByteCount
+                    continue
+                }
+            }
+            index += 1
+        }
+        return frames
+    }
+
+    /// Oversized lastPacket dump for house-arrest. Callers keep `lastPacketType`
+    /// from the real opcode (2B stays 2B). Never label this hex as IMU.
+    static func diagnosticOversizedLastPacketHex(
+        payloadLength: Int,
+        frame: Data,
+        type: UInt8
+    ) -> String? {
+        guard payloadLength > 256, !frame.isEmpty else { return nil }
+        guard type != packetType else { return nil }
+        return frame.map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 /// Concatenates compact 100 Hz 10-sample slices into R10 seconds. Lock-screen

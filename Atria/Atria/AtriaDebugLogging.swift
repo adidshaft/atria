@@ -37,13 +37,27 @@ enum AtriaDebugLogging {
             "--atria-test-weekly-report-production-maintenance",
             "--atria-test-morning-summary-notification",
             "--atria-test-morning-summary-toggle-off",
+            "--atria-imu-quiet-lease",
+            "--atria-imu-extra-notify-linkup",
+            "--atria-imu-single-6a",
+            "--atria-imu-official-gen4-compact",
+            "--atria-imu-allday-abort-then-6a",
+            "--atria-imu-software-reset",
+            "--atria-imu-enable-after-seconds",
+            "--atria-imu-allday-recovery-after-seconds",
+            "--atria-imu-reset-after-seconds",
             "--atria-seed-strength-workout-proof"
         ]
 
         return arguments.contains { argument in
-            diagnosticFlags.contains(argument)
+            let tokens = AtriaIMUDiagnosticTransport.expandedLaunchArguments([argument])
+            return tokens.contains(where: { diagnosticFlags.contains($0) })
                 || diagnosticPrefixes.contains(where: argument.hasPrefix)
+                || tokens.contains(where: { token in
+                    diagnosticPrefixes.contains(where: token.hasPrefix)
+                })
         } || ProcessInfo.processInfo.environment["ATRIA_SEED_STRENGTH_WORKOUT_PROOF"] == "1"
+            || ProcessInfo.processInfo.environment["ATRIA_IMU_QUIET_LEASE"] == "1"
     }()
 }
 

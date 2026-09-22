@@ -2414,15 +2414,28 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "live_restored=%d terminal_and_live_restored=%d"
         ))
         let reassembly = try XCTUnwrap(source.range(
-            of: "let completeFrames = proprietaryFrameReassembler.feed("
+            of: "let completeFrames = AtriaWhoop4CompactIMUDecoder.completeFrames("
         ))
-        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(520))
+        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(2_800))
+        XCTAssertTrue(reassemblyTail.contains("isolatedNotify: data"))
+        XCTAssertTrue(reassemblyTail.contains("proprietaryFrameReassembler.feed("))
         XCTAssertTrue(reassemblyTail.contains(
             "historyGeneration: historyPhase.generation"
         ))
         XCTAssertTrue(reassemblyTail.contains(
             "historyServeToken: historyPhase.serveToken"
         ))
+        XCTAssertTrue(reassemblyTail.contains(
+            "connectionEpoch: callbackSource.epoch"
+        ))
+        XCTAssertTrue(
+            reassemblyTail.contains("recordNativeCompactIMUFrame("),
+            "isolated 0x33 must persist independently of the attended R10 window"
+        )
+        XCTAssertTrue(
+            reassemblyTail.contains("recordNativeR10MotionFrame("),
+            "CRC-valid native R10 must persist outside the calibration window"
+        )
     }
 
     func testMotionBankOffloadUsesTypedExactAuthorityNotConnectedHandoffFlag() throws {
@@ -4101,6 +4114,69 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(transition.contains(
             "resumePendingFullDrainPublicationIfNeeded("
         ))
+    }
+
+    func testInteractiveForegroundDefersLongWearRefreshOffSceneUpdatePath() throws {
+        let source = try managerSource()
+        let methodStart = try XCTUnwrap(source.range(
+            of: "func handleInteractiveForeground(rest: Int, maxHR: Int)"
+        ))
+        let methodEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func shouldReissueAllDayCompactAbortOnForeground(",
+            range: methodStart.upperBound..<source.endIndex
+        ))
+        let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
+        XCTAssertTrue(
+            method.contains("scheduleInteractiveForegroundLongWearRefresh("),
+            "scene-active long-wear refresh must not run synchronously on the scene-update path"
+        )
+        XCTAssertFalse(
+            method.contains("startLongWearMode(rest: rest, maxHR: maxHR, reason: \"scene_active_foreground\")"),
+            "handleInteractiveForeground must not call startLongWearMode directly"
+        )
+
+        let schedulerStart = try XCTUnwrap(source.range(
+            of: "private func scheduleInteractiveForegroundLongWearRefresh("
+        ))
+        let schedulerEnd = try XCTUnwrap(source.range(
+            of: "private func startLongWearMode(rest: Int, maxHR: Int, reason: String)",
+            range: schedulerStart.upperBound..<source.endIndex
+        ))
+        let scheduler = String(source[schedulerStart.lowerBound..<schedulerEnd.lowerBound])
+        XCTAssertTrue(scheduler.contains("await Task.yield()"))
+        XCTAssertTrue(scheduler.contains("UIApplication.shared.applicationState == .active"))
+
+        let startLongWearStart = try XCTUnwrap(source.range(
+            of: "private func startLongWearMode(rest: Int, maxHR: Int, reason: String)"
+        ))
+        let startLongWearEnd = try XCTUnwrap(source.range(
+            of: "private func stopLongWearMode(reason: String)",
+            range: startLongWearStart.upperBound..<source.endIndex
+        ))
+        let startLongWear = String(
+            source[startLongWearStart.lowerBound..<startLongWearEnd.lowerBound]
+        )
+        XCTAssertTrue(startLongWear.contains("action=keep_existing_supervisor"))
+        XCTAssertTrue(startLongWear.contains("reason != \"scene_active_foreground\""))
+
+        let app = try appSource()
+        let transitionStart = try XCTUnwrap(app.range(
+            of: "foregroundBLETransitionTask = Task { @MainActor in"
+        ))
+        let transitionEnd = try XCTUnwrap(app.range(
+            of: "private static func registerBackgroundTasks",
+            range: transitionStart.upperBound..<app.endIndex
+        ))
+        let transition = String(
+            app[transitionStart.lowerBound..<transitionEnd.lowerBound]
+        )
+        let handleForeground = try XCTUnwrap(transition.range(
+            of: "ble.handleInteractiveForeground("
+        ))
+        let firstYield = try XCTUnwrap(
+            transition.range(of: "await Task.yield()", range: handleForeground.upperBound..<transition.endIndex)
+        )
+        XCTAssertLessThan(handleForeground.lowerBound, firstYield.lowerBound)
     }
 
     func testFirstUseScanRequiresWhoopSpecificIdentity() {

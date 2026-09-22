@@ -280,11 +280,10 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
     }
 
-    func testStandaloneLiveEstimateIsClampedToPhysiologicalCadence() {
+    func testStandaloneLiveEstimateIsWithheldWhenAbovePhysiologicalCadence() {
         // The former fail-closed concern (an unvalidated count could be arbitrarily
-        // wrong) is now bounded by a physiological cadence ceiling: a blown-up model
-        // value cannot exceed what is humanly possible in the elapsed active window.
-        // Here only 100s have elapsed → ceiling = 100 * 3.5 = 350 steps.
+        // wrong) is bounded by a physiological cadence ceiling: a blown-up model
+        // is withheld, not rewritten as elapsed×3.5 as if that were today's walk.
         let dayStart = day
         let now = dayStart.addingTimeInterval(100)
         let value = AtriaDailyStepPresentation.resolve(
@@ -297,9 +296,108 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.source, .live)
-        XCTAssertFalse(value.isValidated)
-        XCTAssertEqual(value.count, 350)
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.source, .none)
+    }
+
+    func testElapsedWallTimeAloneDoesNotIncreaseHeldOrEstimatedSteps() {
+        let dayStart = day
+        let capturedAt = dayStart.addingTimeInterval(100)
+        let later = capturedAt.addingTimeInterval(3_600)
+        let first = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt,
+            liveCount: 55_393,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        let second = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: later,
+            liveCount: 55_393,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertNil(first.count)
+        XCTAssertNil(second.count)
+        XCTAssertEqual(second.capturedAt, first.capturedAt)
+    }
+
+    func testRepeatedPublicationDoesNotRefreshObservationTime() {
+        let dayStart = day
+        let capturedAt = dayStart.addingTimeInterval(14 * 3_600)
+        let first = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt.addingTimeInterval(1),
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        let second = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt.addingTimeInterval(30),
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(first.capturedAt, capturedAt)
+        XCTAssertEqual(second.capturedAt, capturedAt)
+        XCTAssertEqual(first.count, second.count)
+    }
+
+    func testCycleRolloverDoesNotTreatPriorCycleCaptureAsFreshToday() {
+        let priorCycleStart = day
+        let wake = day.addingTimeInterval(8 * 3_600)
+        let capturedAt = wake.addingTimeInterval(-60)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: wake,
+            now: wake.addingTimeInterval(120),
+            liveCount: 12_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            physiologicalDayStart: wake,
+            calendar: utcCalendar
+        )
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.source, .none)
+        if let captured = value.capturedAt {
+            XCTAssertEqual(captured, capturedAt)
+            XCTAssertLessThan(captured, wake)
+        }
+    }
+
+    func testReconnectDoesNotAddStepsWithoutNewObservation() {
+        let dayStart = day
+        let capturedAt = dayStart.addingTimeInterval(2 * 3_600)
+        let before = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt.addingTimeInterval(5),
+            liveCount: 1_200,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        let afterReconnect = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt.addingTimeInterval(90),
+            liveCount: 1_200,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(before.count, afterReconnect.count)
+        XCTAssertEqual(afterReconnect.capturedAt, capturedAt)
     }
 
     func testStandaloneLiveEstimateNeverFiresWithoutQualifiedModel() {
@@ -1082,6 +1180,60 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: next, defaults: suite)
         XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: cycle, defaults: suite))
         XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: next, defaults: suite))
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: next.addingTimeInterval(3_600),
+                cycleStart: next,
+                defaults: suite
+            )
+        )
+    }
+
+    func testLiveGyroTodayDoesNotRatchetAcrossWake() {
+        let suiteName = "AtriaLiveGyroTodayWake.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(16 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 55_393,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        let wake = cycle.addingTimeInterval(24 * 3_600)
+        AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: wake, defaults: suite)
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: wake.addingTimeInterval(120),
+                cycleStart: wake,
+                defaults: suite
+            )
+        )
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 55_393,
+            capturedAt: wake.addingTimeInterval(60),
+            cycleStart: wake,
+            defaults: suite
+        )
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: wake.addingTimeInterval(120),
+                cycleStart: wake,
+                defaults: suite
+            ),
+            "55k in the first minute after wake is not today's live walk"
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.presentedDailyStrapStepCount(
+                savedMerge: 0,
+                liveCumulative: 200,
+                liveGyroToday: 55_393,
+                cycleStart: wake,
+                now: wake.addingTimeInterval(120)
+            ),
+            200
+        )
     }
 
     func testPresentationDropsImplausibleHeldFloorWhenLiveGyroIsNearby() {
@@ -1539,7 +1691,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
               missingCoverageSeconds: missing)
     }
 
-    func testInCycleCaptureClockStampsNowWhenBLEClockIsPriorCycle() {
+    func testInCycleCaptureClockKeepsObservationTime() {
         let cycleStart = day.addingTimeInterval(8 * 3_600)
         let now = cycleStart.addingTimeInterval(3_600)
         let prior = cycleStart.addingTimeInterval(-10 * 3_600)
@@ -1550,7 +1702,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                 now: now,
                 presentedCount: 2_379
             ),
-            now
+            prior
         )
         let inCycle = now.addingTimeInterval(-2)
         XCTAssertEqual(
@@ -1570,6 +1722,109 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                 presentedCount: 0
             ),
             prior
+        )
+    }
+
+    func testNativeR10CopyIsNotCompactLiveGait() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let native = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "r10_live_validated",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        let compact = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "validated",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(native.productRoute, .nativeR10Observed)
+        XCTAssertEqual(native.detailText, "Today so far · native stream")
+        XCTAssertNotEqual(native.detailText, "Today so far · live")
+        XCTAssertEqual(compact.productRoute, .compactLive)
+        XCTAssertEqual(compact.detailText, "Today so far · live")
+        XCTAssertEqual(
+            AtriaStrapMotionProductRoute.resolve(
+                validationState: "whoop4_historical_gravity_1hz"
+            ).liveDetailText,
+            "1 Hz history · not 100 Hz gait"
+        )
+        XCTAssertEqual(
+            native.productHonestyFootnote,
+            "Observed native motion only while frames arrive. Not compact 0x33 gait."
+        )
+    }
+
+    func testHistorical55393CoordinateIsNotVerifiedLiveData() {
+        let dayStart = day
+        let capturedAt = dayStart.addingTimeInterval(100)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt,
+            liveCount: 55_393,
+            liveValidationState: "r10_live_validated",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertTrue(value.count == nil || value.count == 0)
+        XCTAssertNotEqual(value.valueText, "55393")
+        XCTAssertFalse(value.detailText.contains("55393"))
+        XCTAssertNotEqual(value.detailText, "Today so far · live")
+        XCTAssertEqual(
+            AtriaHomeModel.presentedDailyStrapStepCount(
+                savedMerge: 0,
+                liveCumulative: 55_393,
+                liveGyroToday: 55_744,
+                cycleStart: dayStart,
+                now: capturedAt
+            ),
+            0
+        )
+    }
+
+    func testReconnectElapsedTimeDoesNotMintStepsOrRefreshCaptureClock() {
+        let dayStart = day
+        let capturedAt = dayStart.addingTimeInterval(2 * 3_600)
+        let afterReconnect = capturedAt.addingTimeInterval(45 * 60)
+        let first = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: capturedAt,
+            liveCount: 400,
+            liveValidationState: "r10_live_validated",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        let second = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: afterReconnect,
+            liveCount: 400,
+            liveValidationState: "r10_live_validated",
+            liveCapturedAt: AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: capturedAt,
+                cycleStart: dayStart,
+                now: afterReconnect,
+                presentedCount: 400
+            ),
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(first.count, 400)
+        XCTAssertEqual(second.count, 400)
+        XCTAssertEqual(second.capturedAt, capturedAt)
+        XCTAssertEqual(second.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertLessThan(
+            400,
+            Int((45 * 60 * AtriaDailyStepPresentation.liveEstimateMaxStepsPerSecond).rounded()),
+            "elapsed-time ceiling must not be treated as walked steps"
         )
     }
 }
