@@ -4586,4 +4586,23 @@ did not invent or send SET/FORCE_DP.
 **Conclusion:** When `6A/01` returns type-24 `other_00` (`00 01 00 00`), this
 strap does **not** emit a stream-7/4 console explanation in the following 20 s.
 IMU stay-off reason remains opaque on-air. Goal open. Holder left on `2A37`
-(pid 33144).
+(pid 33375).
+
+### 2026-09-22 — Mac passive watch, iPhone Bluetooth OFF: stream-5 = 0
+
+**PHYSICAL FAIL for compact IMU (passive, TX=0).** Mac CoreBluetooth only.
+iPhone Bluetooth was **OFF**. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). One session: subscribe `2A37` +
+`61080005` (+ `04`/`07` for link health). **Zero commands** (no `6A`, `3F`,
+`03`, `16`, `9A`, `51`, `1D`).
+
+- Duration **902 s** (~15 min). Link stayed up; timer end (no disconnect).
+- Stream-5 (`61080005`) notify count = **0**. Stream-5 type counts = `{}`.
+- Compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**.
+- `2A37` HR: **936** samples, bpm **70–102** (last 75).
+- Early non-stream-5 only: a few stream-4 type `30` frames; not IMU; not
+  counted as stream-5.
+- **Interpretation:** With the phone radio off, a pure Mac central that only
+  CCCD-subscribes does **not** inherit or spontaneously receive compact
+  `0x33` (or any stream-5 type) on this strap/epoch. Passive listen alone is
+  insufficient. Goal remains open. Holder left on `2A37`.
