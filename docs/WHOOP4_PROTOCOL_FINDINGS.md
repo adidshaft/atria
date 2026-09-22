@@ -4467,3 +4467,13 @@ IMU. SET/FORCE_DP_TYPE remain unused-on-wire and **blocked**. Evidence:
 - `3F/01` type-24 status `02`, then stream-5 type `2B` (`aa8407f72b` / `aa88070b2b`). `3F/00` stops it. Compact `0x33` = 0. `2A37` stayed live (`005e`).
 - A single heart-rate CCCD off reads back `0000` and the samples stop. Stacking that off with another notify in the same turn is what the iPhone flush failed to confirm.
 - Do not treat type `0x28` or type `2B` as compact IMU.
+
+### 2026-09-22 — Mac: wait for HistoryComplete before 6A still yields no `0x33`
+
+**PHYSICAL FAIL for compact IMU.** Same Mac CoreBluetooth path (`tools/strap-mac/session.py`), `2A37` subscribed the whole run. Harvard init `23/00 → 4C/00 → 22/00 → 43/01 → 16/00`, ACK every history end (`0x17` + token from type-31 sub 2).
+
+- History ran ~180 s without `0x31` sub 3 (`HistoryComplete`). Observed subs: 80× sub 1, 79× sub 2. Stream-5 stayed on type-30/31/32 (`32` ≈ 5400). No stall; aborted with `14/00` at the 3-minute ceiling.
+- After abort, one `6A/01`. Full type-24: `aa0c00fc24746a56000100009d3bc71f` → status `00`, data `00 01 00 00`. Compact `0x33` = 0. No type `2B`.
+- Same link, one more legal try: `69/00` type-24 status `03` (`aa0c00fc2475695703000000eeae3311`), then `6A/01` again: `aa0c00fc24766a5800010000d5946837` (status `00`). Still zero `0x33`.
+- HR stayed live end-to-end (`hr_n` 221, last bpm 97). Holder restarted afterward (pid ownership of the single link).
+- **Interpretation:** Finishing (or aborting) the OpenStrap history gate before live IMU enable does not unlock compact `0x33` on this strap/epoch. `6A` remains `other_00`. Do not escalate to `0x9A` / SET_DP / FORCE_DP / reboot.
