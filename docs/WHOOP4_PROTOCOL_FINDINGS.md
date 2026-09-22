@@ -4477,3 +4477,14 @@ IMU. SET/FORCE_DP_TYPE remain unused-on-wire and **blocked**. Evidence:
 - Same link, one more legal try: `69/00` type-24 status `03` (`aa0c00fc2475695703000000eeae3311`), then `6A/01` again: `aa0c00fc24766a5800010000d5946837` (status `00`). Still zero `0x33`.
 - HR stayed live end-to-end (`hr_n` 221, last bpm 97). Holder restarted afterward (pid ownership of the single link).
 - **Interpretation:** Finishing (or aborting) the OpenStrap history gate before live IMU enable does not unlock compact `0x33` on this strap/epoch. `6A` remains `other_00`. Do not escalate to `0x9A` / SET_DP / FORCE_DP / reboot.
+
+### 2026-09-22 — Mac: `3F/01` then `6A/01` on first type-2B still yields no `0x33`
+
+**PHYSICAL FAIL for compact IMU.** Hypothesis: OpenStrap enables live IMU as `3F/01` then `6A/01` while the realtime pipe is open (prior Mac fails sent `6A` with that pipe closed). One Mac CoreBluetooth shot; `2A37` subscribed the whole run. No hello, no history drain, no `0x9A`, no SET/FORCE_DP.
+
+- Sent `3F/01` → type-24 `aa0c00fc24773f010200000023099453` (status `02`).
+- First stream-5 type `2B` (`aa8407f72b…`) arrived ~1.1 s later; immediately one `6A/01` (write with response).
+- `6A` type-24: `aa0c00fc24786a0200010000e238f415` → status `00`, data `00 01 00 00` (same `other_00` as closed-pipe `6A`).
+- Listen 12 s after `6A`: compact `0x33` = **0** (no `AA 94 00 B5 33`). Type `2B` = **26** (+ raw continuation chunks). Packet-type counts at listen_done: `2a37` 14, `24` 2, `2b` 26, `raw` 176.
+- Cleanup: `3F/00` + `6A/00` (yes). Last HR bpm **89**. Holder restarted (pid 32096).
+- **Interpretation:** Opening the R10/`2B` pipe before `6A` does not convert traffic to compact `0x33` on this strap/epoch. `6A` while `3F` is on still returns status `00` and leaves only `2B`. Do not escalate.
