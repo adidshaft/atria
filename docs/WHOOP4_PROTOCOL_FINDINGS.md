@@ -4531,3 +4531,59 @@ Hard bans still apply: `0x9A`, `0x51`, `0x1D`, invented SET/FORCE_DP, `0x60`, an
 **Sent: none.** No `6A` this turn (no type-24). Compact `0x33` count = **0** (no listen window opened). Latest `2A37` HR **84** bpm (holder pid 32393; samples 84–87 during reconnect).
 
 **Conclusion:** On Harvard firmware as published by OpenStrap, there is **no remaining known-payload command** that starts compact realtime `0x33` (`AA 94 00 B5 33`) short of (a) the official app’s workout/session path that has never been captured on this fixture, or (b) an **unpublished** `SET_DP_TYPE` / `FORCE_DP_TYPE` body. Do not shotgun further opcodes to fill the gap. Goal remains open; holder left on `2A37`.
+
+### 2026-09-22 — Mac: 6A refuse window, stream-7/4 console capture (no IMU reason)
+
+**PHYSICAL FAIL for compact IMU. Console silent on refuse.** Mac CoreBluetooth;
+`2A37` + `61080003/04/05/07` subscribed. Exactly one `6A/01` with-response per
+shot (no `0x9A` / `0x51` / `0x1D` / `0x60` / SET/FORCE_DP / `3F` / `69` / history).
+Full GATT payloads saved for every stream-7 and stream-4 notify; printable ASCII
+extracted (≥4 chars). Compact `0x33` = only `AA 94 00 B5 33` @ 152 B.
+
+#### Shot A (immediate 6A after CCCD)
+
+- TX `aa0800a823016a014006147a`
+- Type-24: `aa0c00fc247b6a0100010000af58bc63` → status `00`, data `00 01 00 00`
+- Listen 20 s: stream-7 = **0**, stream-4 = **0**, compact `0x33` = **0**
+- Counts: `2a37` 21, `24` 1. Last HR **85** bpm.
+
+#### Shot B (4 s passive pre-6A, then one 6A + 20 s)
+
+- Type-24: `aa0c00fc247c6a010001000021661ba6` → same status `00` / `00 01 00 00`
+- Pre-window + post-window: stream-7 = **0**, stream-4 = **0**, compact `0x33` = **0**
+- Counts: `2a37` 25, `24` 1. Last HR **80** bpm.
+
+#### Useful ASCII this refuse window
+
+**None.** No firmware console line arrived on stream-7 or stream-4 around the
+`6A` refusal, so there is no on-air string for sleep / wrist / dp-type /
+not-enabled / workout explaining why the IMU engine stayed off.
+
+#### Same-day prior stream-7 ASCII (not from this refuse window)
+
+Earlier Mac sessions today did dump stream-7 once (bootstrap / bond), including:
+
+- Identity: `hboylston`, `h17.2.…`, `gharvard`, `i41.17.…` (`/tmp/atria-ble/probe.jsonl`)
+- Bond console: `PM_EVT_BONDED_PEER_CONNECTED`, `PM_EVT_CONN_SEC_SUCCEEDED`,
+  `PM_EVT_CONN_SEC_FAILED|…|Procedure:BONDING|Error:00000001h`,
+  `FlashChanged:YES`, `delete_disconnected_bonds…` (`/tmp/atria-ble/hr-off-6a.jsonl`)
+
+Those lines are peer-manager / identity, **not** an IMU-mux deny reason. They
+did not recur on the refuse shots above (strap already settled on this Mac).
+
+#### Evidence search: TX that preceded live `AA 94 00 B5 33` (15–19 Sep)
+
+Searched `docs/`, `evidence/2026-09-15-goal-inrange-{36,37,38}/`, Sep-16 IMU
+proofs, and `/tmp/atria-ble`. Live compact frames are in inrange-37/38
+`lastNotifyCallbackHex` (`aa9400b533…`). Reconstruction
+`evidence/2026-09-20-astra-usb-recheck/step5-whoop-probe/SEP15-MATCHING-GEN.md`
+and prefs stamps: last `activation_6a01_sentAt` / official-compact IMU-on are
+**July**; last `51` cover **8 Sep**; **no** logged command hex in the
+01:29→01:36 IST window when type-31 became type-33. **No unreproduced TX byte
+sequence found** that preceded live `AA 94 00 B5 33`. Nothing new to replay;
+did not invent or send SET/FORCE_DP.
+
+**Conclusion:** When `6A/01` returns type-24 `other_00` (`00 01 00 00`), this
+strap does **not** emit a stream-7/4 console explanation in the following 20 s.
+IMU stay-off reason remains opaque on-air. Goal open. Holder left on `2A37`
+(pid 33144).
