@@ -57,6 +57,20 @@ final class AtriaWhoop4CompactIMUCoverageGateTests: XCTestCase {
         )
         XCTAssertFalse(verdict.passed)
         XCTAssertEqual(verdict.reason, "adjacent_device_delta_exceeds_1s")
+        // Δt = 41 between 5998 and 6039 → 40 missing device-time seconds.
+        XCTAssertEqual(verdict.missingCount, 40)
+        XCTAssertEqual(verdict.maxDeltaSeconds, 41)
+    }
+
+    func testContinuousStampsRecordZeroMissingCount() {
+        let stamps = (0..<100).map { UInt32($0) }
+        let verdict = AtriaWhoop4CompactIMUCoverageGate.evaluateContinuity(
+            deviceTimestamps: stamps,
+            provenance: .live
+        )
+        XCTAssertEqual(verdict.missingCount, 0)
+        XCTAssertEqual(verdict.pairsWithinOneSecond, 99)
+        XCTAssertEqual(verdict.dictionary["missing_count"] as? Int, 0)
     }
 
     func testEqualQualityDetectorRejectsLive33AndLeftover2B() {
