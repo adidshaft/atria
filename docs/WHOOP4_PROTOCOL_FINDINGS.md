@@ -5025,3 +5025,9 @@ strap state. Tool: `tools/strap-mac/ff_sweep.py`.
   `enable_write_r24_packets`, `enable_write_r25_packets`; raw `"2"` = the other
   ten. So no flag changed between July (no `0x33`) and today. A flag flip is
   still a candidate trigger, but the flags did not record the Sep 15 state.
+
+#### Trials (each: set → read back → `3F/01` WWR → 15 s → `3F/00` → restore → read back)
+
+| Time | Flag | v0 → v1 | Read back | 15 s after `3F/01` | Restore |
+|---|---|---|---|---|---|
+| 13:04:53 | `sigproc_10_sec_dp` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
