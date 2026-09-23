@@ -5731,3 +5731,25 @@ Verification afterwards: 0 missing seconds across the session in the history
 rows. Raw 104 Hz IMU for the session is not recoverable (strap does not store
 it). Sleep ground truth: the user notes lights-off, wake time and wake-ups;
 plus a morning thermometer reading for a second temperature point.
+
+### App port: lossless flush planner (`Atria/Atria/AtriaWhoop4LiveFlushPlanner.swift`)
+
+A pure state machine (disconnected → awaitingFirstFrame → live ⇄ draining)
+encoding the Mac-validated flush design. It emits only `3F/01`, `3F/00`,
+`16/00`, `17/01+token`, `14/00`: no trim, no mid-drain `0x22`.
+- Periodic drain every 300 s while live. Target = device-now − 1 s (from the
+  R10 second + 32.768 kHz tick). Ends on a row ≥ target, sub-3 complete, or a
+  600-s timeout, then `14/00` + `3F/01`.
+- On reconnect: waits for the first latched live frame, logs `gapBridged`
+  (firmware-counter delta, u16-wrap-safe, frames not received), and drains the
+  gap before resuming. If no frame arrives within 5 s, retries `3F/01` once
+  (strap reboot / lost latch).
+- Accounting separates `missingFrames` (transit loss while live) from
+  `drainPausedFrames` (deliberate pause, covered by history rows).
+- `AtriaWhoop4LiveFlushPlannerTests`: 6 scenario tests **passed** with the
+  5 decoder/estimator tests (iPhone 17 Pro sim). **Not wired into
+  `AtriaBLEManager` yet**; that and the iPhone link test are the next step.
+
+Overnight capture status at 21:09 IST (`night2`, the same logic in Python):
+9431 R10 / 9431 R11 / 9905 HR samples, 33 drains all `caught_up`,
+0 timeouts, 1 disconnect (18 firmware steps bridged), 0 corrupt, 3 missing.

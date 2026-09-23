@@ -1,0 +1,171 @@
+import XCTest
+@testable import Atria
+
+/// Scenario tests for the lossless live/history coordinator. Sequences mirror the
+/// Mac-validated behaviour (flush4 and the overnight capture, 2026-09-23).
+final class AtriaWhoop4LiveFlushPlannerTests: XCTestCase {
+    private let t0 = Date(timeIntervalSince1970: 1_790_160_000)
+    private let deviceSecond0: UInt32 = 1_790_160_000
+
+    private func v24Row(second: UInt32) -> [UInt8] {
+        var p = [UInt8](repeating: 0, count: 100)
+        p[0] = 0x2F
+        p[1] = 0x18
+        p[7] = UInt8(second & 0xFF)
+        p[8] = UInt8((second >> 8) & 0xFF)
+        p[9] = UInt8((second >> 16) & 0xFF)
+        p[10] = UInt8((second >> 24) & 0xFF)
+        return p
+    }
+
+    private func historyEnd(token: [UInt8]) -> [UInt8] {
+        var p = [UInt8](repeating: 0, count: 28)
+        p[0] = 0x31
+        p[2] = 2
+        p.replaceSubrange(13..<21, with: token)
+        return p
+    }
+
+    /// Feeds live frames 1/s from `start` and returns the planner after `count` frames.
+    @discardableResult
+    private func feed(_ planner: inout AtriaWhoop4LiveFlushPlanner, counter: inout UInt16,
+                      second: inout UInt32, steps: UInt16 = 100, from start: Date,
+                      count: Int) -> [AtriaWhoop4LiveFlushPlanner.Command] {
+        var all: [AtriaWhoop4LiveFlushPlanner.Command] = []
+        for i in 0..<count {
+            let now = start.addingTimeInterval(Double(i))
+            all += planner.r10(counter: counter, deviceSecond: second, subsecondTicks: 0,
+                               firmwareSteps: steps, now: now).commands
+            all += planner.tick(now: now).commands
+            counter &+= 1
+            second += 1
+        }
+        return all
+    }
+
+    func testFirstConnectStartsLiveAndPeriodicDrainCatchesUpLosslessly() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        XCTAssertEqual(planner.linkReady(now: t0), [.liveOn])
+        var counter: UInt16 = 10
+        var second = deviceSecond0
+        // 300 s of live frames → exactly one periodic drain request at the end.
+        let commands = feed(&planner, counter: &counter, second: &second, from: t0, count: 301)
+        XCTAssertEqual(commands, [.liveOff, .historyStart])
+        XCTAssertEqual(planner.state, .draining)
+
+        let now = t0.addingTimeInterval(302)
+        // Chunk end is ACKed with its token; rows below the target do not end the drain.
+        let token: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
+        XCTAssertEqual(planner.historyFrame(payload: historyEnd(token: token), now: now).commands,
+                       [.historyAck(token: token)])
+        XCTAssertEqual(planner.historyFrame(payload: v24Row(second: deviceSecond0 + 10), now: now).commands, [])
+        // A row reaching the target (device-now − 1) ends it: abort history, resume live.
+        let end = planner.historyFrame(payload: v24Row(second: deviceSecond0 + 400), now: now)
+        XCTAssertEqual(end.commands, [.historyAbort, .liveOn])
+        guard case let .drainFinished(reason, why, rows, first, last)? = end.events.first else {
+            return XCTFail("expected drainFinished")
+        }
+        XCTAssertEqual(reason, .periodic)
+        XCTAssertEqual(why, .caughtUp)
+        XCTAssertEqual(rows, 2)
+        XCTAssertEqual(first, deviceSecond0 + 10)
+        XCTAssertEqual(last, deviceSecond0 + 400)
+        XCTAssertEqual(planner.state, .live)
+    }
+
+    func testFramesSkippedDuringDrainPauseAreNotCountedAsLoss() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 301)
+        _ = planner.historyFrame(payload: v24Row(second: deviceSecond0 + 999), now: t0.addingTimeInterval(302))
+        // Live resumes 20 frames later (paused for the drain).
+        counter &+= 20
+        second += 20
+        feed(&planner, counter: &counter, second: &second, from: t0.addingTimeInterval(322), count: 5)
+        XCTAssertEqual(planner.accounting.drainPausedFrames, 20)
+        XCTAssertEqual(planner.accounting.missingFrames, 0)
+        // A later skip while live is a real transit loss.
+        counter &+= 3
+        second += 3
+        feed(&planner, counter: &counter, second: &second, from: t0.addingTimeInterval(330), count: 2)
+        XCTAssertEqual(planner.accounting.missingFrames, 3)
+    }
+
+    func testReconnectBridgesFirmwareStepsWithWrapAndDrainsTheGapBeforeLive() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 65_530
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, steps: 65_530, from: t0, count: 3)
+        planner.linkLost()
+        XCTAssertEqual(planner.state, .disconnected)
+
+        // 70 s later the link returns; the strap's 3F latch resumes live frames.
+        let back = t0.addingTimeInterval(73)
+        XCTAssertEqual(planner.linkReady(now: back), [], "reconnect waits for a frame before acting")
+        let result = planner.r10(counter: counter &+ 69, deviceSecond: second + 69, subsecondTicks: 0,
+                                 firmwareSteps: 45, now: back)
+        XCTAssertEqual(result.commands, [.liveOff, .historyStart])
+        guard case let .gapBridged(from, to, steps, notReceived)? = result.events.first else {
+            return XCTFail("expected gapBridged")
+        }
+        XCTAssertEqual(from, deviceSecond0 + 2)
+        XCTAssertEqual(to, second + 69)
+        XCTAssertEqual(steps, 51, "65,532 → 45 wraps through 65,535")
+        XCTAssertEqual(notReceived, 69)
+        XCTAssertEqual(planner.accounting.bridgedFirmwareSteps, 51)
+        XCTAssertEqual(planner.accounting.missingFrames, 0, "gap frames are bridged, not counted as loss")
+        guard case .drainStarted(.reconnect, _)? = result.events.last else {
+            return XCTFail("expected a reconnect drain")
+        }
+    }
+
+    func testDrainTimesOutSafelyAndResumesLive() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 301)
+        XCTAssertEqual(planner.state, .draining)
+        let late = t0.addingTimeInterval(301 + AtriaWhoop4LiveFlushPlanner.maximumDrainDuration + 1)
+        let result = planner.tick(now: late)
+        XCTAssertEqual(result.commands, [.historyAbort, .liveOn])
+        XCTAssertEqual(planner.accounting.drainTimeouts, 1)
+    }
+
+    func testReconnectWithoutLiveFramesRetriesLiveOnce() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 2)
+        planner.linkLost()
+        let back = t0.addingTimeInterval(60)
+        _ = planner.linkReady(now: back)
+        XCTAssertEqual(planner.tick(now: back.addingTimeInterval(2)).commands, [])
+        XCTAssertEqual(planner.tick(now: back.addingTimeInterval(5)).commands, [.liveOn])
+        XCTAssertEqual(planner.tick(now: back.addingTimeInterval(9)).commands, [], "only one retry")
+    }
+
+    func testDisconnectMidDrainDropsTheDrainAndBridgesOnReturn() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, steps: 500, from: t0, count: 301)
+        XCTAssertEqual(planner.state, .draining)
+        planner.linkLost()
+        XCTAssertEqual(planner.state, .disconnected)
+        let back = t0.addingTimeInterval(400)
+        _ = planner.linkReady(now: back)
+        let result = planner.r10(counter: counter &+ 90, deviceSecond: second + 90, subsecondTicks: 0,
+                                 firmwareSteps: 520, now: back)
+        XCTAssertEqual(result.commands, [.liveOff, .historyStart])
+        guard case let .gapBridged(_, _, steps, _)? = result.events.first else {
+            return XCTFail("expected gapBridged")
+        }
+        XCTAssertEqual(steps, 20)
+    }
+}
