@@ -5479,3 +5479,39 @@ established absolute transfer).
 shift when the charger pack is clipped on. Consistent with the
 `enable_capsense_wear_detect` feature. Wear flags 13/14 (128/84 worn, 0/128 off)
 agree.
+
+### Step validation 3 — metronome-labelled walks (truth = click count)
+
+Tool: `tools/strap-mac/metronome_walk.py` (spoken cue, 5 s lead-in, one
+click per step, auto-logged start/stop) + `tools/strap-mac/score_walks.py`
+(window = start − 3 s … stop + 6 s). Counting in the head was replaced because
+the counted walks gave soft truth.
+
+| Walk | spm | Truth | Firmware @1293 | App gyro-cadence | Accel-peak ×1.11 |
+|---|---|---|---|---|---|
+| w1 | 100 | 75 | 72 (−4.0 %) | 69.5 (−7.3 %) | 65.5 (−12.7 %) |
+| w2 | 80 | 60 | 81 (**+35.0 %**) | 66.6 (+11.0 %) | 121.0 (+101.7 %) |
+| w3 | 120 | 90 | 84 (−6.7 %) | 84.0 (−6.7 %) | 30.0 (−66.7 %) |
+| w4 | 100 | 75 | 72 (−4.0 %) | 76.4 (+1.9 %) | 45.5 (−39.3 %) |
+| w5 | 80 | 60 | 57 (−5.0 %) | 63.8 (+6.3 %) | 117.7 (+96.2 %) |
+| w6 | 120 | 90 | 81 (−10.0 %) | 84.1 (−6.6 %) | 30.0 (−66.7 %) |
+| **mean \|err\|** | | | 10.8 % (max 35) | **6.6 % (max 11)** | 63.9 % |
+| mean signed | | | +0.9 % | **−0.2 %** | +2.1 % |
+
+**Verdict:**
+- **App gyro-cadence detector on native Mac R10 = the step source**: 6.6 %
+  mean absolute error, no bias, +6…11 % at 80 spm, −7 % at 120 spm.
+- The firmware counter is decent except one +35 % outlier at 80 spm.
+- Accel-peak double-counts slow gait and misses fast gait. Unusable.
+- The earlier "+55 %" counted-walk results are explained by soft truth
+  (self-counting at ~70 spm), not by the detectors.
+
+### Stability run (3 h, started 16:42) — status at 17:23
+
+- 2367 R10 + 2366 R11 frames; corrupt 1 (startup).
+- **One unstable episode, 16:58 → 17:09:30: 18 × `CBErrorDomain 6`
+  (supervision timeout) every ~35–60 s.** Auto-reconnect worked each time, and
+  every reconnect lost 10–12 frames (counter gap; 212 missing total). Stable
+  before and since (all six walks captured with 55–57 frames each). It started
+  ~3 min after the charger was removed. The cause is unexplained (not walking
+  distance).
