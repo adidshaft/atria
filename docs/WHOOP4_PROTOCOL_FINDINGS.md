@@ -5386,3 +5386,21 @@ are required before any step claim.
   normal/brisk shuttle walking. A normal-pace counted walk is needed to tell a
   slow-gait blind spot from a general bias. No retuning on a single walk
   (overfitting risk).
+
+#### Step validation 2 — counted normal-pace walk (16:54:16–16:55:48 IST, truth 100)
+
+| Detector | Slow walk (100) | **Normal walk (100)** | Desk (0) | Still (0) |
+|---|---|---|---|---|
+| Gyro-cadence, 100 Hz parity | 161 (+61 %) | **112.7 (+12.7 %)** (bout 84.5 s, cadence 90.5 spm) | 10.8 | 0 |
+| Gyro-cadence, measured 104 Hz | 149.7 | 111.8 | — | — |
+| Accel-peak ×1.11 | 176.5 | 169.8 (raw 153; median interval 0.423 s → double peaks) | 0 | 0 |
+
+**Verdict:**
+- Native-R10 steps on the Mac with the app's gyro-cadence detector are
+  **≈ +13 % at normal pace** and **fail on slow deliberate gait (+61 %)**.
+- The accel-peak detector double-counts both walks and is not usable as a
+  count source here (it is clean on the negatives).
+- Two labelled walks are insufficient to retune without overfitting. A
+  multi-pace labelled set (slow / normal / brisk, ≥3 each) is the prerequisite
+  for a better detector.
+- HRV from R10 RR is the validated metric (see above). Steps stay "research".
