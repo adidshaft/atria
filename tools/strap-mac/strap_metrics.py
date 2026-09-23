@@ -19,7 +19,7 @@ import struct
 import sys
 from datetime import datetime
 
-FS = 100
+FS = int(__import__("os").environ.get("STRAP_FS", "100"))
 WIN, HOP = int(4.0 * FS), int(0.5 * FS)
 BAND_LO, BAND_HI, FLOOR, CEIL = 1.3, 3.0, 0.3, 4.0
 LEVEL_GATE, PROMINENCE, SWAY, MIN_ANCHORS, TURN_DISCOUNT = 35.0, 1.6, 1.4, 2, 0.6
@@ -182,3 +182,73 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+class AccelPeakPedometer:
+    """Exact port of AtriaStrapPedometer.StreamingDetector (acceleration-magnitude peaks, g)."""
+
+    def __init__(self, filter_length=8, peak_window=29, sensitivity=0.06, confirmation=6):
+        self.fl, self.pw, self.sens, self.conf = filter_length, peak_window | 1, sensitivity, confirmation
+        self.half = self.pw // 2
+        self.fw, self.fsum, self.lp = [], 0.0, []
+        self.n, self.mean, self.thr_hist, self.thr = 0, 0.0, [], None
+        self.possible, self.regular, self.seek_max, self.cur_max, self.cur_max_i = 0, False, True, 0.0, -1
+        self.steps = 0
+
+    def ingest(self, m):
+        self.n += 1
+        self.mean += (m - self.mean) / self.n
+        self.fw.append(m)
+        self.fsum += m
+        if len(self.fw) > self.fl:
+            self.fsum -= self.fw.pop(0)
+        self.lp.append(self.fsum / len(self.fw))
+        if len(self.lp) < self.pw:
+            return
+        c = self.lp[self.half]
+        is_max = all(v <= c for v in self.lp)
+        is_min = all(v >= c for v in self.lp)
+        if is_max or is_min:
+            self._candidate(self.n - self.half - 1, is_max, c)
+        self.lp.pop(0)
+
+    def _candidate(self, idx, is_max, v):
+        if self.seek_max:
+            if is_max:
+                self.cur_max, self.cur_max_i, self.seek_max = v, idx, False
+            return
+        if is_max:
+            if v > self.cur_max:
+                self.cur_max, self.cur_max_i = v, idx
+            return
+        if idx - self.cur_max_i > 120:
+            self.seek_max, self.possible, self.regular = True, 0, False
+            return
+        t = self.thr if self.thr is not None else self.mean
+        if self.cur_max > t + self.sens / 2 and v < t - self.sens / 2:
+            if self.cur_max - v > self.sens:
+                self.thr_hist.append((self.cur_max + v) / 2)
+                if len(self.thr_hist) > 4:
+                    self.thr_hist.pop(0)
+                self.thr = sum(self.thr_hist) / len(self.thr_hist)
+            self.possible += 1
+            if self.regular:
+                self.steps += 1
+            elif self.possible >= self.conf:
+                self.steps += self.possible
+                self.regular = True
+        else:
+            self.possible, self.regular = 0, False
+        self.seek_max = True
+
+
+def accel_magnitudes(path, lo, hi):
+    out = []
+    for line in open(path):
+        r = json.loads(line)
+        if r["k"] != "r10" or not lo <= r["w"] <= hi:
+            continue
+        p = bytes.fromhex(r["hex"])
+        ax = [struct.unpack_from("<100h", p, o) for o in (85, 285, 485)]
+        out.extend(math.sqrt(ax[0][k] ** 2 + ax[1][k] ** 2 + ax[2][k] ** 2) / 4096 for k in range(100))
+    return out
