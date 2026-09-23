@@ -3,6 +3,8 @@
 Modes (one variable per run):
   3f_wwr       subscribe all, one 3F/01 write-WITHOUT-response, listen.
   history_3f   16/00, ACK every type-31 sub 2, then 3F/01 WWR mid-serve, keep ACKing, listen.
+  passive      subscribe all, TX=0, listen (what does a latched strap send on reconnect?).
+  stop3f       one 3F/00 with response, listen.
 
 TX is limited to 3F/01 (WWR), 16/00, history ACK 17/01+token, and a final 3F/00
 only when no 0x33 was seen. Never 6A/69/51/1D/9A/60/34/35.
@@ -27,7 +29,7 @@ from Foundation import NSData, NSObject, NSTimer
 from PyObjCTools import AppHelper
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "3f_wwr"
-assert MODE in ("3f_wwr", "history_3f"), MODE
+assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f"), MODE
 OUT_PATH = sys.argv[2] if len(sys.argv) > 2 else f"/tmp/atria-ble/r10r11-{MODE}.jsonl"
 LISTEN_S = float(sys.argv[3]) if len(sys.argv) > 3 else 300.0
 HISTORY_LEAD_S = float(sys.argv[4]) if len(sys.argv) > 4 else 30.0
@@ -139,6 +141,10 @@ class Delegate(NSObject):
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(LISTEN_S, self, "finish:", None, False)
             if MODE == "3f_wwr":
                 self.send_3f_wwr("fresh_link")
+            elif MODE == "stop3f":
+                self.send_with_response(0x3F, b"\x00", "3f00")
+            elif MODE == "passive":
+                say({"event": "passive_tx0"})
             else:
                 self.history_started_at = time.time()
                 self.send_with_response(0x16, b"\x00", "history_1600")
