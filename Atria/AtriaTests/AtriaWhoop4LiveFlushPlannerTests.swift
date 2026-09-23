@@ -129,10 +129,42 @@ final class AtriaWhoop4LiveFlushPlannerTests: XCTestCase {
         var second = deviceSecond0
         feed(&planner, counter: &counter, second: &second, from: t0, count: 301)
         XCTAssertEqual(planner.state, .draining)
-        let late = t0.addingTimeInterval(301 + AtriaWhoop4LiveFlushPlanner.maximumDrainDuration + 1)
-        let result = planner.tick(now: late)
+        // Rows keep arriving (no stall) but the drain never reaches its target.
+        var now = t0.addingTimeInterval(301)
+        while now < t0.addingTimeInterval(300 + AtriaWhoop4LiveFlushPlanner.maximumDrainDuration + 2) {
+            now = now.addingTimeInterval(10)
+            _ = planner.historyFrame(payload: v24Row(second: deviceSecond0 + 5), now: now)
+            let result = planner.tick(now: now)
+            if !result.commands.isEmpty {
+                XCTAssertEqual(result.commands, [.historyAbort, .liveOn])
+                guard case .drainFinished(_, .timeout, _, _, _)? = result.events.first else {
+                    return XCTFail("expected timeout")
+                }
+                return
+            }
+        }
+        XCTFail("drain never timed out")
+    }
+
+    func testStalledDrainResumesLiveQuicklyAndRetries() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 301)
+        XCTAssertEqual(planner.state, .draining)
+        // No history rows at all: after the stall timeout live resumes (not 600 s later).
+        let stall = t0.addingTimeInterval(300 + AtriaWhoop4LiveFlushPlanner.drainStallTimeout + 1)
+        let result = planner.tick(now: stall)
         XCTAssertEqual(result.commands, [.historyAbort, .liveOn])
-        XCTAssertEqual(planner.accounting.drainTimeouts, 1)
+        guard case .drainFinished(_, .stalled, _, _, _)? = result.events.first else {
+            return XCTFail("expected stalled")
+        }
+        XCTAssertEqual(planner.state, .live)
+        // A retry drain follows after the retry delay.
+        XCTAssertEqual(planner.tick(now: stall.addingTimeInterval(30)).commands, [])
+        XCTAssertEqual(planner.tick(now: stall.addingTimeInterval(AtriaWhoop4LiveFlushPlanner.stallRetryDelay)).commands,
+                       [.liveOff, .historyStart])
     }
 
     func testReconnectWithoutLiveFramesRetriesLiveOnce() {
