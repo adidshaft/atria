@@ -4876,3 +4876,14 @@ Next runs (Mac, strap expendable per user, one variable each):
 **A**: `3F/01` WWR on a fresh link, no stop, listen 5 min for a `2B`→`0x33`
 change. **B**: history `16/00` running, ACK every sub 2, then `3F/01` WWR
 mid-serve; listen and keep ACKing.
+
+#### 23 Sep 11:15–12:32 IST — clean on-wrist passive window (TX=0)
+
+The recorder was restarted under `caffeinate -s -i` from the Claude terminal
+panel. It stayed on **one connection for 4629 s (~77 min)**, with no Mac sleep
+and no disconnect. 2A37: **4813** samples, max gap 1.6 s, zero `0000`
+readings (on-wrist throughout). 61080004 type `0x30`: 27. 61080007: 2.
+**Stream-5 = 0, compact `0x33` = 0.** This window is the passive baseline for
+runs A/B. The recorder is stopped for run A (the single link is needed).
+New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
+(WWR), `16/00`, `17/01`+token, and `3F/00` cleanup when no `0x33` was seen.
