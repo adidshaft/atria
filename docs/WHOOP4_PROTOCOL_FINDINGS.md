@@ -5365,3 +5365,24 @@ are required before any step claim.
 | 76, 79–80 | fall after the charger went on (194 → 159; 49k → 42k) | same |
 | 27–31 | fast/irregular | unresolved |
 | 42–74 | float-like; not a quaternion | unresolved |
+
+#### Step validation 1 — counted slow indoor walk (16:49:05–16:50:40 IST, truth 100)
+
+| Detector (exact ports of the app's) | Walk (truth 100) | Desk-use control (0) | Still control (0) |
+|---|---|---|---|
+| Gyro-cadence (`AtriaGyroCadenceResearchPedometer`, 100 Hz parity) | **161** (bout 99.5 s, median cadence 116 spm) | **10.8** (one 8 s bout) | 0 |
+| Accel-peak (`AtriaStrapPedometer`, ×1.11 gain) | **159 raw / 176** | **0** | **0** |
+
+- Active rotation lasted 16:49:05 → 16:50:40. Accel-detected steps fall
+  16:49:13 → 16:50:33 (79 s), so 100 true steps = **~76 spm (slow, counted,
+  indoor, turns)**.
+- Gyro: per-window anchor cadence jumps 82–172 spm. The time-averaged
+  rotation spectrum has no clean line at the true step rate (~1.1–1.3 Hz), and
+  the 1.3–3.0 Hz search band starts above ~78 spm, so anchors lock onto
+  harmonics.
+- Accel: median inter-detection 0.413 s (145 spm) on a ~76 spm walk →
+  double peaks per step (heel strike + push-off) on slow gait.
+- **Verdict: FAIL at slow pace for both.** The July validation (2.6 % error) was
+  normal/brisk shuttle walking. A normal-pace counted walk is needed to tell a
+  slow-gait blind spot from a general bias. No retuning on a single walk
+  (overfitting risk).
