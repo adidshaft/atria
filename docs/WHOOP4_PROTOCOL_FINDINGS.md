@@ -5801,3 +5801,4 @@ Tests: `AtriaWhoop4PowerPolicyTests` 8/8, `AtriaWhoop4LiveFlushPlannerTests`
 10/10, `AtriaWhoop4R10RecordTests` 5/5, all passed.
 
 **Sleep ground truth 2026-09-23:** lights off **22:49 IST** (user report). Wake time and a morning thermometer reading will follow. Capture: `night4` (started 22:28, `night4.jsonl` / `night4-raw.jsonl`).
+Bluetooth speaker (ACTON III) switched off by the user at ~23:35 IST (possible 2.4 GHz contention before this).
