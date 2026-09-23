@@ -1,3 +1,5 @@
+<!-- Repository workflow: all work lands on dev; integration PRs promote dev to main. -->
+
 ## What this changes
 
 <!-- One or two sentences. What behaviour is different after this merges? -->

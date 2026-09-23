@@ -4,6 +4,11 @@ Reviewed **23 September 2026**, using repository source, GitHub issue history an
 the latest local Claude session. This is a dated snapshot; linked issues carry
 subsequent acceptance evidence.
 
+Repository workflow: all development, issue fixes and documentation land on
+`dev`; reviewed work reaches `main` through [#43](https://github.com/adidshaft/atria/pull/43).
+These documentation updates are published on `dev`. The checkpoint table below
+records the original audit, before the documentation commits.
+
 ## Which version is being described?
 
 | Checkpoint at review | State |

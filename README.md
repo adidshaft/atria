@@ -257,13 +257,16 @@ python3 tools/audit_handoff_status.py \
 | `assets/` | Logo and README screenshots. |
 | `evidence/` | Physical-device evidence trees. Gitignored — may contain personal health data. |
 
-Nothing in this repository needs credentials to build. The only local secrets
-are your own Apple signing settings, and `.gitignore` keeps signing material,
-device evidence, and logs out of version control.
+No WHOOP credentials are required. Physical-device builds use your own Apple
+signing configuration. Review staged changes for private data before publication;
+ignore rules cover known signing material, evidence and logs.
 
 - [Research validation corpus](docs/research-validation-corpus.md) — the rules and fixtures used for reproducible sensor validation.
 
 ## Contributing
+
+All development, issue fixes and documentation updates land on **`dev`**.
+Reviewed changes reach **`main`** through the dev → main integration PR.
 
 The fastest useful contributions are:
 
