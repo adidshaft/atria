@@ -5194,3 +5194,19 @@ charge state do not gate `0x33`.
 - **Open repair:** re-establish a Mac↔strap bond. The strap keeps peer 2
   (`delete_disconnected_bonds called 0 times`, including in pairing mode), and
   macOS offers no CLI LE pairing. No bond-clearing opcode is known.
+
+#### 16:15 IST — command channel restored by toggling Mac Bluetooth; fresh bond, still `2B`
+
+- `blueutil -p 0` → 4 s → `-p 1` (via the runner). Next connect (advert 180D,
+  not pairing mode) stream-7: `BONDED_PEER_CONNECTED|Peer:2` → `CONN_SEC_START|BONDING`
+  → `CONN_SEC_CONFIG_REQ` → **`PM_EVT_CONN_SEC_SUCCEEDED|Conn:0|Peer:2|Procedure:BONDING`**
+  → **`Client requested all bonds except requesting deleted`**.
+- The Mac is re-bonded, and **the strap deleted every other bond (including the
+  iPhone's)**. The iPhone must re-pair (pairing mode) before Atria on the phone
+  can command the strap again.
+- On the fresh bond: hello `23/00` → type-24 status 01. `3F/01` WWR →
+  `02 00 00 00` → **`2B` ×14 per 10 s, `0x33` 0**. H-BOND is refuted a second
+  time, on a freshly bonded, encrypted Mac link.
+- Recovery recipe for the stuck state (keys lost on the Mac, strap keeps the
+  peer): toggle Mac Bluetooth off/on and reconnect. The half-deleted bluetoothd
+  state was blocking LESC completion. Pairing mode was not needed.
