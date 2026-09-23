@@ -5210,3 +5210,37 @@ charge state do not gate `0x33`.
 - Recovery recipe for the stuck state (keys lost on the Mac, strap keeps the
   peer): toggle Mac Bluetooth off/on and reconnect. The half-deleted bluetoothd
   state was blocking LESC completion. Pairing mode was not needed.
+
+## 2026-09-23 — RE-SCOPE: native R10 IMU (`2B`/`0A`) on the Mac is live, decoded, and motion-validated
+
+The user asked whether `0x33` is the only IMU, and chose "unlock the full IMU".
+**It is not the only one.** Record `2B 0A` (R10), already decoded by
+`AtriaR10MotionDecoder` in `Atria/Atria/AtriaR10Motion.swift`, carries **100
+native 6-axis samples per frame**: accel planar int16 at payload 85/285/485
+(×1/4096 g), gyro at 688/888/1088 (×0.06103515625 °/s), device second u32
+@7, HR @17. It is started by `3F/01` and has flowed on every Mac `3F` today.
+July dismissed it because the **iPhone** link died within seconds under it.
+Compact `0x33` is not R10 and is still unrecovered. R10 is reported separately
+and is **not** relabelled as `0x33`.
+
+Tool: `tools/strap-mac/r10_capture.py` (Python port of the Swift decoder, CRC
+validation, auto-reconnect, per-frame decoded JSONL).
+
+### Motion-validated capture — 16:20:49–16:23:53 IST (stream-5 CCCD toggle, then `3F/01` WWR)
+
+| Phase (IST) | Accel magnitude SD (max per 5 s) | Mean gyro | 2A37 HR |
+|---|---|---|---|
+| Still 16:21:01–16:21:26 | 0.002–0.013 g | 0.7–5.7 °/s | 66–82 |
+| **Shake 16:21:36–16:22:01** | **0.76–1.85 g** | **351–587 °/s** | 67 → 122 |
+| Still 16:22:56–16:23:51 | 0.0025–0.008 g | 0.5–2.3 °/s | 73–85 |
+
+- **180 R10 frames = 18,000 six-axis samples, 179 R11 frames, corrupt 0,
+  disconnects 0** over 184 s (the Mac link held under `2B` the whole time).
+- **Frame counter found:** payload `[3:5]` u16le increments by exactly 1 per
+  R10 frame (46931 → 47110, all deltas 1) → exact missing-frame accounting;
+  missing = 0.
+- **Frame period 0.961 s** (device span 172 s / 179 frames; wall 0.9603 s) →
+  100 samples per 0.961 s ≈ **104 Hz**. Seven same-second pairs (every ~25 s)
+  are the period, not duplicates: consecutive payloads were never identical.
+  Device-time gaps: 172 × 1 s, 7 × 0 s, none > 1 s.
+- Decoded samples: `/tmp/atria-ble/r10-samples.jsonl` (raw int16 + scales).
