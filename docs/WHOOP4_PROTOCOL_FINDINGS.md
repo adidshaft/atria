@@ -4917,3 +4917,25 @@ New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
   `SEND_R10_R11_REALTIME` therefore yields R10 and R11 both inside type `2B`.
   The "compact `0x33` is the R11 half of `3F`" hypothesis is **refuted**. `2B`
   is still not compact IMU and is not relabelled.
+
+#### Run B — 12:42 IST: history serve, then `3F/01` WWR mid-serve
+
+**PHYSICAL FAIL for compact `0x33`.** `r10r11_probe.py history_3f`, log
+`/tmp/atria-ble/r10r11-B.jsonl`. Starting state: `3F` stopped (`3F/00` at
+12:34, clean 32 s link with no `2B`).
+
+- `16/00` → type-24 data `02 0b 00 00` (pending). Stream-5 served history as
+  type `0x32` console records, ~280 per 10 s (ASCII "BLE: Nordic Conn Status",
+  "Total Conns: 1", "Whoop Conn idx: 0"), plus type `0x31`: 14 × sub 1 and
+  13 × sub 2. All 13 sub-2 ends were ACKed (`17/01`+token) → data
+  `01 00 00 00`. No sub 3 in 30 s.
+- `3F/01` WWR at +33 s → type-24 `02 00 00 00`. Within 1.5 s type `2B`
+  (R10 `0a` / R11 `0b`) **replaced** the history serve: `0x32` fell from
+  ~270 to 33 in that window, then to 0.
+- `2B` ran ~16–20 per 10 s with 2A37 at ~1 Hz, and the link lasted longer than
+  run A (46 s after `3F` vs 25 s). It still died with **`CBErrorDomain 6` at
+  +79 s**.
+- Totals: `0x32` 876, `0x31` 27, `0x30` 5, `2B` 75, type-24 15. **Compact
+  `0x33` = 0.** `3F` is latched again (no cleanup was possible).
+- **Conclusion:** `3F` does not take over a running history serve as `0x33`;
+  it pre-empts history with `2B`.
