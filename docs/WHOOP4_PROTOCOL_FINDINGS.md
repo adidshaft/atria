@@ -5055,3 +5055,19 @@ read-verified, and the journal is clear. The strap config is identical to the
 Tooling: `tools/strap-mac/runner.sh` is one long-lived Claude-panel tab that
 runs queued commands from `/tmp/atria-ble/runner.queue`. It works around the
 panel's six-tab limit and the TCC Bluetooth kill for non-panel shells.
+
+### 2026-09-23 — Feature-flag **reboot pass** (user lifted the `0x1D` ban for this pass)
+
+The user approved rebooting so that boot-time-only flags take effect. Per flag:
+`setreboot KEY` (read v0 → journal → `0x78` v1 → read back → `1D/00`) → wait →
+`checkrestore` (read key after boot → `3F/01` WWR → 15 s → `3F/00` → `0x78` v0
+→ read back). The next flag's reboot applies the previous restore. One final
+`1D/00`, then a full read pass and `clock` (re-set only if outside 2025–2027).
+
+| Flag (reboot-applied) | v0 → v1 | After reboot | 15 s after `3F/01` | Restore |
+|---|---|---|---|---|
+| `sigproc_10_sec_dp` (13:15) | 2 → 1 | 1 (persisted) | `2B` ×28, `0x33` 0 | 2 ✓ |
+
+`1D/00` → type-24 data `01 00 00 00`, clean disconnect ~0.5 s later. The first
+post-boot response sequence was **`01`** (it was 0x80–0xB0 before), which
+confirms a real firmware restart. The strap re-advertised within 20 s.

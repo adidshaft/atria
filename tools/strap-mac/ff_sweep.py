@@ -5,8 +5,13 @@ Modes:
   trial KEY [VALUE]  read v0, SET v1 (default: raw "1"<->"2"), read back, 3F/01 WWR stimulus,
                      listen, 3F/00, restore v0 unless 0x33 was seen, read back.
   restore            only restore a pending journal entry.
+  setreboot KEY      read v0, journal, SET v1, read back, then 1D/00 (reboot applies it).
+  checkrestore       after a reboot: read the journaled key, 3F/01 WWR stimulus, listen,
+                     3F/00, restore v0, read back (applied by the next reboot).
+  reboot             1D/00 only.
+  clock              GET_CLOCK 0B/00; SET_CLOCK 0A only if the strap clock is outside 2025-2027.
 
-Opcodes used: 75, 76, 80, 78, 3F. 0x78 body = 01 | key[32] | value[32] (Jul 30 proven).
+Opcodes used: 75, 76, 80, 78, 3F, 1D (user-authorized reboot pass), 0B/0A (clock repair). 0x78 body = 01 | key[32] | value[32] (Jul 30 proven).
 0x80 body = 01 | key[32] (inferred; validated in `read` against Jul 30 values).
 A journal is written before every 0x78 and cleared only after a verified restore.
 Usage: ff_sweep.py MODE [KEY] [VALUE] [--log PATH] [--listen S]
@@ -37,8 +42,8 @@ if "--log" in ARGS:
 if "--listen" in ARGS:
     i = ARGS.index("--listen"); LISTEN_S = float(ARGS[i + 1]); del ARGS[i:i + 2]
 MODE = ARGS[0] if ARGS else "read"
-assert MODE in ("read", "trial", "restore"), MODE
-TRIAL_KEY = ARGS[1] if MODE == "trial" else None
+assert MODE in ("read", "trial", "restore", "setreboot", "checkrestore", "reboot", "clock"), MODE
+TRIAL_KEY = ARGS[1] if MODE in ("trial", "setreboot") else None
 TRIAL_VALUE = ARGS[2] if MODE == "trial" and len(ARGS) > 2 else None
 JOURNAL = "/tmp/atria-ble/ff-journal.json"
 OUT = open(LOG, "a", buffering=1)
@@ -258,6 +263,13 @@ class Delegate(NSObject):
     @objc.python_method
     def begin(self):
         pending = journal_read()
+        if MODE == "checkrestore":
+            if not pending:
+                say({"event": "checkrestore_no_journal"})
+                self.hangup(); return
+            self.check_flow(pending); return
+        if MODE in ("reboot", "clock"):
+            self.main_flow(); return
         if pending:
             say({"event": "journal_restore_first", "journal": pending})
             self.set_value(pending["key"], pending["original"], lambda ok: self.after_restore(ok, pending))
@@ -285,6 +297,12 @@ class Delegate(NSObject):
             self.hangup()
         elif MODE == "read":
             self.enumerate(lambda: self.read_all(0))
+        elif MODE == "setreboot":
+            self.setreboot_flow()
+        elif MODE == "reboot":
+            self.reboot_now("final_reboot")
+        elif MODE == "clock":
+            self.clock_flow()
         else:
             self.trial_flow()
 
@@ -387,6 +405,53 @@ class Delegate(NSObject):
         self.hangup()
 
     @objc.python_method
+    def reboot_now(self, reason):
+        say({"event": "reboot", "reason": reason})
+        self.send(0x1D, b"\x00", "reboot_1d00", lambda d: self.hangup())
+
+    @objc.python_method
+    def setreboot_flow(self):
+        key = TRIAL_KEY
+        def got_v0(v0):
+            if v0 not in ("1", "2"):
+                say({"event": "trial_refused", "key": key, "v0": v0}); self.hangup(); return
+            v1 = "1" if v0 == "2" else "2"
+            journal_write({"key": key, "original": v0, "trial": v1, "phase": "set_before_reboot", "at": time.time()})
+            say({"event": "journal_written", "key": key, "original": v0, "trial": v1})
+            def set_done(ok):
+                def readback(v):
+                    say({"event": "trial_value", "key": key, "v0": v0, "v1": v1, "observed": v})
+                    self.reboot_now(f"apply:{key}={v1}")
+                self.get_value(key, readback)
+            self.set_value(key, v1, set_done)
+        self.get_value(key, got_v0)
+
+    @objc.python_method
+    def check_flow(self, j):
+        key, v0, v1 = j["key"], j["original"], j["trial"]
+        def post_reboot(v):
+            say({"event": "post_reboot_value", "key": key, "observed": v, "expected": v1})
+            self.trial = (key, v0, v1)
+            self.counts = {}
+            self.compact = 0
+            self.send(0x3F, b"\x01", "3f01_stimulus", lambda d: None, wwr=True)
+            self.pending = None
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(LISTEN_S, self, "endListen:", None, False)
+        self.get_value(key, post_reboot)
+
+    @objc.python_method
+    def clock_flow(self):
+        def got(data):
+            unix = int.from_bytes(data[1:5], "little") if data and data[0] == 0x01 and len(data) >= 5 else None
+            say({"event": "clock", "device_unix": unix, "wall_unix": int(time.time())})
+            if unix is not None and 1735689600 <= unix <= 1830297600:
+                self.hangup(); return
+            now = int(time.time())
+            self.send(0x0A, now.to_bytes(4, "little") + b"\x00\x00\x00\x00", "set_clock",
+                      lambda d: self.send(0x0B, b"\x00", "get_clock_after", lambda d2: self.hangup()))
+        self.send(0x0B, b"\x00", "get_clock", got)
+
+    @objc.python_method
     def hangup(self):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(0.5, self, "cancelLink:", None, False)
 
@@ -398,6 +463,17 @@ say({"event": "start", "mode": MODE, "key": TRIAL_KEY, "value": TRIAL_VALUE, "li
      "journal_pending": journal_read()})
 delegate = Delegate.alloc().init()
 delegate.central = CBCentralManager.alloc().initWithDelegate_queue_(delegate, None)
+
+
+class Watchdog(NSObject):
+    def fire_(self, _timer):
+        if not delegate.started:
+            say({"event": "watchdog_no_link_120s"})
+            AppHelper.stopEventLoop()
+
+
+_wd = Watchdog.alloc().init()
+NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(120.0, _wd, "fire:", None, False)
 try:
     AppHelper.runConsoleEventLoop()
 finally:
