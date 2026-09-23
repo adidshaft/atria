@@ -10,6 +10,8 @@ Modes:
                      3F/00, restore v0, read back (applied by the next reboot).
   reboot             1D/00 only.
   clock              GET_CLOCK 0B/00; SET_CLOCK 0A only if the strap clock is outside 2025-2027.
+  trim3f             test D: 22/00 range -> 19 trim (FE*8+00, Jul 30 proven) -> 22/00 verify W==U
+                     -> 3F/01 WWR -> listen (0x33 leaves 3F on; else 3F/00).
 
 Opcodes used: 75, 76, 80, 78, 3F, 1D (user-authorized reboot pass), 0B/0A (clock repair). 0x78 body = 01 | key[32] | value[32] (Jul 30 proven).
 0x80 body = 01 | key[32] (inferred; validated in `read` against Jul 30 values).
@@ -42,7 +44,7 @@ if "--log" in ARGS:
 if "--listen" in ARGS:
     i = ARGS.index("--listen"); LISTEN_S = float(ARGS[i + 1]); del ARGS[i:i + 2]
 MODE = ARGS[0] if ARGS else "read"
-assert MODE in ("read", "trial", "restore", "setreboot", "checkrestore", "reboot", "clock"), MODE
+assert MODE in ("read", "trial", "restore", "setreboot", "checkrestore", "reboot", "clock", "trim3f"), MODE
 TRIAL_KEY = ARGS[1] if MODE in ("trial", "setreboot") else None
 TRIAL_VALUE = ARGS[2] if MODE == "trial" and len(ARGS) > 2 else None
 JOURNAL = "/tmp/atria-ble/ff-journal.json"
@@ -268,7 +270,7 @@ class Delegate(NSObject):
                 say({"event": "checkrestore_no_journal"})
                 self.hangup(); return
             self.check_flow(pending); return
-        if MODE in ("reboot", "clock"):
+        if MODE in ("reboot", "clock", "trim3f"):
             self.main_flow(); return
         if pending:
             say({"event": "journal_restore_first", "journal": pending})
@@ -303,6 +305,8 @@ class Delegate(NSObject):
             self.reboot_now("final_reboot")
         elif MODE == "clock":
             self.clock_flow()
+        elif MODE == "trim3f":
+            self.trim_flow()
         else:
             self.trial_flow()
 
@@ -450,6 +454,43 @@ class Delegate(NSObject):
             self.send(0x0A, now.to_bytes(4, "little") + b"\x00\x00\x00\x00", "set_clock",
                       lambda d: self.send(0x0B, b"\x00", "get_clock_after", lambda d2: self.hangup()))
         self.send(0x0B, b"\x00", "get_clock", got)
+
+    @objc.python_method
+    def get_range(self, label, callback):
+        def got(data):
+            inner = b"\x24\x00\x22\x00" + (data or b"")
+            r = None
+            if data and len(inner) >= 66:
+                r = {"W": int.from_bytes(inner[14:18], "little"), "U": int.from_bytes(inner[18:22], "little"),
+                     "capacity": int.from_bytes(inner[26:30], "little"),
+                     "device_unix": int.from_bytes(inner[62:66], "little")}
+                r["pending"] = (r["W"] - r["U"]) % r["capacity"] if r["capacity"] else None
+            say({"event": "data_range", "label": label, "range": r})
+            callback(r)
+        self.send(0x22, b"\x00", f"range_{label}", got)
+
+    @objc.python_method
+    def trim_flow(self):
+        def after_pre(r0):
+            def after_trim(_):
+                def after_post(r1):
+                    say({"event": "fifo_state", "empty": bool(r1) and r1["W"] == r1["U"], "pre": r0, "post": r1})
+                    self.counts = {}
+                    self.compact = 0
+                    self.send(0x3F, b"\x01", "3f01_stimulus", lambda d: None, wwr=True)
+                    self.pending = None
+                    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                        LISTEN_S, self, "endTrim:", None, False)
+                self.get_range("post_trim", after_post)
+            self.send(0x19, b"\xfe" * 8 + b"\x00", "trim_19", after_trim)
+        self.get_range("pre_trim", after_pre)
+
+    def endTrim_(self, _timer):
+        say({"event": "trim3f_result", "compact33": self.compact, "counts": self.counts, "hr_n": self.hr_n})
+        if self.compact:
+            say({"event": "compact_found_leaving_3f_on"})
+            self.hangup(); return
+        self.send(0x3F, b"\x00", "3f00", lambda d: self.hangup())
 
     @objc.python_method
     def hangup(self):

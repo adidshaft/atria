@@ -5104,3 +5104,23 @@ command whose payload is known. What remains is unpublished (`SET_DP_TYPE`
 `0x34` / `FORCE_DP_TYPE` `0x35` bodies), a strap that has no BLE DFU service,
 or the iPhone app/central from Sep 15 (build `d82b42e6`), which was not
 re-run. Goal remains open.
+
+### 2026-09-23 — Mac-only continuation: FIFO-empty hypothesis (test D)
+
+User preference: Mac↔strap only. **Hypothesis H-FIFO:** firmware admits live
+compact `0x33` only when the flash FIFO is caught up (`W == U`), while R10 `2B`
+is admitted regardless. It fits Sep 14–15: a full history drain was running,
+and `0x33` first appeared ~6 min after a history-end frame (01:29:40 →
+~01:36). **Test D:** `22/00` (W/U/capacity) → `0x19` trim (`FE×8 + 00`, Jul
+30 proven; strap history is expendable) → `22/00` verify `W == U` → `3F/01` WWR
+→ listen 60 s → `3F/00` if no `0x33`.
+
+#### Test D — 13:31 IST: result
+
+**PHYSICAL FAIL; H-FIFO refuted (immediate form).** Log `/tmp/atria-ble/testD.jsonl`.
+- Pre-trim `0x22`: W=882, U=122442, capacity 131072 → **9512 pending**
+  (wrapped ring), device time 1790150462 (correct).
+- `0x19` `FE×8+00` → data `01 00 00 00`. Post-trim: **W=U=883**, pending 0.
+- `3F/01` WWR on the empty FIFO → **`2B` ×124 in 60 s**, `0x33` 0. The link
+  held all 60 s. Cleanup `3F/00` sent. Strap history is now discarded (the
+  user declared it expendable).
