@@ -5329,3 +5329,25 @@ Non-IMU bytes that vary across 463 R10 frames: 2–4, 7–8, 11–15, 17–22, 2
 
 Unresolved: bytes 2, 11–15, 27–31, 76–84, 687, 1293–1315, 1917 (flags,
 sub-second tick, temperature/status candidates).
+
+### Mac-side metrics from native R10 (`tools/strap-mac/strap_metrics.py`)
+
+**HRV — PASS (source agreement).** R10 RR (bytes 18/19…) is in **milliseconds**:
+its mean matches the strap's own bpm field (still windows: 76.9 vs 77.7 bpm,
+65.5 vs 65.6 bpm). The same beats arrive on 2A37 one notification later, with
+**R10_ms = 2A37_raw × 1.024** beat-for-beat. The spec reading (raw × 1000/1024)
+makes 2A37 RR ~4.6% short (implies 80.7 / 68.7 bpm vs 77.7 / 65.4 reported).
+With the empirical scale, the two sources agree over the 16:28–16:42 capture:
+R10 RMSSD **47.1 ms**, SDNN 78.6, mean RR 871.5 (471 beats) vs 2A37 RMSSD 47.0,
+SDNN 78.8, mean RR 870.8 (469 beats). Artifact filter 300–2000 ms, |Δ| ≤ 20 %.
+**App impact:** `AtriaBLEManager` 2A37 parse uses `(raw*1000+512)/1024`, so
+app RMSSD/SDNN read ~4.6 % low on this strap (flagged as a separate task).
+
+**Steps — port done, not yet validated.** An exact Python port of
+`AtriaGyroCadenceResearchPedometer` (4 s Hann DFT, 0.5 s hop, 1.3–3.0 Hz band,
+35 °/s gate, prominence 1.6, sway 1.4, ≥2 anchors, turn discount 0.6, 100 Hz
+parity). On the 16:28–16:42 capture it reported **128 steps with zero real
+walking**. The bouts sit on the deliberate wrist-shake phases (≈90–117 spm) and
+on strap removal/reseat. Rhythmic wrist shaking is a known false-positive class
+for a wrist gyro pedometer. A counted walk plus a typing/desk negative control
+are required before any step claim.
