@@ -4822,3 +4822,28 @@ iPhone Bluetooth is OFF.
   or the `claude` CLI. They run from the Claude desktop terminal panel
   (Claude.app declares Bluetooth) or Cursor. Recorder restarted 11:15 under
   `caffeinate -s -i` from that panel.
+
+### 2026-09-23 — Re-read of Sep 15: a 3F/01 WWR activation DID precede the first `0x33`
+
+**EVIDENCE RE-READ (no TX).** User has declared the strap expendable and asked
+for the deepest fix available. Before any new command, the Sep 15 first-`0x33`
+window was re-read against the app code.
+
+- `SEP15-MATCHING-GEN.md` lists `atria.protectedR10.activationSentAt` =
+  **01:05:49 IST 15 Sep** (activation count **597 → 601** across the pulls),
+  plus a WWR flush at 01:05:49. First type `0x31` (history end, sub 2) is at
+  01:29:40, and the first native 152-byte `0x33` is at ~01:36.
+- In `AtriaBLEManager.sendProtectedR10ActivationNowIfReady` that key is
+  stamped by exactly one TX: `encodeFrame([0x23, seq, 0x3F, 0x01])`
+  (`Cmd.sendR10R11Realtime`), sent **write-WITHOUT-response**
+  (`writeProprietaryWithoutResponse`, reason `protected_r10_3f`). Preconditions:
+  standard-HR-only mode, stream-5 CCCD confirmed, 2A37 notifying.
+- So the earlier conclusion "no logged start command, inherited mux" is
+  incomplete. The logged 6A stamps were all July, but a **`3F/01` WWR** was
+  logged ~30 min before `0x33`, with a history serve (type `0x31`) between them.
+- Differences from every Mac `3F/01` attempt on 22 Sep: the Mac used
+  write-WITH-response, stopped `3F` with `3F/00` within ~12 s of the first
+  type `2B`, and never let a history serve finish while `3F` stayed on.
+- `0x3F` is named `SEND_R10_R11_REALTIME`. Every test so far has treated it as
+  R10 (`2B`) only. Whether the compact frame is the "R11" half is **untested**.
+  It is a hypothesis, not evidence.
