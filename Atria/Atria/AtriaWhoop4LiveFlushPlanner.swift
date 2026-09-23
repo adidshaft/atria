@@ -90,8 +90,38 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
     private var drain: (reason: DrainReason, target: UInt32, startedAt: Date, rows: Int,
                         first: UInt32?, last: UInt32?, progressAt: Date)?
     private var retryDrainAt: Date?
+    /// Power policy (see `AtriaWhoop4PowerPolicy`); defaults allow everything.
+    private(set) var liveAllowed = true
+    private(set) var flushMode: AtriaWhoop4PowerPolicy.Flush = .periodic(interval: 300)
+    private var liveStreaming = false
+    static let asapFlushInterval: TimeInterval = 60
 
     init() {}
+
+    // MARK: Power
+
+    /// Apply a power decision. Returns commands needed right now (e.g. stop live).
+    mutating func applyPower(_ decision: AtriaWhoop4PowerPolicy.Decision) -> [Command] {
+        liveAllowed = decision.liveMotionAllowed
+        flushMode = decision.flush
+        if !liveAllowed, liveStreaming, state == .live {
+            liveStreaming = false
+            return [.liveOff]
+        }
+        if liveAllowed, !liveStreaming, state == .live {
+            liveStreaming = true
+            return [.liveOn]
+        }
+        return []
+    }
+
+    private var flushInterval: TimeInterval? {
+        switch flushMode {
+        case .asap: return Self.asapFlushInterval
+        case let .periodic(interval): return interval
+        case .paused: return nil
+        }
+    }
 
     // MARK: Link
 
@@ -103,7 +133,12 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
         awaitingRetried = false
         // First connection: start live immediately. Reconnect: the 3F latch may
         // already resume live frames; the gap drain starts on the first frame.
-        return preGapFrame == nil && lastFrame == nil ? startLive(now: now) : []
+        guard preGapFrame == nil, lastFrame == nil else { return [] }
+        if liveAllowed { return startLive(now: now) }
+        // Live not allowed: connected but idle; flush decisions come from tick.
+        state = .live
+        liveSince = now
+        return []
     }
 
     mutating func linkLost() {
@@ -132,6 +167,7 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
             }
         }
         if state == .live { resumedFromPause = false }
+        if state != .draining { liveStreaming = true }
         lastFrame = (counter, deviceSecond, firmwareSteps)
 
         if state == .awaitingFirstFrame {
@@ -193,18 +229,29 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
                 return endDrain(.timeout, now: now)
             }
         case .live:
+            guard let interval = flushInterval else { return ([], []) }
             if let retry = retryDrainAt, now >= retry {
                 retryDrainAt = nil
                 return beginDrain(reason: .periodic, now: now)
             }
             let reference = lastDrainEndedAt ?? liveSince ?? now
-            if now.timeIntervalSince(reference) >= Self.periodicDrainInterval {
+            if now.timeIntervalSince(reference) >= interval {
                 return beginDrain(reason: .periodic, now: now)
             }
         case .awaitingFirstFrame:
+            if !liveAllowed {
+                // Live stays off: no latched frames expected. Drain the gap now
+                // (if flushing is allowed) using the last known device clock.
+                state = .live
+                liveSince = liveSince ?? now
+                preGapFrame = nil
+                if flushInterval != nil { return beginDrain(reason: .reconnect, now: now) }
+                return ([], [])
+            }
             if !awaitingRetried, let since = awaitingSince,
                now.timeIntervalSince(since) >= Self.awaitingFrameLiveRetry {
                 awaitingRetried = true
+                liveStreaming = true
                 return ([.liveOn], [])
             }
         case .disconnected:
@@ -217,6 +264,7 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
 
     private mutating func startLive(now: Date) -> [Command] {
         liveSince = liveSince ?? now
+        liveStreaming = true
         return [.liveOn]
     }
 
@@ -224,6 +272,7 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
         guard let offset = deviceMinusWall else { return ([], []) }
         let target = UInt32(max(0, (now.timeIntervalSince1970 + offset).rounded(.down) - 1))
         state = .draining
+        liveStreaming = false
         drain = (reason, target, now, 0, nil, nil, now)
         accounting.drains += 1
         return ([.liveOff, .historyStart], [.drainStarted(reason: reason, targetDeviceSecond: target)])
@@ -236,7 +285,8 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
         state = .live
         lastDrainEndedAt = now
         resumedFromPause = true
-        return ([.historyAbort, .liveOn],
+        liveStreaming = liveAllowed
+        return (liveAllowed ? [.historyAbort, .liveOn] : [.historyAbort],
                 [.drainFinished(reason: d.reason, end: end, rows: d.rows,
                                 firstRowSecond: d.first, lastRowSecond: d.last)])
     }
