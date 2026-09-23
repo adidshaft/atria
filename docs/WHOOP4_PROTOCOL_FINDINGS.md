@@ -5351,3 +5351,17 @@ walking**. The bouts sit on the deliberate wrist-shake phases (≈90–117 spm) 
 on strap removal/reseat. Rhythmic wrist shaking is a known false-positive class
 for a wrist gyro pedometer. A counted walk plus a typing/desk negative control
 are required before any step claim.
+
+### R10 unknown-field pass (item 3), 868 frames, 16:28–16:46 IST
+
+| Bytes | Result | Evidence |
+|---|---|---|
+| **11–12** | **u16le 32.768 kHz sub-second tick** (15-bit, wraps at 32768). **Frame time = device second (7–10) + tick/32768** | consecutive frames 0.96143 s ± 0.12 ms apart (min 0.9612, max 0.9614); tick drops by ~1264 (= 0.0386 s) per frame and wraps exactly when the second repeats |
+| — | **IMU rate = 100 samples / 0.96143 s = 104.01 Hz** (LSM6DS-class 104 Hz ODR fits) | from the above |
+| 82–84 / 685–687 | IMU block headers `03 01 n` (accel) / `05 01 n` (gyro); ids 03/05; n = 99–102 (101 ×614, 100 ×268, 99 ×3, 102 ×1). 84 and 687 are always equal | storage is always exactly 3 × 100 int16; **n is not the stored-sample count** (unverified meaning, e.g. FIFO words read). A fixed 100-sample decode stays correct |
+| **13 / 14** | **wear/contact candidates**: 128/84 on-wrist, **0/128** off-wrist | off-wrist frame 16:36:08 (2A37 = 0, gravity flat) |
+| **2** | status byte, 0x29 → **0x2B** (bit 1 set) at 16:38, ~1 min after the user put the charger on (~16:37) | **charging-flag candidate** |
+| 15, 1917, 1293–1294 | rise after the charger went on (15: 74 → 184 at ~+10/min; 1917: 85 → 147; u16@1293: 1413 → 1700 stepwise) | battery/charge/temperature candidates; needs a charger-off event to separate |
+| 76, 79–80 | fall after the charger went on (194 → 159; 49k → 42k) | same |
+| 27–31 | fast/irregular | unresolved |
+| 42–74 | float-like; not a quaternion | unresolved |
