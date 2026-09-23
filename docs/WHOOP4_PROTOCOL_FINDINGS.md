@@ -5546,3 +5546,37 @@ Limits: one subject, one wrist (x/y signs depend on wrist and side), one
 session. Not tested: hands in pockets, carrying objects, phone to the ear,
 treadmill handrails, stairs. These could fail the gate (under-count).
 Recommended default: gx ≥ 0.7 until more labelled data exists.
+
+### Step validation 4 — carrying/holding conditions, other wrist, and a fused rule (17:36–17:46 IST)
+
+Room walks with 180° turns every 10–12 steps (the user's real environment),
+100 spm metronome, truth 75. `/tmp/atria-ble/cond-labels.jsonl`.
+
+| Condition | Gyro | Gyro arm-down gated (gx ≥ 0.7) | Firmware @1293 | Accel | Gravity mean |
+|---|---|---|---|---|---|
+| Hands in pockets | 68.5 | 68.5 (−8.7 %) | 89 (+18.7 %) | 116.6 | (+0.89, +0.47, 0.01) |
+| Bag in strap hand | **27.9 (−63 %)** | 27.9 | **74 (−1.3 %)** | 51.1 | (+0.99, +0.17, 0.04) |
+| Phone in strap hand | **23.1 (−69 %)** | 0 | **65 (−13 %)** | 58.8 | (−0.23, +0.92, −0.23) |
+| **Other wrist** | **72.3 (−3.6 %)** | 0 (sign!) | 77 (+2.7 %) | 102.1 | **(−1.00, +0.23, −0.06)** |
+| Other wrist, hand-talk (truth 0) | 70.9 | 0 | **110** | 103.2 | (−0.20, +0.72, −0.11) |
+
+- The gyro-cadence detector needs arm swing. Carrying or holding something
+  breaks it; the firmware counter survives it.
+- On the other wrist gravity x flips sign, so the arm-down gate must be
+  **|gx| ≥ 0.7**.
+
+**Walking discriminator: accel-magnitude autocorrelation peak (lags 0.35–1.2 s).**
+All 11 walks score 0.295–0.626. Typing / hand-talk (both wrists) /
+hand-to-mouth score 0.027–0.111. A threshold of 0.2 separates them with margin.
+
+**Fused rule (candidate):** if accel periodicity < 0.2 → 0 steps; else if
+gyro ≥ 0.7 × firmware → gyro count; else firmware count.
+
+| All labelled segments | Result |
+|---|---|
+| 10 walks (80/100/120 spm, pockets, bag, phone, other wrist) | **mean \|err\| 6.7 %, max 13.3 % (phone)** |
+| 4 controls (typing, hand-to-mouth, hand-talk ×2 wrists) | **0 false steps** (firmware alone: 236) |
+
+**Caveat:** the rule was designed on the same segments (in-sample) and
+evaluated per whole segment. A production version must run on rolling windows
+(~10 s) and be re-validated on fresh labelled walks before any product use.
