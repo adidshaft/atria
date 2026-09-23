@@ -5772,3 +5772,30 @@ Overnight capture status at 21:09 IST (`night2`, the same logic in Python):
   20-s connect watchdog (cancel + rescan) and a `didFailToConnect` rescan.
   Reconnected immediately at 22:28:20 (discovery RSSI −94 dBm, far).
 - Planner tests: 7/7 pass.
+
+### Power policy (`Atria/Atria/AtriaWhoop4PowerPolicy.swift`) wired into the flush planner
+
+Owner requirement: manage strap and phone battery. Deferring a flush is
+lossless (history waits in strap flash), so low battery delays data but never
+drops it. 2A37 HR always stays on.
+
+| Condition (first match wins) | Live R10/R11 | Flush |
+|---|---|---|
+| strap ≤ 5 % not charging | off | paused |
+| phone thermal critical | off | paused |
+| strap or phone charging | on unless the strap is low and not charging, or the phone is conserving | **asap** (drain every 60 s) |
+| strap < 20 % (resume 25 %) | off | **paused** |
+| phone < 20 % (resume 25 %) / Low Power Mode / thermal ≥ serious | off | every 30 min |
+| strap < 25 % (resume 30 %) | off | every 5 min |
+| otherwise | on | every 5 min + on reconnect |
+
+The 25 % live threshold reuses `AtriaBLEManager.lowBatteryWarningThreshold`
+(a 13 % strap dropped the link ~12 s after R10 started); the 5 % level reuses
+the broadcast shutoff. The planner never sends `3F/01` while live is
+disallowed, emits `3F/00` when policy turns live off mid-stream, and with live
+off drains immediately after a reconnect (no latched frames to wait for). With
+live off no post-gap firmware-counter reading exists, so gap steps are bridged
+when live next resumes.
+
+Tests: `AtriaWhoop4PowerPolicyTests` 8/8, `AtriaWhoop4LiveFlushPlannerTests`
+10/10, `AtriaWhoop4R10RecordTests` 5/5, all passed.

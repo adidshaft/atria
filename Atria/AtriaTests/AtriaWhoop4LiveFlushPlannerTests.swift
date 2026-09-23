@@ -200,4 +200,59 @@ final class AtriaWhoop4LiveFlushPlannerTests: XCTestCase {
         }
         XCTAssertEqual(steps, 20)
     }
+
+    // MARK: Power policy integration
+
+    private func decision(live: Bool, flush: AtriaWhoop4PowerPolicy.Flush) -> AtriaWhoop4PowerPolicy.Decision {
+        AtriaWhoop4PowerPolicy.Decision(liveMotionAllowed: live, flush: flush, reason: "test")
+    }
+
+    func testLowBatteryStopsLiveAndDrainsWithoutRestartingLive() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 10)
+        XCTAssertEqual(planner.applyPower(decision(live: false, flush: .periodic(interval: 300))), [.liveOff])
+        // Next periodic drain: pause is implicit, drain ends without re-enabling live.
+        let drainStart = planner.tick(now: t0.addingTimeInterval(300))
+        XCTAssertEqual(drainStart.commands, [.liveOff, .historyStart])
+        let end = planner.historyFrame(payload: v24Row(second: deviceSecond0 + 999), now: t0.addingTimeInterval(305))
+        XCTAssertEqual(end.commands, [.historyAbort], "live stays off while not allowed")
+        // Power recovers: live resumes.
+        XCTAssertEqual(planner.applyPower(decision(live: true, flush: .periodic(interval: 300))), [.liveOn])
+    }
+
+    func testPausedFlushNeverDrainsAndChargingDrainsEveryMinute() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 5)
+        _ = planner.applyPower(decision(live: false, flush: .paused))
+        XCTAssertEqual(planner.tick(now: t0.addingTimeInterval(3_600)).commands, [], "paused: history waits on the strap")
+        _ = planner.applyPower(decision(live: false, flush: .asap))
+        XCTAssertEqual(planner.tick(now: t0.addingTimeInterval(3_600)).commands, [.liveOff, .historyStart])
+        _ = planner.historyFrame(payload: v24Row(second: deviceSecond0 + 9_999), now: t0.addingTimeInterval(3_610))
+        XCTAssertEqual(planner.tick(now: t0.addingTimeInterval(3_650)).commands, [])
+        XCTAssertEqual(planner.tick(now: t0.addingTimeInterval(3_671)).commands, [.liveOff, .historyStart],
+                       "asap: next drain one minute after the last")
+    }
+
+    func testReconnectWithLiveOffDrainsImmediatelyWithoutWaitingForFrames() {
+        var planner = AtriaWhoop4LiveFlushPlanner()
+        _ = planner.linkReady(now: t0)
+        var counter: UInt16 = 0
+        var second = deviceSecond0
+        feed(&planner, counter: &counter, second: &second, from: t0, count: 5)
+        _ = planner.applyPower(decision(live: false, flush: .periodic(interval: 300)))
+        planner.linkLost()
+        let back = t0.addingTimeInterval(120)
+        XCTAssertEqual(planner.linkReady(now: back), [])
+        let result = planner.tick(now: back.addingTimeInterval(1))
+        XCTAssertEqual(result.commands, [.liveOff, .historyStart])
+        guard case .drainStarted(.reconnect, _)? = result.events.first else {
+            return XCTFail("expected a reconnect drain")
+        }
+    }
 }
