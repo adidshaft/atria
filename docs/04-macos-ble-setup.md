@@ -20,15 +20,17 @@ python3 -m venv .venv
 
 ## ⚠️ The macOS Bluetooth permission gotcha
 
-Running a bleak script **directly from a shell launched inside an app** (e.g. an
-IDE/agent) aborts immediately with **`SIGABRT` (exit 134)** and the message:
+On some host configurations, running a bleak script **directly from a shell
+launched inside an app** (e.g. an IDE/agent) can abort with **`SIGABRT` (exit 134)** and the message:
 
 > *This app has crashed because it attempted to access privacy-sensitive data
 > without a usage description … NSBluetoothAlwaysUsageDescription.*
 
 Why: macOS TCC attributes the Bluetooth check to the **responsible app** hosting
 the shell, and that attribution doesn't satisfy the subprocess. Repackaging the
-Python interpreter into a signed `.app` bundle does **not** fix it.
+Python interpreter into a signed `.app` bundle did not fix the recorded case.
+Permission behavior depends on the responsible host; do not generalize that
+observation to every IDE or runner.
 
 ### Working solution: run it from Terminal.app
 
@@ -48,3 +50,15 @@ into the script's defaults rather than passing args.)
 
 > The iOS app has none of this pain — CoreBluetooth permission is just an
 > `Info.plist` usage string the app declares natively.
+
+## Newer Mac research tooling
+
+The September 23 local development session uses PyObjC/CoreBluetooth tools under
+`tools/strap-mac/` and also has Swift tooling under `tools/StrapProtocol/`.
+These paths are not present in every published checkout. Follow the dependencies
+and runner instructions in the checkout containing them; the Bleak setup above
+does not install their dependencies. See [current status](CURRENT_STATUS.md).
+
+Do not start a second central or probe while an overnight capture owns the strap.
+A Mac transport result does not establish iPhone background reliability. Keep raw
+captures local and share only reviewed, redacted summaries or synthetic fixtures.
