@@ -129,7 +129,7 @@ class Delegate(NSObject):
         self.armed = False
         self.seq = 1
         self.buffers = {}
-        self.stats = {"r10": 0, "r11": 0, "corrupt": 0, "other": 0, "connects": 0, "disconnects": 0, "missing": 0, "seq_resets": 0}
+        self.stats = {"r10": 0, "r11": 0, "corrupt": 0, "other": 0, "connects": 0, "disconnects": 0, "missing": 0, "seq_resets": 0, "not_produced_s": 0, "pauses": 0}
         self.last_seq = None
         self.win = {"r10": 0, "acc_sd": [], "gyr_mean": [], "hr": None}
         self.last_ts = None
@@ -279,6 +279,14 @@ class Delegate(NSObject):
             elif delta == 0 or delta >= 0x8000:
                 self.stats["seq_resets"] += 1
                 say({"event": "seq_reset", "from_seq": self.last_seq, "to_seq": seq})
+        contiguous = self.last_seq is not None and ((seq - self.last_seq) & 0xFFFF) == 1
+        if contiguous and self.last_ts is not None and ts - self.last_ts > 1:
+            # Counter contiguous but device time jumped: the strap did not produce frames
+            # (e.g. off-wrist wear gate). Not a transit loss.
+            self.stats["not_produced_s"] += ts - self.last_ts - 1
+            self.stats["pauses"] += 1
+            say({"event": "production_pause", "seconds": ts - self.last_ts - 1, "seq": seq,
+                 "from_device_second": self.last_ts, "to_device_second": ts})
         self.last_seq = seq
         gap = None
         if self.last_ts is not None:
