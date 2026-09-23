@@ -4847,3 +4847,32 @@ window was re-read against the app code.
 - `0x3F` is named `SEND_R10_R11_REALTIME`. Every test so far has treated it as
   R10 (`2B`) only. Whether the compact frame is the "R11" half is **untested**.
   It is a hypothesis, not evidence.
+
+#### Sep 15 prefs diff, inrange-34 → 38 (all times IST, 15 Sep)
+
+Only changed keys are shown. Source: each pull's `preferences.plist`.
+
+| Pull | Stream-5 callbacks (this conn) | Event keys that changed |
+|---|---|---|
+| 34 | 0 | zombie stream-5 CCCD toggle + TX rediscover 00:37:18; `3F` count 591 |
+| 35 | 0 | `3F/01` WWR 00:43:39 (count 597) |
+| 36 | **6582**, last = type `0x31` 01:29:40 | **zombie CCCD toggle + TX rediscover 01:02:06**; `3F/01` WWR 01:05:49 (601) |
+| 37 | 8086, last = **152 B `0x33`** (~01:36) | `3F/01` WWR **01:30:29** (602) |
+| 38 | 327 (**new connection**), last = `0x33` 01:50:40 | `3F/01` WWR **01:49:43** (605); history `0x22` timed out → `preserve_realtime` |
+
+Read-out:
+
+- On the fresh connection in pull 38, `3F/01` WWR at 01:49:43 is followed by a
+  native `0x33` at 01:50:40, **57 s later**, with no `6A`.
+- By pull 37, the same opcode that gives type `2B` on the Mac (22 Sep) was
+  giving `0x33`. The switch happened between 01:05 and 01:36, in a window
+  that contains: a stream-5 CCCD off→on toggle (01:02:06), `3F/01` WWR
+  (01:05:49), a long history serve on stream-5 (type `0x31`/`0x32`, 6582
+  callbacks), then `3F/01` WWR again (01:30:29).
+- The Mac never tested `3F` **during or after** a history serve, never let
+  `3F` run longer than ~12 s, and never used WWR for `3F`.
+
+Next runs (Mac, strap expendable per user, one variable each):
+**A**: `3F/01` WWR on a fresh link, no stop, listen 5 min for a `2B`→`0x33`
+change. **B**: history `16/00` running, ACK every sub 2, then `3F/01` WWR
+mid-serve; listen and keep ACKing.
