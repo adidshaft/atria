@@ -5714,3 +5714,20 @@ and the firmware-counter steps are bridged. 4-min trial (drain every 60 s):
 0 corrupt, 0 disconnects. R10 frames not sent during deliberate drain pauses
 are counted as `drain_paused_frames` (covered by history rows), separate from
 `missing`.
+
+### Overnight + gym plan (started 18:29:42 IST, 16 h)
+
+`night_capture.py --duration 57600 --drain-every 300 --drain-max 600` →
+`/tmp/atria-ble/night2.jsonl` (events) and `night2-raw.jsonl` (all payloads).
+The first capture (18:24–18:29, `night.jsonl`) had one periodic drain
+`caught_up` (467 rows / 22.6 s), 0 missing / corrupt / disconnects. It was
+restarted only to raise the drain cap to 10 min.
+
+**Real-world long-gap test:** the user wears the strap to the gym (out of
+range the whole session) while the Mac capture stays home. On return the
+capture must reconnect, bridge gym steps from the firmware counter, drain the
+entire session from flash history (~19× realtime), and resume live.
+Verification afterwards: 0 missing seconds across the session in the history
+rows. Raw 104 Hz IMU for the session is not recoverable (strap does not store
+it). Sleep ground truth: the user notes lights-off, wake time and wake-ups;
+plus a morning thermometer reading for a second temperature point.
