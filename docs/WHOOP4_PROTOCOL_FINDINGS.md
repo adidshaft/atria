@@ -5446,3 +5446,36 @@ otherwise I tried to complete at 100" → truth ≈ **102** per walk.
 - Best available: the app's gyro-cadence detector at normal pace (+11 %). Every
   detector fails on slow/deliberate gait. The next step for steps is a labelled
   multi-pace dataset, not retuning on two walks.
+
+### R10 float block and temperatures — resolved (2316 frames, 16:28–17:13 IST)
+
+**Bytes 40–75:**
+
+| Bytes | Meaning | Evidence |
+|---|---|---|
+| **42–45** float32 | **motion intensity** (per-frame, g-like; ≈0.007 at rest, ≈0.06 walking) | r = 0.83 with mean \|Δa\| between consecutive samples, 0.68 with accel-magnitude SD; exact formula unresolved |
+| **46–57** 3 × float32 | **calibrated mean acceleration (gravity vector), g** | r = **1.000** per axis with the frame's raw accel mean; constant difference in every frame: **x −0.005127, y −0.029297, z +0.026855 g** (= −21, −120, +110 / 4096) |
+| 58–59 | `00 00` | constant |
+| 60–61 | int16, wide range, uncorrelated with motion | unresolved |
+| **62–73** 3 × float32 | exact copy of 46–57 | identical in every frame |
+
+→ **Accelerometer factory bias:** apply `raw/4096 + (−0.005127, −0.029297, +0.026855)`
+g to the 104 Hz samples for calibrated acceleration.
+
+**Temperatures (u16le, byte after each is part of the value):**
+
+| Field | Before charge | Off-wrist (16:36) | Charging peak | 18 min after unplug | Reading |
+|---|---|---|---|---|---|
+| **u16 @1917** | 340–341 | 337 | 412 | 350 | **≈ skin/device temperature, 0.1 °C** → 34.1 °C worn, 41.2 °C charging |
+| **u16 @15** | 330 (flat) | 330 | 460 | 340 | **≈ battery temperature, 0.1 °C with 1 °C steps** → 33 °C worn, 46 °C charging |
+
+The decidegree scaling is inferred from physiological plausibility and
+direction of change. **It is not verified against a thermometer.** Absolute
+°C remain provisional (the v24 skin ADC is a separate 11-bit channel with no
+established absolute transfer).
+
+**u16 @74 / 76 / 78 / 80 = capacitive wear-sense candidates.** Worn ≈ 657 / 706 /
+986 / 704. Off-wrist frame 591 / 703 / **592** / 658 (@78 falls most). All
+shift when the charger pack is clipped on. Consistent with the
+`enable_capsense_wear_detect` feature. Wear flags 13/14 (128/84 worn, 0/128 off)
+agree.
