@@ -5174,3 +5174,23 @@ charge state do not gate `0x33`.
   still arrived. The Sep 14 15:32 → Sep 15 01:05 "silent `3F`" phase in the
   iPhone prefs has the same signature.
 - Compact `0x33` = 0 in both runs.
+
+#### 16:12 IST — REGRESSION caused by the Mac-side unpair: Mac command channel dead
+
+- `late_hello` (outside pairing mode, advert 180D only): stream-7 again shows
+  `BONDED_PEER_CONNECTED|Peer:2` → `CONN_SEC_START|BONDING` →
+  **`CONN_SEC_FAILED|Error:00000001h`** at ~+41 s. Hello `23/00` sent at +43 s
+  and `3F/01` at +55 s got **no type-24 and no stream-5 traffic** in 50 s.
+  2A37 HR and stream-4 `0x30` still flow.
+- Interpretation: until the unpair, the Mac held the LTK for the strap's
+  peer-2 bond, so every Mac link today silently encrypted and commands worked.
+  With the Mac's keys gone, each connect triggers a fresh LESC pairing that the
+  strap does not complete, and the strap then ignores the command channel on
+  that link. The 22 Sep capture shows the same failure (as peer 65535) with an
+  unanswered `6A`. The Mac later became peer 2 by a path not recorded.
+- **H-BOND is refuted by today's own runs.** From 11:13 to 13:32 the Mac link
+  was bonded (peer 2, encrypted) and still got `2B` / `6A` status 00, with no
+  `0x33`.
+- **Open repair:** re-establish a Mac↔strap bond. The strap keeps peer 2
+  (`delete_disconnected_bonds called 0 times`, including in pairing mode), and
+  macOS offers no CLI LE pairing. No bond-clearing opcode is known.

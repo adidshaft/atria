@@ -7,6 +7,7 @@ Modes (one variable per run):
   stop3f       one 3F/00 with response, listen.
   hello_3f     pairing-window bond attempt: hello 23/00 (with response), 12 s watching stream-7
                for security/bond text, then 3F/01 WWR, listen.
+  late_hello   wait 40 s (past a ~30 s failed security procedure), then hello 23/00, 12 s, 3F/01 WWR.
   cccd_3f      Sep 15 "zombie" repair: 10 s silent stream-5, stream-5 CCCD off -> 400 ms -> on
                (2A37 untouched), 20 s, then 3F/01 WWR, listen.
 
@@ -33,7 +34,7 @@ from Foundation import NSData, NSObject, NSTimer
 from PyObjCTools import AppHelper
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "3f_wwr"
-assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f", "cccd_3f", "hello_3f"), MODE
+assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f", "cccd_3f", "hello_3f", "late_hello"), MODE
 OUT_PATH = sys.argv[2] if len(sys.argv) > 2 else f"/tmp/atria-ble/r10r11-{MODE}.jsonl"
 LISTEN_S = float(sys.argv[3]) if len(sys.argv) > 3 else 300.0
 HISTORY_LEAD_S = float(sys.argv[4]) if len(sys.argv) > 4 else 30.0
@@ -155,6 +156,8 @@ class Delegate(NSObject):
             elif MODE == "hello_3f":
                 self.send_with_response(0x23, b"\x00", "hello_2300")
                 NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(12.0, self, "after3F:", None, False)
+            elif MODE == "late_hello":
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(40.0, self, "lateHello:", None, False)
             elif MODE == "cccd_3f":
                 NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(10.0, self, "cccdOff:", None, False)
             else:
@@ -194,6 +197,10 @@ class Delegate(NSObject):
         say({"event": "cccd_toggle_on", "uuid": "61080005"})
         self.peripheral.setNotifyValue_forCharacteristic_(True, self.stream5)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(20.0, self, "after3F:", None, False)
+
+    def lateHello_(self, _timer):
+        self.send_with_response(0x23, b"\x00", "hello_2300_late")
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(12.0, self, "after3F:", None, False)
 
     def after3F_(self, _timer):
         self.send_3f_wwr("after_stream5_cccd_toggle")
