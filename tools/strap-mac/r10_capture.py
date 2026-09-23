@@ -8,7 +8,9 @@ Frames are CRC-checked (crc8 header + crc32 payload). Corrupt frames are counted
 Flow: connect, subscribe, optional stream-5 CCCD off->on (run C stability), 3F/01 WWR, capture.
 On disconnect: reconnect (the 3F latch resumes 2B). At the end: 3F/00.
 Outputs: events log (--log) and decoded samples (--samples, one JSON line per R10 frame).
-Usage: r10_capture.py [--duration S] [--log P] [--samples P] [--no-cccd]
+--raw P additionally stores every CRC-valid 2B payload whole (R10 and R11) plus 2A37 samples,
+one JSON line each ({"w": wall, "k": "r10"|"r11"|"hr"|"mark", ...}) for offline decoding.
+Usage: r10_capture.py [--duration S] [--log P] [--samples P] [--raw P] [--no-cccd]
 """
 from __future__ import annotations
 
@@ -42,6 +44,13 @@ DURATION = float(opt("--duration", "300"))
 LOG = opt("--log", "/tmp/atria-ble/r10-capture.jsonl")
 SAMPLES = opt("--samples", "/tmp/atria-ble/r10-samples.jsonl")
 DO_CCCD = "--no-cccd" not in ARGS
+RAW_PATH = opt("--raw", None)
+ROUT = open(RAW_PATH, "a", buffering=1) if RAW_PATH else None
+
+
+def raw(entry):
+    if ROUT:
+        ROUT.write(json.dumps(entry, separators=(",", ":")) + "\n")
 OUT = open(LOG, "a", buffering=1)
 SOUT = open(SAMPLES, "a", buffering=1)
 NOTIFY_SHORT = {"61080003", "61080004", "61080005", "61080007", "2A37"}
@@ -228,6 +237,7 @@ class Delegate(NSObject):
         if s == "2A37":
             if len(value) > 1:
                 self.win["hr"] = value[1]
+                raw({"w": time.time(), "k": "hr", "hex": value.hex()})
             return
         if s != "61080005":
             return
@@ -248,10 +258,12 @@ class Delegate(NSObject):
             return
         if payload[1] == 0x0B:
             self.stats["r11"] += 1
+            raw({"w": time.time(), "k": "r11", "hex": payload.hex()})
             return
         if payload[1] != 0x0A or len(payload) < 1288:
             self.stats["other"] += 1
             return
+        raw({"w": time.time(), "k": "r10", "hex": payload.hex()})
         ts = int.from_bytes(payload[7:11], "little")
         seq = int.from_bytes(payload[3:5], "little")
         hr = payload[17]
