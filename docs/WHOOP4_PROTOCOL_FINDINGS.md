@@ -5288,3 +5288,25 @@ All four active channels peak at the heart rate (±1 bpm) → **R11 is raw PPG**
 LED/wavelength identity is **unverified** until the off-wrist contrast is in.
 The same capture also shows the first loss accounting in action: 1 corrupt + 1
 missing R10 frame at the start (counter 47404 → 47406), counted, not filled.
+
+#### R11 off-wrist / reseat (16:33–16:37 IST) — wear gate, AGC header, 20-bit ADC
+
+- **Firmware wear gate:** while the strap was off-wrist, R10/R11 **stopped being
+  produced** with the link up and no disconnect. The device-second gap between
+  consecutive R10 frames was **145 s**, but the u16 frame counter did not skip
+  (missing stayed 1). 2A37 went silent in the same window. Two different hole
+  types must therefore be reported: *lost in transit* (counter gap) vs
+  *not produced* (device-time gap with a contiguous counter).
+- **Slot header = live AGC/drive config.** Slot-0 headers seen:
+  `…32 04 98 08 05 98 08 01 98 08 04 20 00 00 00 40 06 05 20 00 00 00 20 03` (322×, on-wrist),
+  `…32 04 16 0d 05 16 0d 01 16 0d 04 20 00 00 00 20 03 05 …` (54×) and
+  `…60 09 05 20 00 00 00 60 09` (38×) around removal/reseat. Header[2] looks
+  like an entry count, followed by `(u16le level, id)` triplets with
+  ids 5/1/4 (0x0898 → 0x0D16 when off-wrist). Raw PPG levels are only
+  comparable within one header value.
+- **ADC range:** off-wrist ambient light pinned channels at **524287 = 2¹⁹−1**
+  → signed **20-bit** samples carried in int32.
+- Off-wrist frame (16:36:00): gravity (0.93, 0.01, 0.19) (strap flat), 2A37 = 0,
+  slot-0 DC jumped to ≈ +229k / +199k.
+- Post-reseat still (16:37:05 →, new header): s0c0/s0c1/s3c0/s3c1 dominant
+  63/62/62/62 bpm vs 2A37 mean 65.1 (falling). Still PPG-locked.
