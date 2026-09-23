@@ -5612,3 +5612,22 @@ delta.
 
 n = 1 subject, one session; thresholds are physical and wrist-agnostic, but
 must be re-validated on more people (population rule).
+
+### Stairs (17:47:50–17:48:50 IST) — truth 88 (4 flights × 11 up + 4 × 11 down, stopwatch laps)
+
+- Motion burst 17:47:50–17:48:50 (rotation 120–258 °/s; the phone was in hand
+  pressing laps). **The Mac link dropped twice at the top of the stairs
+  (17:48:02–10, 17:48:19–28, ≈17 s lost)**: the stairs are at the edge of Mac
+  BLE range.
+- **Firmware step counter keeps counting while disconnected:** +23 and +27
+  across the two gaps (the value after reconnect includes the gap steps).
+  Useful for the app: bridge link gaps with the strap's own count (real,
+  not interpolated).
+- Scores are inconclusive because the window also holds uncounted approach/return
+  walking: fused 34.6 (gaps split the bout below window length and stair
+  orientation wobble exceeded the gate), gyro-only 93.3, firmware 147 over
+  17:47:30–17:49:09.
+- Design consequences:
+  1. Bridge BLE gaps using the firmware counter delta when the frames on both
+     sides of the gap are walking.
+  2. Stairs need their own labelled capture within range before any stair claim.
