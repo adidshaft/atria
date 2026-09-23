@@ -530,10 +530,25 @@ final class AtriaSleepMotionQuiescenceTests: XCTestCase {
 
     // MARK: - Bounded stop
 
-    func testTheCoreIsNotWiredIntoDetectionYet() throws {
-        // This change is a measured rule on four days, not a detector change.
-        // If a caller appears, this test must be deleted deliberately along
-        // with a decision to ship it.
+    func testTheCoreIsWiredOnlyThroughTheReviewOnlyDetector() throws {
+        // WIRED DELIBERATELY, 2026-08-28. This test previously pinned the core
+        // as unwired, its comment requiring "a decision to ship it". That
+        // decision is the owner's active goal, verbatim: "it did not detect my
+        // sleep (i sleep during day time)", "no review cards", "can we do more
+        // breakthrough in detections". Two consecutive measured daytime sleeps
+        // (0.73 and 1.40 ticks/min vs 12-20 awake) had an EMPTY candidate
+        // pool; the wiring is REVIEW-ONLY through the pending-review card and
+        // was adversarially reviewed before shipping (hard HR presence +
+        // depression gates, observed-quiet-only duration, single-slot
+        // precedence).
+        //
+        // The pin's spirit survives: the core may be referenced ONLY by the
+        // detector that carries those gates — anything else re-opens the
+        // silent-wiring hazard this test existed to stop.
+        let allowed: Set<String> = [
+            "AtriaSleepMotionQuiescence.swift",
+            "AtriaDaytimeQuiescentSleepDetector.swift",
+        ]
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -541,12 +556,13 @@ final class AtriaSleepMotionQuiescenceTests: XCTestCase {
         let files = try FileManager.default
             .contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
-            .filter { $0.lastPathComponent != "AtriaSleepMotionQuiescence.swift" }
+            .filter { !allowed.contains($0.lastPathComponent) }
         for file in files {
             let source = try String(contentsOf: file, encoding: .utf8)
             XCTAssertFalse(
                 source.contains("AtriaSleepMotionQuiescence"),
-                "\(file.lastPathComponent) references the unwired core"
+                "\(file.lastPathComponent) references the core outside the "
+                    + "review-only detector"
             )
         }
     }

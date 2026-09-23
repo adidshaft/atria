@@ -119,7 +119,7 @@ struct AtriaHealthspanDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var orbExpanded = false
-    // Knowledge slice 5 (2026-08-01): ⓘ presents the spec §20 "About Body Age
+    // Knowledge slice 5 (2026-08-01): ⓘ presents the spec §20 "About Fitness age
     // & VO₂max" education sheet.
     @State private var showAbout = false
     @ScaledMetric(relativeTo: .largeTitle) private var orbSize: CGFloat = 190
@@ -211,7 +211,7 @@ struct AtriaHealthspanDetailView: View {
                     .frame(width: 34, height: 34)
             }
             .atriaGlassIconAction(tint: .primary, size: 34)
-            .accessibilityLabel("About Body Age and VO2max")
+            .accessibilityLabel("About Fitness age and VO2max")
             Image(systemName: "heart.text.clipboard")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Metrics.electricStrain)
@@ -232,7 +232,7 @@ struct AtriaHealthspanDetailView: View {
             orb
 
             VStack(spacing: 1) {
-                Text("BODY AGE")
+                Text("FITNESS AGE")
                     .font(.caption2.weight(.bold))
                     .tracking(1.2)
                     .foregroundStyle(.secondary)
@@ -353,9 +353,9 @@ struct AtriaHealthspanDetailView: View {
     private var ageAccessibilityLabel: String {
         if model.summary.isReady {
             let qualifier = model.summary.earlyEstimateQualifierText.map { " \($0)." } ?? ""
-            return "Body age \(model.summary.valueText). \(ageComparisonText).\(qualifier)"
+            return "Fitness age \(model.summary.valueText). \(ageComparisonText).\(qualifier)"
         }
-        return "Body age unavailable. \(ageComparisonText)."
+        return "Fitness age unavailable. \(ageComparisonText)."
     }
 
     private var paceCard: some View {

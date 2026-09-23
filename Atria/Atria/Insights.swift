@@ -9,7 +9,11 @@ struct PersonalBaseline: Codable {
     /// qualified standard 2A37 RR inside a confirmed main-sleep window.
     /// Older persisted baselines used a clock-only "overnight" heuristic and
     /// must fail closed until SessionStore rebuilds them from durable evidence.
-    static let currentHRVQualificationVersion = 1
+    /// Version 2 qualifies five-minute windows over valid adjacent-beat PAIRS
+    /// (differences never straddle a >3 s dropout) instead of demanding a
+    /// fully gap-free window, so version-1 window counts and RMSSDs are not
+    /// comparable and every persisted HRV must be recomputed from raw RR.
+    static let currentHRVQualificationVersion = 2
 
     var restingHR: Double?      // learned resting baseline (EMA)
     var hrvEMA: Double?         // learned HRV baseline (EMA, ms)
@@ -736,7 +740,7 @@ struct TimeInZoneView: View {
                         Text(row.zone.name)
                             .font(.caption)
                         Text(boundaries?.rangeText(for: row.zone) ?? "Legacy range")
-                            .font(.system(size: 9, weight: .medium).monospacedDigit())
+                            .font(.caption2.weight(.medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: 88, alignment: .leading)

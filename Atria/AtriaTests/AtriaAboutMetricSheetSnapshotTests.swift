@@ -20,6 +20,7 @@ final class AtriaAboutMetricSheetSnapshotTests: XCTestCase {
             DailyRollupStoreEntry(day: calendar.date(byAdding: .day, value: -offset,
                                                      to: reference)!,
                                   lnRMSSD: log(value),
+                                  sleepSeconds: 7 * 3_600,
                                   calendar: calendar)
         }
         let trend = try XCTUnwrap(AtriaAboutMetricTrend.make(for: .hrv,

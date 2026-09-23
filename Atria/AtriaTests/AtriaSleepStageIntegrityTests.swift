@@ -138,7 +138,13 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             "start: sleep.start",
             "end: sleep.end",
             "source: sleep.source",
-            "confidence: sleep.confidence",
+            // 2026-08-29 (was "confidence: sleep.confidence"): the refresh
+            // now routes confidence through the monotonic hr_only ->
+            // motion_validated upgrade. Ownership is still preserved — both
+            // mapped strings keep their user_* authorship prefix, which is
+            // what this pin protects.
+            "confidence: Self",
+            ".upgradedConfirmedSleepConfidence(",
             "motionProvenance.hasRecoveredEpochs",
             "motionSource: motionSource",
             "motionValidated: motionValidated",

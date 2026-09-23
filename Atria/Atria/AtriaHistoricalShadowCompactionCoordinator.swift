@@ -4,9 +4,9 @@ import Foundation
 /// malformed. A failed chunk remains authoritative raw truth; it cannot starve
 /// later chunks and it is never marked committed or retired.
 struct AtriaHistoricalShadowCompactionCoordinator {
-    /// Production retention selection, split from execution so the 30-day /
+    /// Production retention selection, split from execution so the 7-day /
     /// 512-MiB policy cannot silently become dead configuration again.
-    /// (Raw horizon moved 14 -> 30 days on 2026-08-19; insights are never
+    /// (Raw horizon moved 30 -> 7 days on 2026-09-14; insights are never
     /// pruned. The live value is `AtriaHistoricalRetentionPolicy.production`.)
     ///
     /// This queue authorizes shadow aggregation only. A candidate that already
@@ -130,6 +130,200 @@ struct AtriaHistoricalShadowCompactionCoordinator {
         )
     }
 
+    /// Scene-background has ~25s. A 134 MB legacy JSONL cannot finish in that
+    /// window; skip it and keep oldest-first among chunks that can.
+    static func sceneBackgroundRetirementCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        maximumByteCount: UInt64 = 8 * 1024 * 1024
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let finishable = candidates.filter {
+            $0.storedByteCount > 0 && $0.storedByteCount <= maximumByteCount
+        }
+        return finishable
+    }
+
+    /// Raw JSONL that still cannot cut over (torn rows, missing identity)
+    /// is remembered so sitting idle can drain later isolated shards.
+    /// v2 retries files that only failed on duplicate history keys after
+    /// first-wins collapse became legal.
+    static let idleCutoverSkipChunkIDsKey = "atria.archiveCompaction.idleSkipChunkIDs.v2"
+
+    static func idleCutoverSkipChunkIDs(
+        defaults: UserDefaults = .standard
+    ) -> Set<String> {
+        Set(defaults.stringArray(forKey: idleCutoverSkipChunkIDsKey) ?? [])
+    }
+
+    static func recordIdleCutoverSkip(
+        chunkID: String,
+        defaults: UserDefaults = .standard
+    ) {
+        var ids = defaults.stringArray(forKey: idleCutoverSkipChunkIDsKey) ?? []
+        guard !ids.contains(chunkID) else { return }
+        ids.append(chunkID)
+        defaults.set(ids, forKey: idleCutoverSkipChunkIDsKey)
+    }
+
+    static func skippingIdleCutoverSkips(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        skippedIDs: Set<String>
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        candidates.filter { !skippedIDs.contains($0.id) }
+    }
+
+    /// Lock and sitting share this filter: never parse a shard that overlaps
+    /// 72/134 MB legacy JSONL, and never retry a permanently skipped file.
+    static func isolatedFinishableIdleCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        catalog: AtriaHistoricalArchiveCatalog,
+        maximumByteCount: UInt64,
+        oversizedByteCount: UInt64 = 64 * 1024 * 1024,
+        skippedIDs: Set<String>
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let finishable = sceneBackgroundRetirementCandidates(
+            candidates,
+            maximumByteCount: maximumByteCount
+        )
+        let isolated = skippingOversizedTimeOverlaps(
+            finishable,
+            catalog: catalog,
+            oversizedByteCount: oversizedByteCount
+        )
+        return skippingIdleCutoverSkips(isolated, skippedIDs: skippedIDs)
+    }
+
+    static func isPermanentIdleCutoverSkip(_ error: Error) -> Bool {
+        if let shard = error as? AtriaHistoricalReplayIdentityShard.ShardError {
+            switch shard {
+            case .duplicateIdentity, .tornTrailingRow, .missingExactIdentity,
+                 .rowCountMismatch, .invalidArtifact, .retainedArtifactTooLarge:
+                return true
+            case .sourceMissing, .sourceDigestMismatch:
+                return false
+            }
+        }
+        return isPermanentIdleCutoverSkipMessage(String(describing: error))
+    }
+
+    static func isPermanentIdleCutoverSkipMessage(_ message: String) -> Bool {
+        ["duplicateIdentity", "tornTrailingRow", "missingExactIdentity",
+         "rowCountMismatch", "invalidArtifact", "retainedArtifactTooLarge"]
+            .contains { message.contains($0) }
+    }
+
+    static func recordPermanentIdleCutoverSkips(
+        _ failures: [Failure],
+        defaults: UserDefaults = .standard
+    ) {
+        for failure in failures
+            where isPermanentIdleCutoverSkipMessage(failure.message) {
+            recordIdleCutoverSkip(chunkID: failure.chunkID, defaults: defaults)
+        }
+    }
+
+    static func orderedIdleRetirementCandidates(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        preferLarge: Bool,
+        limit: Int
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let ordered = candidates.sorted {
+            preferLarge
+                ? $0.storedByteCount > $1.storedByteCount
+                : $0.storedByteCount < $1.storedByteCount
+        }
+        return Array(ordered.prefix(max(0, limit)))
+    }
+
+    /// Sitting Today tries cheap isolated ≤8 MB JSONL first so a 33 MB
+    /// parse cannot starve the remaining small shards. Desk sitting may
+    /// append one isolated >8 MB file only after those small candidates
+    /// are gone, smallest first, so an 8.5 MB shard can finish inside the
+    /// sitting lease instead of hashing the largest 33 MB file.
+    static func sittingIdleBuildCandidates(
+        _ isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        includeOneLarge: Bool,
+        smallLimit: Int = 8
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let small = orderedIdleRetirementCandidates(
+            isolatedUnskipped.filter { $0.storedByteCount <= smallChunkBytes },
+            preferLarge: false,
+            limit: smallLimit
+        )
+        guard includeOneLarge else { return small }
+        let large = orderedIdleRetirementCandidates(
+            isolatedUnskipped.filter { $0.storedByteCount > smallChunkBytes },
+            preferLarge: false,
+            limit: 1
+        )
+        let smallIDs = Set(small.map(\.id))
+        return small + large.filter { !smallIDs.contains($0.id) }
+    }
+
+    /// A 33 MB identity parse holds `already_running` for the whole sitting
+    /// lease. Keep large JSONL off the queue while any isolated ≤8 MB file
+    /// can still retire.
+    static func shouldIncludeLargeIdleChunk(
+        isolatedUnskipped: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        preferLarge: Bool
+    ) -> Bool {
+        guard preferLarge else { return false }
+        return !isolatedUnskipped.contains {
+            $0.storedByteCount > 0 && $0.storedByteCount <= smallChunkBytes
+        }
+    }
+
+    static func preferredIdleShadowCutoverChunkID(
+        shadowed: [AtriaHistoricalArchiveCatalog.RawChunk],
+        smallChunkBytes: UInt64,
+        allowLarge: Bool
+    ) -> String? {
+        let smallShadowed = shadowed.filter {
+            $0.storedByteCount > 0 && $0.storedByteCount <= smallChunkBytes
+        }
+        if let small = orderedIdleRetirementCandidates(
+            smallShadowed,
+            preferLarge: false,
+            limit: 1
+        ).first {
+            return small.id
+        }
+        guard allowLarge else { return nil }
+        return orderedIdleRetirementCandidates(
+            shadowed,
+            preferLarge: false,
+            limit: 1
+        ).first?.id
+    }
+
+    /// A 126 KB July shard that overlaps the 134 MB monolith fails shadow on
+    /// this install and burns the sitting lease. Skip it; later isolated
+    /// shards can still retire.
+    static func skippingOversizedTimeOverlaps(
+        _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        catalog: AtriaHistoricalArchiveCatalog,
+        oversizedByteCount: UInt64
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let oversized = catalog.chunks.filter {
+            $0.state == .sealed
+                && max($0.storedByteCount, $0.byteCount) > oversizedByteCount
+        }
+        return candidates.filter { chunk in
+            guard let first = chunk.firstTimestamp, let last = chunk.lastTimestamp else {
+                return false
+            }
+            return !oversized.contains { sibling in
+                guard sibling.id != chunk.id,
+                      let siblingFirst = sibling.firstTimestamp,
+                      let siblingLast = sibling.lastTimestamp else {
+                    return false
+                }
+                return first <= siblingLast && last >= siblingFirst
+            }
+        }
+    }
+
     static func commitFirst<Value>(
         candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
         attempt: (AtriaHistoricalArchiveCatalog.RawChunk) throws -> Value
@@ -143,7 +337,7 @@ struct AtriaHistoricalShadowCompactionCoordinator {
                                   precedingFailures: failures)
             } catch {
                 failures.append(.init(chunkID: chunk.id,
-                                      message: error.localizedDescription))
+                                      message: String(describing: error)))
             }
         }
         return .allFailed(failures)

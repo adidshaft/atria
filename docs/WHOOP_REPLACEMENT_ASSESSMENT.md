@@ -1,7 +1,7 @@
 # Atria vs WHOOP — metric truth, patents, and replacement plan
 
 Status: analysis only. No product code was changed for this document.  
-Branch context: `codex/whoop-remaining-product-gaps`  
+Branch context: `dev`  
 Written: 2026-08-14  
 Scope: what Atria actually reads, how every hero metric is calculated, what public WHOOP patents/docs support, what is scientifically sound, what is product fiction, and what it would take to replace the official WHOOP app **without WHOOP cloud APIs**.
 
@@ -839,7 +839,7 @@ That sentence is more useful than a 41% ring, and you can generate it from data 
 
 These are the only items this assessment is willing to call product-positive **without** touching Gate 4.
 
-> **Status 2026-08-14** — items 2–10 landed on `codex/whoop-remaining-product-gaps`:
+> **Status 2026-08-14** — items 2–10 landed on `dev`:
 > 2+3 in `280c7a88` (heroes demoted; `validated` tier reserved, replay/display read "Personal baseline"),
 > 4 in `1e50cdb3` (`AtriaTodayMorningWhiteboardModel`), 5+6 in `563b59a2` (Recovery v4:
 > personal sleep baseline w/ population fallback tier-capped to `unverified`; robust 30-day
@@ -945,7 +945,7 @@ Protect motion. Measure HRV. Freeze the night. Coach from the whiteboard.
 
 ## 13. Post-handoff remaining work (after items 2–10)
 
-Reviewed: 2026-08-14, on `codex/whoop-remaining-product-gaps` after:
+Reviewed: 2026-08-14, on `dev` after:
 
 | Item | Commit | What shipped |
 |---|---|---|

@@ -3,10 +3,10 @@ import Charts
 
 /// WHOOP-style "Strain & Recovery" combo chart (design backlog G1, 2026-08-03).
 ///
-/// Strain is a line on the 0–21 left axis; each day's recovery is a colored dot
-/// on a right 0–100% axis (dots colored strictly by recovery band). Both series
-/// are the same day-bucketed history the metric detail charts already use, so
-/// there is no new data path.
+/// Strain is a daily bar on the 0–21 left axis (same shape as the Strain
+/// sheet); each day's recovery is a colored dot on a right 0–100% axis
+/// (dots colored strictly by recovery band). Both series are the same
+/// day-bucketed history the metric detail charts already use.
 ///
 /// Honesty: recovery dots plot only on days that actually have a recovery score
 /// (missing ≠ zero); strain is the drained/lagged value the rest of the app
@@ -19,33 +19,68 @@ struct AtriaStrainRecoveryComboChart: View {
     let strain: [AtriaDetailChartPoint]
     let recovery: [AtriaDetailChartPoint]
     let rangeLabel: String
+    /// Anchor for the trailing week. Injected in tests so a July fixture is
+    /// not clipped by a September `Date()`.
+    var now: Date = Date()
+    var calendar: Calendar = .current
 
     /// Strain's fixed physiological ceiling; also the shared chart domain that
     /// recovery (0–100%) is mapped onto so the two axes align on 0/33/66/100%.
     private let strainAxisMax = 21.0
 
-    private let calendar = Calendar.current
-
-    /// A FIXED 7-day frame ending on the most recent day that has data, so the
-    /// x-axis always shows seven day-ticks (not a couple of scattered labels over
-    /// a sparse wide range). Anchoring on the latest data day keeps the readings
-    /// flush at the right edge instead of leaving an empty tail.
+    /// Trailing 7-day frame ending on `now`'s civil day — the same contract
+    /// as `AtriaTrendRange.week` (owner 2026-09-02: the axis is the window,
+    /// not the extent of the data). Anchoring on the latest reading used to
+    /// drop today from a card labelled "the last 7 days" whenever the current
+    /// cycle had no closed point yet.
     private var weekDays: [Date] {
-        let allDays = (strain + recovery).map { calendar.startOfDay(for: $0.day) }
-        guard let end = allDays.max() else { return [] }
-        let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
-        return (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        Self.trailingWeekDays(now: now, calendar: calendar)
     }
 
     /// Points snapped to day-starts and clipped to the 7-day frame, so they align
     /// exactly on the day-ticks and nothing outside the week is drawn.
     private func windowed(_ points: [AtriaDetailChartPoint]) -> [AtriaDetailChartPoint] {
-        guard let first = weekDays.first, let last = weekDays.last else { return [] }
+        Self.pointsInTrailingWeek(points, now: now, calendar: calendar)
+    }
+
+    /// Seven civil days, `now`'s day inclusive. Internal for the window tests.
+    static func trailingWeekDays(now: Date, calendar: Calendar = .current) -> [Date] {
+        let dayStart = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -6, to: dayStart) ?? dayStart
+        return (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    /// Clip a series to the trailing week. Internal for the window tests.
+    static func pointsInTrailingWeek(_ points: [AtriaDetailChartPoint],
+                                     now: Date,
+                                     calendar: Calendar = .current) -> [AtriaDetailChartPoint] {
+        let days = trailingWeekDays(now: now, calendar: calendar)
+        guard let first = days.first, let last = days.last else { return [] }
         return points.compactMap { point in
             let day = calendar.startOfDay(for: point.day)
             guard day >= first, day <= last else { return nil }
             return AtriaDetailChartPoint(day: day, value: point.value, tint: point.tint)
         }
+    }
+
+    /// Same words the Trends and metric-detail cards use. Silent on a full
+    /// window. Strain counts days; recovery counts nights. Internal for tests.
+    static func coverageCaption(strain: [AtriaDetailChartPoint],
+                                recovery: [AtriaDetailChartPoint],
+                                now: Date,
+                                calendar: Calendar = .current) -> String? {
+        let window = trailingWeekDays(now: now, calendar: calendar).count
+        guard window > 1 else { return nil }
+        let strainDays = Set(
+            pointsInTrailingWeek(strain, now: now, calendar: calendar)
+                .map { calendar.startOfDay(for: $0.day) }
+        ).count
+        let recoveryNights = Set(
+            pointsInTrailingWeek(recovery, now: now, calendar: calendar)
+                .map { calendar.startOfDay(for: $0.day) }
+        ).count
+        guard strainDays < window || recoveryNights < window else { return nil }
+        return "\(strainDays) of \(window) days · \(recoveryNights) of \(window) nights recorded"
     }
 
     /// Domain padded half a day each side so edge ticks/points aren't clipped.
@@ -64,15 +99,27 @@ struct AtriaStrainRecoveryComboChart: View {
             // trailing axis. The plot now keeps the card inset and gets
             // explicit headroom instead.
             chart
-            Text("Strain (0–21, left) and recovery % (right) as two lines. Recovery points are colored by band; each line breaks on days with no reading rather than drawing across the gap.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricStrain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strain and recovery over \(rangeLabel). Strain on a 0 to 21 scale, recovery as a percentage, one point per day.")
+        .accessibilityLabel(accessibilityCaption)
+    }
+
+    private var coverageText: String? {
+        Self.coverageCaption(strain: strain, recovery: recovery, now: now, calendar: calendar)
+    }
+
+    private var accessibilityCaption: String {
+        let base = "Strain and recovery over \(rangeLabel). Strain on a 0 to 21 scale, recovery as a percentage, one point per day."
+        guard let coverageText else { return base }
+        return "\(base) \(coverageText)."
     }
 
     private var header: some View {
@@ -81,7 +128,7 @@ struct AtriaStrainRecoveryComboChart: View {
                 .font(.subheadline.weight(.semibold))
             Spacer()
             HStack(spacing: 12) {
-                Label("Strain", systemImage: "line.diagonal")
+                Label("Strain", systemImage: "chart.bar.fill")
                     .labelStyle(.titleAndIcon)
                     .foregroundStyle(Metrics.electricStrain)
                 Label("Recovery", systemImage: "circle.fill")
@@ -97,36 +144,16 @@ struct AtriaStrainRecoveryComboChart: View {
         let strainWindow = windowed(strain)
         let recoveryWindow = windowed(recovery)
         return Chart {
-            // Two zigzag lines on a shared 0–21 domain (recovery % mapped onto
-            // it), each BROKEN at day gaps via its contiguous-run id so neither
-            // line is drawn across days with no reading.
-            ForEach(strainWindow.contiguousDayRuns(), id: \.point.day) { entry in
-                LineMark(x: .value("Day", entry.point.day, unit: .day),
-                         y: .value("Strain", min(entry.point.value, strainAxisMax)),
-                         series: .value("Strain run", "s\(entry.runID)"))
-                    .foregroundStyle(Metrics.electricStrain)
-                    .interpolationMethod(.monotone)
-                    .lineStyle(AtriaChartVisualGrammar.trendLine)
-            }
-            // A dot on each real strain day so an isolated day (a length-1 run
-            // that a LineMark cannot draw) still renders — mirrors the recovery
-            // dots below and prevents a single-day window looking empty.
             ForEach(strainWindow) { point in
-                PointMark(x: .value("Day", point.day, unit: .day),
-                          y: .value("Strain", min(point.value, strainAxisMax)))
-                    .foregroundStyle(Metrics.electricStrain)
-                    .symbolSize(36)
+                BarMark(x: .value("Day", point.day, unit: .day),
+                        y: .value("Strain", min(point.value, strainAxisMax)),
+                        width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
+                    .foregroundStyle(Metrics.electricStrain.gradient)
+                    .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
             }
-            ForEach(recoveryWindow.contiguousDayRuns(), id: \.point.day) { entry in
-                LineMark(x: .value("Day", entry.point.day, unit: .day),
-                         y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),
-                         series: .value("Recovery run", "r\(entry.runID)"))
-                    .foregroundStyle(Metrics.electricGreen)
-                    .interpolationMethod(.monotone)
-                    .lineStyle(AtriaChartVisualGrammar.trendLine)
-            }
-            // A dot on each real recovery day, colored by its band, so the
-            // recovery line's points read green/yellow/red at a glance.
+            // Recovery stays a band-colored dot on the mapped 0–21 axis so
+            // the two series do not fight as two zigzags. Missing nights
+            // draw nothing.
             ForEach(recoveryWindow) { point in
                 PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value("Recovery", point.value / 100.0 * strainAxisMax))
@@ -134,15 +161,16 @@ struct AtriaStrainRecoveryComboChart: View {
                     .symbolSize(50)
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartXScale(domain: xDomain ?? Date()...Date())
         .chartXAxis {
             AxisMarks(values: weekDays) { value in
-                AxisGridLine()
-                    .foregroundStyle(.quaternary)
-                AxisValueLabel {
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel(centered: true) {
                     if let day = value.as(Date.self) {
                         Text(Self.dayTickLabel(for: day, calendar: calendar))
+                            .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -151,11 +179,12 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartYScale(domain: 0...strainAxisMax)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 7, 14, 21]) { value in
-                AxisGridLine()
-                    .foregroundStyle(.quaternary)
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
                         Text("\(Int(raw))")
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(Metrics.electricStrain)
                     }
                 }
@@ -164,26 +193,20 @@ struct AtriaStrainRecoveryComboChart: View {
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
                         Text("\(Int((raw / strainAxisMax * 100).rounded()))%")
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(Metrics.electricGreen)
                     }
                 }
             }
         }
-        // Explicit plot insets (handoff-10 CP3): headroom keeps the top
-        // `21` / `100%` labels and edge points fully visible; no `.clipped()`.
-        .chartPlotStyle { plot in
-            plot.padding(.top, 10)
-        }
-        .frame(height: 158)
+        .frame(height: 168)
     }
 
     /// Compact weekday + day-of-month tick (`M 10`, `T 11`) so a week whose
     /// narrow weekday initials repeat (`S S`, `T T`) stays unambiguous.
     /// Internal for the tick-formatter tests.
     static func dayTickLabel(for day: Date, calendar: Calendar = .current) -> String {
-        let weekday = day.formatted(.dateTime.weekday(.narrow))
-        let dayOfMonth = calendar.component(.day, from: day)
-        return "\(weekday) \(dayOfMonth)"
+        AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day, calendar: calendar)
     }
 }
 

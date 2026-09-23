@@ -456,7 +456,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "case \"sleep-detail\":",
             "debugMetricDetailRecoveryEstimate",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: AtriaDetailPeriodSummaryStrip (tinted
+            # card: gradient rail + change capsule + Avg/Range chips) was
+            # DELETED and replaced by the neutral one-line
+            # AtriaDetailPeriodSummaryLine under the chart. The rail/mini-stat
+            # pins migrated to the line's tokens; AtriaDetailPeriodSummary and
+            # its change-direction enum survive as the shared math.
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "AtriaDetailPeriodSummary(points: recoveryPoints, unit: \"%\")",
             "AtriaDetailPeriodSummary(points: hrvPoints, unit: \"ms\")",
             "AtriaDetailPeriodSummary(points: restingPoints, unit: \"bpm\")",
@@ -466,22 +472,21 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaDetailRangeDotStrip: View, Equatable",
             "private struct Bar: Equatable, Identifiable",
             "private let bars: [Bar]",
-            "AtriaDetailPeriodSummaryStrip(summary: summary,",
+            "AtriaDetailPeriodSummaryLine(summary: summary)",
             # 2026-07-06: AtriaDetailPeriodReportCard call removed from metricChart
             # (detail-sheet redesign collapsed 3 redundant latest/avg/change cards
-            # into the single AtriaDetailPeriodSummaryStrip). Struct definition kept
-            # as uncalled scaffolding, so its declaration/internal pins still hold.
+            # into one summary surface).
             "comparison: comparison,",
             "let latestPosition: Double",
             "private enum AtriaDetailPeriodChangeDirection",
-            "summaryRangeRail",
-            "summaryMiniStat(label: \"Avg\", value: summary.averageText)",
-            "summaryMiniStat(label: \"Range\", value: summary.rangeText)",
+            "Latest \\(summary.latestText)\\(summary.changeDirection.triangleText)",
+            "Avg \\(summary.averageText)",
+            "Range \\(summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
             # added by the design-handoff chart-language pass.
             # 2026-07-07 (loop 3): domain also covers the dashed
             # prior-period ghost series.
-            ".chartYScale(domain: prepared.domain)",
+            ".chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(",
             # 2026-07-07: signature gained the optional comparison param (same
             # chart-language pass as the .chartYScale pin above).
             "struct AtriaMetricChartPreparedData",
@@ -789,7 +794,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaTrendChartScale",
             "static func domain(values: [Double], paddingRatio: Double = 0.16) -> ClosedRange<Double>",
             "static func domain(low: Double, high: Double, paddingRatio: Double = 0.16) -> ClosedRange<Double>",
-            ".chartYScale(domain: prepared.yDomain)",
+            ".chartYScale(domain: trendYDomain)",
         ]:
             assert_contains(self, trend_chart, needle)
         assert_not_contains(self, trend_chart, "private var rangedPoints")
@@ -957,9 +962,10 @@ class HandoffStaticChecks(unittest.TestCase):
             # collapsed them behind an opaque affordance on physical iOS 26.
             ".toolbarBackground(.hidden, for: .tabBar)",
             ".tabViewBottomAccessory",
+            ".safeAreaPadding(.bottom, bottomContentMargin)",
             ".padding(.bottom, scrollBottomClearance)",
             "private var scrollBottomClearance: CGFloat",
-            "shouldShowLiveAccessory ? 260 : 188",
+            "shouldShowLiveAccessory ? 400 : 320",
             ".scrollEdgeEffectStyle(.soft, for: .top)",
             "enum AtriaDesignTokens",
             "func atriaCard(",
@@ -1142,7 +1148,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, hero, "return \"Beat-to-beat settling\"")
         assert_contains(self, hero, "return \"pending\"")
         assert_not_contains(self, hero, "return \"not yet\"")
-        assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
+        # 2026-09-02: the default HRV quality string was shortened so it no
+        # longer truncates on the Vitals HRV tile; same meaning, fewer words.
+        assert_contains(self, ble, "@Published var hrvQuality = \"no beat-to-beat yet\"")
 
         top_chrome = home[home.index("private struct AtriaHomeTopChrome: View"):]
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
@@ -2085,26 +2093,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "decoderAvailable: decoderAvailable",
             "insights: store.behaviorInsights",
             "taggedDays: store.behaviorJournalEntries.count",
+            "let learned: [AtriaLearnedInsight]",
             "let insights: [AtriaInsight]",
             "let taggedDays: Int",
-            "AtriaPanelSectionHeader(title: \"Insights\", subtitle: \"What moves your HRV\")",
-            "Atria learns what moves your HRV.",
+            "AtriaPanelSectionHeader(title: \"Insights\", subtitle: \"What moved you\")",
+            "Atria already reads sleep, recovery, and strain.",
             "let hiddenMetrics: [AtriaTodayMetric]",
-            "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
-            "let onHideMetric: (AtriaTodayMetric) -> Void",
-            "let onShowMetric: (AtriaTodayMetric) -> Void",
-            "let sizeOverridesCSV: String",
-            "let onToggleMetricSize: (AtriaTodayMetric) -> Void",
-            "@State private var isEditingGlance = false",
-            "@State private var showWidgetManager = false",
-            "if isEditingGlance {",
-            ".transition(.scale.combined(with: .opacity))",
-            "isEditingGlance = false",
-            ".accessibilityLabel(\"Finish editing widgets\")",
-            "let onResetMetrics: () -> Void",
-            "let onStartWorkout: () -> Void",
-            "&& lhs.insights == rhs.insights",
-            "&& lhs.hiddenMetrics == rhs.hiddenMetrics",
             "&& lhs.sizeOverridesCSV == rhs.sizeOverridesCSV",
             # TODO(removed feature): the Workout glance card was dropped along with the
             # other IA-3 cases (see the "removed IA-3 glance cases" comment on
@@ -2874,7 +2868,17 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "def emit_battery_preferences():",
             "battery_namespace=",
+            "battery_kind=strap",
             "battery_level=",
+            "phone_battery_level=",
+            "imu_recovery_command=",
+            "imu_recovery_action=",
+            "imu_recovery_age_s=",
+            "imu_recovery_hr_stayed_up=",
+            "imu_recovery_both_live=",
+            "live_hr_sample_age_s=",
+            "live_imu_frame_age_s=",
+            "compact_imu_assembled_age_s=",
             "battery_charge_status=",
             "battery_charge_age_s=",
             "battery_is_charging=",
@@ -5327,7 +5331,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let layoutConfig: AtriaHomeLayoutConfig",
             "if layoutConfig.showLiveStrip",
-            "if layoutConfig.showHighlights && !highlights.isEmpty",
+            "Label(\"Today's read\", systemImage: \"text.alignleft\")",
             "if layoutConfig.showPlan",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
             "switch layoutConfig.ringCenterMetric",
@@ -6658,9 +6662,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, body_source, "store.sleepHistorySnapshot.nights.map")
         assert_not_contains(self, body_source, "store.confirmedWorkouts.map")
 
-        timeline_start = activity.index("private var timelineSpans: [TimelineSpan]")
-        timeline_end = activity.index("\n\n    private var canGoToNextDay", timeline_start)
-        timeline_source = activity[timeline_start:timeline_end]
+        # Scope the assertion to its owner, independently of neighboring members.
+        timeline_blocks = swift_braced_blocks(
+            activity, [r"private var timelineSpans: \[TimelineSpan\]"]
+        )
+        self.assertEqual(len(timeline_blocks), 1)
+        timeline_source = timeline_blocks[0][1]
         assert_not_contains(self, timeline_source, "for night in store.sleepHistorySnapshot.nights")
         assert_not_contains(self, timeline_source, "for workout in store.confirmedWorkouts")
 
@@ -7342,7 +7349,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct TrendMetricChartModel: Identifiable",
             "self.metricCards = [",
             "private struct AtriaDetailPeriodSummary: Equatable",
-            "private struct AtriaDetailPeriodSummaryStrip: View",
+            # 2026-08-29 minimalism pass: the summary strip was replaced by the
+            # neutral AtriaDetailPeriodSummaryLine (see migration note above).
+            "private struct AtriaDetailPeriodSummaryLine: View",
             "private struct AtriaDetailPeriodReportCard: View, Equatable",
             "Label(\"This period\", systemImage: \"chart.bar.xaxis\")",
             "reportChip(title: \"Latest\"",
@@ -7503,7 +7512,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "ForEach(overlay.points) { point in",
             "y: .value(title, prepared.eventLaneY)",
             ".chartXScale(domain: prepared.xDomain)",
-            ".chartYScale(domain: prepared.yDomain)",
+            ".chartYScale(domain: barAwareYDomain)",
             "ForEach(prepared.overlays) { overlay in",
             "return prepared.brushSummary(start: start, end: end, unit: unit)",
             "private struct AtriaExpandedChartPreparedOverlay: Identifiable",
@@ -7864,6 +7873,7 @@ class HandoffStaticChecks(unittest.TestCase):
                 "sendProtectedR10ResponseEventDataSequenceIfReady",
                 "sendProtectedR10ActivationNowIfReady",
                 "requestBoundedR10ActivationForSilentStream",
+                "refreshProtectedBoundedRawCaptureIfNeeded",
                 "retryProtectedR10ShortBurstIfEligible",
                 "stopWorkoutRawMotionIfConnected",
                 "armWorkoutHistoricalMotionBankIfPossible",
@@ -7908,6 +7918,11 @@ class HandoffStaticChecks(unittest.TestCase):
                 "!readOnlyHistoryCaptureRequested",
                 "if standardHROnlyMode",
                 "sendProtectedR10ActivationIfReady()",
+            ],
+            "refreshProtectedBoundedRawCaptureIfNeeded": [
+                "!readOnlyHistoryCaptureRequested",
+                "shouldRefreshProtectedBoundedRawCapture(",
+                "Cmd.startRawData",
             ],
             "retryProtectedR10ShortBurstIfEligible": [
                 "!readOnlyHistoryCaptureRequested",
@@ -9527,8 +9542,11 @@ class HandoffStaticChecks(unittest.TestCase):
             "rrCount: rrPoints.count",
             "firstT: first?.t ?? 0",
             "lastT: last?.t ?? 0",
-            "while lowerIndex < segment.endIndex",
-            "while upperIndex < segment.endIndex",
+            # 2026-08-29 pair-based HRV qualification: windows slide over the
+            # whole sorted RR stream instead of per-gap segments, so the
+            # incremental two-pointer scan now walks `sorted`, not `segment`.
+            "while lowerIndex < sorted.endIndex",
+            "while upperIndex < sorted.endIndex",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -10485,7 +10503,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaExperimentalSensorCopy.skinTemperatureFootnote(",
             "AtriaMetricTile(label: \"Resp rate\"",
             "footnote: respiratory.detail",
-            "AtriaMetricTile(label: \"Strap steps\"",
+            "AtriaMetricTile(label: \"Steps\"",
             "AtriaExperimentalRespiratoryRatePresentation.resolve(",
             "Rows show evidence counts until checked. Skin temperature is only a sleep-baseline change.",
             "private struct AtriaResearchSignalInfoSheet: View",
@@ -10565,9 +10583,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "Research signals are local",
         ]:
             assert_not_contains(self, research_card, forbidden)
-        assert_contains(self, research_card, "AtriaMetricTile(label: \"Strap steps\"")
+        assert_contains(self, research_card, "AtriaMetricTile(label: \"Steps\"")
         assert_not_contains(self, research_card, "lhs.sleepHistory == rhs.sleepHistory")
-        assert_not_contains(self, imu_audit_card, "AtriaMetricTile(label: \"Strap steps\"")
+        assert_not_contains(self, imu_audit_card, "AtriaMetricTile(label: \"Steps\"")
 
         for forbidden in [
             "title: \"Low radio HR\"",
@@ -10961,12 +10979,8 @@ class HandoffStaticChecks(unittest.TestCase):
             (today, "return sessionProjectionStore.state.dailyRollupHistory"),
             (today, 'arguments[valueIndex] == "north-star-highlights"'),
             (today, "debugHighlightRollups(includeNutrition: Self.debugShowsNutritionRecoveryDetail"),
-            # 2026-07-07: strip gained the onOpen route (insight rows are
-            # real buttons now, not fake chevrons).
-            (today, "AtriaTodayHighlightsStrip(highlights: highlights) { metric in"),
             (today, "private struct AtriaTodayHighlightsStrip: View, Equatable"),
             (today, "AtriaTodayLiveStatusStrip(live: liveStore.state,"),
-            (today, "AtriaTodayPlanCard(title: planTitle,"),
             (today, "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)"),
             (today, "private var glanceColumns: [GridItem]"),
             (today, "if horizontalSizeClass == .regular"),
@@ -10981,7 +10995,6 @@ class HandoffStaticChecks(unittest.TestCase):
             # shortcut strip's Journal value on the same screen and was
             # removed; the shortcut strip (pinned below) carries the value.
             (today, "private struct AtriaTodayLiveStatusStrip: View, Equatable"),
-            (today, "private struct AtriaTodayPlanCard: View, Equatable"),
             (today, "private struct AtriaTodayGlanceTile: View, Equatable"),
             (health, "struct AtriaHealthScreen: View"),
             (health, 'Text("Health Monitor")'),
@@ -11362,24 +11375,13 @@ class HandoffStaticChecks(unittest.TestCase):
         ordered_tokens = [
             "triRingHero",
             "AtriaTodayLiveStatusHost(liveStore: liveStore,",
-            # Perf pass (2026-07-06 docs/26 follow-up): AtriaHighlights.topTwo
-            # was hoisted out of the Today body into a
-            # dailyRollupHistoryRevision-memoized `highlights` property (it was
-            # re-sorting the full history up to 4x per ~700ms live tick). The
-            # highlights section still renders in this exact slot, so the
-            # ordering marker migrates from the (now-hoisted) topTwo call to the
-            # section's guard condition, which occupies the same position.
-            "if layoutConfig.showHighlights && !highlights.isEmpty",
-            # 2026-07-07: same onOpen-route migration as above.
-            "AtriaTodayHighlightsStrip(highlights: highlights) { metric in",
-            "AtriaTodayPlanCard(title: planTitle,",
             "LazyVGrid(columns: glanceColumns, spacing: AtriaDesignTokens.Spacing.md)",
             "if layoutConfig.showAICoach && effectiveAICoachSettings.mode != .off",
-            # 2026-07-07: Journal info row removed (duplicate of shortcut
-            # strip value) — see UX-audit commit.
         ]
         positions = [body.index(token) for token in ordered_tokens]
         self.assertEqual(positions, sorted(positions), "Today stack must match 6.1 order")
+        assert_not_contains(self, body, "todaySavedWorkoutRow(workout)")
+        assert_not_contains(self, body, "recentSavedWorkouts")
 
         day_rollups_start = today.index("private var dayDescendingRollups")
         day_rollups_end = today.index("private var displayRecovery", day_rollups_start)
@@ -11399,14 +11401,14 @@ class HandoffStaticChecks(unittest.TestCase):
         # this migration (AtriaOverviewSections.swift, AtriaCustomizeSheet.swift).
         for needle in [
             "let resolvedSlots = ringSlots.map {",
-            "AtriaTriRing(slots: resolvedSlots,",
+            "AtriaTriRing(slots: ringSlots.map { slot in",
             "accessibilitySummary: accessibilitySummary",
             "actions: ringActions",
-            ".sleep: { metricDetail = .sleep }",
-            ".recovery: { metricDetail = .recovery }",
-            ".strain: { metricDetail = .strain }",
-            ".hrv: { metricDetail = .hrv }",
-            ".rhr: { metricDetail = .restingHeartRate }",
+            ".sleep: { openMetricDetail(.sleep) }",
+            ".recovery: { openMetricDetail(.recovery) }",
+            ".strain: { openMetricDetail(.strain) }",
+            ".hrv: { openMetricDetail(.hrv) }",
+            ".rhr: { openMetricDetail(.restingHeartRate) }",
         ]:
             assert_contains(self, today, needle)
 
@@ -11834,7 +11836,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, corner_button, ".glassEffect(")
             assert_contains(self, corner_button, ".frame(width: 18, height: 18)")
             assert_not_contains(self, corner_button, ".contentShape(Circle())")
-        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 6)
+        # 2026-09-02: 6 (cancel + share per sheet) + 1 for AtriaShareEmptyStateView's
+        # close button, the state a sheet shows when nothing real exists yet.
+        self.assertEqual(share.count("AtriaGlassIconButtonStyle(tint: .white, size: 38)"), 7)
         self.assertEqual(share.count("GlassEffectContainer(spacing: 12)"), 3)
         self.assertEqual(share.count(".buttonBorderShape(.circle)"), 0)
         assert_contains(self, plist, "NSCameraUsageDescription")
@@ -11996,9 +12000,17 @@ class HandoffStaticChecks(unittest.TestCase):
         # so this branch never actually matched and the Stress tile silently
         # dead-ended like every other tile. Replaced with a real enum
         # comparison as part of routing every glance tile to its detail.
+        # Pin migrated again (2026-08-29, insight-detail directive): the tile
+        # now opens the full stress detail (information first); breathwork is
+        # reached through the detail's Relax action, and the breathwork
+        # full-screen host plus its debug fixture stay pinned below.
         for needle in [
             "@State private var showBreathworkSession = false",
+            "@State private var showStressDetail = false",
             "if metric == .stress {",
+            "showStressDetail = true",
+            ".fullScreenCover(isPresented: $showStressDetail) {",
+            "onRelax: {",
             "showBreathworkSession = true",
             "AtriaBreathworkSession(currentHeartRate: pulseStore.state.heartRate,",
             "currentRRSamples: pulseStore.state.recentRRSamples",
@@ -12139,11 +12151,11 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, text, "sampleCount")
 
         assert_contains(self, home, "readingCount: model.coreLiveStore.state.sessionSampleCount")
-        for needle in ["activityName", "activitySystemImage", "heartRateZoneIndex", "heartRateZoneName", "steps", "workoutStrain"]:
+        for needle in ["activityName", "activitySystemImage", "heartRateZoneIndex", "heartRateZoneName", "steps", "workoutStrain", "showsWorkoutControls"]:
             assert_contains(self, app_attributes, needle)
             assert_contains(self, widget_attributes, needle)
             assert_contains(self, coordinator, needle)
-        assert_contains(self, home, "isRecording: session != nil")
+        assert_contains(self, home, "isRecording: workoutActive || livePresence")
         assert_contains(self, widget, "liveActivityZoneLabel(for: context.state,")
         assert_contains(self, widget, "availability: heartAvailability")
         assert_contains(self, widget, "liveActivityStepsPresentation(for: context.state)")
@@ -12183,7 +12195,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "@State private var lastLiveWidgetSnapshotHeartRate: Int?",
             "publishLiveWidgetSnapshotIfNeeded()",
             "private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date())",
-            "guard scenePhase == .active else { return }",
             "let heartRate = model.pulseLiveStore.state.heartRate",
             "if heartRate <= 0 {",
             'reason: "live_signal_cleared"',
@@ -12195,6 +12206,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "guard cadenceReady || changeReady else",
             "lastLiveWidgetSnapshotHeartRate = heartRate",
             "reason: cadenceReady ? \"live_throttled\" : \"live_bpm_delta\"",
+            "private func publishLiveWidgetSnapshot(reason: String)",
+            "scheduleLiveSensorWidgetPatch(reason: \"live_hr_background\")",
+            "publishFrozenSceneLiveSurfaces()",
+            "reason: \"live_hr_frozen_scene\"",
         ]:
             assert_contains(self, home, needle)
 
@@ -12299,7 +12314,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var metricFooterText: String",
             ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metricFooterText)\")",
             ".accessibilityLabel(\"\\(metric.title) \\(value), \\(metric.unit), \\(metricFooterText)\")",
-            ".description(\"Strap-derived steps on your Home Screen or Lock Screen.\")",
+            ".description(\"Daily steps on your Home Screen or Lock Screen.\")",
             ".description(\"Today's strain on your Home Screen or Lock Screen.\")",
             ".description(\"Latest HRV on your Home Screen or Lock Screen.\")",
             ".description(\"Latest heart rate on your Home Screen or Lock Screen.\")",
@@ -12421,9 +12436,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, key_builder_source, "store.latestLocalRMSSD")
         assert_not_contains(self, key_builder_source, "store.todayHRZoneMinutesSnapshot")
 
-        publish_start = home.index("private func publishProfileMetrics()")
-        publish_end = home.index("\n    }\n\n    private func refreshSavedAggregate", publish_start)
-        publish_source = home[publish_start:publish_end]
+        # An unrelated helper may be inserted after this method during refactors.
+        publish_blocks = swift_braced_blocks(
+            home, [r"private func publishProfileMetrics\(\)"]
+        )
+        self.assertEqual(len(publish_blocks), 1)
+        publish_source = publish_blocks[0][1]
         self.assertLess(publish_source.index("guard key != profileMetricsKey else { return }"),
                         publish_source.index("Self.makeProfileMetricsState(store: store,"))
 
@@ -13411,10 +13429,10 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, overview, needle)
 
         for needle in [
-            "case .steps: return \"Strap steps\"",
-            "case .steps: return \"strap\"",
-            ".configurationDisplayName(\"Atria Strap Steps\")",
-            ".description(\"Strap-derived steps on your Home Screen or Lock Screen.\")",
+            "case .steps: return \"Steps\"",
+            "case .steps: return \"steps\"",
+            ".configurationDisplayName(\"Atria Steps\")",
+            ".description(\"Daily steps on your Home Screen or Lock Screen.\")",
         ]:
             assert_contains(self, widget, needle)
 

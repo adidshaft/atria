@@ -234,4 +234,131 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertFalse(home.contains("AtriaSleepReviewSheetRoute(night: night)\n            AtriaDebugLog"),
                        "A cache miss must not immediately present a nil-night Add Sleep route")
     }
+
+    func testMetricDeepLinkOpensTheSameSheetAsATodayTap() throws {
+        let hrv = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/hrv")!))
+        XCTAssertEqual(hrv.metric, .hrv)
+        XCTAssertEqual(hrv.range, .day)
+
+        let week = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/hrv?range=week")!))
+        XCTAssertEqual(week.metric, .hrv)
+        XCTAssertEqual(week.range, .week)
+
+        let monthRHR = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/rhr?range=month")!))
+        XCTAssertEqual(monthRHR.metric, .restingHeartRate)
+        XCTAssertEqual(monthRHR.range, .month)
+
+        XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://tab/vitals")!))
+        XCTAssertNil(AtriaMetricDeepLink.parse(URL(string: "atria://sleep-review")!))
+
+        let weekRoute = AtriaMetricSheetRoute(metric: .hrv, range: .week)
+        XCTAssertEqual(weekRoute.id, "hrv-week")
+        XCTAssertNotEqual(weekRoute.id, AtriaMetricSheetRoute(metric: .hrv, range: .day).id)
+    }
+
+    func testPendingDeepLinkFileOpensTheSameURLAsOnOpenURL() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-pending-deeplink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        AtriaPendingDeepLinkFile.documentsDirectoryOverride = directory
+        defer {
+            AtriaPendingDeepLinkFile.documentsDirectoryOverride = nil
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        XCTAssertNil(AtriaPendingDeepLinkFile.consume())
+        try "atria://metric/hrv?range=week".write(
+            to: AtriaPendingDeepLinkFile.fileURL(),
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(
+            AtriaPendingDeepLinkFile.consume(),
+            URL(string: "atria://metric/hrv?range=week")
+        )
+        XCTAssertNil(AtriaPendingDeepLinkFile.consume())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: AtriaPendingDeepLinkFile.fileURL().path))
+    }
+
+    func testSleepMetricDeepLinkIsNotSwallowedBySleepReview() throws {
+        let sleep = try XCTUnwrap(AtriaMetricDeepLink.parse(URL(string: "atria://metric/sleep?range=week")!))
+        XCTAssertEqual(sleep.metric, .sleep)
+        XCTAssertEqual(sleep.range, .week)
+
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("if pieces.first == \"metric\" { return false }"),
+                      "atria://metric/sleep must open the Sleep trend sheet")
+        XCTAssertTrue(home.contains("AtriaMetricDeepLink.parse(url)"))
+        let metricIndex = try XCTUnwrap(home.range(of: "if let metricLink = AtriaMetricDeepLink.parse(url)"))
+        let sleepReviewIndex = try XCTUnwrap(home.range(of: "if Self.isSleepReviewDeepLink(url)"))
+        XCTAssertTrue(metricIndex.lowerBound < sleepReviewIndex.lowerBound,
+                      "metric/sleep must be claimed before the sleep-review token matcher")
+    }
+
+    func testWorkoutDeepLinkStartsAndEndsARunningWorkout() throws {
+        let start = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/start")!))
+        XCTAssertEqual(start.action, .start)
+        XCTAssertEqual(start.activityType, .running)
+
+        let walking = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/start?type=walking")!))
+        XCTAssertEqual(walking.activityType, .walking)
+
+        let end = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/end")!))
+        XCTAssertEqual(end.action, .end)
+
+        let dismiss = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/dismiss")!))
+        XCTAssertEqual(dismiss.action, .dismiss)
+
+        let minimize = try XCTUnwrap(AtriaWorkoutDeepLink.parse(URL(string: "atria://workout/minimize")!))
+        XCTAssertEqual(minimize.action, .minimize)
+
+        XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://metric/hrv")!))
+        XCTAssertNil(AtriaWorkoutDeepLink.parse(URL(string: "atria://overview")!))
+
+        let home = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("pendingWorkoutDeepLink"))
+        XCTAssertTrue(home.contains("await handleWorkoutDeepLink(command)"))
+        XCTAssertTrue(home.contains("beginWorkoutSession(configuration: .init(activityType: command.activityType))"))
+        XCTAssertTrue(home.contains("dismissPresentedWorkoutChrome()"),
+                      "metric, widget, and workout start links must drop the saved-workout recap so the next sheet can present")
+        XCTAssertTrue(home.contains("case .dismiss:"),
+                      "atria://workout/dismiss must clear the recap without starting another session")
+        XCTAssertTrue(home.contains("showLiveActivityLockPreview = false"),
+                      "end and dismiss must drop the lock-preview sheet so it cannot stick after a run")
+        XCTAssertTrue(home.contains("workoutEndNotice = nil"))
+        XCTAssertTrue(home.contains("showWidgetOvernightBoard = false"),
+                      "a metric deep link must drop the widget payload board so Day/Week/Month can present")
+        XCTAssertTrue(home.contains("isLiveActivityLockPreviewDeepLink"))
+        XCTAssertTrue(home.contains("pieces.first == \"live-activity\""))
+        XCTAssertTrue(home.contains("AtriaLiveActivityLockPreviewSheet("))
+        XCTAssertTrue(home.contains("case .minimize:"))
+        let tabStart = try XCTUnwrap(home.range(of: "guard let tab = HomeTab.deepLinkDestination(for: url) else { return }"))
+        let tabSlice = String(home[tabStart.lowerBound...].prefix(400))
+        XCTAssertTrue(tabSlice.contains("dismissPresentedWorkoutChrome()"),
+                      "Activity/Vitals/Journal deeplinks must drop the lock-preview sheet (device 157)")
+    }
+
+    func testWidgetBoardDeepLinkIsSeparateFromWidgetProofDiagnostics() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let home = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let board = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWidgetOvernightBoard.swift"), encoding: .utf8)
+        XCTAssertTrue(home.contains("isWidgetOvernightBoardDeepLink"))
+        XCTAssertTrue(home.contains("showWidgetOvernightBoard = true"))
+        XCTAssertTrue(home.contains("pieces.first == \"widget-board\""))
+        XCTAssertTrue(home.contains("pieces.first == \"widget-proof\""))
+        XCTAssertFalse(home.contains("return pieces.first == \"widget-proof\" || pieces.first == \"widget-board\""))
+        XCTAssertFalse(home.contains("deeplink_widget_board"),
+                       "widget-board must print the already-published payload, not republish")
+        XCTAssertTrue(home.contains("metricSheetDismissToken += 1"))
+        XCTAssertTrue(board.contains("AtriaIntentSnapshotStore.loadPublishedPayload()"))
+        XCTAssertTrue(board.contains(".onAppear"))
+    }
 }

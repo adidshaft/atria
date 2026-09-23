@@ -161,6 +161,42 @@ final class AtriaDetectionLogTests: XCTestCase {
         XCTAssertEqual(DetectionReasonCopy.text(for: unknownEverything), "raw detail")
     }
 
+    /// 2026-09-02: the Vitals sleep card and History rows showed raw pipeline
+    /// sentences ending in "(source: foreground_edge)". Every emitted skip code
+    /// now maps to plain copy, and the raw fallback drops provenance tokens.
+    func testEveryEmittedSleepSkipCodeReadsAsPlainCopy() {
+        let codes = ["no_strong_candidate", "candidate_not_settled",
+                     "daytime_quiescence_no_strap", "daytime_quiescence_insufficient_motion",
+                     "daytime_quiescence_hr_read_incomplete", "daytime_quiescence_no_candidate",
+                     "daytime_quiescence_slot_held", "review_only_classification",
+                     "wake_boundary_review_only_classification",
+                     "compact_materialization_stale_or_missing",
+                     "compact_wake_materialization_stale_or_missing", "baseline_trust_changed",
+                     "wake_boundary_dismissed", "save_time_dismissal_suppressed",
+                     "wake_boundary_no_wake_detected", "wake_boundary_overlaps_saved",
+                     "already_saved_or_overlapping"]
+        for code in codes {
+            let event = DetectionEvent(kind: "sleepCandidateSkipped", reason: code,
+                                       detail: "raw (source: foreground_edge)")
+            let text = DetectionReasonCopy.text(for: event)
+            XCTAssertNotEqual(text, event.detail, "\(code) must not fall through to the raw detail")
+            XCTAssertFalse(text.contains("(source:"), code)
+            XCTAssertFalse(text.contains("_"), "\(code) copy must not carry machine tokens")
+        }
+    }
+
+    func testRawDetailFallbackDropsProvenanceTokens() {
+        let unknown = DetectionEvent(kind: "sleepCandidateSkipped", reason: "some_future_code",
+                                     detail: "3 sleep candidate(s) proposed, none auto-confirmable (source: foreground_edge)")
+        XCTAssertEqual(DetectionReasonCopy.text(for: unknown),
+                       "3 sleep candidate(s) proposed, none auto-confirmable")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("Only a token (source: x)"), "Only a token")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("Marked not sleep: 13:10–19:05. This window won't be suggested again."),
+                       "Marked not sleep: 13:10–19:05. This window won't be suggested again.")
+        XCTAssertEqual(DetectionReasonCopy.sanitizedDetail("(source: x)"), "(source: x)",
+                       "a detail that is nothing but the token stays as recorded rather than vanishing")
+    }
+
     func testDetectionEventCodableRoundTrips() throws {
         let event = DetectionEvent(kind: "workoutSuppressed",
                                     reason: "contact_compromised_stitched",
@@ -168,5 +204,43 @@ final class AtriaDetectionLogTests: XCTestCase {
         let data = try JSONEncoder().encode(event)
         let decoded = try JSONDecoder().decode(DetectionEvent.self, from: data)
         XCTAssertEqual(decoded, event)
+    }
+
+    /// 2026-09-02 (device): two week-old candidates were re-evaluated hourly
+    /// and filled every slot of the ring. The same skip for the same window is
+    /// one fact repeating: one row, newest date, a count.
+    func testIdenticalWindowSkipRepeatedHoursApartMergesIntoOneRowWithACount() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let window = (start: base.addingTimeInterval(-7 * 86_400), end: base.addingTimeInterval(-7 * 86_400 + 8 * 60))
+        DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped", reason: "cluster_no_surviving_lane",
+                                                date: base, detail: "Low-HR window",
+                                                windowStart: window.start, windowEnd: window.end), store: store)
+        DetectionEventLog.append(DetectionEvent(kind: "workoutDetected", date: base.addingTimeInterval(30 * 60),
+                                                detail: "real activity"), store: store)
+        DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped", reason: "cluster_no_surviving_lane",
+                                                date: base.addingTimeInterval(2 * 3_600), detail: "Low-HR window",
+                                                windowStart: window.start, windowEnd: window.end), store: store)
+        DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped", reason: "cluster_no_surviving_lane",
+                                                date: base.addingTimeInterval(4 * 3_600), detail: "Low-HR window",
+                                                windowStart: window.start, windowEnd: window.end), store: store)
+        let loaded = DetectionEventLog.load(store: store)
+        XCTAssertEqual(loaded.count, 2, "one merged skip row plus the workout")
+        XCTAssertEqual(loaded.first?.kind, "sleepCandidateSkipped")
+        XCTAssertEqual(loaded.first?.repeatCount, 3)
+        XCTAssertEqual(loaded.first?.date, base.addingTimeInterval(4 * 3_600), "the row carries the newest attempt")
+        XCTAssertEqual(loaded.last?.kind, "workoutDetected", "the actionable row is not evicted")
+    }
+
+    func testSkipsForDifferentWindowsStayDistinctRows() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let a = base.addingTimeInterval(-7 * 86_400), b = base.addingTimeInterval(-8 * 86_400)
+        DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped", reason: "cluster_no_surviving_lane",
+                                                date: base, detail: "A", windowStart: a, windowEnd: a.addingTimeInterval(600)), store: store)
+        DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped", reason: "cluster_no_surviving_lane",
+                                                date: base.addingTimeInterval(2 * 3_600), detail: "B",
+                                                windowStart: b, windowEnd: b.addingTimeInterval(600)), store: store)
+        let loaded = DetectionEventLog.load(store: store)
+        XCTAssertEqual(loaded.count, 2)
+        XCTAssertTrue(loaded.allSatisfy { ($0.repeatCount ?? 1) == 1 })
     }
 }

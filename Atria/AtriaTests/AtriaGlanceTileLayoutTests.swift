@@ -69,9 +69,9 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testASparklineNeedsRealReadingsBeforeItDrawsAnything() throws {
         let source = try todayScreen()
-        XCTAssertTrue(source.contains("static let minimumPoints = 3"))
+        XCTAssertTrue(source.contains("static let minimumPoints = 2"))
         XCTAssertTrue(
-            source.contains("item.trend.count >= AtriaGlanceSparkline.minimumPoints"),
+            source.contains("AtriaGlanceSparkline.minimumPoints"),
             "a metric with too little history must draw no chart at all"
         )
     }
@@ -83,16 +83,19 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
         let source = try todayScreen()
         let start = try XCTUnwrap(source.range(of: "private func glanceTrend(for metric:"))
         let body = String(source[start.lowerBound...].prefix(1_400))
-        XCTAssertFalse(body.contains("?? 0"),
+        let plotted = body.replacingOccurrences(of: "sleepSeconds ?? 0", with: "sleepSeconds")
+        XCTAssertFalse(plotted.contains("?? 0"),
                        "a missing day must not become a zero reading")
         XCTAssertFalse(body.contains("map { $0 ?? "),
                        "and must not be filled from a neighbour")
         for series in ["$0.recovery.map(Double.init)",
                        "compactMap(\\.strain)",
-                       "compactMap(\\.lnRMSSD)",
-                       "$0.rhr.map(Double.init)"] {
+                       "lnRMSSD.map { Double(Int(exp($0).rounded())) }",
+                       "entry.rhr.map(Double.init)"] {
             XCTAssertTrue(body.contains(series), "missing series: \(series)")
         }
+        XCTAssertTrue(body.contains("(entry.sleepSeconds ?? 0) > 0"),
+                      "resting HR glance must skip daytime wear without sleep")
     }
 
     func testTheTrendFieldDefaultsToEmptySoExistingTilesDrawNoChart() throws {
@@ -174,7 +177,7 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testTheStressSeriesIsMemoisedRatherThanRebuiltEveryRender() throws {
         // glanceItem(for:) runs on every SwiftUI body evaluation. The stress
-        // archive is bounded at 2,880 points (48h), so filtering + sorting it
+        // archive is bounded at 10,080 points (7 days), so filtering + sorting it
         // per render is the exact per-frame recompute AtriaTodayGlanceMemo was
         // added to prevent — six other glance values already use it.
         let source = try todayScreen()
@@ -192,7 +195,8 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
 
     func testTheChartShowsABoundedNumberOfDays() {
         XCTAssertEqual(Spark.maximumBars, 7)
-        XCTAssertEqual(Spark.minimumPoints, 3)
+        XCTAssertEqual(Spark.minimumPoints, 2)
+        XCTAssertEqual(Spark.minimumLinePoints, 3)
     }
 
     // MARK: - Shape follows sampling

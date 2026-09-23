@@ -401,7 +401,10 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
             // (zero construction sites), now removed. AtriaHealthScreen — the
             // screen actually mounted for the Vitals tab — still carries the
             // authority and is still checked below.
-            "AtriaOverviewSections.swift",
+            // AtriaOverviewSections dropped 2026-08-28: its metric-detail
+            // routes lived in the unreachable Overview tree removed that day.
+            // Today and Vitals — the screens actually mounted — still carry
+            // the authority and are still checked here.
         ] {
             let source = try String(
                 contentsOf: sourceRoot.appendingPathComponent(file),

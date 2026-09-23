@@ -129,9 +129,10 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(guarded(thermal: .nominal, lowPower: false, battery: .unplugged, level: 0.40))
     }
 
-    func testGuardFailsClosedOnUnknownBattery() {
-        // UIDevice reports -1 when the level is unknown; must not start.
-        XCTAssertFalse(guarded(thermal: .nominal, lowPower: false, battery: .unknown, level: -1.0))
+    func testGuardAllowsUnknownPhoneBattery() {
+        // UIDevice reports -1 when monitoring is off. That must not be read as
+        // a 0% phone. Strap 2A19 is a different key (`battery_level` in pulls).
+        XCTAssertTrue(guarded(thermal: .nominal, lowPower: false, battery: .unknown, level: -1.0))
     }
 
     func testConnectedRawPublicationYieldRequiresCoolActiveForeground() {
@@ -494,15 +495,352 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         }
         XCTAssertTrue(admits(), "a healthy backgrounded BGProcessing pass is admitted")
         XCTAssertFalse(admits(reason: "scene_active"), "only the BGProcessing lane")
+        XCTAssertFalse(admits(reason: "scene_background"),
+                       "ordinary app-switch backgrounding must not scan the archive")
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationIsBackground: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "an overdue 7/30/90-day window may retire one chunk on scene background"
+        )
         XCTAssertFalse(admits(background: false), "never while the user is in the app")
         XCTAssertFalse(admits(thermal: .serious))
         XCTAssertFalse(admits(thermal: .critical))
         XCTAssertFalse(admits(lowPower: true))
         XCTAssertFalse(admits(batteryLevel: 0.3), "unplugged below 50% is refused")
+        XCTAssertTrue(admits(batteryLevel: -1),
+                      "unknown UIDevice battery must not block overdue work")
         XCTAssertTrue(admits(batteryState: .charging, batteryLevel: 0.3),
                       "charging lifts the battery floor")
         XCTAssertFalse(admits(exactRecovery: true), "never contend with exact recovery")
         XCTAssertFalse(admits(recoveredCycle: true))
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationIsBackground: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: true,
+                compactionOverdue: true
+            ),
+            "overdue one-chunk retirement may run in a recovered rest window"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationIsBackground: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: true,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "exact recovery still owns the archive even when retention is overdue"
+        )
+        XCTAssertTrue(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationState: .inactive,
+                compactionOverdue: true
+            ),
+            "lock's inactive phase may start the one-chunk overdue pass"
+        )
+        XCTAssertFalse(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationState: .inactive,
+                compactionOverdue: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationState: .active,
+                compactionOverdue: true
+            ),
+            "Today in the foreground must not scan the archive"
+        )
+        XCTAssertTrue(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationState: .active,
+                compactionOverdue: true
+            ),
+            "sitting Today may retire one overdue ≤8 MB chunk"
+        )
+        XCTAssertFalse(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationState: .active,
+                compactionOverdue: false
+            ),
+            "idle retention is only for an overdue 7/30/90-day window"
+        )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "overdue idle does not require a backgrounded app"
+        )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: true,
+                recoveredCycleEngaged: true,
+                compactionOverdue: true
+            ),
+            "sitting one-chunk must not wait on the exact-recovery heavy lane"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.9,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: false
+            ),
+            "idle retention is only for an overdue 7/30/90-day window"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .serious,
+                isLowPowerModeEnabled: false,
+                batteryState: .charging,
+                batteryLevel: 0.86,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "sitting JSONL at thermal serious jetsammed the live BLE process"
+        )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.43,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "one-chunk sitting drain must keep moving on a 43% unplugged phone"
+        )
+        XCTAssertTrue(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "scene_background",
+                applicationIsBackground: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.43,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "lock one-chunk drain must also keep moving at 43%"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false,
+                batteryState: .unplugged,
+                batteryLevel: 0.10,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "sitting idle still refuses a critically low unplugged battery"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: "overdue_idle",
+                applicationIsBackground: false,
+                thermalState: .critical,
+                isLowPowerModeEnabled: false,
+                batteryState: .charging,
+                batteryLevel: 0.86,
+                exactRecoveryOwnsPriority: false,
+                recoveredCycleEngaged: false,
+                compactionOverdue: true
+            ),
+            "critical heat still refuses even a one-chunk idle pass"
+        )
+        XCTAssertTrue(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "bg_processing",
+                applicationState: .background,
+                compactionOverdue: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.applicationAllowsAutomaticArchiveCompaction(
+                reason: "bg_processing",
+                applicationState: .inactive,
+                compactionOverdue: true
+            ),
+            "BGProcessing still requires a true backgrounded app"
+        )
+    }
+
+    func testPhoneBatterySnapshotIsNotTheStrapPercent() {
+        let suite = "atria.phoneBattery.test.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        SessionStore.recordPhoneBatterySnapshot(
+            level: 0.82,
+            state: .unplugged,
+            now: Date(timeIntervalSince1970: 2_000_000_000),
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            defaults.float(forKey: "atria.phoneBattery.level"),
+            0.82,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(defaults.string(forKey: "atria.phoneBattery.state"), "unplugged")
+        XCTAssertEqual(
+            defaults.double(forKey: "atria.phoneBattery.at"),
+            2_000_000_000,
+            accuracy: 0.001
+        )
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    func testOverdueArchiveCompactionIsADrainableBacklog() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertTrue(SessionStore.archiveCompactionIsOverdue(lastRunAt: nil, now: now))
+        XCTAssertTrue(SessionStore.archiveCompactionIsOverdue(lastRunAt: 0, now: now))
+        XCTAssertTrue(SessionStore.archiveCompactionIsOverdue(
+            lastRunAt: now.timeIntervalSince1970 - (8 * 86_400),
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.archiveCompactionIsOverdue(
+            lastRunAt: now.timeIntervalSince1970 - (2 * 86_400),
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "scene_background",
+            lastRunAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "scene_background",
+            lastRunAt: now.timeIntervalSince1970 - (8 * 86_400),
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "scene_background",
+            lastRunAt: now.timeIntervalSince1970 - (2 * 86_400),
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "bg_processing",
+            lastRunAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "scene_active",
+            lastRunAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "overdue_idle",
+            lastRunAt: nil,
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.automaticArchiveCompactionIsOverdueSceneBackground(
+            reason: "overdue_idle",
+            lastRunAt: now.timeIntervalSince1970 - (2 * 86_400),
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: nil,
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 46,
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 10,
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 12,
+            lastStatus: "ok_verified_consumer_cutover_raw_retired",
+            now: now
+        ))
+        XCTAssertFalse(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 10,
+            lastStatus: "ok_verified_consumer_cutover_raw_retired",
+            now: now
+        ))
+        XCTAssertTrue(SessionStore.archiveCompactionAttemptIsStale(
+            lastAttemptAt: now.timeIntervalSince1970 - 12,
+            lastStatus: "deferred_retention_source_unavailable",
+            now: now
+        ), "ghost missing catalog rows must not stall sitting idle for 45s")
+    }
+
+    func testArchiveCompactionConvergingBudgetSpendsTheLiveLease() {
+        let fallback = SessionStore.archiveCompactionConvergingBudget(
+            remainingLease: nil
+        )
+        XCTAssertEqual(fallback.iterations, 8)
+        XCTAssertEqual(fallback.elapsed, 8)
+        let scene = SessionStore.archiveCompactionConvergingBudget(
+            remainingLease: 25
+        )
+        XCTAssertEqual(scene.elapsed, 23)
+        XCTAssertEqual(scene.iterations, 11)
+        let processing = SessionStore.archiveCompactionConvergingBudget(
+            remainingLease: 10 * 60
+        )
+        XCTAssertEqual(processing.elapsed, 8 * 60)
+        XCTAssertEqual(processing.iterations, 32)
+        let desk = SessionStore.archiveCompactionConvergingBudget(
+            remainingLease: 15 * 60,
+            maximumElapsed: 15 * 60,
+            maximumIterations: 1
+        )
+        XCTAssertEqual(desk.elapsed, 15 * 60 - 2)
+        XCTAssertEqual(desk.iterations, 1)
     }
 
     func testAutomaticFullBackgroundProjectionFailsClosedInRelease() {
@@ -744,6 +1082,23 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                     isLowPowerModeEnabled: false
                 )
         )
+        XCTAssertTrue(
+            SessionStore.ArchiveCompactionCancellationToken()
+                .shouldContinue(
+                    thermalState: .serious,
+                    isLowPowerModeEnabled: false,
+                    allowsSeriousThermal: true
+                ),
+            "token may allow serious heat; sitting idle must not request it"
+        )
+        XCTAssertFalse(
+            SessionStore.ArchiveCompactionCancellationToken()
+                .shouldContinue(
+                    thermalState: .critical,
+                    isLowPowerModeEnabled: false,
+                    allowsSeriousThermal: true
+                )
+        )
         XCTAssertFalse(
             SessionStore.ArchiveCompactionCancellationToken()
                 .shouldContinue(
@@ -786,11 +1141,11 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(compactionAdmitted(
             battery: .unplugged,
             level: 0.49
-        ))
-        XCTAssertFalse(compactionAdmitted(
+        ), "BGProcessing still uses the 50% phone-battery floor")
+        XCTAssertTrue(compactionAdmitted(
             battery: .unknown,
             level: -1
-        ))
+        ), "unknown UIDevice battery must not block overdue work")
         XCTAssertFalse(compactionAdmitted(exactOwner: true))
         XCTAssertFalse(compactionAdmitted(recoveredOwner: true))
     }
@@ -2555,6 +2910,15 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             "the exact lease/environment must be rechecked after queueing"
         )
         XCTAssertTrue(compaction.contains(
+            "compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground("
+        ), "scene-background must re-admit with the overdue flag, not default false")
+        XCTAssertTrue(compaction.contains(
+            "Self.archiveCompactionConvergingBudget("
+        ), "the driver must spend the live lease instead of the 8s default")
+        XCTAssertTrue(compaction.contains(
+            "maximumElapsed: convergingBudget.elapsed"
+        ))
+        XCTAssertTrue(compaction.contains(
             "shouldContinue: shouldContinue"
         ), "the explicit developer lane retains cooperative cancellation")
         XCTAssertTrue(compaction.contains(
@@ -2699,6 +3063,9 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(app.contains(
             "|| SessionStore.automaticRecoveredDataBootstrapIntentIsPending"
         ), "a retained multi-pass bootstrap must keep BGProcessing scheduled")
+        XCTAssertTrue(app.contains(
+            "|| SessionStore.archiveCompactionIsOverdue()"
+        ), "missed raw-retention windows must keep the 60s BGProcessing cadence")
         let motionStart = try XCTUnwrap(app.range(of: "var motionDrained = false"))
         let hrStart = try XCTUnwrap(app.range(
             of: "// HR drain:",
@@ -2781,6 +3148,74 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(app.contains(
             "reason: \"scene_active\""
         ), "foreground entry must revoke an already-running cooperative pass")
+        XCTAssertTrue(app.contains(
+            "offerOverdueSceneBackgroundRetention()"
+        ), "locking the phone must offer one overdue 7/30/90-day chunk")
+        XCTAssertTrue(app.contains(
+            "withName: \"Atria overdue retention\""
+        ))
+        XCTAssertTrue(app.contains(
+            "status: \"lease_denied\""
+        ), "a refused lock must leave a pull-visible compact attempt")
+        XCTAssertTrue(app.contains(
+            "reason: \"scene_inactive_deferred_checkpoint\""
+        ))
+        let inactiveCheckpoint = try XCTUnwrap(app.range(
+            of: "reason: \"scene_inactive_deferred_checkpoint\""
+        ))
+        let inactiveOffer = try XCTUnwrap(app.range(
+            of: "offerOverdueSceneBackgroundRetention()",
+            range: inactiveCheckpoint.upperBound..<app.endIndex
+        ))
+        XCTAssertLessThan(
+            inactiveCheckpoint.lowerBound,
+            inactiveOffer.lowerBound,
+            "a 1.5s lock/inactive hold must offer the overdue one-chunk pass"
+        )
+        XCTAssertTrue(app.contains(
+            "offerOverdueIdleRetentionIfSafe()"
+        ), "sitting Today must offer one overdue chunk without a lock")
+        XCTAssertTrue(app.contains(
+            ".task(id: scenePhase)"
+        ), "idle polling must follow the live scene, not the launch capture")
+        XCTAssertTrue(app.contains(
+            "reason: \"overdue_idle\""
+        ))
+        XCTAssertTrue(app.contains(
+            "AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention()"
+        ), "idle retention may run at a desk; only a walk blocks archive I/O")
+        XCTAssertTrue(app.contains(
+            "archiveCompactionAttemptIsStale()"
+        ))
+        XCTAssertTrue(app.contains(
+            "recordIdleRetentionSkip("
+        ), "idle skips must be pull-visible without eating the compact attempt")
+        XCTAssertTrue(app.contains(
+            "hasCurrentArchiveCompactionLease()"
+        ), "a live idle lease must not be recorded as lease_denied")
+        XCTAssertTrue(app.contains(
+            "recordIdleRetentionSkip(reason: \"lease_denied\")"
+        ), "lock-path deny must not stamp lastAttemptAt while idle still holds the lease")
+        XCTAssertTrue(app.contains(
+            "archiveCompactionWorkerIsInFlight()"
+        ), "an expired lease must not mint another while the first worker still runs")
+        let lockOfferStart = try XCTUnwrap(app.range(
+            of: "private func offerOverdueSceneBackgroundRetention()"
+        ))
+        let lockOfferEnd = try XCTUnwrap(app.range(
+            of: "private func offerOverdueIdleRetentionIfSafe()",
+            range: lockOfferStart.upperBound..<app.endIndex
+        ))
+        let lockOffer = String(app[lockOfferStart.lowerBound..<lockOfferEnd.lowerBound])
+        XCTAssertTrue(lockOffer.contains(
+            "shouldUseSittingIdleRetentionLease()"
+        ), "desk sitting on lock must use the 180s isolated 24–48 MB idle lease")
+        XCTAssertTrue(lockOffer.contains(
+            "sittingDesk ? \"overdue_idle\" : \"scene_background\""
+        ), "typing on lock stays on the 25s ≤8 MB path")
+        XCTAssertTrue(lockOffer.contains(
+            "isSafeForOneChunkRetention()"
+        ), "a desk-sitting 24 MB parse must survive the 30s background-task expiry")
     }
 
     func testRecoveredLifecycleRevocationAndBGLeaseRetirementPrecedeRestoreGuard()
@@ -3064,6 +3499,36 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             contentsOf: sourceRoot.appendingPathComponent("Sessions.swift"),
             encoding: .utf8
         )
+        XCTAssertTrue(sessions.contains(
+            "allowsForeground: reason == \"overdue_idle\""
+        ), "sitting Today leases must survive an active application state")
+        XCTAssertTrue(sessions.contains(
+            "minimumBatteryLevel: (isOverdueIdle || isOverdueSceneBackground) ? 0.15 : 0.5"
+        ), "one-chunk sitting/lock drain uses phone battery, never strap 2A19")
+        XCTAssertTrue(sessions.contains(
+            "batteryLevel: UIDevice.current.batteryLevel"
+        ), "archive compaction admits on phone battery, never WHOOP 2A19")
+        XCTAssertTrue(sessions.contains(
+            "atria.phoneBattery.level"
+        ), "pull-summary must show phone battery separately from strap battery_level")
+        XCTAssertTrue(sessions.contains(
+            "case \"overdue_idle\":"
+        ), "sitting idle needs more than the 25s lock window once BLE is up")
+        XCTAssertTrue(sessions.contains(
+            "case \"overdue_idle\": leaseLifetime = 180"
+        ), "sitting idle needs more than the 25s lock window once BLE is up")
+        XCTAssertFalse(sessions.contains(
+            "error: \"lease_current\""
+        ), "a live idle lease must not stamp lastAttemptAt and stall the 12s poll")
+        XCTAssertTrue(sessions.contains(
+            "archiveIdleCompactionQueue"
+        ), "one-chunk overdue idle must not wait on recovered projection")
+        XCTAssertTrue(sessions.contains(
+            "if reason == \"scene_active\", active.allowsForeground"
+        ), "coming back to Today must not revoke a sitting idle lease")
+        XCTAssertTrue(sessions.contains(
+            "lease.allowsForeground"
+        ))
         let driverStart = try XCTUnwrap(sessions.range(
             of: "func compactHistoricalArchiveIfUseful("
         ))
@@ -3084,6 +3549,158 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertTrue(driver.contains(
             "status=reserved_automatic_execution_disabled"
         ))
+        XCTAssertTrue(driver.contains(
+            "compactionOverdue: Self.automaticArchiveCompactionIsOverdueSceneBackground("
+        ))
+        XCTAssertTrue(driver.contains(
+            "maximumElapsed: convergingBudget.elapsed"
+        ))
+        XCTAssertTrue(driver.contains(
+            "Self.recordArchiveCompactionAttempt("
+        ), "every compact path must leave a pull-visible last attempt")
+        XCTAssertTrue(driver.contains(
+            "(!recoveredProjectionScanActive || overdueSceneBackground)"
+        ), "overdue lock retention must not wait on recovered projection rest")
+        XCTAssertTrue(driver.contains(
+            "!exactRecoveryOwnsPriority || overdueSceneBackground"
+        ), "sitting one-chunk must not wait on exact recovery")
+        XCTAssertTrue(driver.contains(
+            "Self.applicationAllowsAutomaticArchiveCompaction("
+        ), "inactive lock must be able to admit the overdue one-chunk pass")
+    }
+
+    func testOverdueSceneBackgroundRetentionSkipsArchiveWideHousekeeping() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let archive = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/HistoricalArchive.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(archive.range(of: "static func compactArchive("))
+        let end = try XCTUnwrap(archive.range(
+            of: "static func compactArchiveConverging(",
+            range: start.upperBound..<archive.endIndex
+        ))
+        let body = String(archive[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains(
+            "let overdueSceneBackgroundFastPath = reason == \"scene_background\""
+        ))
+        XCTAssertTrue(body.contains(
+            "reason == \"overdue_idle\""
+        ), "sitting Today uses the same one-chunk skip-GC path as lock")
+        XCTAssertTrue(body.contains(
+            "deferred_catalog_warming"
+        ), "short leases must not recover 72/134 MB legacy JSONL")
+        XCTAssertTrue(body.contains(
+            "status=overdue_scene_background_fast_path"
+        ))
+        XCTAssertTrue(body.contains(
+            "sceneBackgroundRetirementCandidates("
+        ), "a 25s lock cannot start on the 134 MB legacy JSONL")
+        let shadowRetire = try XCTUnwrap(body.range(
+            of: "preferredIdleShadowCutoverID"
+        ))
+        let missingSources = try XCTUnwrap(body.range(
+            of: "if !retention.missingSourceCandidateIDs.isEmpty"
+        ))
+        XCTAssertLessThan(
+            shadowRetire.lowerBound,
+            missingSources.lowerBound,
+            "a missing 72/134 MB catalog row must not block retiring a later verified chunk"
+        )
+        let noIsolated = try XCTUnwrap(body.range(
+            of: "status = \"deferred_idle_no_isolated_small\""
+        ))
+        XCTAssertLessThan(
+            noIsolated.lowerBound,
+            missingSources.lowerBound,
+            "ghost missing catalog rows must not hide empty isolated ≤8 MB as source_unavailable"
+        )
+        XCTAssertTrue(body.contains(
+            "AtriaHistoricalGeneratedArtifactGC("
+        ), "BGProcessing still runs generated-artifact GC")
+        XCTAssertTrue(body.contains(
+            "status=overdue_scene_background_skip_committed_index"
+        ), "a 25s idle lease must not page every committed aggregate")
+        XCTAssertTrue(body.contains(
+            "!overdueSceneBackgroundFastPath"
+        ), "sitting/lock must not resume a 134 MB pending retire")
+        XCTAssertTrue(body.contains(
+            "AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes"
+        ), "lock and typing stay on ≤8 MB JSONL")
+        XCTAssertTrue(body.contains("sittingIdleChunkByteCap()"),
+                      "desk sitting may retire isolated ≤48 MB JSONL")
+        XCTAssertTrue(body.contains("sittingIdleBuildCandidates("),
+                      "sitting idle must drain isolated ≤8 MB JSONL even when a 33 MB shadow cutover is pending")
+        XCTAssertTrue(body.contains("preferredIdleShadowCutoverChunkID("),
+                      "sitting idle must unlink small shadow-committed JSONL before any 33 MB parse")
+        XCTAssertTrue(body.contains("shouldIncludeLargeIdleChunk("),
+                      "desk sitting may take 33 MB only after isolated ≤8 MB JSONL is gone")
+        XCTAssertTrue(body.contains("preferredIdleShadowCutoverID"),
+                      "sitting idle may unlink a shadow-committed JSONL before rebuilding")
+        XCTAssertTrue(body.contains("preferLargeIdle"),
+                      "desk sitting prefers one isolated 33 MB JSONL; typing keeps small shards")
+        XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),
+                      "a 126 KB shard that overlaps the 134 MB monolith must not burn the lease")
+        XCTAssertTrue(body.contains("catalog.chunks.filter { $0.state == .sealed }"),
+                      "sitting idle must not stall on the policy queue's 134 MB row")
+        XCTAssertTrue(body.contains("64 * 1024 * 1024"),
+                      "only 72/134 MB legacy JSONL should isolate overlapping shards")
+        XCTAssertTrue(body.contains("isolatedFinishableIdleCandidates("),
+                      "lock must skip 72/134 MB overlaps before spending 25s")
+        XCTAssertTrue(body.contains("Array(isolated.prefix(1))"),
+                      "lock still attempts one isolated finishable JSONL")
+        XCTAssertTrue(body.contains("deferred_idle_no_isolated_small"),
+                      "empty lock candidates must not look like the 512 MB cap is satisfied")
+        XCTAssertTrue(body.contains(
+            "if retention.plan.hardCapSatisfied"
+        ), "sitting idle must stop once sealed raw is under the 512 MB cap")
+        XCTAssertTrue(body.contains("recordPermanentIdleCutoverSkips("),
+                      "a poisoned shard must not be retried on every sitting pass")
+        XCTAssertTrue(body.contains("orderedIdleRetirementCandidates("),
+                      "sitting idle still skips duplicate-identity shards then takes isolated JSONL")
+        XCTAssertTrue(body.contains("preferLarge: true"),
+                      "BGProcessing may retire one isolated 33 MB JSONL and must skip 72/134")
+        XCTAssertTrue(body.contains("sittingIdleLargeChunkBytes"),
+                      "background retention cap stays under the 72/134 MB legacy JSONL")
+        XCTAssertTrue(body.contains("skippingIdleCutoverSkips("),
+                      "a JSONL with duplicate replay keys must not stall every later isolated shard")
+        XCTAssertTrue(body.contains("deferred_idle_cutover_skipped"),
+                      "duplicateIdentity cutover must skip and keep draining")
+        XCTAssertTrue(body.contains(
+            "singleSourceRetention: overdueSceneBackgroundFastPath"
+        ), "sitting/lock must not stream every aggregate or hash sibling JSONL")
+        XCTAssertTrue(body.contains("shouldContinue: maintenanceShouldContinue"),
+                      "a 33 MB JSONL parse must abort when the sitting lease ends")
+        XCTAssertTrue(body.contains("loadCommittedChunkIDs("),
+                      "BGProcessing still uses the strict committed index")
+        XCTAssertTrue(archive.contains(
+            "result.status == \"deferred_idle_cutover_skipped\""
+        ), "a skipped duplicateIdentity shard must not end the sitting lease")
+    }
+
+    func testConsumerCutoverHashesOnlyTheTargetChunk() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let archive = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/HistoricalArchive.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(archive.range(
+            of: "static func publishAndVerifyHistoricalConsumerCutover("
+        ))
+        let end = try XCTUnwrap(archive.range(
+            of: "enum TerminalConsumerProjectionError",
+            range: start.upperBound..<archive.endIndex
+        ))
+        let body = String(archive[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("singleSourceRetention: Bool = false"))
+        XCTAssertTrue(body.contains("prepareForRawRetirementCutover("))
+        XCTAssertTrue(body.contains("publishRawRetirementReceipts("))
+        XCTAssertTrue(body.contains("AtriaHistoricalVerifiedConsumerReader("),
+                      "BGProcessing cutover still re-reads typed consumers")
     }
 
     func testCompletingOnboardingReplaysRetainedRecoveredProjectionAfterProfileSave()

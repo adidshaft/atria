@@ -9,7 +9,7 @@ struct WidgetSnapshot: Codable {
     let recoveryPercent: Int?
     let recoveryConfidence: String
     let recoveryDetail: String
-    let strain: Double
+    var strain: Double
     /// Evidence qualifier for the numeric day-load value. Current writers use
     /// this to distinguish a partial sparse-HR aggregate from a complete cycle.
     var strainDetail: String? = nil
@@ -503,7 +503,7 @@ enum WidgetSnapshotPublisher {
                 before: cycle.start,
                 strapIdentifiers: [sourceIdentifier]
             )
-        let presentation = resolvedDailySteps(
+        let presentation = resolvedDailyStepsHoldingLastCount(
             day: now,
             now: now,
             liveCount: 0,
@@ -787,6 +787,36 @@ enum WidgetSnapshotPublisher {
         return value
     }
 
+    /// A reconnect/install live-session reset can recompute day strain as 0
+    /// while Today still holds the cycle load. Keep the delivered number for
+    /// the same physiological cycle.
+    nonisolated static func snapshotPreservingDayStrain(
+        candidate: WidgetSnapshot,
+        current: WidgetSnapshot
+    ) -> WidgetSnapshot {
+        let sameCycle = current.strainCycleStart == candidate.strainCycleStart
+            || current.strainCycleExpiresAt == candidate.strainCycleExpiresAt
+        guard sameCycle else { return candidate }
+        let held = mergedLiveStrainValue(
+            previous: current.strain,
+            next: candidate.strain,
+            nextDetail: candidate.strainDetail
+        )
+        guard abs(held - candidate.strain) > 0.000_000_001 else { return candidate }
+        var snapshot = candidate
+        snapshot.strain = held
+        snapshot.strainDetail = mergedLiveStrainDetail(
+            previous: current.strainDetail,
+            next: candidate.strainDetail
+        )
+        snapshot.strainCapturedAt = current.strainCapturedAt ?? candidate.strainCapturedAt
+        snapshot.strainCycleStart = current.strainCycleStart ?? candidate.strainCycleStart
+        snapshot.strainCycleExpiresAt = current.strainCycleExpiresAt ?? candidate.strainCycleExpiresAt
+        snapshot.strainValueText = current.strainValueText
+            ?? (held > 0 ? String(format: "%.1f", held) : nil)
+        return snapshot
+    }
+
     /// A broad rebuild can start immediately before a background receipt save
     /// and reach UserDefaults after the receipt-only lane. Merge only the step
     /// family from the stronger already-delivered authority; every non-step
@@ -818,7 +848,7 @@ enum WidgetSnapshotPublisher {
                 current.stepsReceiptSourceIdentifier
             )
             : nil
-        let shouldPreserveCurrent: Bool
+        var shouldPreserveCurrent: Bool
         if let candidateSource, let currentSource,
            candidateSource != currentSource {
             // A full publish resolves the currently persisted strap identity;
@@ -1014,6 +1044,27 @@ enum WidgetSnapshotPublisher {
                 }
             }
         }
+        // A later-written live estimate can keep a desk-sitting accel leftover
+        // (device 2026-09-17: widget 10946 vs Today gyro 1901) because this
+        // merge compared capture clocks. Home already replaces that floor;
+        // the widget must not freeze the contaminated number.
+        if shouldPreserveCurrent,
+           liveEstimateShouldReplacePreservedSteps(
+            currentSteps: current.steps,
+            currentSource: current.stepsSource,
+            candidateSteps: candidate.steps,
+            candidateSource: candidate.stepsSource
+           ) {
+            shouldPreserveCurrent = false
+        }
+        if liveEstimateIsReconnectFragmentDrop(
+            currentSteps: current.steps,
+            currentSource: current.stepsSource,
+            candidateSteps: candidate.steps,
+            candidateSource: candidate.stepsSource
+        ) {
+            shouldPreserveCurrent = true
+        }
         guard shouldPreserveCurrent else { return candidate }
 
         var merged = candidate
@@ -1079,10 +1130,26 @@ enum WidgetSnapshotPublisher {
             current.stepsReceiptCapturedAt,
             current.stepsCapturedAt,
         ].compactMap { $0 }.max()
+        let replacesContaminatedLiveEstimate =
+            liveEstimateShouldReplacePreservedSteps(
+                currentSteps: current.steps,
+                currentSource: current.stepsSource,
+                candidateSteps: steps,
+                candidateSource: stepsSource ?? "live"
+            )
+        let dropsToReconnectFragment =
+            liveEstimateIsReconnectFragmentDrop(
+                currentSteps: current.steps,
+                currentSource: current.stepsSource,
+                candidateSteps: steps,
+                candidateSource: stepsSource ?? "live"
+            )
         // This lane may have captured its arguments before a durable receipt
         // landed. Keep the latest snapshot's step projection unless the live
-        // sample is at least as new as every delivered step/receipt clock.
-        let acceptsIncomingSteps = incomingStepEvidenceAt.map { incoming in
+        // sample is at least as new as every delivered step/receipt clock, or
+        // the incoming live gyro count is replacing a contaminated leftover.
+        let acceptsIncomingSteps = replacesContaminatedLiveEstimate
+            || (!dropsToReconnectFragment && (incomingStepEvidenceAt.map { incoming in
             let equalsRevisionedDurableReceipt =
                 current.stepsReceiptAuthorityVersion
                     == qualifiedStepAuthorityVersion
@@ -1094,7 +1161,23 @@ enum WidgetSnapshotPublisher {
                 && (currentStepEvidenceAt.map { incoming >= $0 } ?? true)
         } ?? (current.steps == nil
                 && current.stepsCapturedAt == nil
-                && current.stepsReceiptCapturedAt == nil)
+                && current.stepsReceiptCapturedAt == nil)))
+        let mergedStrain = mergedLiveStrainValue(
+            previous: current.strain,
+            next: strain,
+            nextDetail: strainDetail
+        )
+        let heldHeartRate = mergedStaticWidgetHeartRate(
+            previous: current.heartRate,
+            previousCapturedAt: current.heartRateCapturedAt,
+            previousZoneIndex: current.heartRateZoneIndex,
+            previousZoneName: current.heartRateZoneName,
+            next: heartRate,
+            nextCapturedAt: heartRateCapturedAt,
+            nextZoneIndex: heartRateZoneIndex,
+            nextZoneName: heartRateZoneName,
+            now: createdAt
+        )
         let patchedSteps = acceptsIncomingSteps ? steps : current.steps
         let patchedStepsAreEstimated = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAreEstimated)
@@ -1120,7 +1203,7 @@ enum WidgetSnapshotPublisher {
             recoveryPercent: current.recoveryPercent,
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
-            strain: strain,
+            strain: mergedStrain,
             // A live patch may update the numeric lower bound, but it cannot
             // upgrade the evidence authority established by the full daily
             // projection. Preserve an existing partial marker unless the
@@ -1132,7 +1215,7 @@ enum WidgetSnapshotPublisher {
             strainCapturedAt: cumulativeStrainCaptureDate(
                 previousValue: current.strain,
                 previousCapturedAt: current.strainCapturedAt,
-                nextValue: strain,
+                nextValue: mergedStrain,
                 nextEvidenceAt: strainCapturedAt
             ),
             strainCycleStart: current.strainCycleStart,
@@ -1175,10 +1258,10 @@ enum WidgetSnapshotPublisher {
             stepsPriorCycleEndedAt: patchedSteps == nil
                 ? current.stepsPriorCycleEndedAt : nil,
             dailyStepGoal: current.dailyStepGoal,
-            heartRate: heartRate,
-            heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
-            heartRateZoneIndex: heartRate == nil ? nil : heartRateZoneIndex,
-            heartRateZoneName: heartRate == nil ? nil : heartRateZoneName,
+            heartRate: heldHeartRate.heartRate,
+            heartRateCapturedAt: heldHeartRate.heartRate == nil ? nil : heldHeartRate.capturedAt,
+            heartRateZoneIndex: heldHeartRate.heartRate == nil ? nil : heldHeartRate.zoneIndex,
+            heartRateZoneName: heldHeartRate.heartRate == nil ? nil : heldHeartRate.zoneName,
             batteryLevel: batteryLevel,
             batteryCapturedAt: batteryLevel == nil ? nil : batteryCapturedAt,
             batteryCorroboratedAt: batteryLevel == nil ? nil : batteryCorroboratedAt,
@@ -1214,9 +1297,58 @@ enum WidgetSnapshotPublisher {
             ? (steps == nil ? nil : stepsStatusText)
             : current.stepsStatusText
         carried.strainValueText =
-            abs(current.strain - strain) <= 0.000_000_001
+            abs(current.strain - mergedStrain) <= 0.000_000_001
                 ? current.strainValueText : nil
         return carried
+    }
+
+    /// A reconnect / learning-zero pulse must not wipe a still-current cycle
+    /// load. Device 2026-09-18: Today showed 0.6 of 17 while the Home Screen
+    /// widget stayed on 0 / Learning after install restarted the live session.
+    /// Device 2026-09-19: a thermal journal restart recomputed 0.2 Partial
+    /// while `atria.strain.heldDayValue` still held 1.15 from morning walking.
+    /// Day strain is cumulative for the cycle, so any drop inside the cycle
+    /// is a lost session, not a real lower load.
+    nonisolated static func mergedLiveStrainValue(
+        previous: Double,
+        next: Double,
+        nextDetail: String?
+    ) -> Double {
+        if previous > 0, next + 0.05 < previous {
+            return previous
+        }
+        return next
+    }
+
+    /// Static Home widgets keep a 65s capture window so WidgetKit's one-minute
+    /// coalesced reload does not flicker to `--`. A 15s 2A37 gap (device
+    /// 2026-09-19, HR 20s stale, IMU live) used to publish `heartRate: nil`
+    /// and wipe that window before the extension could apply it.
+    nonisolated static let staticWidgetHeartRateHold: TimeInterval = 65
+
+    nonisolated static func mergedStaticWidgetHeartRate(
+        previous: Int?,
+        previousCapturedAt: Date?,
+        previousZoneIndex: Int? = nil,
+        previousZoneName: String? = nil,
+        next: Int?,
+        nextCapturedAt: Date?,
+        nextZoneIndex: Int? = nil,
+        nextZoneName: String? = nil,
+        now: Date,
+        hold: TimeInterval = staticWidgetHeartRateHold
+    ) -> (heartRate: Int?, capturedAt: Date?, zoneIndex: Int?, zoneName: String?) {
+        if let next, next > 0 {
+            return (next, nextCapturedAt, nextZoneIndex, nextZoneName)
+        }
+        guard let previous, previous > 0, let previousCapturedAt else {
+            return (nil, nil, nil, nil)
+        }
+        guard previousCapturedAt <= now.addingTimeInterval(5),
+              now.timeIntervalSince(previousCapturedAt) <= hold else {
+            return (nil, nil, nil, nil)
+        }
+        return (previous, previousCapturedAt, previousZoneIndex, previousZoneName)
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1226,6 +1358,12 @@ enum WidgetSnapshotPublisher {
         previous: String?,
         next: String?
     ) -> String? {
+        let nextIsLearning =
+            next?.localizedCaseInsensitiveContains("learning") == true
+            || next?.localizedCaseInsensitiveContains("standby") == true
+        if nextIsLearning, previous != nil {
+            return previous
+        }
         let previousIsPartial =
             previous?.localizedCaseInsensitiveContains("partial") == true
         let nextIsPartial =
@@ -1234,6 +1372,54 @@ enum WidgetSnapshotPublisher {
             return previous
         }
         return next ?? previous
+    }
+
+    /// Widgets must show the same day load Today already rendered. A reconnect
+    /// or learning-zero recompute cannot replace a positive hero value.
+    nonisolated static func resolvedPresentedWidgetStrain(
+        computed: Double,
+        computedDetail: String?,
+        heroStrain: Double?,
+        heroDetail: String?
+    ) -> (value: Double, detail: String?) {
+        let value = mergedLiveStrainValue(
+            previous: heroStrain ?? 0,
+            next: computed,
+            nextDetail: computedDetail
+        )
+        let heroIsLearning =
+            heroDetail?.localizedCaseInsensitiveContains("learning") == true
+            || heroDetail?.localizedCaseInsensitiveContains("standby") == true
+        let previousDetail: String?
+        if (heroStrain ?? 0) > 0 {
+            if heroIsLearning || heroDetail?.isEmpty != false {
+                previousDetail = computedDetail ?? "Current cycle"
+            } else {
+                previousDetail = heroDetail
+            }
+        } else {
+            previousDetail = computedDetail
+        }
+        if (heroStrain ?? 0) > 0,
+           abs(value - (heroStrain ?? 0)) <= 0.000_000_001,
+           computed + 0.05 < (heroStrain ?? 0) {
+            var heldDetail = previousDetail
+            if value > 0, heldDetail == nil || heroIsLearning {
+                heldDetail = "Current cycle"
+            }
+            return (value, heldDetail)
+        }
+        var detail = mergedLiveStrainDetail(
+            previous: previousDetail,
+            next: computedDetail
+        )
+        let detailIsLearning =
+            detail?.localizedCaseInsensitiveContains("learning") == true
+            || detail?.localizedCaseInsensitiveContains("standby") == true
+        if value > 0, detail == nil || detailIsLearning {
+            detail = "Current cycle"
+        }
+        return (value, detail)
     }
 
     /// A partial publisher owns only its named live/battery fields. Carry every
@@ -1297,7 +1483,9 @@ enum WidgetSnapshotPublisher {
                                 ble: AtriaBLEManager,
                                 reason: String,
                                 forceImmediateTimelineReload: Bool = false,
-                                delay: Duration = .milliseconds(60)) {
+                                delay: Duration = .milliseconds(60),
+                                presentedDayStrain: Double? = nil,
+                                presentedDayStrainDetail: String? = nil) {
         scheduledStablePublishTask?.cancel()
         let ticket = publishLaneAuthority.mint(.stable)
         scheduledStablePublishTask = Task { @MainActor in
@@ -1311,7 +1499,9 @@ enum WidgetSnapshotPublisher {
                 store: store,
                 ble: ble,
                 reason: reason,
-                forceImmediateTimelineReload: forceImmediateTimelineReload
+                forceImmediateTimelineReload: forceImmediateTimelineReload,
+                presentedDayStrain: presentedDayStrain,
+                presentedDayStrainDetail: presentedDayStrainDetail
             )
             if publishLaneAuthority.isCurrent(ticket) {
                 scheduledStablePublishTask = nil
@@ -1465,7 +1655,9 @@ enum WidgetSnapshotPublisher {
                         ble: AtriaBLEManager,
                         reason: String = "update",
                         now: Date = Date(),
-                        forceImmediateTimelineReload: Bool = false) -> WidgetSnapshot {
+                        forceImmediateTimelineReload: Bool = false,
+                        presentedDayStrain: Double? = nil,
+                        presentedDayStrainDetail: String? = nil) -> WidgetSnapshot {
         // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
         // volatile live BLE resting reading used to outrank the stable
         // saved-session resting, so the first widget snapshots computed
@@ -1477,12 +1669,6 @@ enum WidgetSnapshotPublisher {
             ?? store.sessions.first?.restingStable
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
             on: now
-        )
-        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
-            validated: store.latestReferenceValidatedHRVForDisplay,
-            live: ble.hrvSnapshot,
-            local: store.latestLocalRMSSDForDisplay,
-            now: now
         )
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
             .flatMap { _ in store.currentPhysiologicalMainSleep(on: now) }
@@ -1575,11 +1761,16 @@ enum WidgetSnapshotPublisher {
                 ? strainPresentation.coverageText ?? "Partial · sparse HR"
                 : "Current cycle")
             : nil
-        let strapStepsToday = AtriaHomeModel.mergedStrapStepResearchCount(
-            savedToday: savedAggregate.savedTodayStrapSteps,
-            savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
-            savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
-            liveActiveSession: ble.liveStrapStepResearchCount
+        ble.noteOpenPhysiologicalCycleStart(physiologicalCycle.start, now: now)
+        let strapStepsToday = AtriaHomeModel.presentedDailyStrapStepCount(
+            savedMerge: AtriaHomeModel.mergedStrapStepResearchCount(
+                savedToday: savedAggregate.savedTodayStrapSteps,
+                savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
+                savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
+                liveActiveSession: ble.liveStrapStepResearchTodayCount
+            ),
+            liveCumulative: ble.liveStrapStepResearchTodayCount,
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(now: now)?.count ?? 0
         )
         let projectedStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -1633,12 +1824,17 @@ enum WidgetSnapshotPublisher {
                 before: savedAggregate.day,
                 strapIdentifiers: strapIdentifiers
             )
-        let dailySteps = resolvedDailySteps(
+        let dailySteps = resolvedDailyStepsHoldingLastCount(
             day: now,
             now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
-            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            liveCapturedAt: AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+                cycleStart: savedAggregate.day,
+                now: now,
+                presentedCount: strapStepsToday
+            ),
             canonicalDays: projectedStepDays,
             liveAuthorityQualified:
                 stepReleaseAuthorityQualified,
@@ -1663,6 +1859,18 @@ enum WidgetSnapshotPublisher {
                           maxHR: store.profile.maxHR,
                           restingHR: rest)
             : nil
+        let previousPublishedHeartRate = AtriaIntentSnapshotStore.loadPublishedPayload()
+        let heldHeartRate = mergedStaticWidgetHeartRate(
+            previous: previousPublishedHeartRate?.heartRate,
+            previousCapturedAt: previousPublishedHeartRate?.heartRateCapturedAt,
+            previousZoneIndex: previousPublishedHeartRate?.heartRateZoneIndex,
+            previousZoneName: previousPublishedHeartRate?.heartRateZoneName,
+            next: liveHeartRate > 0 ? liveHeartRate : nil,
+            nextCapturedAt: liveHeartRateCapturedAt,
+            nextZoneIndex: liveHeartRateZone?.rawValue,
+            nextZoneName: liveHeartRateZone?.name,
+            now: now
+        )
         let publishedSteps = dailySteps.count
         let stepsAreValidated = dailySteps.isValidated
         let stepsCapturedAt = dailySteps.capturedAt
@@ -1674,7 +1882,20 @@ enum WidgetSnapshotPublisher {
             ? currentCycleDisplayedReceiptContentRevision : nil
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
-        let hrvRMSSD = displayHRV?.value
+        let settledHRVRollup = AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(
+            from: store.dailyRollupHistory
+        )
+        let settledHRV = settledHRVRollup.flatMap { entry in
+            AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: [entry])
+        }
+        let hrvRMSSD = settledHRV
+        let settledRHR = AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(
+            from: store.dailyRollupHistory
+        )
+        let settledRecoveryRollup = AtriaHealthMetricEvidencePresentation.newestSettledRecoveryRollup(
+            from: store.dailyRollupHistory
+        )
+        let settledRecovery = settledRecoveryRollup?.recovery
         let hrvState: String
         if hrvRMSSD == nil {
             hrvState = "learning"
@@ -1736,7 +1957,33 @@ enum WidgetSnapshotPublisher {
             calendar: calendar
         )
         let presentedWidgetRecovery = widgetDayResolution.recoveryOverride ?? widgetRecovery
-        let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
+        let overnightWidgetRecoveryPercent = settledRecovery ?? presentedWidgetRecovery.percent
+        let overnightWidgetRecoveryDetail = settledRecoveryRollup.map {
+            AtriaHealthMetricEvidencePresentation.settledRecoveryDetail(rollup: $0)
+        } ?? presentedWidgetRecovery.detail
+        let overnightWidgetRecoveryConfidence = settledRecoveryRollup?.recoverySummary?.confidence
+            ?? presentedWidgetRecovery.confidence.rawValue
+        let computedPresentedStrain = widgetDayResolution.strainOverride ?? strain
+        let computedPresentedDetail = widgetDayResolution.strainOverride != nil
+            ? "Partial · current day"
+            : strainDetail
+        // Device 2026-09-18: Today showed 0.6 while widgets recomputed 0 after
+        // install reset the live session. Use the same number the Home hero
+        // already rendered for this cycle.
+        let presentedWidgetStrainResolution = resolvedPresentedWidgetStrain(
+            computed: computedPresentedStrain,
+            computedDetail: computedPresentedDetail,
+            heroStrain: presentedDayStrain,
+            heroDetail: presentedDayStrainDetail
+        )
+        let presentedWidgetStrain = presentedWidgetStrainResolution.value
+        let presentedWidgetStrainDetail = presentedWidgetStrainResolution.detail
+        // Home still shows a numeric day load (0.6 of 17) while confidence
+        // says "learning". Withholding the widget clock then left Strain as
+        // "--" / Learning on the Home Screen. A fabricated 0.0 with no load
+        // still fails closed. A positive number Today is already showing must
+        // publish.
+        let publishDayStrainClock = strainIsCredible || presentedWidgetStrain > 0
         // Same cross-midnight hold as the app (field report item 4), so the
         // widget and the Today ring cannot disagree about whether last night's
         // hours are still the current value.
@@ -1759,13 +2006,11 @@ enum WidgetSnapshotPublisher {
         // already-installed widget extensions continue decoding the payload.
         var snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
-                                      recoveryPercent: presentedWidgetRecovery.percent,
-                                      recoveryConfidence: presentedWidgetRecovery.confidence.rawValue,
-                                      recoveryDetail: presentedWidgetRecovery.detail,
+                                      recoveryPercent: overnightWidgetRecoveryPercent,
+                                      recoveryConfidence: overnightWidgetRecoveryConfidence,
+                                      recoveryDetail: overnightWidgetRecoveryDetail,
                                       strain: presentedWidgetStrain,
-                                      strainDetail: widgetDayResolution.strainOverride != nil
-                                        ? "Partial · current day"
-                                        : strainDetail,
+                                      strainDetail: presentedWidgetStrainDetail,
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.
@@ -1773,12 +2018,14 @@ enum WidgetSnapshotPublisher {
                                       // above rest, TRIMP integrates against a
                                       // fabricated anchor and reads a confident
                                       // 0.0 — withhold the credibility clock so
-                                      // the widget shows its placeholder, the
-                                      // same honesty gate as the Home hero.
-                                      strainCapturedAt: strainIsCredible ? now : nil,
-                                      strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil,
-                                      strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil,
-                                      restingHR: presentationRestingHeartRate,
+                                      // the widget shows its placeholder. A
+                                      // positive load Today already displays
+                                      // still gets the clock even if confidence
+                                      // is still "learning".
+                                      strainCapturedAt: publishDayStrainClock ? now : nil,
+                                      strainCycleStart: publishDayStrainClock ? physiologicalCycle.start : nil,
+                                      strainCycleExpiresAt: publishDayStrainClock ? strainCycleExpiresAt : nil,
+                                      restingHR: settledRHR ?? presentationRestingHeartRate,
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
@@ -1832,10 +2079,13 @@ enum WidgetSnapshotPublisher {
                                       stepsPriorCycleEndedAt: dailySteps
                                         .priorCycleReceipt?.endedAt,
                                       dailyStepGoal: dailyStepGoal,
-                                      heartRate: liveHeartRate > 0 ? liveHeartRate : nil,
-                                      heartRateCapturedAt: liveHeartRateCapturedAt,
-                                      heartRateZoneIndex: liveHeartRateZone?.rawValue,
-                                      heartRateZoneName: liveHeartRateZone?.name,
+                                      heartRate: heldHeartRate.heartRate,
+                                      heartRateCapturedAt: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.capturedAt,
+                                      heartRateZoneIndex: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.zoneIndex,
+                                      heartRateZoneName: heldHeartRate.heartRate == nil
+                                        ? nil : heldHeartRate.zoneName,
                                       batteryLevel: displayableBatteryLevel,
                                       batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
                                       batteryCorroboratedAt: displayableBatteryLevel == nil
@@ -1887,10 +2137,10 @@ enum WidgetSnapshotPublisher {
         }
         // Same display projection as Today/Vitals and the dedicated HRV widget.
         // Recovery-only or whole-session candidates cannot leak into this row.
-        let whiteboardHRVMS = displayHRV?.value
+        let whiteboardHRVMS = settledHRV
         let whiteboardModel = AtriaTodayMorningWhiteboardModel.make(
             hrvMS: whiteboardHRVMS,
-            restingHR: presentationRestingHeartRate,
+            restingHR: settledRHR ?? presentationRestingHeartRate,
             baseline: AtriaBaselineTargetSnapshot(store.baseline),
             sleepDurationText: widgetSleepIsCurrentDay ? whiteboardNight?.durationText : nil,
             nightConfirmed: widgetSleepIsCurrentDay ? whiteboardNight?.confirmed : nil,
@@ -1926,7 +2176,16 @@ enum WidgetSnapshotPublisher {
                 forKey: "atria.target.recovery.yellowLower"
             ) as? Double) ?? 34
         )
-        snapshot.hrvCapturedAt = displayHRV?.measuredAt
+        snapshot.hrvCapturedAt = [
+            settledHRVRollup?.day,
+            AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRateRollup(
+                from: store.dailyRollupHistory
+            )?.day,
+            settledRecoveryRollup?.day
+        ]
+        .compactMap { $0 }
+        .max()
+        .map { calendar.startOfDay(for: $0) }
         snapshot.biomarkerExpiresAt = displayDayEnd
         // 2026-08-20 (widget-sync RC3): only the full stable publish may
         // advance the stable-evidence clock the extension's stale disclosure
@@ -1949,9 +2208,11 @@ enum WidgetSnapshotPublisher {
                 String(format: "%.1f", max(0, presentedWidgetStrain))
         } else if strainIsCredible, strainPresentation.value != nil {
             snapshot.strainValueText = strainPresentation.valueText
+        } else if presentedWidgetStrain > 0 {
+            snapshot.strainValueText =
+                String(format: "%.1f", presentedWidgetStrain)
         } else {
-            // Not credible: the credibility clock is withheld above and the
-            // widget fails closed to its placeholder — never a rendered value.
+            // Fabricated 0.0 / no load: fail closed to the placeholder.
             snapshot.strainValueText = nil
         }
         // Cold-start + card-settlement guard: landing sessions makes the UI
@@ -1997,6 +2258,10 @@ enum WidgetSnapshotPublisher {
                 current: current,
                 authoritativeReceiptContentRevision:
                     authoritativeReceiptContentRevision
+            )
+            snapshot = snapshotPreservingDayStrain(
+                candidate: snapshot,
+                current: current
             )
         }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot),
@@ -2100,6 +2365,53 @@ enum WidgetSnapshotPublisher {
         )
     }
 
+    nonisolated static func resolvedDailyStepsHoldingLastCount(
+        day: Date,
+        now: Date,
+        liveCount: Int,
+        liveValidationState: String,
+        liveCapturedAt: Date?,
+        canonicalDays: [AtriaHistoricalDailyConsumerProjection.StepDay] = [],
+        liveAuthorityQualified: Bool = true,
+        physiologicalDayStart: Date? = nil,
+        priorCycleReceipt: AtriaDailyStepPresentation.PriorCycleReceipt? = nil,
+        boundaryIsUnconfirmedFallback: Bool = false,
+        calendar: Calendar = .current
+    ) -> AtriaDailyStepPresentation {
+        let cycleStart = physiologicalDayStart ?? calendar.startOfDay(for: day)
+        let held = AtriaHeldDailyStepFloor.load(cycleStart: cycleStart)
+        let presentation = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: liveCount,
+            liveValidationState: liveValidationState,
+            liveCapturedAt: liveCapturedAt,
+            canonicalDays: canonicalDays,
+            liveAuthorityQualified: liveAuthorityQualified,
+            physiologicalDayStart: physiologicalDayStart,
+            priorCycleReceipt: priorCycleReceipt,
+            boundaryIsUnconfirmedFallback: boundaryIsUnconfirmedFallback,
+            heldCount: held?.count ?? 0,
+            heldCapturedAt: held?.capturedAt,
+            calendar: calendar
+        )
+        if presentation.source == .live,
+           let count = presentation.count, count > 0 {
+            AtriaHeldDailyStepFloor.persist(
+                count: count,
+                cycleStart: cycleStart,
+                capturedAt: presentation.capturedAt
+            )
+            if let capturedAt = presentation.capturedAt {
+                AtriaHeldDailyStepFloor.persistLiveGyroToday(
+                    count: count,
+                    capturedAt: capturedAt
+                )
+            }
+        }
+        return presentation
+    }
+
     nonisolated static func stepSourceIdentifier(
         _ source: AtriaDailyStepPresentation.Source
     ) -> String? {
@@ -2123,6 +2435,52 @@ enum WidgetSnapshotPublisher {
     nonisolated static func strapStepsArePublishable(state: String) -> Bool {
         strapStepsAreValidated(state: state)
             || state == "r10_live_preliminary"
+    }
+
+    /// Live estimates compare capture clocks. A later-written accel leftover
+    /// must not outrank the flowing gyro today count Home already shows.
+    nonisolated static func liveEstimateShouldReplacePreservedSteps(
+        currentSteps: Int?,
+        currentSource: String?,
+        candidateSteps: Int?,
+        candidateSource: String?
+    ) -> Bool {
+        guard currentSource == "live",
+              candidateSource == "live",
+              let currentSteps,
+              let candidateSteps else {
+            return false
+        }
+        return AtriaHeldDailyStepFloor.shouldReplaceContaminatedHeld(
+            existing: currentSteps,
+            incoming: candidateSteps,
+            sameCycle: true,
+            trustedPrefix: 0
+        )
+            // gyroOnlySessionSteps treats a sub-1000 drop as a reconnect
+            // fragment (214 vs 18), not accel leftover. Device 2026-09-17:
+            // 10946 vs 1901 may replace; 1926 vs 101 after ship must not.
+            && candidateSteps >= 1_000
+    }
+
+    /// A post-relaunch session-local count (device 2026-09-17: 101 vs Today
+    /// 1926) is not authority to erase the in-cycle gyro total.
+    nonisolated static func liveEstimateIsReconnectFragmentDrop(
+        currentSteps: Int?,
+        currentSource: String?,
+        candidateSteps: Int?,
+        candidateSource: String?
+    ) -> Bool {
+        guard currentSource == "live",
+              candidateSource == "live",
+              let currentSteps,
+              let candidateSteps,
+              candidateSteps > 0,
+              currentSteps > candidateSteps + AtriaHeldDailyStepFloor.contaminationSlack
+        else {
+            return false
+        }
+        return currentSteps >= 1_000 && candidateSteps < 1_000
     }
 
     /// Live writes can arrive every five seconds. WidgetKit cannot sustainably

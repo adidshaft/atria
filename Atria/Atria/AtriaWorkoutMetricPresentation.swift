@@ -126,6 +126,55 @@ enum AtriaWorkoutMetricPresentation {
         workouts.filter { !isAccidentalLiveFragment($0) }
     }
 
+    /// Today and the previous civil day. A workout saved after a strap drop
+    /// must still appear on Today the next morning, not only inside Activity.
+    static func recentSavedWorkouts(
+        _ workouts: [UserConfirmedWorkout],
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        lookbackDays: Int = 2
+    ) -> [UserConfirmedWorkout] {
+        let today = calendar.startOfDay(for: now)
+        guard lookbackDays > 0,
+              let windowStart = calendar.date(
+                byAdding: .day,
+                value: -(lookbackDays - 1),
+                to: today
+              ) else { return [] }
+        return presentableWorkouts(workouts)
+            .filter { $0.start >= windowStart }
+            .sorted { $0.start > $1.start }
+    }
+
+    /// Today keeps the last two recaps in the lookback window. One row hid a
+    /// walked session with HR behind a later Strength window that had none
+    /// (device 2026-09-18). Two rows still fit above the tab; a stack of every
+    /// yesterday fragment does not.
+    static func todayFirstScreenSavedWorkouts(
+        _ workouts: [UserConfirmedWorkout],
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        lookbackDays: Int = 2,
+        limit: Int = 2
+    ) -> [UserConfirmedWorkout] {
+        Array(
+            recentSavedWorkouts(
+                workouts,
+                now: now,
+                calendar: calendar,
+                lookbackDays: lookbackDays
+            ).prefix(max(0, limit))
+        )
+    }
+
+    static func durationText(_ duration: TimeInterval) -> String {
+        let totalMinutes = max(0, Int((duration / 60).rounded()))
+        if totalMinutes < 60 { return "\(max(totalMinutes, 1))m" }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+        return minutes == 0 ? "\(hours)h" : "\(hours)h \(minutes)m"
+    }
+
     static func heartRateState(_ workout: UserConfirmedWorkout) -> HeartRatePresentationState {
         guard workout.samples > 0, workout.avgHR > 0 else { return .unavailable }
         guard workout.samples >= 2,
@@ -282,9 +331,40 @@ enum AtriaWorkoutMetricPresentation {
         workout.activeEnergyKilocalories.map { "\(Int($0.rounded()))" } ?? "--"
     }
 
+    /// Edwards zone-minute load: Z1×1 … Z5×5. Restorative time is omitted.
+    /// Nil when the workout has no usable heart-rate zone evidence.
+    static func heartRateLoadPoints(_ workout: UserConfirmedWorkout) -> Int? {
+        guard hasHeartRateData(workout), let zones = workout.zoneSeconds else { return nil }
+        let weights: [(key: String, weight: Double)] = [
+            ("warmup", 1), ("fatBurn", 2), ("aerobic", 3), ("anaerobic", 4), ("max", 5)
+        ]
+        let points = weights.reduce(0.0) { total, zone in
+            total + zone.weight * (zones[zone.key] ?? 0) / 60
+        }
+        guard points > 0 else { return nil }
+        return Int(points.rounded())
+    }
+
+    static func heartRateLoadText(_ workout: UserConfirmedWorkout) -> String {
+        heartRateLoadPoints(workout).map { "\($0)" } ?? "--"
+    }
+
+    /// Trailing number on Today / Activity rows. Edwards Z1+ load when the
+    /// session left the restorative bucket; otherwise the measured average —
+    /// never a second ring, and never "No HR" on a walk that actually recorded.
+    static func firstScreenTrailingMetric(_ workout: UserConfirmedWorkout) -> (value: String, caption: String)? {
+        if let load = heartRateLoadPoints(workout) {
+            return ("\(load)", "HR load")
+        }
+        if hasHeartRateData(workout) {
+            return ("\(workout.avgHR)", "avg HR")
+        }
+        return nil
+    }
+
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
-        case .unavailable: return "No HR data"
+        case .unavailable: return "No HR"
         case .incomplete, .complete: return "\(workout.streamCoveragePercent)% HR"
         }
     }

@@ -153,17 +153,29 @@ struct AtriaCompletedWorkoutStepEvidence: Equatable {
     let isEstimated: Bool
     let capturedAt: Date?
 
-    static func select(strap: Self?) -> Self? {
+    static func select(
+        strap: Self?,
+        sourceVersion: AtriaWorkoutStepSourceVersion = .strapAccelerometerV1
+    ) -> Self? {
         // Workout totals are a product claim, not a research readout.  Until
         // the frozen strap detector has a fresh, validated boundary, retain
         // no total at all.  In particular, do not turn an unavailable R10
         // interval into `~0 steps` or carry a preliminary strap estimate into
         // the saved workout/share card.  There is intentionally no phone
         // pedometer alternative here.
-        guard let strap,
-              strap.isEstimated == false,
-              strap.capturedAt != nil else { return nil }
-        return sanitized(strap)
+        //
+        // Walking/running/hiking freeze the gyro-cadence coordinate, which is
+        // intentionally estimated. Dropping that estimate made lock-screen
+        // walks persist 0 after a real bout (device 2026-09-17, 81 s / 100
+        // steps). Admit a stamped gyro total for that frozen source only.
+        guard let strap, strap.capturedAt != nil else { return nil }
+        switch sourceVersion {
+        case .strapGyroCadenceAmbulatoryV1:
+            return sanitized(strap)
+        case .strapAccelerometerV1:
+            guard strap.isEstimated == false else { return nil }
+            return sanitized(strap)
+        }
     }
 
     private static func sanitized(_ evidence: Self) -> Self {
@@ -390,8 +402,20 @@ final class AtriaWorkoutRuntime {
                     isEstimated: intent.completedStepsAreEstimated ?? true,
                     capturedAt: intent.completedStepsCapturedAt
                 )
-            }
+            },
+            sourceVersion: intent.stepSourceVersion
         )
+        // Root recovery is a finalize too (2026-08-30): with a declared switch
+        // timeline the persisted scalar resolves to the dominant segment, and
+        // the timeline itself lands on the confirmed record — identical to the
+        // foreground End and presentation-recovery paths.
+        let recoveredActivityType = WorkoutSegment.dominantActivityType(
+            segments: intent.segments,
+            sessionStart: intent.startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: intent.finalizedExcludedIntervals()
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? intent.resolvedActivityType
         let confirmed = await store.confirmWorkoutWindowForUIAsync(
             start: intent.startedAt,
             end: endedAt,
@@ -402,9 +426,10 @@ final class AtriaWorkoutRuntime {
                 ?? store.profile.maxHR,
             source: "pending_live_workout_root_recovery",
             preserveUserDeclaredActivityWithoutHeartRate: true,
-            activityType: intent.resolvedActivityType == .other ? nil : intent.activityType,
+            activityType: recoveredActivityType == .other ? nil : recoveredActivityType.rawValue,
             strengthSets: intent.strengthSets,
             excludedIntervals: intent.finalizedExcludedIntervals(),
+            segments: intent.segments,
             workoutSteps: stepEvidence?.count,
             workoutStepsAreEstimated: stepEvidence?.isEstimated,
             workoutStepsCapturedAt: stepEvidence?.capturedAt

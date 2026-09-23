@@ -243,6 +243,38 @@ extension AtriaBLEManager {
         static let passiveR10FirstValidAt = "atria.radio.passiveR10FirstValidAt"
         static let passiveR10LastValidAt = "atria.radio.passiveR10LastValidAt"
         static let passiveR10ValidFrames = "atria.radio.passiveR10ValidFrames"
+        static let txReady = "atria.radio.txReady"
+        static let lastWWRAllowed = "atria.radio.lastWWRAllowed"
+        static let wwrBlockedCount = "atria.radio.wwrBlockedCount"
+        static let lastWWRFlushedAt = "atria.radio.lastWWRFlushedAt"
+        static let lastWWRFlushCount = "atria.radio.lastWWRFlushCount"
+        static let wwrPendingCount = "atria.radio.wwrPendingCount"
+        static let zombieTxRediscoverAt = "atria.r10.zombieTxRediscoverAt"
+        static let zombieCCCDToggleAt = "atria.r10.zombieCCCDToggleAt"
+        static let zombieKickSkipReason = "atria.r10.zombieKickSkipReason"
+        static let liveR10EligibleBlockers = "atria.radio.liveR10EligibleBlockers"
+        static let lastIMURecoveryCommand = "atria.radio.lastIMURecoveryCommand"
+        static let lastIMURecoveryAction = "atria.radio.lastIMURecoveryAction"
+        static let lastIMURecoveryAt = "atria.radio.lastIMURecoveryAt"
+        static let lastIMURecoveryHRNotifying = "atria.radio.lastIMURecoveryHRNotifying"
+        static let lastIMURecoveryHRAge = "atria.radio.lastIMURecoveryHRAge"
+        static let lastIMURecoveryIMUAge = "atria.radio.lastIMURecoveryIMUAge"
+        static let lastIMURecoverySkipReason = "atria.radio.lastIMURecoverySkipReason"
+        static let lastIMURecoverySkipAt = "atria.radio.lastIMURecoverySkipAt"
+        /// Wall-clock abort `0x14` / follow-up `6A` so a reconnect does not
+        /// restart the 12s live attempt or block historical IMU catch-up.
+        static let allDayCompactAbortAt = "atria.radio.allDayCompactAbortAt"
+        static let allDayCompactFollowUp6AAt = "atria.radio.allDayCompactFollowUp6AAt"
+        static let allDayCompactHistoryCatchUpAt = "atria.radio.allDayCompactHistoryCatchUpAt"
+        static let allDayCompactLive6AAfterCatchUpAt = "atria.radio.allDayCompactLive6AAfterCatchUpAt"
+        static let allDayCompactLive6AAfterSubscribeAt = "atria.radio.allDayCompactLive6AAfterSubscribeAt"
+        static let liveHRNotifying = "atria.radio.liveHRNotifying"
+        static let liveHRSampleAt = "atria.radio.liveHRSampleAt"
+        static let liveIMUFrameAt = "atria.radio.liveIMUFrameAt"
+        static let liveR10Eligible = "atria.radio.liveR10Eligible"
+        static let liveStream5Confirmed = "atria.radio.liveStream5Confirmed"
+        static let liveRealtimeArmed = "atria.radio.liveRealtimeArmed"
+        static let liveR10LivenessAction = "atria.radio.liveR10LivenessAction"
     }
 
     enum WorkoutMotionDefaults {
@@ -252,6 +284,10 @@ extension AtriaBLEManager {
         static let gapStartedAt = "atria.workoutMotion.gapStartedAt"
         static let firstLiveFrameAt = "atria.workoutMotion.firstLiveFrameAt"
         static let lastLiveFrameAt = "atria.workoutMotion.lastLiveFrameAt"
+        /// Set once this workout lease has observed dense R10 (~1 Hz) frames.
+        /// Counted against the workout, not the BLE epoch, so a reconnect
+        /// cannot restart 6A/51 after the stream has already gone live.
+        static let denseObservedAt = "atria.workoutMotion.denseObservedAt"
         static let activationAttemptAt = "atria.workoutMotion.activationAttemptAt"
         static let activationConnectionAt = "atria.workoutMotion.activationConnectionAt"
         static let activationAttempts = "atria.workoutMotion.activationAttempts"
@@ -418,6 +454,19 @@ extension AtriaBLEManager {
         // stopping the self-sustaining "history incomplete" storm at its source.
         static let historyAbandonedThroughUnix =
             "atria.offlineSync.historyAbandonedThroughUnix.v1"
+        /// Drain cursor at the moment a terminal zero-row stall was accepted.
+        /// `markRangeLossBackfillRequired` must not re-arm the same unfillable
+        /// interval until this cursor actually advances. Distinct from Start
+        /// fresh's `historyAbandonedThroughUnix` — that watermark is `now` and
+        /// must not be shown as "newest record".
+        static let unrecoverableHistoryAcceptedCursorUnix =
+            "atria.offlineSync.unrecoverableHistoryAcceptedCursorUnix.v1"
+        /// Seek unix at which oldest-first drain jumped to live coverage
+        /// because the parked page was stuck (no_rows / first-frame timeout).
+        /// Not a fill ACK. Lets all-day IMU requalify once after history
+        /// releases the radio.
+        static let historyCoverLiveUnix =
+            "atria.offlineSync.historyCoverLiveUnix.v1"
         // Clean-slate auto-surfacing: persisted mirror of the in-memory
         // consecutive zero-progress catch-up slice counter. A degraded strap
         // that drops the link on every history read accumulates these (each
@@ -516,6 +565,16 @@ extension AtriaBLEManager {
         static let lastPacketType = "atria.protocol.lastPacketType"
         static let lastPacketKind = "atria.protocol.lastPacketKind"
         static let lastPacketLength = "atria.protocol.lastPacketLength"
+        static let packetsThisConnection = "atria.protocol.packetsThisConnection"
+        static let lastPacketAt = "atria.protocol.lastPacketAt"
+        static let notifyCallbacksThisConnection = "atria.protocol.notifyCallbacksThisConnection"
+        static let lastNotifyCallbackAt = "atria.protocol.lastNotifyCallbackAt"
+        static let lastNotifyCallbackUUID = "atria.protocol.lastNotifyCallbackUUID"
+        static let lastNotifyCallbackLength = "atria.protocol.lastNotifyCallbackLength"
+        static let lastNotifyCallbackHex = "atria.protocol.lastNotifyCallbackHex"
+        static let lastNotifyCallbackType = "atria.protocol.lastNotifyCallbackType"
+        static let stream4NotifyCallbacksThisConnection = "atria.protocol.stream4NotifyCallbacksThisConnection"
+        static let stream5NotifyCallbacksThisConnection = "atria.protocol.stream5NotifyCallbacksThisConnection"
     }
 
     enum Cmd {

@@ -42,12 +42,13 @@ final class AtriaNotificationCategoryTests: XCTestCase {
         }
         // The two task-mandated defaults-on categories.
         XCTAssertTrue(AtriaNotificationCategory.morningSummary.defaultEnabled)
-        XCTAssertTrue(AtriaNotificationCategory.strapBattery.defaultEnabled)
+        XCTAssertFalse(AtriaNotificationCategory.strapBattery.defaultEnabled)
         // Every category added 2026-08-13 starts OFF.
         for category in [AtriaNotificationCategory.secondSleepPrimary,
                          .bedtimeWindDown,
                          .catchUpComplete,
-                         .parkedInterval] {
+                         .parkedInterval,
+                         .strapBattery] {
             XCTAssertFalse(category.defaultEnabled,
                            "\(category.rawValue) must be opt-in")
             XCTAssertFalse(AtriaNotificationSettings().allows(kind: category.kind),

@@ -243,6 +243,46 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
         ))
     }
 
+    func testRecapShowsEstimatedGyroWalkingStepsWhileShareOmitsThem() {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+        let capturedAt = end.addingTimeInterval(-1)
+        XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ), "105")
+        XCTAssertNil(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 0,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ))
+        XCTAssertNil(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 105,
+            isEstimated: true,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .strength
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.recapStepsText(
+            count: 842,
+            isEstimated: false,
+            capturedAt: capturedAt,
+            workoutEndedAt: end,
+            activity: .walking
+        ), "842")
+    }
+
     func testCompletedWorkoutShareOmitsStaleOrMissingStepProvenance() {
         let end = Date(timeIntervalSince1970: 2_000_000_000)
         XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
@@ -290,7 +330,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap motion for this workout",
+                detailText: "No verified motion for this workout",
                 isAvailable: false
             )
         )
@@ -306,7 +346,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "Strap motion was not verified at workout end",
+                detailText: "Motion was not verified at workout end",
                 isAvailable: false
             )
         )
@@ -320,7 +360,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap step count for this workout",
+                detailText: "No verified step count for this workout",
                 isAvailable: false
             )
         )
@@ -334,7 +374,7 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             ),
             AtriaWorkoutSharePresentation.CompletedSteps(
                 valueText: "--",
-                detailText: "No verified strap step count for this workout",
+                detailText: "No verified step count for this workout",
                 isAvailable: false
             )
         )
@@ -443,11 +483,13 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
 
         XCTAssertFalse(source.contains(".glassEffect(.regular.interactive(), in: Circle())"),
                        "The corner action label must not add a second glass circle")
+        // 2026-09-02: 6 (cancel + action per sheet) + 1 for AtriaShareEmptyStateView's
+        // close button, shown when a sheet has nothing real to put on a card.
         XCTAssertEqual(source.components(separatedBy: "AtriaGlassIconButtonStyle(tint: .white, size: 38)").count - 1,
-                       6,
+                       7,
                        "Daily, workout, and weekly share should each keep one cancel and one action circular")
         XCTAssertEqual(source.components(separatedBy: ".frame(width: 18, height: 18)").count - 1,
-                       6,
+                       7,
                        "All share icons and their preparing indicators should stay at native scale")
 
         let dailyStart = try XCTUnwrap(source.range(of: "struct AtriaShareSheet: View"))

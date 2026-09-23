@@ -2505,7 +2505,8 @@ enum HistoricalArchive {
         catalogStore: AtriaHistoricalArchiveCatalogStore,
         configuration: AtriaHistoricalConsumerProjectionConfiguration,
         receiptLedger injectedLedger: AtriaHistoricalConsumerReceiptLedger? = nil,
-        shouldContinue: () -> Bool = { true }
+        shouldContinue: () -> Bool = { true },
+        singleSourceRetention: Bool = false
     ) throws -> HistoricalConsumerCutoverResult {
         func requireMaintenanceAuthority() throws {
             guard shouldContinue() else {
@@ -2528,6 +2529,7 @@ enum HistoricalArchive {
         // load of that range instead of decoding the whole archive. This cutover
         // path runs during foreground compaction.
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles(
+            chunkIDs: [chunkID],
             shouldContinue: shouldContinue
         )
         guard let rawChunk = catalog.chunks.first(where: { $0.id == chunkID }),
@@ -2599,20 +2601,94 @@ enum HistoricalArchive {
             )
         )
         try requireMaintenanceAuthority()
-        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
             completionStore: completionStore,
             receiptLedger: ledger
-        ).publishReceiptSet(
-            for: chunkID,
-            verifiedCatalog: catalog,
-            catalogData: try AtriaHistoricalActivityInspectionProofFactory
-                .canonicalCatalogData(catalog),
-            aggregateReader: aggregateReader,
-            configuration: configuration
         )
+        let report: AtriaHistoricalConsumerProjectionCoordinator.Report
+        let identity: AtriaHistoricalVerifiedConsumerReader.VerificationIdentity
         let expectedKinds: Set<AtriaHistoricalConsumerReceiptLedger.ProjectionKind> = [
             .activity, .dailyMetrics, .steps, .sleep, .workout,
         ]
+        let retentionSettledAt = singleSourceRetention ? Date() : completion.completedAt
+        if singleSourceRetention {
+            // Sitting/lock cannot stream every committed aggregate or re-hash
+            // 5.5 GB of sibling JSONL. Publish this chunk's five receipts from
+            // its own aggregate, then continue the existing replay/canonical
+            // apply. Drain inspection still uses the whole-archive path.
+            let factory = AtriaHistoricalActivityInspectionProofFactory(
+                completionStore: completionStore
+            )
+            let prepared = try factory.prepareForRawRetirementCutover(
+                verifiedCatalog: catalog,
+                catalogData: catalogData,
+                aggregate: aggregate,
+                completionGeneration: completion.generation
+            )
+            let published = try coordinator.publishRawRetirementReceipts(
+                source: aggregate,
+                prepared: prepared,
+                configuration: configuration,
+                settledAt: retentionSettledAt
+            )
+            report = .init(
+                completionGeneration: completion.generation,
+                inspectedSourceCount: 1,
+                published: published,
+                deferredSources: []
+            )
+            identity = .init(
+                completionGeneration: prepared.completionGeneration,
+                generationIdentifier: prepared.generationIdentifier,
+                catalogSnapshotSHA256: AtriaHistoricalSessionProjectionSupport.sha256(
+                    prepared.catalogSnapshot
+                ),
+                source: ledgerSource,
+                receipts: published.map(\.receipt).sorted {
+                    $0.kind.rawValue < $1.kind.rawValue
+                }
+            )
+        } else {
+            report = try coordinator.publishReceiptSet(
+                for: chunkID,
+                verifiedCatalog: catalog,
+                catalogData: catalogData,
+                aggregateReader: aggregateReader,
+                configuration: configuration
+            )
+            guard report.completionGeneration == completion.generation,
+                  report.inspectedSourceCount == 1,
+                  report.deferredSources.isEmpty else {
+                throw HistoricalConsumerCutoverError.terminalCompletionAttestationRejected
+            }
+            guard report.published.count == AtriaHistoricalConsumerProjectionCoordinator
+                    .Report.artifactsPerCompleteSource,
+                  Set(report.published.map(\.receipt.kind)) == expectedKinds,
+                  report.published.allSatisfy({ $0.receipt.source == ledgerSource }) else {
+                throw HistoricalConsumerCutoverError.receiptPublicationIncomplete
+            }
+            try requireMaintenanceAuthority()
+            let verified = AtriaHistoricalVerifiedConsumerReader(
+                aggregateReader: aggregateReader,
+                completionStore: completionStore,
+                receiptLedger: ledger
+            ).readSource(
+                chunkID: chunkID,
+                catalogStore: catalogStore,
+                configuration: configuration
+            )
+            guard verified.hasCompleteConsumerCoverage,
+                  let verifiedIdentity = verified.verificationIdentity,
+                  verifiedIdentity.completionGeneration == completion.generation,
+                  verifiedIdentity.source == ledgerSource,
+                  verifiedIdentity.receipts.count == expectedKinds.count,
+                  Set(verifiedIdentity.receipts.map(\.kind)) == expectedKinds else {
+                throw HistoricalConsumerCutoverError.typedVerificationIncomplete
+            }
+            identity = verifiedIdentity
+        }
         guard report.completionGeneration == completion.generation,
               report.inspectedSourceCount == 1,
               report.deferredSources.isEmpty else {
@@ -2624,20 +2700,7 @@ enum HistoricalArchive {
               report.published.allSatisfy({ $0.receipt.source == ledgerSource }) else {
             throw HistoricalConsumerCutoverError.receiptPublicationIncomplete
         }
-
-        try requireMaintenanceAuthority()
-        let verified = AtriaHistoricalVerifiedConsumerReader(
-            aggregateReader: aggregateReader,
-            completionStore: completionStore,
-            receiptLedger: ledger
-        ).readSource(
-            chunkID: chunkID,
-            catalogStore: catalogStore,
-            configuration: configuration
-        )
-        guard verified.hasCompleteConsumerCoverage,
-              let identity = verified.verificationIdentity,
-              identity.completionGeneration == completion.generation,
+        guard identity.completionGeneration == completion.generation,
               identity.source == ledgerSource,
               identity.receipts.count == expectedKinds.count,
               Set(identity.receipts.map(\.kind)) == expectedKinds else {
@@ -2653,7 +2716,7 @@ enum HistoricalArchive {
             sourceURL: rawURL,
             source: aggregate.source,
             ledger: ledger,
-            settledAt: completion.completedAt
+            settledAt: retentionSettledAt
         )
         let typedReceipts = Dictionary(uniqueKeysWithValues: identity.receipts.map {
             ($0.kind, $0)
@@ -2756,6 +2819,7 @@ enum HistoricalArchive {
         let finalSnapshot = aggregateReader.load(since: chunkFirst, until: chunkWindowEnd)
         let finalMatches = finalSnapshot.aggregates.filter { $0.source.chunkID == chunkID }
         let finalCatalog = try catalogStore.snapshotVerifiedAgainstFiles(
+            chunkIDs: [chunkID],
             shouldContinue: shouldContinue
         )
         guard !finalSnapshot.diagnostics.limitExceeded,
@@ -7587,6 +7651,16 @@ enum HistoricalArchive {
     /// stall main-thread callers the way in-lock verification did
     /// (priority-inversion freeze fixed 2026-08-01 in
     /// `snapshotVerifiedAgainstFiles`).
+    private static func catalogStoreIfAlreadyLoaded(
+        lockTimeout: TimeInterval = 0.05
+    ) -> AtriaHistoricalArchiveCatalogStore? {
+        guard archiveCatalogInitializationLock.lock(
+            before: Date().addingTimeInterval(lockTimeout)
+        ) else { return nil }
+        defer { archiveCatalogInitializationLock.unlock() }
+        return archiveCatalogStore
+    }
+
     private static func catalogStoreLocked() throws -> AtriaHistoricalArchiveCatalogStore {
         archiveCatalogInitializationLock.lock()
         defer { archiveCatalogInitializationLock.unlock() }
@@ -9321,6 +9395,27 @@ enum HistoricalArchive {
         let summaryRows: Int
         let bytesBefore: Int
         let bytesAfter: Int
+        let error: String?
+
+        init(
+            status: String,
+            scannedRows: Int,
+            keptRows: Int,
+            compactedRows: Int,
+            summaryRows: Int,
+            bytesBefore: Int,
+            bytesAfter: Int,
+            error: String? = nil
+        ) {
+            self.status = status
+            self.scannedRows = scannedRows
+            self.keptRows = keptRows
+            self.compactedRows = compactedRows
+            self.summaryRows = summaryRows
+            self.bytesBefore = bytesBefore
+            self.bytesAfter = bytesAfter
+            self.error = error
+        }
     }
 
     private static func maintenanceAuthorityRevokedCompactionResult(
@@ -9368,8 +9463,26 @@ enum HistoricalArchive {
         guard maintenanceShouldContinue() else {
             return maintenanceAuthorityRevokedCompactionResult()
         }
+        let overdueSceneBackgroundFastPath = reason == "scene_background"
+            || reason == "overdue_idle"
         do {
-            let store = try catalogStoreLocked()
+            let store: AtriaHistoricalArchiveCatalogStore
+            if overdueSceneBackgroundFastPath {
+                guard let ready = catalogStoreIfAlreadyLoaded() else {
+                    AtriaDebugLog("ATRIADBG archive_retention status=deferred_catalog_warming reason=%@ action=skip_legacy_jsonl_recover_on_short_lease",
+                                  reason)
+                    return CompactionResult(status: "deferred_catalog_warming",
+                                            scannedRows: 0,
+                                            keptRows: 0,
+                                            compactedRows: 0,
+                                            summaryRows: 0,
+                                            bytesBefore: 0,
+                                            bytesAfter: 0)
+                }
+                store = ready
+            } else {
+                store = try catalogStoreLocked()
+            }
             let retirementExecutor = AtriaHistoricalRawRetirementExecutor(
                 archiveRoot: archiveDirectory,
                 catalogStore: store
@@ -9377,7 +9490,8 @@ enum HistoricalArchive {
             guard maintenanceShouldContinue() else {
                 return maintenanceAuthorityRevokedCompactionResult()
             }
-            if let recovered = try retirementExecutor.recoverFirstPendingIntent(
+            if !overdueSceneBackgroundFastPath,
+               let recovered = try retirementExecutor.recoverFirstPendingIntent(
                 shouldContinue: maintenanceShouldContinue
             ) {
                 AtriaDebugLog("ATRIADBG archive_retention status=recovered_retirement_intent reason=%@ chunk=%@ source_deleted=%d catalog_retired=%d",
@@ -9400,6 +9514,14 @@ enum HistoricalArchive {
             guard maintenanceShouldContinue() else {
                 return maintenanceAuthorityRevokedCompactionResult()
             }
+            // Overdue scene-background has ~25s. Spend it on one verified
+            // 7/30/90-day chunk instead of GC/VACUUM/diagnostics that cannot
+            // unlink raw. BGProcessing still runs the full graph.
+            var highVolumeReport: AtriaHistoricalHighVolumeDiagnosticsCoordinator.Report?
+            if overdueSceneBackgroundFastPath {
+                AtriaDebugLog("ATRIADBG archive_retention status=overdue_scene_background_fast_path reason=%@ action=skip_gc_vacuum_diagnostics_for_one_chunk",
+                              reason)
+            } else {
             // Recover crash-left immutable generations before high-volume
             // accounting. The collector follows every durable current pointer
             // and never removes necessary typed history.
@@ -9479,7 +9601,6 @@ enum HistoricalArchive {
             // Read-only high-volume accounting is advisory. A scan failure is
             // logged truthfully and cannot delay capture or authorize any
             // retention mutation.
-            var highVolumeReport: AtriaHistoricalHighVolumeDiagnosticsCoordinator.Report?
             guard maintenanceShouldContinue() else {
                 return maintenanceAuthorityRevokedCompactionResult()
             }
@@ -9510,6 +9631,7 @@ enum HistoricalArchive {
                 AtriaDebugLog("ATRIADBG archive_storage_diagnostics state=unavailable error=%@ mutation_authority=0 raw_retained=1",
                               String(describing: error))
             }
+            }
             let aggregates = archiveDirectory.appendingPathComponent("aggregates-v2", isDirectory: true)
             let manifests = archiveDirectory.appendingPathComponent("retention-manifests-v2", isDirectory: true)
             // A filename alone is not a commit. Only the strict reader's
@@ -9521,20 +9643,35 @@ enum HistoricalArchive {
             guard maintenanceShouldContinue() else {
                 return maintenanceAuthorityRevokedCompactionResult()
             }
-            let committedIndex = aggregateReader.loadCommittedChunkIDs()
-            guard !committedIndex.limitExceeded,
-                  committedIndex.rejectedManifests == 0 else {
-                AtriaDebugLog("ATRIADBG archive_retention status=deferred_reader_limit reason=%@ raw_retained=1",
+            // Sitting/lock has ~25s. Paging every committed aggregate on a
+            // 5.5 GB install burned the lease before one 939 KB JSONL could
+            // retire. Reuse-or-build still verifies the chosen chunk.
+            let committedChunkIDs: Set<String>
+            if overdueSceneBackgroundFastPath {
+                AtriaDebugLog("ATRIADBG archive_retention status=overdue_scene_background_skip_committed_index reason=%@ action=reuse_or_build_one_finishable_chunk",
                               reason)
-                return CompactionResult(status: "deferred_retention_reader_limit",
-                                        scannedRows: 0,
-                                        keptRows: 0,
-                                        compactedRows: 0,
-                                        summaryRows: 0,
-                                        bytesBefore: 0,
-                                        bytesAfter: 0)
+                committedChunkIDs = []
+            } else {
+                let committedIndex = aggregateReader.loadCommittedChunkIDs(
+                    shouldContinue: maintenanceShouldContinue
+                )
+                guard maintenanceShouldContinue() else {
+                    return maintenanceAuthorityRevokedCompactionResult()
+                }
+                guard !committedIndex.limitExceeded,
+                      committedIndex.rejectedManifests == 0 else {
+                    AtriaDebugLog("ATRIADBG archive_retention status=deferred_reader_limit reason=%@ raw_retained=1",
+                                  reason)
+                    return CompactionResult(status: "deferred_retention_reader_limit",
+                                            scannedRows: 0,
+                                            keptRows: 0,
+                                            compactedRows: 0,
+                                            summaryRows: 0,
+                                            bytesBefore: 0,
+                                            bytesAfter: 0)
+                }
+                committedChunkIDs = committedIndex.chunkIDs
             }
-            let committedChunkIDs = committedIndex.chunkIDs
             // The combined raw + exact-replay ceiling is an execution input, not
             // merely a dashboard diagnostic. Verified planner selections are
             // eligible for immediate cutover. While the tree is over cap, the
@@ -9560,17 +9697,34 @@ enum HistoricalArchive {
             guard maintenanceShouldContinue() else {
                 return maintenanceAuthorityRevokedCompactionResult()
             }
+            let liveRetentionChunks = catalog.chunks.filter { $0.state != .retired }
+            let storedRawBytes = liveRetentionChunks.reduce(UInt64(0)) { $0 + $1.storedByteCount }
+            let earliestRetention = liveRetentionChunks
+                .compactMap { $0.firstTimestamp ?? $0.createdAt }
+                .min()
+            let latestRetention = liveRetentionChunks
+                .compactMap { $0.lastTimestamp ?? $0.sealedAt ?? $0.createdAt }
+                .max()
+            let retentionPolicy = AtriaHistoricalRetentionPolicy.policy(
+                storedRawBytes: storedRawBytes,
+                coverageDays: AtriaHistoricalRetentionPolicy.coverageDays(
+                    from: earliestRetention,
+                    to: latestRetention,
+                    now: now
+                )
+            )
             let retention = AtriaHistoricalShadowCompactionCoordinator.retentionQueue(
                 catalog: catalog,
                 archiveDirectory: archiveDirectory,
                 committedChunkIDs: committedChunkIDs,
                 additionalCandidateIDs: highVolumeCandidateIDs,
-                policy: .production,
+                policy: retentionPolicy,
                 now: now
             )
-            AtriaDebugLog("ATRIADBG archive_retention status=policy_evaluated reason=%@ raw_bytes=%llu projected_after_verified_retirement=%llu selected=%d shadow_pending=%d shadow_committed=%d missing_sources=%d provisional_timestamps=%d hard_cap_satisfied=%d raw_retained=1",
+            AtriaDebugLog("ATRIADBG archive_retention status=policy_evaluated reason=%@ raw_bytes=%llu horizon_days=%d projected_after_verified_retirement=%llu selected=%d shadow_pending=%d shadow_committed=%d missing_sources=%d provisional_timestamps=%d hard_cap_satisfied=%d raw_retained=1",
                           reason,
                           retention.plan.rawBytesBefore,
+                          Int((retentionPolicy.rawHorizon / 86_400).rounded()),
                           retention.plan.projectedRawBytes,
                           retention.plan.candidates.count,
                           retention.uncommittedCandidates.count,
@@ -9584,18 +9738,204 @@ enum HistoricalArchive {
                     bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
                 )
             }
+            var retirementCandidates: [AtriaHistoricalArchiveCatalog.RawChunk]
+            var preferredIdleShadowCutoverID: String?
+            if overdueSceneBackgroundFastPath {
+                // Lock stays on ≤8 MB. Sitting Today may take isolated ≤48 MB
+                // JSONL when compact IMU mean is under 8 dps; typing stays on
+                // 8 MB. 72/134 MB legacy files stay skipped by the 64 MB overlap
+                // filter.
+                let idleCap: UInt64 = reason == "overdue_idle"
+                    ? AtriaCompactIMULiveDiagnostics.sittingIdleChunkByteCap()
+                    : AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                let preferLargeIdle = idleCap > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
+                if reason == "overdue_idle" {
+                    let sealed = catalog.chunks.filter { $0.state == .sealed }
+                    let finishable = AtriaHistoricalShadowCompactionCoordinator
+                        .sceneBackgroundRetirementCandidates(
+                            sealed,
+                            maximumByteCount: idleCap
+                        )
+                    // Only the 72/134 MB legacy JSONL poison shadow of overlapping
+                    // shards. 4 MB neighbors retired fine; do not treat those as
+                    // oversized.
+                    let isolated = AtriaHistoricalShadowCompactionCoordinator
+                        .skippingOversizedTimeOverlaps(
+                            finishable,
+                            catalog: catalog,
+                            oversizedByteCount: 64 * 1024 * 1024
+                        )
+                    let skipFiltered = AtriaHistoricalShadowCompactionCoordinator
+                        .skippingIdleCutoverSkips(
+                            isolated,
+                            skippedIDs: AtriaHistoricalShadowCompactionCoordinator
+                                .idleCutoverSkipChunkIDs()
+                        )
+                    let shadowed = skipFiltered.filter {
+                        retention.shadowCommittedCandidateIDs.contains($0.id)
+                    }
+                    let includeOneLarge = AtriaHistoricalShadowCompactionCoordinator
+                        .shouldIncludeLargeIdleChunk(
+                            isolatedUnskipped: skipFiltered,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            preferLarge: preferLargeIdle
+                        )
+                    preferredIdleShadowCutoverID = AtriaHistoricalShadowCompactionCoordinator
+                        .preferredIdleShadowCutoverChunkID(
+                            shadowed: shadowed,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            allowLarge: includeOneLarge
+                        )
+                    // Isolated ≤8 MB JSONL stays on the build list until it
+                    // is gone. A 33 MB shadow cutover previously burned the
+                    // lease on duplicateIdentity and blocked the remaining
+                    // small shards.
+                    retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                        .sittingIdleBuildCandidates(
+                            skipFiltered,
+                            smallChunkBytes: AtriaCompactIMULiveDiagnostics
+                                .sittingIdleSmallChunkBytes,
+                            includeOneLarge: includeOneLarge
+                        )
+                } else {
+                    // A 25s lock used to pick a 126 KB shard that overlaps the
+                    // 134 MB monolith, then stall identity verification for
+                    // the whole sitting `already_running` window.
+                    let isolated = AtriaHistoricalShadowCompactionCoordinator
+                        .isolatedFinishableIdleCandidates(
+                            retention.uncommittedCandidates,
+                            catalog: catalog,
+                            maximumByteCount: idleCap,
+                            skippedIDs: AtriaHistoricalShadowCompactionCoordinator
+                                .idleCutoverSkipChunkIDs()
+                        )
+                    retirementCandidates = Array(isolated.prefix(1))
+                }
+            } else {
+                let sealed = catalog.chunks.filter { $0.state == .sealed }
+                let finishable = AtriaHistoricalShadowCompactionCoordinator
+                    .sceneBackgroundRetirementCandidates(
+                        sealed,
+                        maximumByteCount: AtriaCompactIMULiveDiagnostics.sittingIdleLargeChunkBytes
+                    )
+                let isolated = AtriaHistoricalShadowCompactionCoordinator
+                    .skippingOversizedTimeOverlaps(
+                        finishable,
+                        catalog: catalog,
+                        oversizedByteCount: 64 * 1024 * 1024
+                    )
+                let skipFiltered = AtriaHistoricalShadowCompactionCoordinator
+                    .skippingIdleCutoverSkips(
+                        isolated,
+                        skippedIDs: AtriaHistoricalShadowCompactionCoordinator
+                            .idleCutoverSkipChunkIDs()
+                    )
+                retirementCandidates = AtriaHistoricalShadowCompactionCoordinator
+                    .orderedIdleRetirementCandidates(
+                        skipFiltered,
+                        preferLarge: true,
+                        limit: 1
+                    )
+            }
+            if overdueSceneBackgroundFastPath,
+               retirementCandidates.first?.id != retention.uncommittedCandidates.first?.id {
+                AtriaDebugLog("ATRIADBG archive_retention status=overdue_scene_background_skipped_large_chunk reason=%@ skipped=%@ selected=%@ selected_bytes=%llu",
+                              reason,
+                              retention.uncommittedCandidates.first?.id ?? "none",
+                              retirementCandidates.first?.id ?? "none",
+                              retirementCandidates.first?.storedByteCount ?? 0)
+            }
+            if reason == "overdue_idle",
+               let chunkID = preferredIdleShadowCutoverID {
+                do {
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    let cutover = try publishAndVerifyHistoricalConsumerCutover(
+                        chunkID: chunkID,
+                        archiveRoot: archiveDirectory,
+                        catalogStore: store,
+                        configuration: configuration,
+                        shouldContinue: maintenanceShouldContinue,
+                        singleSourceRetention: overdueSceneBackgroundFastPath
+                    )
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    let retired = try retirementExecutor.retire(
+                        chunkID: cutover.chunkID,
+                        shouldContinue: maintenanceShouldContinue
+                    )
+                    AtriaDebugLog("ATRIADBG archive_retention status=retired_verified_raw reason=%@ chunk=%@ completion_generation=%llu receipts=%d reused=%d source_deleted=%d catalog_retired=%d",
+                                  reason,
+                                  cutover.chunkID,
+                                  cutover.completionGeneration,
+                                  cutover.receiptCount,
+                                  cutover.reusedReceiptCount,
+                                  retired.sourceDeleted ? 1 : 0,
+                                  retired.catalogRetired ? 1 : 0)
+                    return CompactionResult(
+                        status: "ok_verified_consumer_cutover_raw_retired",
+                        scannedRows: 0,
+                        keptRows: 0,
+                        compactedRows: 0,
+                        summaryRows: 0,
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                    )
+                } catch {
+                    guard maintenanceShouldContinue() else {
+                        return maintenanceAuthorityRevokedCompactionResult(
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        )
+                    }
+                    if AtriaHistoricalShadowCompactionCoordinator
+                        .isPermanentIdleCutoverSkip(error) {
+                        AtriaHistoricalShadowCompactionCoordinator
+                            .recordIdleCutoverSkip(chunkID: chunkID)
+                        preferredIdleShadowCutoverID = nil
+                        retirementCandidates.removeAll { $0.id == chunkID }
+                    } else {
+                        AtriaDebugLog("ATRIADBG archive_retention status=deferred_verified_consumer_cutover reason=%@ chunk=%@ error=%@ raw_retained=1 retirement_authority=0",
+                                      reason,
+                                      chunkID,
+                                      String(describing: error))
+                        return CompactionResult(
+                            status: "deferred_verified_consumer_cutover_required",
+                            scannedRows: 0,
+                            keptRows: 0,
+                            compactedRows: 0,
+                            summaryRows: 0,
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                            error: String(describing: error)
+                        )
+                    }
+                }
+            }
             let outcome = AtriaHistoricalShadowCompactionCoordinator.commitFirst(
-                candidates: retention.uncommittedCandidates
+                candidates: retirementCandidates
             ) { chunk in
                 guard maintenanceShouldContinue() else {
                     throw AtriaHistoricalRetentionTransaction.TransactionError
                         .maintenanceAuthorityRevoked
                 }
                 let sourceURL = archiveDirectory.appendingPathComponent(chunk.relativePath)
-                let build = try AtriaHistoricalAggregateBuilder.build(sourceURL: sourceURL,
-                                                                      chunkID: chunk.id,
-                                                                      createdAt: chunk.sealedAt
-                                                                        ?? chunk.createdAt)
+                let build = try AtriaHistoricalAggregateBuilder.build(
+                    sourceURL: sourceURL,
+                    chunkID: chunk.id,
+                    createdAt: chunk.sealedAt ?? chunk.createdAt,
+                    shouldContinue: maintenanceShouldContinue
+                )
                 guard maintenanceShouldContinue() else {
                     throw AtriaHistoricalRetentionTransaction.TransactionError
                         .maintenanceAuthorityRevoked
@@ -9642,9 +9982,14 @@ enum HistoricalArchive {
             switch outcome {
             case .noCandidates:
                 let status: String
-                if !retention.missingSourceCandidateIDs.isEmpty {
-                    status = "deferred_retention_source_unavailable"
-                } else if let chunkID = retention.shadowCommittedCandidateIDs.first {
+                if let chunkID = preferredIdleShadowCutoverID
+                    ?? (reason == "overdue_idle"
+                        ? nil
+                        : retention.shadowCommittedCandidateIDs.first(where: {
+                    !AtriaHistoricalShadowCompactionCoordinator
+                        .idleCutoverSkipChunkIDs()
+                        .contains($0)
+                })) {
                     guard maintenanceShouldContinue() else {
                         return maintenanceAuthorityRevokedCompactionResult(
                             bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
@@ -9657,7 +10002,8 @@ enum HistoricalArchive {
                             archiveRoot: archiveDirectory,
                             catalogStore: store,
                             configuration: configuration,
-                            shouldContinue: maintenanceShouldContinue
+                            shouldContinue: maintenanceShouldContinue,
+                            singleSourceRetention: overdueSceneBackgroundFastPath
                         )
                         guard maintenanceShouldContinue() else {
                             return maintenanceAuthorityRevokedCompactionResult(
@@ -9689,8 +10035,49 @@ enum HistoricalArchive {
                                       reason,
                                       chunkID,
                                       String(describing: error))
-                        status = "deferred_verified_consumer_cutover_required"
+                        UserDefaults.standard.set(
+                            String(describing: error),
+                            forKey: "atria.archiveCompaction.lastError"
+                        )
+                        if overdueSceneBackgroundFastPath,
+                           AtriaHistoricalShadowCompactionCoordinator
+                            .isPermanentIdleCutoverSkip(error) {
+                            AtriaHistoricalShadowCompactionCoordinator
+                                .recordIdleCutoverSkip(chunkID: chunkID)
+                            return CompactionResult(
+                                status: "deferred_idle_cutover_skipped",
+                                scannedRows: 0,
+                                keptRows: 0,
+                                compactedRows: 0,
+                                summaryRows: 0,
+                                bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                                bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                                error: String(describing: error)
+                            )
+                        }
+                        return CompactionResult(
+                            status: "deferred_verified_consumer_cutover_required",
+                            scannedRows: 0,
+                            keptRows: 0,
+                            compactedRows: 0,
+                            summaryRows: 0,
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                            error: String(describing: error)
+                        )
                     }
+                } else if overdueSceneBackgroundFastPath {
+                    // Isolated unique JSONL is gone, or it only overlaps 72/134.
+                    // Once the 512 MB cap is met, do not spin sitting idle
+                    // every 12s on a live BLE link. Leftover monolith overlaps
+                    // wait for a non-foreground pass.
+                    if retention.plan.hardCapSatisfied {
+                        status = "noop_retention_within_bounds"
+                    } else {
+                        status = "deferred_idle_no_isolated_small"
+                    }
+                } else if !retention.missingSourceCandidateIDs.isEmpty {
+                    status = "deferred_retention_source_unavailable"
                 } else {
                     switch highVolumeReport?.plan.state {
                     case .protectedActiveException:
@@ -9709,19 +10096,34 @@ enum HistoricalArchive {
                                         bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
                                         bytesAfter: Int(clamping: retention.plan.rawBytesBefore))
             case let .allFailed(failures):
+                guard maintenanceShouldContinue() else {
+                    return maintenanceAuthorityRevokedCompactionResult(
+                        bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                    )
+                }
                 for failure in failures {
                     AtriaDebugLog("ATRIADBG archive_retention status=shadow_chunk_deferred reason=%@ chunk=%@ error=%@ raw_retained=1",
                                   reason,
                                   failure.chunkID,
                                   failure.message)
                 }
-                return CompactionResult(status: "deferred_shadow_verification_failed",
+                AtriaHistoricalShadowCompactionCoordinator
+                    .recordPermanentIdleCutoverSkips(failures)
+                let skipped = failures.contains {
+                    AtriaHistoricalShadowCompactionCoordinator
+                        .isPermanentIdleCutoverSkipMessage($0.message)
+                }
+                return CompactionResult(status: skipped
+                                            ? "deferred_idle_cutover_skipped"
+                                            : "deferred_shadow_verification_failed",
                                         scannedRows: 0,
                                         keptRows: 0,
                                         compactedRows: 0,
                                         summaryRows: 0,
                                         bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
-                                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore))
+                                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                                        error: failures.first?.message)
             case let .committed(value, precedingFailures):
                 for failure in precedingFailures {
                     AtriaDebugLog("ATRIADBG archive_retention status=shadow_chunk_skipped reason=%@ chunk=%@ error=%@ raw_retained=1",
@@ -9729,6 +10131,8 @@ enum HistoricalArchive {
                                   failure.chunkID,
                                   failure.message)
                 }
+                AtriaHistoricalShadowCompactionCoordinator
+                    .recordPermanentIdleCutoverSkips(precedingFailures)
                 let build = value.build
                 let result = value.result
                 AtriaDebugLog("ATRIADBG archive_retention status=shadow_committed reason=%@ chunk=%@ rows=%d raw_bytes=%llu aggregate=%@ manifest=%@ reused=%d raw_retained=1",
@@ -9756,7 +10160,8 @@ enum HistoricalArchive {
                         archiveRoot: archiveDirectory,
                         catalogStore: store,
                         configuration: configuration,
-                        shouldContinue: maintenanceShouldContinue
+                        shouldContinue: maintenanceShouldContinue,
+                        singleSourceRetention: overdueSceneBackgroundFastPath
                     )
                     guard maintenanceShouldContinue() else {
                         return maintenanceAuthorityRevokedCompactionResult(
@@ -9797,6 +10202,28 @@ enum HistoricalArchive {
                                   reason,
                                   value.chunk.id,
                                   String(describing: error))
+                    UserDefaults.standard.set(
+                        String(describing: error),
+                        forKey: "atria.archiveCompaction.lastError"
+                    )
+                    if overdueSceneBackgroundFastPath,
+                       AtriaHistoricalShadowCompactionCoordinator
+                        .isPermanentIdleCutoverSkip(error) {
+                        AtriaHistoricalShadowCompactionCoordinator
+                            .recordIdleCutoverSkip(chunkID: value.chunk.id)
+                        return CompactionResult(
+                            status: "deferred_idle_cutover_skipped",
+                            scannedRows: build.aggregate.source.rawRowCount,
+                            keptRows: build.aggregate.source.rawRowCount,
+                            compactedRows: 0,
+                            summaryRows: build.aggregate.heartRateMinutes.count
+                                + build.aggregate.rrEpochs.count
+                                + build.aggregate.motionEpochs.count,
+                            bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
+                            bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                            error: String(describing: error)
+                        )
+                    }
                     return CompactionResult(
                         status: "deferred_verified_consumer_cutover_required",
                         scannedRows: build.aggregate.source.rawRowCount,
@@ -9806,7 +10233,8 @@ enum HistoricalArchive {
                             + build.aggregate.rrEpochs.count
                             + build.aggregate.motionEpochs.count,
                         bytesBefore: Int(clamping: retention.plan.rawBytesBefore),
-                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
+                        bytesAfter: Int(clamping: retention.plan.rawBytesBefore),
+                        error: String(describing: error)
                     )
                 }
             }
@@ -9876,12 +10304,14 @@ enum HistoricalArchive {
                     compactedRows: compacted,
                     summaryRows: summaries,
                     bytesBefore: firstBytesBefore ?? result.bytesBefore,
-                    bytesAfter: result.bytesAfter
+                    bytesAfter: result.bytesAfter,
+                    error: result.error
                 )
             }
             let madeProgress = result.status == "ok_recovered_retirement_intent"
                 || result.status == "ok_verified_consumer_cutover_raw_retired"
                 || result.status.hasPrefix("ok_shadow_")
+                || result.status == "deferred_idle_cutover_skipped"
             guard madeProgress else {
                 return .init(status: result.status,
                              scannedRows: scanned,
@@ -9889,7 +10319,8 @@ enum HistoricalArchive {
                              compactedRows: compacted,
                              summaryRows: summaries,
                              bytesBefore: firstBytesBefore ?? result.bytesBefore,
-                             bytesAfter: result.bytesAfter)
+                             bytesAfter: result.bytesAfter,
+                             error: result.error)
             }
             if Date().timeIntervalSince(started) >= maximumElapsed { break }
         }

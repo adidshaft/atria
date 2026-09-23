@@ -36,6 +36,10 @@ older binary's runtime evidence.
 Pulled files, when present:
   - sessions.json
   - daily-rollups.json
+  - learned-insights-v1.json
+  - atria-diagnosis-v1.json
+  - atria-pending-deeplink-v1.txt
+  - historical-archive.catalog-v2.json
   - atria-active-session.json
   - atria-active-session.segments/
   - historical-archive.jsonl
@@ -351,6 +355,12 @@ copy_from_container "Documents/sessions-cold.json" "$evidence_dir/sessions-cold.
 deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"
 deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
+copy_from_container "Documents/learned-insights-v1.json" "$evidence_dir/learned-insights-v1.json" "learned_insights" || true
+copy_from_container "Documents/atria-diagnosis-v1.json" "$evidence_dir/atria-diagnosis-v1.json" "diagnosis" || true
+copy_from_container "Documents/atria-pending-deeplink-v1.txt" "$evidence_dir/atria-pending-deeplink-v1.txt" "pending_deeplink" || true
+copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
+  "$evidence_dir/historical-archive.catalog-v2.json" \
+  "historical_archive_catalog" || true
 copy_from_container "Documents/daily-metrics.json" "$evidence_dir/daily-metrics.json" "daily_metrics" || true
 copy_from_container "Documents/confirmed-workouts.json" "$evidence_dir/confirmed-workouts.json" "confirmed_workouts" || true
 
@@ -975,9 +985,73 @@ def emit_offline_sync_preferences():
     print(f"radio_clean_owner_state={clean_owner_state}")
     print(f"radio_clean_owner_failure={clean_owner_failure}")
     print(f"protocol_packets={int(pref(prefs, 'protocol.packets', 0) or 0)}")
+    print(f"protocol_packets_this_connection={int(pref(prefs, 'protocol.packetsThisConnection', 0) or 0)}")
+    print(f"protocol_notify_callbacks_this_connection={int(pref(prefs, 'protocol.notifyCallbacksThisConnection', 0) or 0)}")
+    print(f"protocol_stream4_notify_callbacks_this_connection={int(pref(prefs, 'protocol.stream4NotifyCallbacksThisConnection', 0) or 0)}")
+    print(f"protocol_stream5_notify_callbacks_this_connection={int(pref(prefs, 'protocol.stream5NotifyCallbacksThisConnection', 0) or 0)}")
+    print(f"protocol_last_notify_callback_uuid={pref(prefs, 'protocol.lastNotifyCallbackUUID', 'none') or 'none'}")
+    print(f"protocol_last_notify_callback_length={int(pref(prefs, 'protocol.lastNotifyCallbackLength', 0) or 0)}")
+    print(f"protocol_last_notify_callback_hex={pref(prefs, 'protocol.lastNotifyCallbackHex', 'none') or 'none'}")
+    print(f"protocol_last_notify_callback_type={pref(prefs, 'protocol.lastNotifyCallbackType', 'none') or 'none'}")
     print(f"protocol_imu_frames={int(pref(prefs, 'protocol.imuFrames', 0) or 0)}")
+    print(f"radio_tx_ready={bool_int(pref(prefs, 'radio.txReady', False))}")
+    print(f"radio_last_wwr_allowed={pref(prefs, 'radio.lastWWRAllowed', 'none')}")
+    print(f"radio_wwr_blocked={int(pref(prefs, 'radio.wwrBlockedCount', 0) or 0)}")
+    print(f"radio_wwr_pending={int(pref(prefs, 'radio.wwrPendingCount', 0) or 0)}")
+    print(f"r10_zombie_cccd_toggle_at={pref(prefs, 'r10.zombieCCCDToggleAt', 'none')}")
+    print(f"r10_zombie_kick_skip_reason={pref(prefs, 'r10.zombieKickSkipReason', 'none') or 'none'}")
+    print(f"r10_zombie_tx_rediscover_at={pref(prefs, 'r10.zombieTxRediscoverAt', 'none')}")
+    imu_recovery_at = pref(prefs, "radio.lastIMURecoveryAt")
+    imu_recovery_age = max(0.0, now - float(imu_recovery_at)) if isinstance(imu_recovery_at, (int, float)) and imu_recovery_at > 0 else -1.0
+    print(f"imu_recovery_command={pref(prefs, 'radio.lastIMURecoveryCommand', 'none') or 'none'}")
+    print(f"imu_recovery_action={pref(prefs, 'radio.lastIMURecoveryAction', 'none') or 'none'}")
+    print(f"imu_recovery_age_s={imu_recovery_age:.1f}")
+    imu_recovery_hr_age = pref(prefs, "radio.lastIMURecoveryHRAge")
+    imu_recovery_imu_age = pref(prefs, "radio.lastIMURecoveryIMUAge")
+    print(f"imu_recovery_hr_notifying={bool_int(pref(prefs, 'radio.lastIMURecoveryHRNotifying'))}")
+    print(f"imu_recovery_hr_age_s={float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1:.1f}")
+    print(f"imu_recovery_imu_age_s={float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1:.1f}")
+    imu_hr_age_n = float(imu_recovery_hr_age) if isinstance(imu_recovery_hr_age, (int, float)) else -1.0
+    imu_imu_age_n = float(imu_recovery_imu_age) if isinstance(imu_recovery_imu_age, (int, float)) else -1.0
+    print(f"imu_recovery_hr_stayed_up={bool_int(imu_imu_age_n > 4 and 0 <= imu_hr_age_n <= 15)}")
+    print(f"imu_recovery_both_live={bool_int(0 <= imu_imu_age_n <= 4 and 0 <= imu_hr_age_n <= 15)}")
+    print(f"imu_recovery_skip_reason={pref(prefs, 'radio.lastIMURecoverySkipReason', 'none') or 'none'}")
+    imu_skip_at = pref(prefs, "radio.lastIMURecoverySkipAt")
+    imu_skip_age = max(0.0, now - float(imu_skip_at)) if isinstance(imu_skip_at, (int, float)) and imu_skip_at > 0 else -1.0
+    print(f"imu_recovery_skip_age_s={imu_skip_age:.1f}")
+    print(f"live_r10_eligible={bool_int(pref(prefs, 'radio.liveR10Eligible'))}")
+    print(f"live_r10_eligible_blockers={pref(prefs, 'radio.liveR10EligibleBlockers', 'none') or 'none'}")
+    print(f"live_stream5_confirmed={bool_int(pref(prefs, 'radio.liveStream5Confirmed'))}")
+    print(f"live_realtime_armed={bool_int(pref(prefs, 'radio.liveRealtimeArmed'))}")
+    print(f"live_r10_liveness_action={pref(prefs, 'radio.liveR10LivenessAction', 'none') or 'none'}")
+    live_hr_at = pref(prefs, "radio.liveHRSampleAt")
+    live_imu_at = pref(prefs, "radio.liveIMUFrameAt")
+    live_hr_age = max(0.0, now - float(live_hr_at)) if isinstance(live_hr_at, (int, float)) and live_hr_at > 0 else -1.0
+    live_imu_age = max(0.0, now - float(live_imu_at)) if isinstance(live_imu_at, (int, float)) and live_imu_at > 0 else -1.0
+    print(f"live_hr_notifying={bool_int(pref(prefs, 'radio.liveHRNotifying'))}")
+    print(f"live_hr_sample_age_s={live_hr_age:.1f}")
+    print(f"live_imu_frame_age_s={live_imu_age:.1f}")
     print(f"protocol_last_packet_type={pref(prefs, 'protocol.lastPacketType', 'none') or 'none'}")
     print(f"protocol_last_packet_kind={pref(prefs, 'protocol.lastPacketKind', 'none') or 'none'}")
+    compact_rot_at = pref(prefs, "compactIMU.lastRotationAt")
+    compact_rot_age = max(0.0, now - float(compact_rot_at)) if isinstance(compact_rot_at, (int, float)) and compact_rot_at > 0 else -1.0
+    print(f"compact_imu_rotation_mean_dps={float(pref(prefs, 'compactIMU.lastRotationMeanDps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_max_dps={float(pref(prefs, 'compactIMU.lastRotationMaxDps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_peak60_dps={float(pref(prefs, 'compactIMU.lastRotationPeak60Dps', -1) or -1):.3f}")
+    print(f"compact_imu_rotation_samples={int(pref(prefs, 'compactIMU.lastRotationSamples', 0) or 0)}")
+    print(f"compact_imu_rotation_age_s={compact_rot_age:.1f}")
+    compact_assembled_at = pref(prefs, "compactIMU.lastAssembledSecondAt")
+    compact_assembled_age = max(0.0, now - float(compact_assembled_at)) if isinstance(compact_assembled_at, (int, float)) and compact_assembled_at > 0 else -1.0
+    print(f"compact_imu_assembled_age_s={compact_assembled_age:.1f}")
+    print(f"compact_imu_last_second_skipped_sitting={bool_int(pref(prefs, 'compactIMU.lastSecondSkippedSitting'))}")
+    print(f"compact_imu_last_scored_mean_dps={float(pref(prefs, 'compactIMU.lastScoredMeanDps', -1) or -1):.3f}")
+    print(f"compact_imu_skipped_sitting_seconds={int(pref(prefs, 'compactIMU.skippedSittingSeconds', 0) or 0)}")
+    print(f"compact_imu_scored_seconds={int(pref(prefs, 'compactIMU.scoredSeconds', 0) or 0)}")
+    print(f"compact_imu_last_gyro_csv={pref(prefs, 'compactIMU.lastRotationCsv', '') or ''}")
+    print(f"compact_imu_last_interarrival_ms={float(pref(prefs, 'compactIMU.lastInterarrivalMs', -1) or -1):.1f}")
+    print(f"compact_imu_last_device_timestamp={int(pref(prefs, 'compactIMU.lastDeviceTimestamp', 0) or 0)}")
+    emit_raw = pref(prefs, "compactIMU.lastEmitCount", None)
+    print(f"compact_imu_last_emit_count={-1 if emit_raw is None else int(emit_raw)}")
     print(f"step_source=strap_r10_imu")
     print("phone_step_fallback=0")
     print(f"link_namespace={pref_namespace(prefs, 'link.lastAutoSaveStatus')}")
@@ -1043,6 +1117,7 @@ def emit_battery_preferences():
     recent_drop = drop_delta > 0 and 0 <= drop_age <= 6 * 60 * 60
     charging = charge_status in ("charging", "full")
     print(f"battery_namespace={pref_namespace(prefs, 'battery.level')}")
+    print("battery_kind=strap")
     print(f"battery_level={int(level) if isinstance(level, int) else -1}")
     print(f"battery_source={source}")
     print(f"battery_age_s={age:.1f}")
@@ -1057,6 +1132,18 @@ def emit_battery_preferences():
     print(f"battery_drop_recent={bool_int(recent_drop)}")
     print(f"battery_drop_delta={drop_delta}")
     print(f"battery_drop_age_s={drop_age:.1f}")
+    phone_level = pref(prefs, "phoneBattery.level")
+    phone_state = pref(prefs, "phoneBattery.state", "missing") or "missing"
+    phone_at = pref(prefs, "phoneBattery.at")
+    phone_age = max(0.0, now - float(phone_at)) if isinstance(phone_at, (int, float)) and phone_at > 0 else -1.0
+    if isinstance(phone_level, (int, float)) and float(phone_level) >= 0:
+        fraction = float(phone_level)
+        phone_pct = int(round(fraction * 100)) if fraction <= 1.0 else int(fraction)
+    else:
+        phone_pct = -1
+    print(f"phone_battery_level={phone_pct}")
+    print(f"phone_battery_state={phone_state}")
+    print(f"phone_battery_age_s={phone_age:.1f}")
 
 def emit_motion_context_preferences():
     prefs_path = evidence / "preferences.plist"
@@ -1189,6 +1276,97 @@ def emit_duty_cycle_and_compaction_preferences():
     print(f"duty_cycle_sleep_window_end_min={int(sleep_window_end) if isinstance(sleep_window_end, (int, float)) else -1}")
     print(f"archive_compaction_last_run_at={last_run_at if isinstance(last_run_at, (int, float)) and last_run_at > 0 else 'none'}")
     print(f"archive_compaction_last_run_age_s={last_run_age:.1f}")
+    last_attempt_at = pref(prefs, "archiveCompaction.lastAttemptAt")
+    last_attempt_age = max(0.0, now - float(last_attempt_at)) if isinstance(last_attempt_at, (int, float)) and last_attempt_at > 0 else -1.0
+    print(f"archive_compaction_last_attempt_age_s={last_attempt_age:.1f}")
+    print(f"archive_compaction_last_status={pref(prefs, 'archiveCompaction.lastStatus', 'none') or 'none'}")
+    print(f"archive_compaction_last_reason={pref(prefs, 'archiveCompaction.lastReason', 'none') or 'none'}")
+    print(f"archive_compaction_last_compacted_rows={int(pref(prefs, 'archiveCompaction.lastCompactedRows', 0) or 0)}")
+    print(f"archive_compaction_last_bytes_before={int(pref(prefs, 'archiveCompaction.lastBytesBefore', 0) or 0)}")
+    print(f"archive_compaction_last_bytes_after={int(pref(prefs, 'archiveCompaction.lastBytesAfter', 0) or 0)}")
+    print(f"archive_compaction_last_error={pref(prefs, 'archiveCompaction.lastError', 'none') or 'none'}")
+    skip_ids = pref(prefs, "archiveCompaction.idleSkipChunkIDs.v2") or pref(prefs, "archiveCompaction.idleSkipChunkIDs") or []
+    print(f"archive_compaction_idle_skip_chunk_count={len(skip_ids) if isinstance(skip_ids, list) else 0}")
+    idle_skip_at = pref(prefs, "archiveCompaction.lastIdleSkipAt")
+    idle_skip_age = max(0.0, now - float(idle_skip_at)) if isinstance(idle_skip_at, (int, float)) and idle_skip_at > 0 else -1.0
+    print(f"archive_compaction_idle_skip_reason={pref(prefs, 'archiveCompaction.lastIdleSkipReason', 'none') or 'none'}")
+    print(f"archive_compaction_idle_skip_age_s={idle_skip_age:.1f}")
+    print(f"today_held_step_count={int(pref(prefs, 'steps.heldDailyCount', 0) or 0)}")
+    held_at = pref(prefs, "steps.heldDailyCapturedAt")
+    held_age = max(0.0, now - float(held_at)) if isinstance(held_at, (int, float)) and held_at > 0 else -1.0
+    print(f"today_held_step_age_s={held_age:.1f}")
+    print(f"today_live_gyro_count={int(pref(prefs, 'steps.liveGyroTodayCount', 0) or 0)}")
+    live_gyro_at = pref(prefs, "steps.liveGyroTodayCapturedAt")
+    live_gyro_age = max(0.0, now - float(live_gyro_at)) if isinstance(live_gyro_at, (int, float)) and live_gyro_at > 0 else -1.0
+    print(f"today_live_gyro_age_s={live_gyro_age:.1f}")
+    ledger_path = evidence / "authoritative-runtime-state" / "atria-strap-step-ledger.json"
+    gyro_cum = -1
+    gyro_seg = -1
+    if ledger_path.is_file():
+        try:
+            ledger = json.loads(ledger_path.read_text())
+            if isinstance(ledger, dict):
+                gyro_cum = int(ledger.get("cumulativeGyroCadenceResearchSteps") or -1)
+                gyro_seg = int(ledger.get("segmentGyroCadenceResearchSteps") or -1)
+        except Exception:
+            pass
+    print(f"today_gyro_cumulative_steps={gyro_cum}")
+    print(f"today_gyro_segment_steps={gyro_seg}")
+
+
+def emit_catalog_v2_summary():
+    catalog_path = evidence / "historical-archive.catalog-v2.json"
+    if not catalog_path.is_file():
+        print("catalog_v2_summary_status=missing")
+        return
+    try:
+        catalog = json.loads(catalog_path.read_text())
+    except Exception as exc:
+        print(f"catalog_v2_summary_error={type(exc).__name__}:{exc}")
+        return
+    chunks = catalog.get("chunks") if isinstance(catalog, dict) else None
+    if not isinstance(chunks, list):
+        print("catalog_v2_summary_status=invalid")
+        return
+    states = {}
+    bytes_by = {}
+    isolated_20_48 = 0
+    isolated_20_48_bytes = 0
+    oversized = 0
+    oversized_bytes = 0
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        state = str(chunk.get("state") or "unknown")
+        byte_count = int(chunk.get("byteCount") or 0)
+        states[state] = states.get(state, 0) + 1
+        bytes_by[state] = bytes_by.get(state, 0) + byte_count
+        if state == "sealed" and 20 * 1024 * 1024 <= byte_count <= 48 * 1024 * 1024:
+            isolated_20_48 += 1
+            isolated_20_48_bytes += byte_count
+        if state == "sealed" and byte_count >= 64 * 1024 * 1024:
+            oversized += 1
+            oversized_bytes += byte_count
+    sealed_bytes = int(bytes_by.get("sealed") or 0)
+    active_bytes = int(bytes_by.get("active") or 0)
+    cap = 512 * 1024 * 1024
+    print("catalog_v2_summary_status=ok")
+    print(f"catalog_v2_generation={int(catalog.get('generation') or 0)}")
+    print(f"catalog_v2_chunks={len(chunks)}")
+    print(f"catalog_v2_sealed={int(states.get('sealed') or 0)}")
+    print(f"catalog_v2_retired={int(states.get('retired') or 0)}")
+    print(f"catalog_v2_active={int(states.get('active') or 0)}")
+    print(f"catalog_v2_sealed_bytes={sealed_bytes}")
+    print(f"catalog_v2_active_bytes={active_bytes}")
+    print(f"catalog_v2_retired_bytes={int(bytes_by.get('retired') or 0)}")
+    print(f"catalog_v2_sealed_plus_active_bytes={sealed_bytes + active_bytes}")
+    print(f"catalog_v2_cap_bytes={cap}")
+    print(f"catalog_v2_sealed_under_512mib={1 if sealed_bytes <= cap else 0}")
+    print(f"catalog_v2_sealed_plus_active_under_512mib={1 if sealed_bytes + active_bytes <= cap else 0}")
+    print(f"catalog_v2_isolated_20_48_count={isolated_20_48}")
+    print(f"catalog_v2_isolated_20_48_bytes={isolated_20_48_bytes}")
+    print(f"catalog_v2_oversized_count={oversized}")
+    print(f"catalog_v2_oversized_bytes={oversized_bytes}")
 
 def emit_watchdog_preferences():
     prefs_path = evidence / "preferences.plist"
@@ -1592,6 +1770,7 @@ emit_motion_context_preferences()
 emit_hr_broadcast_preferences()
 emit_ble_link_preferences()
 emit_duty_cycle_and_compaction_preferences()
+emit_catalog_v2_summary()
 emit_watchdog_preferences()
 emit_sample_preferences()
 emit_keepalive_preferences()
@@ -2721,13 +2900,113 @@ def emit_projection_artifact_revisions():
     if isinstance(widget, dict):
         print("widget_projection_status=ok")
         print(f"widget_projection_created_at={widget.get('createdAt', 'missing')}")
+        print(f"widget_projection_recovery={widget.get('recoveryPercent', 'missing')}")
+        print(f"widget_projection_hrv={widget.get('hrvRMSSD', 'missing')}")
+        print(f"widget_projection_rhr={widget.get('restingHR', 'missing')}")
+        print(f"widget_projection_hrv_captured_at={widget.get('hrvCapturedAt', 'missing')}")
         print(f"widget_projection_strain={widget.get('strain', 'missing')}")
+        print(f"widget_projection_strain_detail={widget.get('strainDetail', 'missing')}")
+        print(f"widget_projection_strain_value_text={widget.get('strainValueText', 'missing')}")
+        print(f"widget_projection_steps={widget.get('steps', 'missing')}")
         print(f"widget_projection_sleep_hours={widget.get('sleepHours', 'missing')}")
         print(f"widget_projection_storage={widget.get('storage', 'missing')}")
         print(f"widget_projection_app_group_enabled={bool_int(widget.get('appGroupEnabled'))}")
         print(f"widget_projection_target_present={bool_int(widget.get('widgetTargetPresent'))}")
     else:
         print("widget_projection_status=missing")
+
+    diagnosis_path = evidence / "atria-diagnosis-v1.json"
+    if diagnosis_path.exists():
+        try:
+            diagnosis = json.loads(diagnosis_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"diagnosis_status=error")
+            print(f"diagnosis_error={type(exc).__name__}:{exc}")
+        else:
+            print("diagnosis_status=ok")
+            print(f"diagnosis_schema={diagnosis.get('schema', 'missing')}")
+            print(f"diagnosis_recorded_at={diagnosis.get('recordedAt', 'missing')}")
+            print(f"diagnosis_build={diagnosis.get('build', 'missing')}")
+            discrepancies = diagnosis.get("discrepancies")
+            if isinstance(discrepancies, list) and discrepancies:
+                print(f"diagnosis_discrepancies={','.join(str(item) for item in discrepancies)}")
+            else:
+                print("diagnosis_discrepancies=none")
+            connection = diagnosis.get("connection") if isinstance(diagnosis.get("connection"), dict) else {}
+            print(f"diagnosis_connection_status={connection.get('status', 'missing')}")
+            print(f"diagnosis_recovering={connection.get('recovering', 'missing')}")
+            print(f"diagnosis_hr_age_s={connection.get('hrAgeSeconds', 'missing')}")
+            print(f"diagnosis_imu_age_s={connection.get('imuAgeSeconds', 'missing')}")
+            print(f"diagnosis_stream5={connection.get('stream5Confirmed', 'missing')}")
+            print(f"diagnosis_wwr_pending={connection.get('wwrPendingCount', 'missing')}")
+            print(f"diagnosis_last_wwr_allowed={connection.get('lastWWRAllowed', 'missing')}")
+            metrics = diagnosis.get("metrics") if isinstance(diagnosis.get("metrics"), dict) else {}
+            print(f"diagnosis_overnight_recovery={metrics.get('overnightRecovery', 'missing')}")
+            print(f"diagnosis_today_recovery={metrics.get('todayRecovery', 'missing')}")
+            print(f"diagnosis_settled_hrv={metrics.get('settledHRV', 'missing')}")
+            windows = diagnosis.get("metricWindows") if isinstance(diagnosis.get("metricWindows"), dict) else {}
+            def _window_label(points):
+                if not isinstance(points, list) or not points:
+                    return "none"
+                labels = []
+                for item in points:
+                    if not isinstance(item, dict):
+                        continue
+                    labels.append(f"{item.get('day', '?')}:{item.get('value', '?')}")
+                return ",".join(labels) if labels else "none"
+            print(f"diagnosis_hrv_day={windows.get('hrvDay', 'missing')}")
+            print(f"diagnosis_hrv_week={_window_label(windows.get('hrvWeek'))}")
+            print(f"diagnosis_hrv_month={_window_label(windows.get('hrvMonth'))}")
+            print(f"diagnosis_recovery_week={_window_label(windows.get('recoveryWeek'))}")
+            print(f"diagnosis_recovery_month={_window_label(windows.get('recoveryMonth'))}")
+            print(f"diagnosis_rhr_week={_window_label(windows.get('rhrWeek'))}")
+            print(f"diagnosis_rhr_month={_window_label(windows.get('rhrMonth'))}")
+            print(f"diagnosis_sleep_week={_window_label(windows.get('sleepWeek'))}")
+            print(f"diagnosis_sleep_month={_window_label(windows.get('sleepMonth'))}")
+            live_activity = diagnosis.get("liveActivity") if isinstance(diagnosis.get("liveActivity"), dict) else {}
+            print(f"diagnosis_live_activity_recording={live_activity.get('recording', 'missing')}")
+            print(f"diagnosis_live_activity_hr={live_activity.get('heartRate', 'missing')}")
+            print(f"diagnosis_live_activity_zone={live_activity.get('zone', 'missing')}")
+            print(f"diagnosis_live_activity_name={live_activity.get('activityName', 'missing')}")
+            print(f"diagnosis_live_activity_availability={live_activity.get('availability', 'missing')}")
+            print(f"diagnosis_live_activity_strain={live_activity.get('strain', 'missing')}")
+            print(f"diagnosis_live_activity_steps={live_activity.get('steps', 'missing')}")
+            print(f"diagnosis_live_activity_elapsed_s={live_activity.get('elapsedSeconds', 'missing')}")
+            print(f"diagnosis_live_activity_kit_count={live_activity.get('activityKitCount', 'missing')}")
+            widget_diag = diagnosis.get("widget") if isinstance(diagnosis.get("widget"), dict) else {}
+            print(f"diagnosis_widget_hrv={widget_diag.get('hrv', 'missing')}")
+            print(f"diagnosis_widget_rhr={widget_diag.get('rhr', 'missing')}")
+            print(f"diagnosis_widget_recovery={widget_diag.get('recovery', 'missing')}")
+            print(f"diagnosis_widget_live_hr={widget_diag.get('heartRate', 'missing')}")
+            print(f"diagnosis_widget_steps={widget_diag.get('steps', 'missing')}")
+            print(f"diagnosis_today_steps={metrics.get('todaySteps', 'missing')}")
+            print(f"diagnosis_widget_strain={widget_diag.get('strain', 'missing')}")
+            print(f"diagnosis_today_strain={metrics.get('todayStrain', 'missing')}")
+            print(f"diagnosis_widget_hrv_captured_at={widget_diag.get('hrvCapturedAt', 'missing')}")
+            print(f"diagnosis_widget_created_at={widget_diag.get('createdAt', 'missing')}")
+            workout = diagnosis.get("lastWorkout") if isinstance(diagnosis.get("lastWorkout"), dict) else {}
+            print(f"diagnosis_last_workout_type={workout.get('activityType', 'missing')}")
+            print(f"diagnosis_last_workout_samples={workout.get('samples', 'missing')}")
+            print(f"diagnosis_last_workout_avg_hr={workout.get('avgHR', 'missing')}")
+            print(f"diagnosis_last_workout_strain={workout.get('strain', 'missing')}")
+            print(f"diagnosis_last_workout_steps={workout.get('steps', 'missing')}")
+            print(f"diagnosis_last_workout_steps_estimated={workout.get('stepsAreEstimated', 'missing')}")
+            print(f"diagnosis_last_workout_hr_load={workout.get('heartRateLoad', 'missing')}")
+            print(f"diagnosis_last_workout_reason={workout.get('reason', 'missing')}")
+            recent_no_hr = diagnosis.get("recentNoHeartRateWorkouts")
+            if isinstance(recent_no_hr, list) and recent_no_hr:
+                labels = []
+                for item in recent_no_hr:
+                    if not isinstance(item, dict):
+                        continue
+                    labels.append(
+                        f"{item.get('activityType', '?')}:{item.get('samples', '?')}:{item.get('reason', '?')}"
+                    )
+                print(f"diagnosis_no_hr_workouts={','.join(labels)}")
+            else:
+                print("diagnosis_no_hr_workouts=none")
+    else:
+        print("diagnosis_status=missing")
 
 emit_projection_artifact_revisions()
 PY

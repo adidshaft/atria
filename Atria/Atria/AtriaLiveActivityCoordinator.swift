@@ -258,6 +258,8 @@ final class AtriaLiveActivityCoordinator {
         var targetUpperHeartRateZone: Int? = nil
         var isPaused: Bool
         var elapsedDuration: TimeInterval
+        /// Idle all-day presence must not expose Pause/End workout controls.
+        var showsWorkoutControls: Bool = true
     }
 
     struct QueuedActivityUpdate: Equatable {
@@ -267,6 +269,11 @@ final class AtriaLiveActivityCoordinator {
 
     private var activity: Activity<AtriaLiveActivityAttributes>?
     private var startedAt: Date?
+    var lastPublishedSnapshot: Snapshot? { lastSnapshot }
+    var activityKitCount: Int {
+        Activity<AtriaLiveActivityAttributes>.activities.count
+    }
+
     private var lastSnapshot: Snapshot?
     private var lastActivitySnapshot: Snapshot?
     private var lastActivityUpdateAt: Date?
@@ -277,23 +284,26 @@ final class AtriaLiveActivityCoordinator {
     private var activeActivityWriteBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var queuedActivityUpdate: QueuedActivityUpdate?
     private var queuedActivityBackgroundTask: UIBackgroundTaskIdentifier = .invalid
-    private var hasReconciledExistingActivity = false
     private var isEndingActivity = false
+    private var lastIdleStartAttemptAt: Date?
     /// Keep workout metrics close to the strap without attempting one
     /// ActivityKit write for every 1 Hz sensor publication.
     private let minimumActivityUpdateInterval: TimeInterval = 5
+    static let idleStartRetryInterval: TimeInterval = 20
+    nonisolated static let lastStartErrorKey = AtriaIdleLiveActivityStart.lastStartErrorKey
 
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
+        let snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)
         let now = Date()
-        if !hasReconciledExistingActivity {
+        let pendingWorkoutIsActive = !snapshot.isRecording
+            && AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        if activity == nil, !isEndingActivity {
             // A publisher can reach Home before its durable pending workout has
             // been rehydrated into SwiftUI state. Ending every existing Live
             // Activity on that transient idle snapshot removes the Lock Screen
             // workout that the next runloop is about to adopt. Wait only while
             // a current, non-terminal pending intent proves restoration work is
-            // still outstanding; genuinely orphaned activities are still ended.
-            let pendingWorkoutIsActive = !snapshot.isRecording
-                && AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+            // still outstanding.
             if Self.shouldDeferExistingActivityReconciliation(
                 snapshotIsRecording: snapshot.isRecording,
                 pendingWorkoutIsActive: pendingWorkoutIsActive
@@ -301,32 +311,32 @@ final class AtriaLiveActivityCoordinator {
                 lastSnapshot = snapshot
                 return
             }
-            let existingActivities = Activity<AtriaLiveActivityAttributes>.activities
-            if snapshot.isRecording,
-               let matching = existingActivities.first(where: {
-                   Self.activityBelongsToWorkout(activityStartedAt: $0.attributes.startedAt,
-                                                 workoutStartedAt: snapshot.startedAt)
-               }) {
-                activity = matching
-                startedAt = matching.attributes.startedAt
+            // Device 175: the first post-install tick was often !isRecording
+            // (HR not restored yet). One-shot orphan reconciliation ended the
+            // idle island, then Activity.request from background failed.
+            // Leave unowned idle presence in ActivityKit until this process
+            // can adopt it with a live snapshot.
+            if snapshot.isRecording {
+                adoptOrReconcileExistingActivities(snapshot)
             }
-            for existing in existingActivities where existing.id != activity?.id {
-                // Never leave stale duplicate/orphan controls on the Lock Screen.
-                // Their immutable start token cannot safely control this workout.
-                Task {
-                    await existing.end(nil, dismissalPolicy: .immediate)
-                    AtriaDebugLog("ATRIADBG live_activity status=ended_orphan old_start=%@ new_start=%@",
-                                  existing.attributes.startedAt.description,
-                                  snapshot.startedAt.description)
-                }
-            }
-            hasReconciledExistingActivity = true
         }
 
         // The merged live publisher fires frequently even when no workout is
-        // active. After the one-time orphan reconciliation above, idle calls
-        // must not enumerate ActivityKit state or construct authorization info.
+        // active. After adoption, idle calls must not enumerate ActivityKit.
         if !snapshot.isRecording {
+            let ownedControls: Bool?
+            if activity != nil {
+                ownedControls = activity?.content.state.showsWorkoutControls
+            } else {
+                ownedControls = lastSnapshot?.showsWorkoutControls
+            }
+            if !Self.shouldEndOwnedActivity(
+                snapshotIsRecording: snapshot.isRecording,
+                ownedShowsWorkoutControls: ownedControls
+            ) {
+                lastSnapshot = snapshot
+                return
+            }
             guard activity != nil, !isEndingActivity else {
                 lastSnapshot = snapshot
                 return
@@ -363,7 +373,15 @@ final class AtriaLiveActivityCoordinator {
                 lastSnapshot = snapshot
                 return
             }
-            start(with: snapshot)
+            if Self.shouldRetryIdleStart(
+                lastAttemptAt: lastIdleStartAttemptAt,
+                now: now,
+                showsWorkoutControls: snapshot.showsWorkoutControls,
+                force: forceActivityWrite
+            ) {
+                lastIdleStartAttemptAt = now
+                start(with: snapshot)
+            }
         } else if forceActivityWrite
                     ? lastActivitySnapshot != snapshot
                     : Self.shouldEnqueueActivityUpdate(previous: lastSnapshot,
@@ -395,6 +413,132 @@ final class AtriaLiveActivityCoordinator {
             <= AtriaLiveWorkoutActionStore.sessionMatchTolerance
     }
 
+    /// Idle Live Activity used to require a live BPM every tick. Pulse
+    /// zeros after `liveHeartRateFreshnessInterval`, so a 15s blip ended
+    /// ActivityKit (`isRecording=false`) and emptied the island while the
+    /// widget still showed the last HR (device 2026-09-18 ~16:33Z).
+    /// Keep presence on a usable link after the first pulse; metric hold
+    /// then keeps the last BPM. `presenceAlreadyStarted` is also true when
+    /// ActivityKit already shows an idle island across process restart.
+    nonisolated static func idleLivePresenceShouldStayActive(
+        workoutActive: Bool,
+        linkUsable: Bool,
+        heldHeartRate: Int,
+        presenceAlreadyStarted: Bool
+    ) -> Bool {
+        guard !workoutActive, linkUsable else { return false }
+        if heldHeartRate > 0 { return true }
+        return presenceAlreadyStarted
+    }
+
+    /// Workouts must match `startedAt`. Idle all-day Live is process-local
+    /// (`livePresenceStartedAt = now` after relaunch), so adopt any idle
+    /// island instead of orphaning it.
+    nonisolated static func shouldAdoptExistingActivity(
+        snapshotIsRecording: Bool,
+        snapshotShowsWorkoutControls: Bool,
+        snapshotStartedAt: Date,
+        existingStartedAt: Date,
+        existingShowsWorkoutControls: Bool?
+    ) -> Bool {
+        guard snapshotIsRecording else { return false }
+        let existingIsWorkout = existingShowsWorkoutControls ?? true
+        if snapshotShowsWorkoutControls {
+            return existingIsWorkout && activityBelongsToWorkout(
+                activityStartedAt: existingStartedAt,
+                workoutStartedAt: snapshotStartedAt
+            )
+        }
+        return !existingIsWorkout
+    }
+
+    /// Idle presence used to require CoreBluetooth `.connected`/`.connecting`.
+    /// After a --no-launch bounce, `status` can still be scanning while 2A37
+    /// samples are live, so the frozen-scene lane never even called
+    /// `Activity.request` (device 185 kit=0, HR 0.3s, diagnosis Connected).
+    nonisolated static func idleLiveLinkIsUsable(
+        status: AtriaBLEManager.Status,
+        heartRate: Int
+    ) -> Bool {
+        if status == .connected || status == .connecting { return true }
+        return heartRate > 0
+    }
+
+    /// First publisher after install/jetsam is often !isRecording. Ending
+    /// idle islands there emptied ActivityKit (device 175, kit=0 with HR 75).
+    nonisolated static func shouldPreserveUnownedIdleActivity(
+        snapshotIsRecording: Bool,
+        existingShowsWorkoutControls: Bool?
+    ) -> Bool {
+        !snapshotIsRecording && existingShowsWorkoutControls == false
+    }
+
+    /// Device 186: leaving Atria for Telegram published `isRecording=false`
+    /// (linkUsable dropped for one tick) and `update` ended the owned idle
+    /// island. Workout terminals still end. Idle presence must survive a
+    /// non-recording tick until the wearer dismisses it or a workout adopts.
+    nonisolated static func shouldEndOwnedActivity(
+        snapshotIsRecording: Bool,
+        ownedShowsWorkoutControls: Bool?
+    ) -> Bool {
+        guard !snapshotIsRecording else { return false }
+        return !shouldPreserveUnownedIdleActivity(
+            snapshotIsRecording: snapshotIsRecording,
+            existingShowsWorkoutControls: ownedShowsWorkoutControls
+        )
+    }
+
+    nonisolated static func shouldRetryIdleStart(
+        lastAttemptAt: Date?,
+        now: Date,
+        showsWorkoutControls: Bool,
+        force: Bool
+    ) -> Bool {
+        if showsWorkoutControls || force { return true }
+        guard let lastAttemptAt else { return true }
+        return now.timeIntervalSince(lastAttemptAt) >= idleStartRetryInterval
+    }
+
+    /// Pulse and the BLE session zero when the radio drops or an R10
+    /// boundary clears samples. ActivityKit still needs the last real BPM
+    /// and zone so a reconnecting workout does not go `--`.
+    static func holdingLastKnownWorkoutMetrics(
+        _ snapshot: Snapshot,
+        previous: Snapshot?
+    ) -> Snapshot {
+        guard snapshot.isRecording,
+              let previous,
+              previous.isRecording,
+              activityBelongsToWorkout(activityStartedAt: previous.startedAt,
+                                       workoutStartedAt: snapshot.startedAt)
+                || (!snapshot.showsWorkoutControls && !previous.showsWorkoutControls)
+        else { return snapshot }
+        var held = snapshot
+        if snapshot.heartRate <= 0, previous.heartRate > 0 {
+            held.heartRate = previous.heartRate
+            held.heartRateCapturedAt = snapshot.heartRateCapturedAt
+                ?? previous.heartRateCapturedAt
+            if (snapshot.heartRateZoneIndex ?? 0) <= 0 {
+                held.heartRateZoneIndex = previous.heartRateZoneIndex
+                held.heartRateZoneName = previous.heartRateZoneName
+            }
+            if snapshot.heartRateAvailability == .unavailable {
+                held.heartRateAvailability = previous.heartRateAvailability == .live
+                    ? .stale
+                    : previous.heartRateAvailability
+            }
+        }
+        if snapshot.workoutStrain <= 0, previous.workoutStrain > 0 {
+            held.workoutStrain = previous.workoutStrain
+            held.workoutStrainCapturedAt = snapshot.workoutStrainCapturedAt
+                ?? previous.workoutStrainCapturedAt
+            if snapshot.workoutStrainAvailability == .unavailable {
+                held.workoutStrainAvailability = .stale
+            }
+        }
+        return held
+    }
+
     nonisolated static func shouldDeferExistingActivityReconciliation(
         snapshotIsRecording: Bool,
         pendingWorkoutIsActive: Bool
@@ -418,6 +562,39 @@ final class AtriaLiveActivityCoordinator {
         )
     }
 
+    private func adoptOrReconcileExistingActivities(_ snapshot: Snapshot) {
+        let existingActivities = Activity<AtriaLiveActivityAttributes>.activities
+        if let matching = existingActivities.first(where: {
+            Self.shouldAdoptExistingActivity(
+                snapshotIsRecording: snapshot.isRecording,
+                snapshotShowsWorkoutControls: snapshot.showsWorkoutControls,
+                snapshotStartedAt: snapshot.startedAt,
+                existingStartedAt: $0.attributes.startedAt,
+                existingShowsWorkoutControls: $0.content.state.showsWorkoutControls
+            )
+        }) {
+            activity = matching
+            startedAt = matching.attributes.startedAt
+            AtriaDebugLog("ATRIADBG live_activity status=adopted idle=%d start=%@",
+                          snapshot.showsWorkoutControls ? 0 : 1,
+                          matching.attributes.startedAt.description)
+        }
+        for existing in existingActivities where existing.id != activity?.id {
+            if Self.shouldPreserveUnownedIdleActivity(
+                snapshotIsRecording: snapshot.isRecording,
+                existingShowsWorkoutControls: existing.content.state.showsWorkoutControls
+            ) {
+                continue
+            }
+            Task {
+                await existing.end(nil, dismissalPolicy: .immediate)
+                AtriaDebugLog("ATRIADBG live_activity status=ended_orphan old_start=%@ new_start=%@",
+                              existing.attributes.startedAt.description,
+                              snapshot.startedAt.description)
+            }
+        }
+    }
+
     private func start(with snapshot: Snapshot) {
         let startDate = snapshot.startedAt
         startedAt = startDate
@@ -429,13 +606,16 @@ final class AtriaLiveActivityCoordinator {
                                             content: ActivityContent(state: state,
                                                                      staleDate: staleDate(for: snapshot)),
                                             pushType: nil)
+            UserDefaults.standard.removeObject(forKey: Self.lastStartErrorKey)
             AtriaDebugLog("ATRIADBG live_activity status=started bpm=%d strain=%.1f readings=%d local_only=1",
                           snapshot.heartRate,
                           snapshot.strain,
                           snapshot.readingCount)
         } catch {
+            let message = String(describing: error)
+            UserDefaults.standard.set(message, forKey: Self.lastStartErrorKey)
             AtriaDebugLog("ATRIADBG live_activity status=start_failed error=%@ local_only=1",
-                          String(describing: error))
+                          message)
         }
         lastActivitySnapshot = snapshot
         lastActivityUpdateAt = Date()
@@ -518,7 +698,8 @@ final class AtriaLiveActivityCoordinator {
                                                  isPaused: snapshot.isPaused,
                                                  isEnding: isEnding,
                                                  timerAnchor: now.addingTimeInterval(-elapsed),
-                                                 elapsedDuration: elapsed)
+                                                 elapsedDuration: elapsed,
+                                                 showsWorkoutControls: snapshot.showsWorkoutControls)
     }
 
     private func enqueueActivityUpdate(_ snapshot: Snapshot,
@@ -652,7 +833,7 @@ final class AtriaLiveActivityCoordinator {
     /// have independent freshness windows. Ask the system to redraw at the
     /// first source expiry. The widget then evaluates each source clock on its
     /// own, so 15-second motion staleness cannot keep looking live past the
-    /// app's strict six-second HR deadline (or incorrectly make fresh HR stale).
+    /// app's `liveHeartRateFreshnessInterval` HR deadline (or incorrectly make fresh HR stale).
     nonisolated static func sensorStaleDate(heartRateCapturedAt: Date?,
                                             stepsCapturedAt: Date?,
                                             strainCapturedAt: Date? = nil,

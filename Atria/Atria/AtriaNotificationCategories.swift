@@ -86,7 +86,9 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
     var honestDescription: String {
         switch self {
         case .recoveryReady:
-            return "When a baseline-qualified recovery estimate is ready."
+            // Never "recovery score": the app publishes a recovery it can
+            // stand behind, not a score it claims to have measured.
+            return "When today's recovery is trusted enough to show."
         case .strainTarget:
             return "When today's measured strain reaches its target."
         case .sleepReview:
@@ -100,7 +102,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
         case .healthDeviation:
             return "When a vital runs outside your typical range for 2 days."
         case .strapBattery:
-            return "When the strap battery runs low."
+            return "When the strap battery runs low. Off by default so jumpy 2A19 values do not fire alerts or extra radio work."
         case .bluetoothOff:
             return "When Bluetooth is off and strap capture stops."
         case .fitCheck:
@@ -126,7 +128,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
     /// category starts OFF so the user explicitly opts in.
     var defaultEnabled: Bool {
         switch self {
-        case .secondSleepPrimary, .bedtimeWindDown, .catchUpComplete, .parkedInterval:
+        case .secondSleepPrimary, .bedtimeWindDown, .catchUpComplete, .parkedInterval, .strapBattery:
             return false
         default:
             return true

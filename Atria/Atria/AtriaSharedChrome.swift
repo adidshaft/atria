@@ -58,6 +58,23 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     }
 }
 
+/// Pressed feedback for tappable CARDS — glance tiles, metric tiles, and any
+/// card whose whole surface is the button. `.plain` renders the label
+/// untouched but gives the finger nothing back; a card that opens a sheet
+/// should acknowledge the press the way the segment and icon buttons above
+/// already do. Scale is gentler than theirs (a large surface at 0.94 lurches).
+struct AtriaPressableCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick),
+                       value: configuration.isPressed)
+    }
+}
+
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
     // `size` is the visual glass diameter. The outer interaction frame remains
@@ -99,8 +116,9 @@ private struct AtriaCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -160,8 +178,9 @@ private struct AtriaRaisedCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -359,6 +378,17 @@ extension View {
 
     func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View {
         self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
+    }
+
+    /// The small uppercase label that heads a card section. One font, one
+    /// tracking, one color, so every eyebrow in the app is the same element
+    /// (see `AtriaDesignTokens.Typography.eyebrow`).
+    func atriaEyebrow() -> some View {
+        self
+            .font(AtriaDesignTokens.Typography.eyebrow)
+            .tracking(AtriaDesignTokens.Typography.eyebrowTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(.secondary)
     }
 }
 

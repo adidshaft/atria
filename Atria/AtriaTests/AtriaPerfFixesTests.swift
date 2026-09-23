@@ -471,7 +471,53 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(currentCount: 0,
                                                                          publishedCount: 42,
                                                                          force: true))
+        XCTAssertTrue(AtriaBLEManager.shouldPublishLiveStrapStepResearch(
+            currentCount: 0,
+            publishedCount: 0,
+            currentCumulativeCount: 7_845,
+            publishedCumulativeCount: 0
+        ))
+    }
 
+    func testDailyStepPresentationUsesLedgerCumulativeInsteadOfRestartedSegment() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let ble = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let home = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        let widget = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift"), encoding: .utf8)
+
+        XCTAssertTrue(ble.contains("liveStrapStepResearchCumulativeCount"))
+        XCTAssertTrue(ble.contains("cumulativeGyroCadenceResearchSteps("))
+        XCTAssertTrue(ble.contains("gyroOnlySessionSteps("))
+        XCTAssertTrue(ble.contains("carriedMotionSnapshot.gyroCadenceResearchSteps"))
+        XCTAssertTrue(ble.contains("trustedPrefix: strapStepLedgerGyroCumulativePrefix"))
+        XCTAssertFalse(ble.contains("publishedFloor = max(cumulative, liveStrapStepResearchTodayCount)"))
+        XCTAssertFalse(ble.contains("strapStepResearchCount = carriedMotionSnapshot.steps"))
+        XCTAssertTrue(home.contains("presentedDailyStrapStepCount("))
+        XCTAssertTrue(home.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(home.contains("liveGyroToday:"))
+        XCTAssertTrue(home.contains("persistLiveGyroToday("),
+                      "device 2026-09-19: live gyro today stayed frozen at 13:13 because persist was test-only")
+        XCTAssertTrue(home.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(widget.contains("presentedDailyStrapStepCount("))
+        XCTAssertTrue(widget.contains("liveCumulative: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(widget.contains("liveGyroToday:"))
+        XCTAssertTrue(widget.contains("persistLiveGyroToday("),
+                      "widget publication must keep the same-day gyro floor")
+        XCTAssertTrue(widget.contains("liveActiveSession: ble.liveStrapStepResearchTodayCount"))
+        XCTAssertTrue(ble.contains("publishedLiveStrapStepTodayCount("))
+        XCTAssertTrue(ble.contains("cycleBaselinePreservingRestoredToday("))
+        XCTAssertTrue(home.contains("ble.$liveStrapStepResearchCumulativeCount"))
+        XCTAssertTrue(home.contains("noteOpenPhysiologicalCycleStart"))
+        XCTAssertTrue(ble.contains("AtriaHeldDailyStepFloor.resetForNewCycle"))
+        XCTAssertTrue(home.contains("dailyStepPresentation.source == .live"))
+        XCTAssertTrue(widget.contains("presentation.source == .live"))
+        XCTAssertTrue(ble.contains("historicalDrainTelemetry.persisted > 0"))
     }
 
 
@@ -641,6 +687,38 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(refreshedToday.savedTodayStrapSteps, 11)
     }
 
+    func testHomeSavedAggregateIgnoresAccelerometerPeakStrapCounts() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = DateComponents(calendar: calendar,
+                                   timeZone: calendar.timeZone,
+                                   year: 2026,
+                                   month: 7,
+                                   day: 9,
+                                   hour: 8).date!
+        let accelOnly = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(20 * 60),
+            label: "Accel leftover",
+            points: (0...120).map { sample in
+                SavedSession.Point(t: TimeInterval(sample * 10), bpm: 150)
+            },
+            strapStepResearchCount: 8_516
+        )
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [accelOnly],
+            rest: 60,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            calendar: calendar,
+            now: start.addingTimeInterval(21 * 60),
+            rawSessionCount: 1
+        )
+        XCTAssertEqual(aggregate.savedTodayStrapSteps, 0)
+        XCTAssertEqual(aggregate.savedActiveSessionTotalStrapSteps, 0)
+    }
+
     func testLiveStepMergeSubtractsCheckpointedActivePrefix() {
         XCTAssertEqual(AtriaHomeModel.mergedStrapStepResearchCount(savedToday: 1_000,
                                                                    savedActiveSession: 400,
@@ -654,6 +732,48 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                    savedActiveSession: 0,
                                                                    liveActiveSession: 300),
                        1_300)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
+                                                                  liveCumulative: 12),
+                       12,
+                       "live IMU gyro outranks a leftover saved floor")
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 8_516,
+                                                                  liveCumulative: 41),
+                       41)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 18,
+                                                                  liveCumulative: 36),
+                       36)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 232,
+                                                                  liveCumulative: 0),
+                       232,
+                       "gyro-only saved sessions remain the floor across relaunch")
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 50,
+                                                                  liveCumulative: 0),
+                       50,
+                       "IMU drop keeps the saved floor")
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
+                                                                  liveCumulative: 0),
+                       0)
+        XCTAssertEqual(AtriaHomeModel.presentedDailyStrapStepCount(savedMerge: 0,
+                                                                  liveCumulative: 167,
+                                                                  liveGyroToday: 1_944),
+                       1_944,
+                       "a post-relaunch cycle fragment must not replace same-day gyro today")
+        XCTAssertEqual(AtriaBLEManager.publishedLiveStrapStepTodayCount(
+            cycleOrDayCount: 167,
+            liveGyroToday: 1_944
+        ), 1_944)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 1_939,
+            restoredToday: 1_944
+        ), 0)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 6_420,
+            restoredToday: 1_944
+        ), 4_476)
+        XCTAssertEqual(AtriaBLEManager.cycleBaselinePreservingRestoredToday(
+            sessionCount: 1_939,
+            restoredToday: 0
+        ), 1_939)
     }
 
     func testSavedAggregateIdentifiesActiveCheckpointSteps() {
@@ -1092,6 +1212,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                             label: "Saved aggregate",
                             points: points,
                             strapStepResearchCount: stepCount,
+                            gyroCadenceResearchSteps: stepCount,
                             strapStepResearchState: "research_unvalidated")
     }
 
@@ -1418,6 +1539,120 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(merged.isEmpty)
     }
 
+    func testAuthoritativeRebuildKeepsHoleyUserAdjustedNightWhenSleepStillExists() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let start = calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 14, hour: 23, minute: 21
+        ))!
+        let span: TimeInterval = 27_648.603010058403
+        let measured: TimeInterval = 5_112.069190979004
+        let end = start.addingTimeInterval(span)
+        let day = calendar.startOfDay(for: end)
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 18, hour: 12
+        )))
+        let night = UserConfirmedSleep(
+            id: "1789408260-1789435909-user_adjusted_sleep",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "user_adjusted_sleep",
+            confidence: "user_adjusted_hr_only",
+            sessions: 1,
+            samples: 5_059,
+            avgHR: 60,
+            peakHR: 90,
+            restingHR: 67,
+            hrv: 40,
+            hrvWindowCount: 26,
+            duration: measured,
+            span: span,
+            reason: "device holey overnight",
+            motionSource: "user_adjusted",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "Asia/Kolkata"
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        let frozen = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 52,
+            recoveryConfidence: "unverified",
+            hrv: 49,
+            restingHR: 61,
+            respiratoryRate: nil,
+            sleepDuration: 15_693,
+            sleepSpan: span,
+            sleepStart: start,
+            sleepEnd: end,
+            sleepSource: "user_adjusted_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: 0.6
+        )
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [day],
+            calendar: calendar
+        )
+        let preserved = try XCTUnwrap(merged.first { calendar.isDate($0.day, inSameDayAs: day) })
+        XCTAssertEqual(preserved.recoveryPercent, 52)
+        XCTAssertEqual(preserved.hrv, 49)
+        XCTAssertEqual(preserved.restingHR, 61)
+
+        let cancellable = try XCTUnwrap(SessionStore.mergeDailyMetricHistoryCancellable(
+            existing: [frozen],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            authoritativeDays: [day],
+            calendar: calendar,
+            shouldContinue: { true }
+        ))
+        let cancellablePreserved = try XCTUnwrap(
+            cancellable.first { calendar.isDate($0.day, inSameDayAs: day) }
+        )
+        XCTAssertEqual(cancellablePreserved.recoveryPercent, 52)
+        XCTAssertEqual(cancellablePreserved.hrv, 49)
+
+        let recomputed = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        )
+        let reminted = SessionStore.mergeDailyMetricHistory(
+            existing: [frozen],
+            computed: recomputed,
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        )
+        let updated = try XCTUnwrap(reminted.first { calendar.isDate($0.day, inSameDayAs: day) })
+        XCTAssertEqual(updated.recoveryPercent, 52,
+                       "a holey remint that cannot score Recovery must keep the frozen morning")
+        XCTAssertEqual(updated.hrv, 40)
+        XCTAssertEqual(updated.restingHR, 67)
+    }
+
     func testAuthoritativeTodayDeletionRemovesFrozenMetricWithoutFreshEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -1597,10 +1832,13 @@ final class AtriaPerfFixesTests: XCTestCase {
     func testSavedSessionLocalHRVSummaryIsStableAcrossRepeatedReads() {
         let session = localRRSession(hrv: nil)
 
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: windows advance on a 150 s
+        // half-stride, so this 900 s clean stream yields 5 windows (was 3
+        // under 300 s tiling). The RMSSD itself is unchanged.
+        XCTAssertEqual(session.localHRVWindowCount, 5)
         XCTAssertEqual(session.localRMSSD, 40)
         XCTAssertEqual(session.localRMSSD, 40)
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        XCTAssertEqual(session.localHRVWindowCount, 5)
     }
 
     func testSavedSessionLowRateRRProducesThreeRealisticFiveMinuteWindows() {
@@ -1622,7 +1860,9 @@ final class AtriaPerfFixesTests: XCTestCase {
             rrPoints: rrPoints
         )
 
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: the 150 s half-stride places 5
+        // windows on this 900 s low-rate stream (was 3 under 300 s tiling).
+        XCTAssertEqual(session.localHRVWindowCount, 5)
         XCTAssertEqual(session.localRMSSD, 20)
     }
 
@@ -1641,7 +1881,8 @@ final class AtriaPerfFixesTests: XCTestCase {
         let session = localRRSession(hrv: 55)
 
         XCTAssertEqual(session.localRMSSD, 55)
-        XCTAssertEqual(session.localHRVWindowCount, 3)
+        // 2026-08-29 pair-based qualification: 5 half-stride windows (was 3).
+        XCTAssertEqual(session.localHRVWindowCount, 5)
     }
 
     func testLatestLocalRMSSDSourceAfterUpsertKeepsOvernightRecoveryPreference() {

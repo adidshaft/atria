@@ -77,6 +77,64 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.accessibilityText.contains("steps. Verified through "))
     }
 
+    func testNewerValidatedLiveAdvancesExactOpenCycleSubtotalWithoutSumming() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let receiptEnd = now.addingTimeInterval(-2 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day, now: now, liveCount: 4_257,
+            liveValidationState: "validated", liveCapturedAt: now,
+            canonicalDays: [stepDay(state: .available, stepCount: 176,
+                                    known: 176, covered: 12 * 3_600,
+                                    missing: 0, end: receiptEnd)],
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 4_257)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.capturedAt, now)
+        XCTAssertEqual(value.detailText, "Today so far · live")
+    }
+
+    func testExactSubtotalRejectsLiveWithoutNewerQualifiedCurrentEvidence() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let receiptEnd = now.addingTimeInterval(-2 * 3_600)
+        for (captured, state, qualified) in [
+            (now.addingTimeInterval(-60), "validated", true),
+            (receiptEnd, "validated", true),
+            (now, "research_unvalidated", true),
+            (now, "validated", false)
+        ] {
+            let value = AtriaDailyStepPresentation.resolve(
+                day: day, now: now, liveCount: 4_257,
+                liveValidationState: state, liveCapturedAt: captured,
+                canonicalDays: [stepDay(state: .available, stepCount: 176,
+                                        known: 176, covered: 12 * 3_600,
+                                        missing: 0, end: receiptEnd)],
+                liveAuthorityQualified: qualified,
+                calendar: utcCalendar
+            )
+            XCTAssertEqual(value.count, 176)
+            XCTAssertEqual(value.source, .verifiedCanonical)
+        }
+    }
+
+    func testFreshValidatedLiveCannotEraseLargerDrainedPartial() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        for liveCount in [0, 100] {
+            let value = AtriaDailyStepPresentation.resolve(
+                day: day, now: now, liveCount: liveCount,
+                liveValidationState: "validated", liveCapturedAt: now,
+                canonicalDays: [stepDay(state: .missing, stepCount: nil,
+                                        known: 1_234, covered: 3_600,
+                                        missing: 13 * 3_600, end: now)],
+                calendar: utcCalendar
+            )
+            XCTAssertEqual(value.count, 1_234)
+            XCTAssertEqual(value.source, .verifiedCanonical)
+        }
+    }
+
     func testPartialCanonicalCoverageUsesLowerBoundLabel() {
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -147,7 +205,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, coverageDetail)
         // The forward-looking promise becomes the terminal blocker.
         XCTAssertEqual(value.motionAvailabilityFootnote,
-                       "Strap motion is unavailable in the current connection mode. "
+                       "Motion is unavailable in the current connection mode. "
                         + "Live heart rate is still connected.")
     }
 
@@ -167,7 +225,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         var value = partialVerified176()
         value.motionAvailability = .unknown
         XCTAssertEqual(value.motionAvailabilityFootnote,
-                       "Counted so far — updates when strap motion syncs.")
+                       "Counted so far — updates when motion syncs.")
         // Never asserts the terminal "unavailable in the current connection mode".
         XCTAssertFalse(value.motionAvailabilityFootnote?
             .contains("unavailable in the current connection mode") ?? false)
@@ -283,7 +341,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.unavailabilityReason, .stepModelNotQualified)
         XCTAssertEqual(
             value.detailText,
-            "Strap step model is still validating"
+            "Step model is still validating"
         )
     }
 
@@ -341,14 +399,15 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
         XCTAssertEqual(
             value.detailText,
-            "Strap motion found · count still resolving"
+            "Steps found · count still resolving"
         )
         XCTAssertFalse(value.detailText.contains("Today so far · estimate"))
     }
 
-    func testStaleStrapSubtotalIsUnavailableWithoutCanonicalCoverage() {
-        // No drained coverage → no verified floor → an unvalidated stale count
-        // still fails closed rather than masquerading as today's total.
+    func testStaleStrapSubtotalIsHeldWhileMotionSyncs() {
+        // Device 2026-09-14: IMU silence made the widget "-- / Waiting for strap"
+        // even though an in-cycle count existed. Hold the last counted floor and
+        // say it is syncing — never claim it is live.
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -362,12 +421,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertNil(value.count)
-        XCTAssertEqual(value.source, .none)
-        XCTAssertEqual(
-            value.detailText,
-            "Last strap movement is no longer live"
-        )
+        XCTAssertEqual(value.count, 4_000)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertFalse(value.isValidated)
+        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
+        XCTAssertEqual(value.valueText, "4000")
+        XCTAssertFalse(value.detailText.contains("Today so far · live"))
     }
 
     func testStaleStrapSubtotalIsNotPresentedAsLiveTodayCount() {
@@ -384,13 +445,12 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertNil(value.count)
-        XCTAssertEqual(value.source, .none)
-        XCTAssertEqual(value.completeness, .unavailable)
-        XCTAssertEqual(
-            value.detailText,
-            "Last strap movement is no longer live"
-        )
+        XCTAssertEqual(value.count, 612)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
+        XCTAssertFalse(value.detailText.contains("Today so far"))
     }
 
     func testClosedDayWithoutCanonicalStrapCoverageIsUnavailable() {
@@ -422,11 +482,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.valueText, "--")
-        XCTAssertEqual(
-            value.detailText,
-            "Last strap movement is no longer live"
-        )
+        XCTAssertEqual(value.valueText, "400")
+        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
     }
 
     func testHighCoverageVerifiedFloorIsNotOverriddenByInflatedPreliminaryLive() {
@@ -495,15 +553,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        // Option 1 (2026-08-22): over only 21% drained coverage the in-cycle
-        // live estimate (4257) is the more up-to-date total and is now shown as
-        // an estimate, rather than pinning the 176-step drained floor. This is
-        // the "stuck at 176 all morning" case the user asked to fix.
-        XCTAssertEqual(value.count, 4_257)
-        XCTAssertEqual(value.source, .live)
-        XCTAssertFalse(value.isValidated)
+        // Device 2026-09-11: a preliminary live estimate must not replace a
+        // real drained floor. The 176-step receipt stays until validated live
+        // or more coverage drains; swinging 176↔4257 was the field failure.
+        XCTAssertEqual(value.count, 176)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertTrue(value.isValidated)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.detailText, "Today so far · estimate")
+        XCTAssertFalse(value.detailText.contains("Today so far · estimate"))
     }
 
     func testFreshValidatedLiveOutranksPartialDurableReceiptWithoutSumming() {
@@ -637,11 +694,411 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertNil(value.count)
-        XCTAssertEqual(value.unavailabilityReason, .staleLiveReceipt)
+        XCTAssertEqual(value.count, 12)
+        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
         XCTAssertNil(value.priorCycleReceipt)
-        XCTAssertEqual(value.detailText,
-                       "Last strap movement is no longer live")
+        XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
+    }
+
+    func testHeldFloorSurvivesZeroLiveMergeInsideCurrentCycle() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 0,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            heldCount: 11_854,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 11_854)
+        XCTAssertEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertEqual(value.capturedAt, heldAt)
+        XCTAssertTrue(value.detailText.hasPrefix("Last count · syncing"))
+    }
+
+    func testFreshCumulativeLiveIMUTicksRaiseTheHeldFloor() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 7_857,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 7_845,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 7_857)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
+    }
+
+    func testLiveGyroWinsOverAContaminatedHeldFloorAfterRestart() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 10,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 7_845,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 10)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
+    }
+
+    func testGyroSavedFloorReplacesAccelerometerHeldCountAfterRelaunch() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let heldAt = now.addingTimeInterval(-120)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 232,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 8_748,
+            heldCapturedAt: heldAt,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 232)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.capturedAt, now.addingTimeInterval(-1))
+    }
+
+    func testHeldFloorDoesNotCrossANewCycle() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            heldCount: 11_854,
+            heldCapturedAt: day.addingTimeInterval(-3_600),
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
+    }
+
+    func testHeldDailyStepFloorLoadRejectsADifferentCycle() {
+        let suiteName = "AtriaHeldDailyStepFloorTests.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        AtriaHeldDailyStepFloor.persist(
+            count: 400,
+            cycleStart: cycle,
+            capturedAt: cycle.addingTimeInterval(8 * 3_600),
+            defaults: suite
+        )
+        XCTAssertEqual(AtriaHeldDailyStepFloor.load(cycleStart: cycle, defaults: suite)?.count, 400)
+        XCTAssertNil(AtriaHeldDailyStepFloor.load(
+            cycleStart: cycle.addingTimeInterval(86_400),
+            defaults: suite
+        ))
+    }
+
+    func testHeldFloorPersistLiveCoordinateRequiresMatchingCycleKey() {
+        let suiteName = "AtriaHeldDailyStepFloorLiveCoordinate.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_845,
+            capturedAt: captured,
+            defaults: suite
+        )
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            "an unkeyed live coordinate must not attach to a new wake"
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_845,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            7_845
+        )
+        XCTAssertNil(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle.addingTimeInterval(86_400),
+                now: captured.addingTimeInterval(86_400 + 120),
+                defaults: suite
+            )?.count,
+            "confirming last night's sleep must not keep yesterday's floor"
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 10,
+            capturedAt: captured.addingTimeInterval(60),
+            cycleStart: cycle,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            10,
+            "cycle-scoped gyro must replace a leftover thousands-high floor"
+        )
+    }
+
+    func testGyroOnlySessionStepsDropsAccelerometerPeakContamination() {
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 0, incomingGyro: 4), 4)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 4, incomingGyro: 12), 12)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 0), 0)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 6_420, incomingGyro: 12), 12)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 48, incomingGyro: 50), 50)
+        XCTAssertEqual(AtriaBLEManager.gyroOnlySessionSteps(current: 50, incomingGyro: 48), 50)
+        XCTAssertEqual(
+            AtriaBLEManager.gyroOnlySessionSteps(current: 214, incomingGyro: 18),
+            214,
+            "a real gyro walk must survive a smaller reconnect snapshot"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.publishedLiveStrapStepTodayCount(
+                cycleOrDayCount: 167,
+                liveGyroToday: 1_944
+            ),
+            1_944,
+            "Today must keep gyro-today across a post-relaunch cycle fragment"
+        )
+    }
+
+    func testLiveGyroTodayPersistsMonotonicallyOnTheSameDay() {
+        let suiteName = "AtriaLiveGyroToday.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let captured = day.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 214,
+            capturedAt: captured,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 18,
+            capturedAt: captured.addingTimeInterval(30),
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: captured.addingTimeInterval(60),
+                defaults: suite
+            )?.count,
+            214
+        )
+        AtriaHeldDailyStepFloor.persistLiveGyroToday(
+            count: 250,
+            capturedAt: captured.addingTimeInterval(90),
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            250
+        )
+    }
+
+    func testAttributedStrapStepsUseGyroCadenceNotAccelerometerPeaks() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let interval = DateInterval(start: start, duration: 3_600)
+        let accelOnly = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(3_600),
+            label: "Accel leftover",
+            points: [],
+            strapStepResearchCount: 8_516
+        )
+        XCTAssertEqual(
+            accelOnly.attributedStrapSteps(within: interval),
+            0,
+            "closed-session accel peaks must not become Today's floor after relaunch"
+        )
+        let gyro = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(3_600),
+            label: "Gyro session",
+            points: [],
+            strapStepResearchCount: 8_516,
+            gyroCadenceResearchSteps: 232
+        )
+        XCTAssertEqual(gyro.attributedStrapSteps(within: interval), 232)
+    }
+
+    func testHeldFloorRejectsImplausibleAccelerometerJumpAndReplacesIt() {
+        let suiteName = "AtriaHeldDailyStepFloorContamination.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_849,
+            capturedAt: captured,
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 14_269,
+            capturedAt: captured.addingTimeInterval(40),
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            7_849,
+            "6k sitting accel peaks in 40s must not raise Today"
+        )
+    }
+
+    func testHeldFloorReplacesAlreadyPersistedAccelerometerContamination() {
+        let suiteName = "AtriaHeldDailyStepFloorReplaceContamination.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 14_269,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 7_849,
+            capturedAt: captured.addingTimeInterval(2),
+            cycleStart: cycle,
+            trustedPrefix: 7_849,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            7_849
+        )
+    }
+
+    func testPresentationDropsHugeHeldFloorWhenLiveGyroIsTiny() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 18,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 9_482,
+            heldCapturedAt: now.addingTimeInterval(-40),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 18)
+        XCTAssertEqual(value.source, .live)
+    }
+
+    func testHeldFloorReplacesCycleScopedGyroContaminationWithoutTrustedPrefix() {
+        let suiteName = "AtriaHeldDailyStepFloorTinyGyro.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        let captured = cycle.addingTimeInterval(8 * 3_600)
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 9_482,
+            capturedAt: captured,
+            cycleStart: cycle,
+            defaults: suite
+        )
+        AtriaHeldDailyStepFloor.persistLiveCoordinate(
+            count: 18,
+            capturedAt: captured.addingTimeInterval(2),
+            cycleStart: cycle,
+            defaults: suite
+        )
+        XCTAssertEqual(
+            AtriaHeldDailyStepFloor.load(
+                cycleStart: cycle,
+                now: captured.addingTimeInterval(120),
+                defaults: suite
+            )?.count,
+            18
+        )
+    }
+
+    func testNewCycleClearsTheHeldFloor() {
+        let suiteName = "AtriaHeldDailyStepFloorNewCycle.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let cycle = day
+        AtriaHeldDailyStepFloor.persist(
+            count: 9_482,
+            cycleStart: cycle,
+            capturedAt: cycle.addingTimeInterval(3_600),
+            defaults: suite
+        )
+        let next = cycle.addingTimeInterval(24 * 3_600)
+        AtriaHeldDailyStepFloor.resetForNewCycle(cycleStart: next, defaults: suite)
+        XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: cycle, defaults: suite))
+        XCTAssertNil(AtriaHeldDailyStepFloor.load(cycleStart: next, defaults: suite))
+    }
+
+    func testPresentationDropsImplausibleHeldFloorWhenLiveGyroIsNearby() {
+        let now = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: now,
+            liveCount: 7_849,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(-1),
+            canonicalDays: [],
+            heldCount: 14_269,
+            heldCapturedAt: now.addingTimeInterval(-40),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 7_849)
+        XCTAssertNotEqual(value.unavailabilityReason, .heldWhileMotionSyncing)
     }
 
     // 2026-08-01: a prior cycle that ended overnight (before 6 AM today) or
@@ -820,6 +1277,149 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
                        .init(steps: 1_118, endedAt: endedAt))
     }
 
+    // 2026-09-07 device bug: the strap's motion transport sat in pure-HR
+    // fallback for days, so the newest drained receipt (135 steps) was frozen
+    // three days before this cycle's wake boundary — yet it was promoted to
+    // today's hero count and the widget value. A prior receipt stranded more
+    // than one physiological cycle back is NOT the same continuous wear period
+    // (a whole cycle drained nothing in between), so it must neither be carried
+    // forward as today nor disclosed as an abutting "prior cycle".
+    func testMultiDayStalePriorReceiptIsNeverCarriedOrDisclosedAsToday() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let staleEndedAt = cycleStart.addingTimeInterval(-72 * 3_600) // 3 days back
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 135, endedAt: staleEndedAt),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.valueText, "--")
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+        // Not even disclosed as "prior cycle": a dateless "ended 9:44 AM" would
+        // read as recent. Fall through to the plain honest empty state instead.
+        XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertEqual(value.detailText, "No verified receipt for this cycle")
+        XCTAssertFalse(value.detailText.contains("135"))
+    }
+
+    /// Device 2026-09-08: accepting the Friday 9:44 IST fill freeze must not
+    /// withhold a later open-cycle live total for the current wake window.
+    func testOpenCycleLiveAfterFridayFillFreezeIsNotWithheld() {
+        let friday944 = Date(timeIntervalSince1970: 1_788_495_274)
+        let wake = Date(timeIntervalSince1970: 1_788_847_800) // 2026-09-08 00:15Z
+        let now = wake.addingTimeInterval(8 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: wake,
+            now: now,
+            liveCount: 842,
+            liveValidationState: "validated",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            physiologicalDayStart: wake,
+            priorCycleReceipt: .init(steps: 135, endedAt: friday944),
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(value.count, 842)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertFalse(value.detailText.contains("135"))
+    }
+
+    // The stale receipt must not sneak in as the partial-branch FLOOR either:
+    // a small fresh drained slice is the honest lower bound for the open cycle,
+    // never a 3-day-old total.
+    func testMultiDayStalePriorReceiptDoesNotFloorAFreshPartial() {
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: day.addingTimeInterval(2 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .missing,
+                                    stepCount: nil,
+                                    known: 120,
+                                    covered: 1_800,
+                                    missing: 40_000,
+                                    end: day.addingTimeInterval(1_800))],
+            physiologicalDayStart: day,
+            priorCycleReceipt: .init(steps: 135,
+                                     endedAt: day.addingTimeInterval(-72 * 3_600)),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 120)
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+    }
+
+    // The abutment boundary is one physiological cycle (28 h). A receipt just
+    // inside it is the immediately-preceding cycle and still carries; just
+    // outside it is stale history and does not.
+    func testPriorReceiptCarriedOnlyWithinOnePhysiologicalCycle() {
+        let cycleStart = day.addingTimeInterval(30 * 3_600)
+        func resolveWithGap(_ gap: TimeInterval) -> AtriaDailyStepPresentation {
+            AtriaDailyStepPresentation.resolve(
+                day: day,
+                now: cycleStart.addingTimeInterval(600),
+                liveCount: 0,
+                liveValidationState: "unavailable",
+                liveCapturedAt: nil,
+                canonicalDays: [],
+                physiologicalDayStart: cycleStart,
+                priorCycleReceipt: .init(steps: 900,
+                                         endedAt: cycleStart.addingTimeInterval(-gap)),
+                boundaryIsUnconfirmedFallback: true,
+                calendar: utcCalendar
+            )
+        }
+
+        let justInside = resolveWithGap(27 * 3_600)
+        XCTAssertEqual(justInside.count, 900)
+        XCTAssertTrue(justInside.carriedFromUnconfirmedPriorCycle)
+
+        let justOutside = resolveWithGap(29 * 3_600)
+        XCTAssertNil(justOutside.count)
+        XCTAssertFalse(justOutside.carriedFromUnconfirmedPriorCycle)
+        XCTAssertEqual(justOutside.unavailabilityReason, .noCurrentCycleReceipt)
+    }
+
+    // The exact 2026-09-07 device shape: a CONFIRMED main-sleep boundary opens
+    // this cycle (wake 09-07 00:20Z) while the newest drained receipt is frozen
+    // ~68 h back (09-04, R10 in pure-HR fallback). It must be neither carried
+    // (mainSleep boundary already forbids that) NOR disclosed as an abutting
+    // "prior cycle" — the hero is "--" and there is no dateless "Prior cycle:
+    // 135" line to misread as recent.
+    func testStaleReceiptUnderConfirmedSleepBoundaryIsNotDisclosed() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let staleEndedAt = cycleStart.addingTimeInterval(-68 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 135, endedAt: staleEndedAt),
+            boundaryIsUnconfirmedFallback: false, // .mainSleep boundary
+            calendar: utcCalendar
+        )
+        XCTAssertNil(value.count)
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+        XCTAssertNil(value.priorCycleReceipt)
+        XCTAssertEqual(value.unavailabilityReason, .noCurrentCycleReceipt)
+    }
+
     // Once this freshly-rolled cycle drains its own small early slice, the shown
     // number must not REGRESS below what the same active period already counted.
     // The carried prior receipt is a non-regressing floor (max, never a sum).
@@ -938,6 +1538,40 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
               knownCoverageSeconds: covered,
               missingCoverageSeconds: missing)
     }
+
+    func testInCycleCaptureClockStampsNowWhenBLEClockIsPriorCycle() {
+        let cycleStart = day.addingTimeInterval(8 * 3_600)
+        let now = cycleStart.addingTimeInterval(3_600)
+        let prior = cycleStart.addingTimeInterval(-10 * 3_600)
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: prior,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 2_379
+            ),
+            now
+        )
+        let inCycle = now.addingTimeInterval(-2)
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: inCycle,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 100
+            ),
+            inCycle
+        )
+        XCTAssertEqual(
+            AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: prior,
+                cycleStart: cycleStart,
+                now: now,
+                presentedCount: 0
+            ),
+            prior
+        )
+    }
 }
 
 final class AtriaStrapMotionAvailabilityTests: XCTestCase {
@@ -1015,5 +1649,43 @@ final class AtriaStrapMotionAvailabilityTests: XCTestCase {
     func testRelaunchWithoutFreshMotionFailsClosed() {
         XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
             input(owner: .legacy, state: .none)), .unknown)
+    }
+
+    func testHeldDayStrainSurvivesReconnectZeroOnTheSameCycle() throws {
+        let suiteName = "AtriaHeldDayStrainFloor.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let cycleStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let expires = cycleStart.addingTimeInterval(86_400)
+        let now = cycleStart.addingTimeInterval(12 * 3_600)
+        AtriaHeldDayStrainFloor.persist(
+            value: 0.7,
+            cycleStart: cycleStart,
+            cycleExpiresAt: expires,
+            detail: "Current cycle",
+            now: now,
+            defaults: defaults
+        )
+        AtriaHeldDayStrainFloor.persist(
+            value: 0,
+            cycleStart: cycleStart,
+            cycleExpiresAt: expires,
+            detail: "learning",
+            now: now.addingTimeInterval(60),
+            defaults: defaults
+        )
+        let held = try XCTUnwrap(AtriaHeldDayStrainFloor.load(
+            cycleStart: cycleStart,
+            now: now.addingTimeInterval(8 * 3_600),
+            defaults: defaults
+        ))
+        XCTAssertEqual(held.value, 0.7, accuracy: 0.000_000_001)
+        XCTAssertEqual(held.detail, "Current cycle")
+        XCTAssertNil(AtriaHeldDayStrainFloor.load(
+            cycleStart: cycleStart.addingTimeInterval(86_400),
+            now: now,
+            defaults: defaults
+        ))
+        defaults.removePersistentDomain(forName: suiteName)
     }
 }

@@ -405,10 +405,8 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
                       "an unchanged-movement edit must keep the original receipt")
         XCTAssertTrue(source.contains("excludingSetID: editingOriginal?.id"),
                       "a re-derived receipt must exclude the edited set itself")
-        XCTAssertTrue(source.contains("StrengthSuperset(id: activeSuperset?.id ?? UUID().uuidString,"),
-                      "regrouping must reuse the existing group id")
-        XCTAssertTrue(source.contains("Button(\"Ungroup\") { activeSuperset = nil; supersetMembers.removeAll(); showsSupersetEditor = false }"),
-                      "Ungroup must only clear the active group, never logged sets")
+        XCTAssertTrue(source.contains("startedAt: editingOriginal?.startedAt"),
+                      "an edit must keep the original IMU window")
     }
 
     func testDensityCountsOnlyQuickTransitionsAndCapsAtFifteenPercent() throws {

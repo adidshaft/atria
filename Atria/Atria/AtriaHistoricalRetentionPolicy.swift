@@ -6,13 +6,13 @@ import Foundation
 /// first pass `AtriaHistoricalRetentionTransaction`; its committed manifest is
 /// the only proof that the raw file may be retired.
 struct AtriaHistoricalRetentionPolicy: Equatable, Sendable {
-    /// 30 days of raw, chosen by the user on 2026-08-19 ("raw data maintained
-    /// only up to a week or month, but insights are persisted all the time").
-    /// Insights are unaffected: `aggregates-v2` and the rollups are what every
-    /// history surface reads, and on the field device they were only ~93 MB
-    /// against 2.99 GB of raw.
+    /// 7 days of high-rate raw. Field device 2026-08-19: ~2.99 GB of raw vs
+    /// ~93 MB of aggregates/rollups. A week of IMU-rate frames stays under the
+    /// 512 MB safety cap on typical wear; 30 days of raw does not. Insights
+    /// never ride this horizon: `aggregates-v2`, daily rollups, and the durable
+    /// learned-insight ledger persist independently.
     static let production = AtriaHistoricalRetentionPolicy(
-        rawHorizon: 30 * 24 * 60 * 60,
+        rawHorizon: 7 * 24 * 60 * 60,
         maximumRawBytes: 512 * 1024 * 1024
     )
 
@@ -24,6 +24,46 @@ struct AtriaHistoricalRetentionPolicy: Equatable, Sendable {
         precondition(maximumRawBytes > 0)
         self.rawHorizon = rawHorizon
         self.maximumRawBytes = maximumRawBytes
+    }
+
+    /// Longest feasible raw window among 90 / 30 / 7 days. IMU-rate archives
+    /// that would overflow the 512 MB cap at 30 or 90 days keep 7 days; a
+    /// small archive can keep a month or a quarter. Insights never use this.
+    static let candidateHorizonDays = [90, 30, 7]
+
+    static func coverageDays(from earliest: Date?, to latest: Date?, now: Date) -> Double {
+        guard let earliest else { return 1 }
+        let end = max(earliest, latest ?? now)
+        return max(1, end.timeIntervalSince(earliest) / 86_400)
+    }
+
+    static func resolvedHorizonDays(
+        storedRawBytes: UInt64,
+        coverageDays: Double,
+        maximumRawBytes: UInt64 = production.maximumRawBytes
+    ) -> Int {
+        let observedDays = max(coverageDays, 1)
+        let bytesPerDay = Double(storedRawBytes) / observedDays
+        for days in candidateHorizonDays {
+            if bytesPerDay * Double(days) <= Double(maximumRawBytes) {
+                return days
+            }
+        }
+        return 7
+    }
+
+    static func policy(
+        storedRawBytes: UInt64,
+        coverageDays: Double
+    ) -> AtriaHistoricalRetentionPolicy {
+        let days = resolvedHorizonDays(
+            storedRawBytes: storedRawBytes,
+            coverageDays: coverageDays
+        )
+        return AtriaHistoricalRetentionPolicy(
+            rawHorizon: TimeInterval(days) * 24 * 60 * 60,
+            maximumRawBytes: production.maximumRawBytes
+        )
     }
 
     struct Chunk: Equatable, Sendable {

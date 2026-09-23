@@ -105,17 +105,10 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
             "sleep?.durationHours / max(sleepGoalHours"
         ))
 
-        let planStart = try XCTUnwrap(overview.range(
-            of: "private var sleepPlanTargetHours"
-        ))
-        let planEnd = try XCTUnwrap(overview.range(
-            of: "private var sleepPlanTargetText",
-            range: planStart.upperBound..<overview.endIndex
-        ))
-        XCTAssertTrue(
-            overview[planStart.lowerBound..<planEnd.lowerBound]
-                .contains("yesterdayStrain: yesterdayStrainForLatestSleep")
-        )
+        // 2026-08-28: the sleep-plan strip this block scanned lived in the
+        // unreachable Overview tree deleted that day. The same rule — a sleep
+        // surface reads YESTERDAY's strain, never today's partial number — is
+        // still pinned on the live hero state immediately below.
 
         let heroStart = try XCTUnwrap(overview.range(
             of: "private var sleepHeroState"
@@ -138,5 +131,23 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
         XCTAssertFalse(today.contains(
             "let current = latestRollup?.sleepPerformance"
         ))
+    }
+
+    /// 2026-09-02: the shared authority must withhold strain exactly when the
+    /// Today tile does — while the hero's confidence says the value is not
+    /// computable — instead of passing a raw 0.0 to the detail hero.
+    func testCurrentCycleStrainIsWithheldWhileNotComputable() {
+        let learning = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: nil, recoveryDetail: "", restingHeartRateText: "--",
+            hrvValue: "--", hrvDetail: "", strain: 0, strainDetail: "Learning · no strap HR yet")))
+        XCTAssertNil(learning.strain, "no usable heart rate → no strain, not 0.0")
+        XCTAssertNil(AtriaHealthMetricAuthority.strainTrendTruth(learning).heroLowerBound)
+
+        let partial = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: nil, recoveryDetail: "", restingHeartRateText: "--",
+            hrvValue: "--", hrvDetail: "", strain: 4.2, strainDetail: "Partial · 40% tracked",
+            strainIsPartial: true)))
+        XCTAssertEqual(partial.strain, 4.2, "a partial floor is a real measurement and stays")
+        XCTAssertTrue(AtriaHealthMetricAuthority.strainTrendTruth(partial).isPartial)
     }
 }

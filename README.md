@@ -67,18 +67,61 @@ This project is independent and unaffiliated with WHOOP. It does not bypass paid
 
 ## Current Status
 
+**Status reviewed 23 September 2026.** The public default branch, published
+`dev`, and latest local research are at different checkpoints. See
+[Current product status](docs/CURRENT_STATUS.md) for the branch boundaries,
+active issues, and acceptance gates. The new Mac R10/R11 findings are not yet
+an enabled iPhone feature or a released build.
+
 Atria is usable for local backup and honest diagnostics on a physical iPhone. For the current single-strap build, personal baseline is the end-user ready HRV/recovery state; external-reference validation remains an optional/internal gate for HealthKit HRV and research claims, not a required user task.
 
-| Gate | Area | Status | What works | What remains |
-|---|---|---:|---|---|
-| A | BLE connection and live collection | Partial | Fresh scan/connect, standard `2A37` HR, battery, long-wear logging, reconnect watchdogs | Proprietary realtime stream remains diagnostic; custom RR stream is not reliable enough to be primary |
-| B | HRV | Personal baseline | Clean saved 5-minute RR window exists; RMSSD is shown with an honest personal-baseline/unverified badge; RR correction/confidence enforced | Real-device single-strap self-consistency and coverage evidence |
-| C | Recovery | Personal baseline | Recovery appears once local HRV and resting baselines are mature, with a personal-baseline/unverified confidence state | More real-device baseline maturity and long-wear coverage proof |
-| D | Strain and onboarding | Partial | HR-reserve TRIMP, learned resting HR, HRmax/profile controls, explainable strain | Workout-intensity calibration from real sustained captures |
-| E | Sleep and workout detection | User-confirmed evidence | Sleep/workout candidates, user-confirmed examples, daily rollups, honest blockers | Fully automatic workout detection from cleaner sustained coverage |
-| F | Trends and insights | Local progress | 7/30/90-day trend surfaces and anomaly routing from saved rollups | More real saved history and baseline-backed trend confidence |
-| G | Platform polish | Metric-gated | HealthKit HR/workout/sleep export, backups, notifications, widget/complication plumbing | HealthKit HRV write waits for validated HRV |
-| H | Protocol expansion | Research-ready | Historical/archive decoder evidence and protocol diagnostics | Additional sensor validation and broader strap-history decoding |
+### At a glance
+
+**✅ Implemented** · **🟡 Limited confidence** · **🔬 Research only** · **⏳ Pending** · **⛔ Blocked**
+
+“Implemented” describes working functionality, not independently validated health
+accuracy. Status includes development work; the branch boundaries above still
+apply. Confidence labels are evidence categories, not completion percentages.
+
+| Capability | Achieved | Confidence / availability | Next milestone |
+|---|---|---|---|
+| **Live HR, battery & local data** | iPhone collection, persistence and reconnect handling | ✅ Implemented; background acceptance remains | [Fresh onboarding](https://github.com/adidshaft/atria/issues/23) · [lease expiration](https://github.com/adidshaft/atria/issues/22) |
+| **HRV & recovery** | RR filtering, RMSSD and personal baselines | 🟡 Personal baseline; reference-unverified | [Resolve RR scaling](https://github.com/adidshaft/atria/issues/47) · [qualify recovery](https://github.com/adidshaft/atria/issues/2) |
+| **Strain** | Personalized HR-reserve TRIMP | 🟡 Local estimate; calibration pending | [Rest/high-effort reference comparison](https://github.com/adidshaft/atria/issues/3) |
+| **Sleep & workouts** | Candidates, saved sessions and daily summaries | 🟡 Coverage-dependent; review flow needs proof | [Physical sleep review](https://github.com/adidshaft/atria/issues/25) · [workout surfaces](https://github.com/adidshaft/atria/issues/45) |
+| **Trends, widgets & insights** | Local history views and shared display data | 🟡 Cross-surface consistency still under review | [Trend confidence](https://github.com/adidshaft/atria/issues/5) · [concise UI](https://github.com/adidshaft/atria/issues/48) |
+| **All-day steps** | Mac fused estimator; development-build count display | 🔬 All-day accuracy unproven | [Held-out walks, controls and gap coverage](https://github.com/adidshaft/atria/issues/21) |
+| **R10/R11 motion & optical streams** | Mac decoding and offline Swift port | 🔬 Local research; production iPhone path disabled | [Sustained iPhone integration](https://github.com/adidshaft/atria/issues/46) |
+| **Disconnect recovery** | Short Mac test recovered contiguous 1 Hz history | 🔬 Long-gap/iPhone proof pending; raw high-rate gaps remain lost | [Overnight analysis and lifecycle checks](https://github.com/adidshaft/atria/issues/46) |
+| **Skin temperature** | Thermal candidates; one R10 reference point | 🟡 Preliminary; absolute calibration unproven | [Repeated references and baseline stability](https://github.com/adidshaft/atria/issues/31) |
+| **SpO₂** | Pulsatile R11 optical data decoded on Mac | ⏳ No defensible percentage yet | [Channel/gain interpretation and reference validation](https://github.com/adidshaft/atria/issues/31) |
+| **HealthKit** | Supported HR/workout/sleep export plumbing | ✅ Implemented for supported data; HRV export gated | [Qualified HRV and device readback](https://github.com/adidshaft/atria/issues/6) |
+| **Integration & release** | Draft integration PR and local device builds | ⛔ Verification and distribution gates open | [Repair checks](https://github.com/adidshaft/atria/issues/44) · [TestFlight receipt](https://github.com/adidshaft/atria/issues/42) |
+
+### From working data to trusted features
+
+```mermaid
+flowchart TD
+    A["IMPLEMENTED · iPhone HR + local storage"] --> B["LIMITED CONFIDENCE · Personal HRV / recovery"]
+    B --> C["PENDING · RR scale + reference qualification"]
+    D["RESEARCH · Mac R10/R11 decoding"] --> E["RESEARCH · Offline Swift port"]
+    E --> F["PENDING · Sustained iPhone transport"]
+    G["RESEARCH · Short-gap 1 Hz recovery"] --> H["PENDING · Long-gap + overnight proof"]
+    F --> I["PENDING · All-day steps + sensor validation"]
+    H --> I
+    classDef implemented fill:#dcfce7,stroke:#166534,color:#14532d
+    classDef limited fill:#fef3c7,stroke:#92400e,color:#78350f
+    classDef research fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+    classDef pending fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-dasharray:5 5
+    class A implemented
+    class B limited
+    class D,E,G research
+    class C,F,H,I pending
+```
+
+Solid boxes describe existing functionality or research results; dashed boxes
+are unfinished milestones. The paths show dependencies, not a release timeline.
+See the [full status and issue index](docs/CURRENT_STATUS.md) for acceptance criteria.
 
 ## Principles
 
@@ -109,19 +152,26 @@ Atria is usable for local backup and honest diagnostics on a physical iPhone. Fo
 - Clinically validated HRV. Atria can show local RMSSD as a personal baseline; independent RR/IBI validation is not part of the single-strap user path.
 - Fully validated recovery. Recovery can display as a personal baseline; the validated tier stays gated for export/research uses.
 - Fully automatic workout detection in all gym conditions. Current logic is honest about stream coverage and HR-intensity blockers.
-- **Whole-day step totals.** The strap holds the motion, but the historical drain
-  cannot yet finish against a live HR connection, so Atria withholds the daily
-  number rather than publishing a false lower bound. Counted-walk accuracy is
-  proven (110 truth → 112 strap steps, 1.82% error); autonomous all-day quantity
-  is not. Strap-only by design — no phone pedometer fallback.
-  ([#21](https://github.com/adidshaft/atria/issues/21))
-- **SpO₂.** The WHOOP 4 candidate fields are 1 Hz DC levels with no pulsatile
-  component; a ratio-of-ratios over them collapses to a constant ~80% artifact.
-  No defensible value can be derived from them, so the card stays blank with a
-  named reason. ([#31](https://github.com/adidshaft/atria/issues/31))
-- **Absolute skin temperature.** The thermal field is real and validated, but its
-  absolute scale reads several degrees hot with unknown per-device calibration.
-  Only relative deviation is usable.
+- **Validated whole-day steps.** Development builds have displayed step totals,
+  but display agreement does not establish all-day accuracy. September 23 Mac
+  experiments recovered 1 Hz history across a short disconnect and exercised a
+  fused step estimator. Fresh held-out walks, long gaps, and physical iPhone
+  integration remain open. Raw high-rate IMU is not stored during disconnects.
+  ([#21](https://github.com/adidshaft/atria/issues/21),
+  [#46](https://github.com/adidshaft/atria/issues/46))
+- **SpO₂.** Historical V24 DC candidate fields did not support a defensible
+  percentage. Newly decoded Mac R11 pulsatile optical data is a separate
+  research source, not a validated SpO₂ value.
+  ([#31](https://github.com/adidshaft/atria/issues/31))
+- **Calibrated absolute skin temperature.** The older V24 thermal signal and
+  the new R10 candidate have different evidence. R10 has one contact-thermometer
+  comparison; repeatability, slope and per-device calibration are unproven.
+  The product target remains deviation from a personal baseline.
+- **Confirmed WHOOP-specific RR scaling.** Mac source comparisons found a
+  discrepancy with the app's standard Heart Rate Service conversion. A
+  source-specific investigation is pending; independent HRV and HealthKit
+  validation gates remain unchanged.
+  ([#47](https://github.com/adidshaft/atria/issues/47))
 - Any claim that requires WHOOP cloud data. This project intentionally stays local.
 
 ## Quick Start
@@ -129,7 +179,7 @@ Atria is usable for local backup and honest diagnostics on a physical iPhone. Fo
 Requirements:
 
 - macOS with Xcode.
-- A physical iPhone. BLE collection cannot be validated in the Simulator.
+- A physical iPhone running iOS 26.1 or later. BLE collection cannot be validated in the Simulator.
 - A compatible strap that is free to advertise over BLE.
 - Apple Developer signing configured for the iOS app target.
 
@@ -148,10 +198,11 @@ Select the Atria app target, choose your physical iPhone, set signing if needed,
 For command-line physical-device verification:
 
 ```sh
-./live_device_debug.sh --seconds 45 --log logs/live-device/run.log --log-gate-status --standard-hr-only --long-wear-mode --leave-running
+ATRIA_DEVICE_ID="YOUR-PHYSICAL-DEVICE-ID" ./live_device_debug.sh --seconds 45 --log logs/live-device/run.log --log-gate-status --standard-hr-only --long-wear-mode --leave-running
 ```
 
-Fast local tooling checks:
+Local tooling checks (offline; the current development static gate has known
+failures tracked in [#44](https://github.com/adidshaft/atria/issues/44)):
 
 ```sh
 ./test_handoff_local.sh
@@ -160,7 +211,7 @@ Fast local tooling checks:
 Long-wear acceptance, when extended physical-device checks are allowed:
 
 ```sh
-ATRIA_DEVICE_ID=<physical-device-id> \
+ATRIA_DEVICE_ID="YOUR-PHYSICAL-DEVICE-ID" \
   python3 tools/monitor_long_wear.py \
   --preset overnight \
   --label overnight-$(date -u +%Y%m%dT%H%M%SZ)
@@ -201,12 +252,21 @@ python3 tools/audit_handoff_status.py \
 | `docs/` | Technical notes, validation plans, and protocol research — start at [`docs/README.md`](docs/README.md). |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
+| `test_*.py`, `test_*.sh` | Offline regression checks and evidence harnesses; physical capture scripts require a device. |
+| `gate_*.sh`, `reference_*.sh` | Capture and reference-comparison runs for sensor validation. |
 | `assets/` | Logo and README screenshots. |
 | `evidence/` | Physical-device evidence trees. Gitignored — may contain personal health data. |
+
+No WHOOP credentials are required. Physical-device builds use your own Apple
+signing configuration. Review staged changes for private data before publication;
+ignore rules cover known signing material, evidence and logs.
 
 - [Research validation corpus](docs/research-validation-corpus.md) — the rules and fixtures used for reproducible sensor validation.
 
 ## Contributing
+
+All development, issue fixes and documentation updates land on **`dev`**.
+Reviewed changes reach **`main`** through the dev → main integration PR.
 
 The fastest useful contributions are:
 

@@ -64,6 +64,9 @@ struct AtriaLiveActivityAttributes: ActivityAttributes {
         var isEnding: Bool? = nil
         var timerAnchor: Date? = nil
         var elapsedDuration: TimeInterval? = nil
+        /// Optional so activities started before all-day Live still decode.
+        /// Nil means workout controls (Pause/End). False hides them.
+        var showsWorkoutControls: Bool? = nil
     }
 
     var startedAt: Date

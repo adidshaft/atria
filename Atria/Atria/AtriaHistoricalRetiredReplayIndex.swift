@@ -131,7 +131,10 @@ final class AtriaHistoricalRetiredReplayIndex: @unchecked Sendable {
         guard shard.source.chunkID == source.chunkID,
               shard.source.rawSHA256 == source.rawSHA256,
               shard.source.rawRowCount == source.rawRowCount,
-              shard.entries.count == source.rawRowCount,
+              shard.entries.count <= source.rawRowCount,
+              (source.rawRowCount == 0 && shard.entries.isEmpty)
+                || (source.rawRowCount > 0 && !shard.entries.isEmpty),
+              Set(shard.entries.map(\.stableKey)).count == shard.entries.count,
               shard.entries.allSatisfy({ $0.observedAtUnix.isFinite }),
               importedAt.timeIntervalSince1970.isFinite else {
             throw IndexError.invalidIdentity

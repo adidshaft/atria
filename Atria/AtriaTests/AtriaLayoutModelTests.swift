@@ -40,7 +40,17 @@ final class AtriaLayoutModelTests: XCTestCase {
 
     func testTodaySectionOrderRepairsMalformedAndDuplicateCSV() {
         XCTAssertEqual(AtriaTodayScreen.orderedTodaySections(from: "coach,unknown,plan,coach"),
-                       [.coach, .plan, .shortcuts, .weeklyPlan, .glance])
+                       [.coach, .plan, .learnedRead, .shortcuts, .weeklyPlan, .glance])
+    }
+
+    func testTodaySectionOrderInsertsNewSectionsAtDefaultRelativeSlot() {
+        XCTAssertEqual(
+            AtriaTodayScreen.orderedTodaySections(
+                from: "plan,shortcuts,weeklyPlan,glance,coach"
+            ),
+            [.plan, .learnedRead, .shortcuts, .weeklyPlan, .glance, .coach],
+            "learnedRead must sit under the plan cluster, not after coach"
+        )
     }
 
     func testTodayScreenGlanceMetricsUsesValidatedLayoutConfig() {

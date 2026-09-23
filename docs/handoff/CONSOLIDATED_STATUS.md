@@ -1,4 +1,4 @@
-# Consolidated status — codex/whoop-remaining-product-gaps
+# Consolidated status — dev
 
 > **Superseded for current Git/install work (Aug 10):** the authoritative
 > branch tip is now `f68c14c9352e40972d38f420279144cba761b467`, pushed with
@@ -53,7 +53,7 @@ Codex's report listed CP6 as NOT EXERCISED and CP7 as pending a strap mode chang
 
 The remote tip `8ad99939` wrongly bundled the user's Vitals WIP (my `git commit --only` committed working-tree content). Corrected locally to `18181f46`. See `docs/handoff/CODEX_NEW3_GIT_HANDOFF.md` + patches (`new3-correct-commit.patch`, `user-vitals-wip.patch`). Recommended fix (Recipe A, on this working copy):
 ```
-git push --force-with-lease=codex/whoop-remaining-product-gaps:8ad99939 origin codex/whoop-remaining-product-gaps
+git push --force-with-lease=dev:8ad99939 origin dev
 ```
 Do NOT `git pull` (local/remote diverged by design). All 14 user dirty chart files remain uncommitted/preserved.
 

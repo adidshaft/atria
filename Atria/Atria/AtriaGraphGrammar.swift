@@ -59,6 +59,162 @@ enum AtriaChartVisualGrammar {
             .compactMap { calendar.date(byAdding: .hour, value: 12, to: $0.element) }
     }
 
+    /// Sparse overnight bars must be labeled on the nights that actually have
+    /// a value. Domain-wide `dayCentreMarks` on Recovery Week (device
+    /// 2026-09-18) printed Sep 12, 14, 16, 18 under bars that were Sep 13,
+    /// 15, 16, 18 — diagnosis week-last matched the hero, the x-axis did not.
+    static func nightBarAxisMarks(
+        days: [Date],
+        targetCount: Int,
+        calendar: Calendar = .current,
+        domain: ClosedRange<Date>? = nil
+    ) -> [Date] {
+        guard targetCount > 0 else { return [] }
+        let unique = Array(Set(days.map { calendar.startOfDay(for: $0) })).sorted()
+        guard !unique.isEmpty else { return [] }
+        let pickedDays: [Date]
+        if let domain, domain.upperBound > domain.lowerBound {
+            // Thin against the plotted window, not the night count. HRV Month
+            // 153 labeled Sep 15/16/18 on Aug 20–Sep 18 and Charts stacked
+            // them into "S S…" (device 2026-09-18 16:40). Week (7d/4) still
+            // keeps a one-day gap so adjacent Recovery bars stay named.
+            let start = calendar.startOfDay(for: domain.lowerBound)
+            let end = calendar.startOfDay(for: domain.upperBound)
+            let spanDays = max(
+                1,
+                calendar.dateComponents([.day], from: start, to: end).day ?? 1
+            )
+            pickedDays = thinnedRecordedNights(
+                unique,
+                minGapDays: max(1, spanDays / targetCount),
+                calendar: calendar
+            )
+        } else {
+            let stride = max(1, Int(ceil(Double(unique.count) / Double(targetCount))))
+            var picked: [Date] = unique.enumerated().compactMap { offset, day in
+                offset % stride == 0 ? day : nil
+            }
+            if let last = unique.last, picked.last != last {
+                picked.append(last)
+            }
+            pickedDays = picked
+        }
+        return pickedDays.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) }
+    }
+
+    /// Always keeps the first and last recorded night so week-last can match
+    /// the hero. Interior nights closer than `minGapDays` are dropped.
+    private static func thinnedRecordedNights(
+        _ unique: [Date],
+        minGapDays: Int,
+        calendar: Calendar
+    ) -> [Date] {
+        guard let first = unique.first, let last = unique.last else { return [] }
+        if unique.count == 1 { return unique }
+        var picked = [first]
+        for day in unique.dropFirst().dropLast() {
+            let gap = calendar.dateComponents([.day], from: picked.last!, to: day).day ?? 0
+            if gap >= minGapDays {
+                picked.append(day)
+            }
+        }
+        if picked.last != last {
+            let gap = calendar.dateComponents([.day], from: picked.last!, to: last).day ?? 0
+            if gap < minGapDays, picked.count > 1 {
+                picked.removeLast()
+            }
+            if picked.last != last {
+                picked.append(last)
+            }
+        }
+        // A cluster narrower than the gap (HRV Month 15/16/18 on a 30-day
+        // axis) still collides if first and last both stay. Keep week-last.
+        if picked.count >= 2,
+           let span = calendar.dateComponents([.day], from: picked.first!, to: last).day,
+           span < minGapDays {
+            picked = [last]
+        }
+        return picked
+    }
+
+    /// Sit an overnight date label fully inside the plot when its tick is
+    /// against an edge. Month 154 kept "Sep 18" at noon of the last day of
+    /// a 30-day window — twelve hours of axis, "Se…" on device.
+    static func nightAxisLabelAnchor(
+        for mark: Date,
+        domain: ClosedRange<Date>,
+        calendar: Calendar = .current
+    ) -> UnitPoint {
+        let start = calendar.startOfDay(for: domain.lowerBound)
+        let end = calendar.startOfDay(for: domain.upperBound)
+        let spanDays = max(
+            1,
+            calendar.dateComponents([.day], from: start, to: end).day ?? 1
+        )
+        let markDay = calendar.startOfDay(for: mark)
+        let fromStart = calendar.dateComponents([.day], from: start, to: markDay).day ?? 0
+        let fromEnd = calendar.dateComponents([.day], from: markDay, to: end).day ?? 0
+        let edgeDays = max(2, spanDays / 8)
+        if fromEnd <= edgeDays { return .topTrailing }
+        if fromStart <= edgeDays { return .topLeading }
+        return .top
+    }
+
+    /// Compact week tick (`F 18`) so a 7-day window never stacks `S S` or
+    /// clips `Sep 18` on a narrow phone. Month windows keep month+day.
+    static func nightAxisLabelText(
+        for mark: Date,
+        domain: ClosedRange<Date>,
+        calendar: Calendar = .current
+    ) -> String {
+        let start = calendar.startOfDay(for: domain.lowerBound)
+        let end = calendar.startOfDay(for: domain.upperBound)
+        let spanDays = max(
+            1,
+            calendar.dateComponents([.day], from: start, to: end).day ?? 1
+        )
+        if spanDays <= 8 {
+            return compactWeekdayDayLabel(for: mark, calendar: calendar)
+        }
+        return mark.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    /// Weekday initial plus day-of-month (`M 10`, `T 11`). Shared by the
+    /// overnight week axis and the strain/recovery combo so those two
+    /// 7-day surfaces do not invent different tick copy.
+    static func compactWeekdayDayLabel(
+        for day: Date,
+        calendar: Calendar = .current
+    ) -> String {
+        let weekday = day.formatted(.dateTime.weekday(.narrow))
+        let dayOfMonth = calendar.component(.day, from: day)
+        return "\(weekday) \(dayOfMonth)"
+    }
+
+    /// Rounded daily columns. One radius and one relative width so Recovery,
+    /// HRV, Strain, Steps and the combo do not each pick a different bar.
+    static let dailyBarCornerRadius: CGFloat = 4
+    static let dailyBarWidthRatio: CGFloat = 0.58
+    static let inlinePlotHeight: CGFloat = 196
+    /// Shared plot well. Overnight bars, Vitals HR, and Stress used to pick
+    /// 7 / 10 / 12 pt corners and primary vs secondary fills, so the same
+    /// data looked like three products.
+    static let plotCornerRadius: CGFloat = 7
+    static let plotFillOpacity: Double = 0.035
+
+    /// Magnitude bars (recovery %, sleep hours, strain) grow from zero so
+    /// height is the value. Level bars (HRV, RHR, respiration) keep the
+    /// padded min…max domain — the same shape, with the few-unit move still
+    /// readable instead of crushed into the top sliver of a 0-based column.
+    static func plottedYDomain(
+        values: ClosedRange<Double>,
+        drawsBars: Bool,
+        anchorsAtZero: Bool
+    ) -> ClosedRange<Double> {
+        guard drawsBars, anchorsAtZero else { return values }
+        return 0...max(values.upperBound, 1)
+    }
+
     /// Mark density for a SCROLLABLE day-bar chart.
     ///
     /// `.automatic(desiredCount:)` recomputes against whatever is on screen, so
@@ -95,16 +251,208 @@ enum AtriaChartVisualGrammar {
     )
 }
 
+// MARK: - Drag-to-inspect scrub (shared interaction grammar, 2026-08-29)
+
+/// Pure selection rule behind the shared scrub: the nearest REAL sample by
+/// absolute time distance. A drag over a gap snaps to the closest recorded
+/// observation — nothing between samples is ever selectable, so the card can
+/// never display an interpolated value.
+enum AtriaChartScrubSelection {
+    static func nearest<Point>(to target: Date,
+                               points: [Point],
+                               date: (Point) -> Date) -> Point? {
+        points.min {
+            abs(date($0).timeIntervalSince(target))
+                < abs(date($1).timeIntervalSince(target))
+        }
+    }
+}
+
+/// One drag-to-inspect interaction for every inline time-series trace: the
+/// Vitals Live-monitor stress chart, Activity's day HR/Stress charts, and the
+/// stress-detail measured-HR chart. Drag (or touch) across the plot to select
+/// the nearest real sample; a vertical rule, a dot on the sample, and a
+/// compact clamped card (via `AtriaChartPointerPlacement`) render inside the
+/// plot. Selection only ever lands on a recorded point — a drag over a gap
+/// snaps to the nearest real observation, never to an interpolated value.
+///
+/// The gesture lives only on the plot overlay, so an enclosing
+/// `.atriaInspectableGraph` card tap stays reachable everywhere outside the
+/// plot (the shipped stress-detail timeline established this coexistence).
+/// Rendered as the content of `chartOverlay`; generic over the chart's own
+/// point type so no call site converts its series.
+struct AtriaChartScrubOverlay<Point, Card: View>: View {
+    let proxy: ChartProxy
+    let geometry: GeometryProxy
+    let points: [Point]
+    let date: (Point) -> Date
+    let value: (Point) -> Double
+    @Binding var selectedDate: Date?
+    @ViewBuilder let card: (Point) -> Card
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .fill(.clear)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { dragValue in
+                            guard let plotFrame = proxy.plotFrame else { return }
+                            let frame = geometry[plotFrame]
+                            let x = dragValue.location.x - frame.origin.x
+                            guard x >= 0, x <= frame.width,
+                                  let target: Date = proxy.value(atX: x) else { return }
+                            selectedDate = nearestPoint(to: target).map(date)
+                        }
+                )
+            if let selected = selectedPoint,
+               let plotFrame = proxy.plotFrame,
+               let xPosition = proxy.position(forX: date(selected)),
+               let yPosition = proxy.position(forY: value(selected)) {
+                let frame = geometry[plotFrame]
+                let anchor = CGPoint(x: frame.origin.x + xPosition,
+                                     y: frame.origin.y + yPosition)
+                selectionMarker(anchor: anchor, plot: frame)
+                let placement = AtriaChartPointerPlacement.place(anchor: anchor,
+                                                                 plot: frame)
+                card(selected)
+                    .frame(width: AtriaChartPointerPlacement.defaultCardSize.width,
+                           alignment: .leading)
+                    .offset(x: placement.origin.x, y: placement.origin.y)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var selectedPoint: Point? {
+        selectedDate.flatMap(nearestPoint(to:))
+    }
+
+    private func nearestPoint(to target: Date) -> Point? {
+        AtriaChartScrubSelection.nearest(to: target, points: points, date: date)
+    }
+
+    /// Drawn overlay-side (not as chart content) so function-built Chart
+    /// bodies share the exact grammar without threading selection state into
+    /// their mark builders. Same visual weight as the historical in-chart
+    /// RuleMark/PointMark: a 1 pt rule at 28 % primary spanning the plot, and
+    /// a 7 pt primary dot on the real sample.
+    @ViewBuilder
+    private func selectionMarker(anchor: CGPoint, plot: CGRect) -> some View {
+        Rectangle()
+            .fill(.primary.opacity(0.28))
+            .frame(width: 1, height: plot.height)
+            .offset(x: anchor.x - 0.5, y: plot.minY)
+            .allowsHitTesting(false)
+        Circle()
+            .fill(.primary)
+            .frame(width: 7, height: 7)
+            .offset(x: anchor.x - 3.5,
+                    y: min(max(anchor.y, plot.minY + 3.5), plot.maxY - 3.5) - 3.5)
+            .allowsHitTesting(false)
+    }
+}
+
+extension View {
+    /// The one visual chrome for a scrub inspection card: caption type, single
+    /// lines, compact padding on regular material. Content stays per-surface
+    /// (stress shows score · zone, HR shows bpm); the shell never varies.
+    func atriaChartScrubCardChrome() -> some View {
+        self
+            .font(.caption2)
+            .lineLimit(1)
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
 extension View {
     /// A quiet, plot-aligned surface gives axes and dense traces enough
     /// contrast without adding a competing card inside the existing card.
     func atriaGraphPlotSurface() -> some View {
         chartPlotStyle { plotArea in
             plotArea
-                .background(Color.primary.opacity(0.035))
+                .contentShape(Rectangle())
+                .background(Color.primary.opacity(AtriaChartVisualGrammar.plotFillOpacity))
                 .clipShape(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(
+                        cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+                        style: .continuous
+                    )
                 )
+        }
+    }
+
+    /// Shared quantity axis for every daily chart: leading, four ticks,
+    /// caption type, no tick marks. Intra-day traces that need custom
+    /// zone labels keep their own axis; everything else comes here.
+    func atriaDailyQuantityYAxis() -> some View {
+        chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel()
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Overnight Day/Week/Month x-axis: label recorded nights, sit edge
+    /// dates inside the plot, and use the same week (`F 18`) / month
+    /// (`Sep 18`) copy on every surface.
+    func atriaOvernightChartXAxis(
+        recordedDays: [Date],
+        domain: ClosedRange<Date>,
+        targetCount: Int = 4
+    ) -> some View {
+        chartXAxis {
+            AxisMarks(
+                preset: .aligned,
+                values: AtriaChartVisualGrammar.nightBarAxisMarks(
+                    days: recordedDays,
+                    targetCount: targetCount,
+                    domain: domain
+                )
+            ) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisTick().foregroundStyle(.clear)
+                if let date = value.as(Date.self) {
+                    AxisValueLabel(
+                        anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                            for: date,
+                            domain: domain
+                        )
+                    ) {
+                        Text(AtriaChartVisualGrammar.nightAxisLabelText(
+                            for: date,
+                            domain: domain
+                        ))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Plot surface plus top headroom in ONE `chartPlotStyle`. Chaining a
+    /// second `chartPlotStyle` replaces the first, which is why the quiet
+    /// fill used to vanish the moment a chart also asked for label room.
+    func atriaDailyChartPlotChrome() -> some View {
+        chartPlotStyle { plot in
+            plot
+                .background(Color.primary.opacity(AtriaChartVisualGrammar.plotFillOpacity))
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+                        style: .continuous
+                    )
+                )
+                .padding(.top, 8)
         }
     }
 }

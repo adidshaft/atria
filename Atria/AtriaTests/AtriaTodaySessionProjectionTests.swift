@@ -145,8 +145,20 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertTrue(screenSource.contains("let heroStore: AtriaHomeModel.HeroStore"))
         XCTAssertFalse(screenSource.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"))
         XCTAssertTrue(source.contains("private struct AtriaTodayHeroProjectionHost<Content: View>: View, Equatable"))
+        XCTAssertTrue(source.contains("private struct AtriaTodayMetricDetailSheetHost<Content: View>: View, Equatable"))
         XCTAssertTrue(source.contains("@ObservedObject var heroStore: AtriaHomeModel.HeroStore"),
                       "Only the narrow hero leaf should own live HeroStore observation")
+
+        let sheetStart = try XCTUnwrap(source.range(of: ".sheet(item: $metricSheet)"))
+        let sheetEnd = try XCTUnwrap(source.range(of: ".task(id: pendingMetricDeepLink)"))
+        let metricSheet = String(source[sheetStart.lowerBound..<sheetEnd.lowerBound])
+        XCTAssertTrue(metricSheet.contains("AtriaTodayMetricDetailSheetHost"))
+        XCTAssertFalse(
+            metricSheet.contains("AtriaTodayHeroProjectionHost("),
+            "Hero Equatable host froze Week HRV at the first rollup snapshot after remint"
+        )
+        XCTAssertTrue(metricSheet.contains("dailyRollupHistoryRevision"))
+        XCTAssertTrue(metricSheet.contains(".id(\"\\(route.id).r\\(sessionProjectionStore.state.dailyRollupHistoryRevision)\")"))
         XCTAssertTrue(source.contains("@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore"))
         XCTAssertTrue(source.contains("@ObservedObject var sessionProjectionStore: AtriaTodaySessionProjectionStore"))
         XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
@@ -172,13 +184,18 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         )
         let insightCase = String(source[insightCaseStart.lowerBound..<layoutSizeStart.lowerBound])
         XCTAssertTrue(insightCase.contains("sessionProjectionStore.state.behaviorInsights"))
-        XCTAssertTrue(insightCase.contains("value: \"\\(insights.count)\""))
+        XCTAssertTrue(insightCase.contains("sessionProjectionStore.state.learnedInsights"))
+        XCTAssertTrue(insightCase.contains("value: \"\\(learned.count + insights.count)\""))
         XCTAssertFalse(insightCase.contains("highlights.count"),
                        "The Insights tile must not count unrelated Today highlights")
 
         XCTAssertTrue(source.contains("showInsights = true"))
-        XCTAssertTrue(source.contains("AtriaInsightsCardHost(store: store)"),
-                      "Today should reuse the canonical ranked-insights card")
+        XCTAssertTrue(source.contains("AtriaLearnedInsightsSheet("),
+                      "Today should open the naked Insights sheet, not a nested card host")
+        XCTAssertTrue(source.contains("orderedTodaySections.filter { $0 != .learnedRead }"))
+        XCTAssertFalse(source.contains("style: .compactBar"),
+                       "Master rings already occupy Today; compact read must not clone them")
+        XCTAssertTrue(source.contains("AtriaLearnedInsights.insights(rollups: store.dailyRollupHistory"))
     }
 
     func testDayStrainIncompleteCacheReusesOnlyExactSourceWindow() {

@@ -398,14 +398,15 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutRouteMetricsHost: View"))
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutStrainGuidanceHost: View"))
-        // 2026-07-17: pin migrated 2 -> 3. The strap-motion transport status
-        // indicator ships as its own narrow leaf host (see the dated comment on
-        // AtriaLiveWorkoutMotionStatusHost), which is exactly the isolation this
-        // audit enforces — the root still never observes the store.
+        // Pin migrated 3 -> 5. Backdrop and the heart block are additional
+        // narrow leaves so strap HR/zone publications do not rebuild the
+        // workout root. The root still never observes the store.
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutMotionStatusHost: View"))
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutBackdrop: View"))
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutHeartBlock: View"))
         XCTAssertEqual(workout.components(separatedBy: "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore").count - 1,
-                       3,
-                       "Exactly the route HUD, stationary guidance, and motion status hosts should observe rapid metrics")
+                       5,
+                       "Exactly the backdrop, route HUD, heart block, stationary guidance, and motion status hosts should observe rapid metrics")
     }
 
     func testHealthMonitorLiveMetricsUseDeduplicatedLeafProjection() throws {
@@ -689,6 +690,8 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         )
         XCTAssertTrue(cadence.contains("ble.$sessionSampleCount"))
         XCTAssertTrue(cadence.contains("self?.publishCoreLive()"))
+        XCTAssertTrue(cadence.contains("self?.publishDiagnosisReport(reason: \"core_live\")"),
+                      "inactive CoreLive presentation must still refresh the pullable diagnosis file")
         XCTAssertFalse(mergedInputs.contains("ble.$historicalRecoveryPresentation"),
                        "history progress must not join unrelated BLE CoreLive churn")
         XCTAssertTrue(cadence.contains(
@@ -1212,6 +1215,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             workoutSteps: nil,
             workoutStepsAreEstimated: nil,
             workoutStepsCapturedAt: nil,
+            segments: nil,
             profile: profile,
             eventTimeZoneIdentifier: "UTC"
         )

@@ -764,12 +764,14 @@ extension AtriaBLEManager {
 
     /// Flag-gated stop-realtime history drain that may pause 2A37 only where
     /// there is no live HR to protect. Unflagged default builds never select a
-    /// window. A healthy attended (foreground) epoch is never selected unless
-    /// the strap itself is charging or off-wrist — those states have no live HR
-    /// to seize. Device soak 2026-08-23: production already sends 0x22 first and
-    /// still yields `stream5_rx=0` then `ble_disconnect` ~13s while 2A37 stays
-    /// subscribed, so this path pauses notify on the same connection instead of
-    /// `cancelPeripheralConnection`.
+    /// window. A healthy worn epoch is never selected unless the strap itself
+    /// is charging or off-wrist — those states have no live HR to seize — or
+    /// an explicit queued gym fill / consume-to-now asked for 0x22. Lock-screen
+    /// Live Activity and widgets are attended surfaces: backgrounding Home must
+    /// not empty them. Device soak 2026-08-23: production already sends 0x22
+    /// first and still yields `stream5_rx=0` then `ble_disconnect` ~13s while
+    /// 2A37 stays subscribed, so this path pauses notify on the same connection
+    /// instead of `cancelPeripheralConnection`.
     nonisolated static let idleWindowHistoryDrainEnableArgument =
         "--atria-idle-window-drain-enable"
 
@@ -793,13 +795,15 @@ extension AtriaBLEManager {
         explicitMotionOwnershipActive: Bool,
         thermalParked: Bool,
         consumeToNow: Bool = false,
-        lastPendingRecords: UInt32? = nil
+        lastPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
         let consumeLiveTail = shouldTreatConsumeLiveTailAsBacklog(
             consumeToNow: consumeToNow,
             lastPendingRecords: lastPendingRecords
         )
-        guard launchFlagEnabled, strapBacklogPending || consumeLiveTail else {
+        guard launchFlagEnabled,
+              strapBacklogPending || consumeLiveTail || queuedPullIntent else {
             return .none
         }
         guard !explicitMotionOwnershipActive, !thermalParked else { return .none }
@@ -809,19 +813,23 @@ extension AtriaBLEManager {
         if strapIsCharging { return .strapCharging }
         if strapOffWrist && !healthyLiveEpochActive { return .strapOffWrist }
         // Consented ACK-consume-to-now may re-pause 2A37 after the resume
-        // interval so later slices keep walking. Unconsented builds still
-        // never seize a healthy attended epoch.
-        if consumeToNow {
+        // interval so later slices keep walking. An explicit queued gym pull
+        // is the same class of intent: 0x22 never write-confirms while 2A37
+        // stays subscribed on a healthy Home epoch (2026-09-17 17:16Z).
+        if consumeToNow || queuedPullIntent {
             return healthyLiveEpochActive ? .appBackgroundIdle : .naturalGapPreHR
         }
-        // Build-5 contract: never cancel a healthy attended epoch.
-        if healthyLiveEpochActive && attendedForeground { return .none }
+        // Build-5 contract: never cancel a healthy worn epoch. Live Activity
+        // and widgets stay current only while 2A37 is subscribed, so locking
+        // the phone is not a drain window. Catch-up waits for charging,
+        // off-wrist, pre-HR reconnect, or an explicit queued gym fill.
+        _ = attendedForeground
+        _ = appBackgrounded
+        if healthyLiveEpochActive { return .none }
         // Pre-HR (didConnect, first-HR race, natural gap): no live pulse yet.
         // 2026-08-23 04:27 recapture never armed because didConnect health is
         // false but this predicate previously required a prior natural drop.
-        if !healthyLiveEpochActive { return .naturalGapPreHR }
-        if appBackgrounded { return .appBackgroundIdle }
-        return .none
+        return .naturalGapPreHR
     }
 
     /// Kill switch for the now-default idle-window drain. The enable
@@ -924,12 +932,17 @@ extension AtriaBLEManager {
         attendedForeground: Bool = false,
         consumeToNow: Bool = false,
         sliceStartPendingRecords: UInt32? = nil,
-        heartRatePauseElapsed: TimeInterval = 0
+        heartRatePauseElapsed: TimeInterval = 0,
+        queuedPullIntent: Bool = false
     ) -> Bool {
         guard idleWindowDrainOwnsLink, acknowledgedPages >= 1 else {
             return false
         }
-        if consumeToNow {
+        // Consented consume-to-now and an explicit queued gym pull both have
+        // to walk more than one ACK: Home-attended 124 slices finished after
+        // the first page, live write kept pace, and Strength 21:05–21:37 IST
+        // never left `no_rows` (pending ~14520 for minutes).
+        if consumeToNow || queuedPullIntent {
             if let pending = sliceStartPendingRecords,
                pending <= idleWindowConsumeLiveTailPendingLimit {
                 if acknowledgedPages >= max(Int(pending), 1) {
@@ -965,9 +978,12 @@ extension AtriaBLEManager {
         acknowledgedPages: Int = 0,
         consumeIngressInFlight: Bool = false,
         lastFrameAge: TimeInterval? = nil,
-        stream5Received: Int = 0
+        stream5Received: Int = 0,
+        queuedPullIntent: Bool = false
     ) -> Bool {
-        guard idleWindowDrainOwnsLink, consumeToNow, let pausedAt else {
+        guard idleWindowDrainOwnsLink,
+              consumeToNow || queuedPullIntent,
+              let pausedAt else {
             return false
         }
         if chargingOrOffWrist { return false }
@@ -987,16 +1003,29 @@ extension AtriaBLEManager {
     /// the handshake absolute budget. A same-launch restore that starts
     /// pre-HR before scene-active is not pickup — require the chunk to
     /// have begun unattended and already issued 0x22.
+    ///
+    /// Device 2026-09-18: leftover `pending=5` started while Recovery Week
+    /// was already foreground, so `drainBeganUnattended` stayed false and
+    /// 2A37 stayed paused. A dry leftover with no gym pull is not pickup.
     nonisolated static func shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
         idleWindowDrainOwnsLink: Bool,
         attendedForeground: Bool,
         drainBeganUnattended: Bool,
-        historyRangeRequested: Bool
+        historyRangeRequested: Bool,
+        leftoverPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false
     ) -> Bool {
-        idleWindowDrainOwnsLink
-            && attendedForeground
-            && drainBeganUnattended
-            && historyRangeRequested
+        guard idleWindowDrainOwnsLink,
+              attendedForeground,
+              historyRangeRequested else { return false }
+        if drainBeganUnattended { return true }
+        if queuedPullIntent { return false }
+        guard let pending = leftoverPendingRecords,
+              pending > 0,
+              pending <= idleWindowConsumeLiveTailPendingLimit else {
+            return false
+        }
+        return true
     }
 
     /// Charging / off-wrist bursts are thermal-bounded, not the 20s worn
@@ -1043,9 +1072,19 @@ extension AtriaBLEManager {
         minimumResumeInterval: TimeInterval = 20,
         consumeToNow: Bool = false,
         lastPendingRecords: UInt32? = nil,
-        chargingOrOffWrist: Bool = false
+        chargingOrOffWrist: Bool = false,
+        queuedPullIntent: Bool = false,
+        lastAttemptYieldedRows: Bool = true
     ) -> Bool {
         guard let lastFinishedAt else { return true }
+        if shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: lastPendingRecords,
+            queuedPullIntent: queuedPullIntent
+        ) {
+            return false
+        }
         let interval: TimeInterval
         if consumeToNow,
            chargingOrOffWrist
@@ -1053,15 +1092,42 @@ extension AtriaBLEManager {
                 $0 <= idleWindowConsumeLiveTailPendingLimit
             } == true) {
             let pending = lastPendingRecords ?? 0
-            interval = pending > 0
-                && pending <= idleWindowConsumeLiveTailPendingLimit
-                ? idleWindowConsumeLiveTailImmediateResumeInterval
-                : idleWindowConsumeLiveTailResumeInterval
+            // Device 2026-09-18 build 130: pending=5 no_rows terminal re-armed
+            // every 0.4s and skipped 2A37 reassert (`hr_stale_while_connected`
+            // at 15.7s, liveHRNotifying=false). A dry live tail is not a
+            // drainable page — let HR breathe on the worn 20s beat.
+            if !lastAttemptYieldedRows,
+               !chargingOrOffWrist,
+               pending > 0,
+               pending <= idleWindowConsumeLiveTailPendingLimit {
+                // Device 2026-09-18 build 131: dry leftover still re-armed
+                // every 20s (`liveHRNotifying=false` during 0x22). Stuck
+                // pending=5 never yields rows on-wrist — keep 2A37 up unless
+                // a queued gym leftover still needs the worn beat.
+                if queuedPullIntent {
+                    interval = minimumResumeInterval
+                } else {
+                    return false
+                }
+            } else {
+                interval = pending > 0
+                    && pending <= idleWindowConsumeLiveTailPendingLimit
+                    ? idleWindowConsumeLiveTailImmediateResumeInterval
+                    : idleWindowConsumeLiveTailResumeInterval
+            }
         } else if chargingOrOffWrist {
             // The 20s beat exists to let live 2A37 breathe between chunks.
             // On the charger / off the wrist the firmware is not producing a
             // pulse to protect, so that beat is dead air on the one window
             // where the backlog can actually be cleared in bulk.
+            interval = idleWindowUnprotectedResumeInterval
+        } else if queuedPullIntent,
+                  lastPendingRecords.map({
+                      $0 > idleWindowConsumeLiveTailPendingLimit
+                  }) != false {
+            // Device 125: 18s walk + 20s resume let live write keep ~half
+            // the ACK'd records. Queued gym leftover must re-arm like the
+            // charging window so pending can fall overnight.
             interval = idleWindowUnprotectedResumeInterval
         } else {
             interval = minimumResumeInterval
@@ -1262,11 +1328,91 @@ extension AtriaBLEManager {
     /// drain — reassert must run. Mid-slice scene_active reassert still skips.
     /// Soak 14: a 1–2 page live tail is not complete; keep 2A37 paused so
     /// the next 0x22 can land before write seals another page.
+    /// Device 2026-09-11: an 83-minute Strength workout saved 0 HR samples
+    /// because `idleWindowDrainArchiveWarmRetry` kept admitting 2A37 pause
+    /// after the user had already started the session. A live workout or
+    /// calibration hold outranks that retry.
+    /// Device 2026-09-18 21:17: leftover pending=5 with `no_rows` re-paused
+    /// 2A37 on the worn 20s beat because consume-to-now was off, so the
+    /// dry-tail retry refusal never ran. Refuse that pause here too.
+    nonisolated static func shouldAdmitIdleWindowHeartRatePause(
+        explicitMotionOwnershipActive: Bool,
+        lastAttemptYieldedRows: Bool = true,
+        leftoverPendingRecords: UInt32? = nil,
+        queuedPullIntent: Bool = false,
+        chargingOrOffWrist: Bool = false
+    ) -> Bool {
+        if explicitMotionOwnershipActive { return false }
+        if shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: leftoverPendingRecords,
+            queuedPullIntent: queuedPullIntent
+        ) {
+            return false
+        }
+        return true
+    }
+
+    /// Device 168 21:17: `lastDrainAttemptYieldedRows=false` and
+    /// `idleWindowAckedRange.pending=5` still admitted a new 0x22 after 20s
+    /// when consume-to-now was false. A dry live-tail leftover is not a
+    /// drainable on-wrist page — keep 2A37 until a gym pull or charger
+    /// window owns the leftover.
+    nonisolated static func shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+        lastAttemptYieldedRows: Bool,
+        chargingOrOffWrist: Bool,
+        leftoverPendingRecords: UInt32?,
+        queuedPullIntent: Bool
+    ) -> Bool {
+        guard !lastAttemptYieldedRows,
+              !chargingOrOffWrist,
+              !queuedPullIntent else {
+            return false
+        }
+        let pending = leftoverPendingRecords ?? 0
+        return pending > 0 && pending <= idleWindowConsumeLiveTailPendingLimit
+    }
+
+    /// Pull-to-refresh and the missed-data banner queue a short-lived catch-up
+    /// that `shouldDeferRawCatchUpForIdleWindowDrain` always prefers as an
+    /// idle-window 0x22. Combined with leftover pending=5 / no_rows, that
+    /// re-pauses 2A37 while Today is already Live (device 2026-09-19 09:27).
+    /// A durable gym fill (`post_workout_hr_backfill`) still keeps the snapshot.
+    nonisolated static func shouldDropShortLivedCatchUpToRetireDryLeftover(
+        queuedReason: String?,
+        lastAttemptYieldedRows: Bool,
+        leftoverPendingRecords: UInt32?,
+        chargingOrOffWrist: Bool
+    ) -> Bool {
+        guard let reason = queuedReason,
+              !queuedRawCatchUpIntentSurvivesLifetime(reason: reason) else {
+            return false
+        }
+        return shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+            lastAttemptYieldedRows: lastAttemptYieldedRows,
+            chargingOrOffWrist: chargingOrOffWrist,
+            leftoverPendingRecords: leftoverPendingRecords,
+            queuedPullIntent: false
+        )
+    }
+
+    /// Workout Start may disconnect a history owner, but the replacement
+    /// connection must restore 2A37 first. Re-admitting the pending history
+    /// owner on `didConnect` skipped HR discovery for the whole gym window.
+    nonisolated static func shouldAdmitFreshHistoryOwnerOnConnect(
+        explicitMotionOwnershipActive: Bool
+    ) -> Bool {
+        !explicitMotionOwnershipActive
+    }
+
     nonisolated static func shouldSkipIdleWindowHeartRateReassert(
         idleWindowDrainOwnsLink: Bool,
         verifiedEmptyHistoryCursor: Bool = false,
-        deferLiveRestoreForConsumeLiveTail: Bool = false
+        deferLiveRestoreForConsumeLiveTail: Bool = false,
+        explicitMotionOwnershipActive: Bool = false
     ) -> Bool {
+        if explicitMotionOwnershipActive { return false }
         if verifiedEmptyHistoryCursor { return false }
         if deferLiveRestoreForConsumeLiveTail { return true }
         return idleWindowDrainOwnsLink
@@ -1282,9 +1428,13 @@ extension AtriaBLEManager {
         lastPendingRecords: UInt32?,
         verifiedEmptyHistoryCursor: Bool,
         linkStillConnected: Bool,
-        consumePauseElapsed: TimeInterval
+        consumePauseElapsed: TimeInterval,
+        lastAttemptYieldedRows: Bool = true
     ) -> Bool {
         if verifiedEmptyHistoryCursor { return false }
+        // A no_rows live tail never ACK'd a page. Keeping 2A37 paused for the
+        // next 0.4s 0x22 is the 130 stale-HR loop (pending stuck at 5).
+        if !lastAttemptYieldedRows { return false }
         guard consumeToNow, linkStillConnected else { return false }
         if consumePauseElapsed >= idleWindowConsumeHeartRatePauseLimit {
             return false
@@ -1585,11 +1735,12 @@ extension AtriaBLEManager {
     /// starvation hole): resume lanes and attended taps could START nothing
     /// when no authority existed — after any process kill that cleared or
     /// resolved the authority, the backlog sat dead until a human tapped Sync
-    /// or relaunched. A BACKGROUND re-arm with a real backlog may create the
-    /// same forward-from-cursor chunked catch-up an attended tap gets, under
-    /// the same proven-live-epoch conditions as the stranded resume plus an
-    /// attempt cooldown. Foreground still defers (that dead-end stays dead);
-    /// the seekless full-flash gap replay stays retired.
+    /// or relaunched.
+    ///
+    /// That background re-arm required a fresh `lastAcceptedHRAt` and then
+    /// paused 2A37 for 0x22, which emptied all-day Live Activity and left
+    /// widgets on a stale beat. Charging / off-wrist / pre-HR idle-window
+    /// drain still catch the bank up. This path stays retired.
     nonisolated static func shouldAdmitAutonomousCursorAnchoredCatchUpStart(
         foregroundInteractive: Bool,
         strapBacklogPending: Bool,
@@ -1605,25 +1756,20 @@ extension AtriaBLEManager {
         acceptedFreshnessWindow: TimeInterval = 45,
         attemptCooldown: TimeInterval = 120
     ) -> Bool {
-        guard !foregroundInteractive,
-              strapBacklogPending,
-              !syncInProgress,
-              linkConnected,
-              !activeExplicitWorkout,
-              !recentDisconnectStorm,
-              let connectedAt,
-              let lastAcceptedHRAt else { return false }
-        let connectionAge = now.timeIntervalSince(connectedAt)
-        let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
-        guard connectionAge >= stableConnectionInterval,
-              acceptedAge >= 0,
-              acceptedAge <= acceptedFreshnessWindow else { return false }
-        if let lastAttemptAt {
-            guard now.timeIntervalSince(lastAttemptAt) >= attemptCooldown else {
-                return false
-            }
-        }
-        return true
+        _ = foregroundInteractive
+        _ = strapBacklogPending
+        _ = syncInProgress
+        _ = linkConnected
+        _ = connectedAt
+        _ = lastAcceptedHRAt
+        _ = lastAttemptAt
+        _ = activeExplicitWorkout
+        _ = recentDisconnectStorm
+        _ = now
+        _ = stableConnectionInterval
+        _ = acceptedFreshnessWindow
+        _ = attemptCooldown
+        return false
     }
 
     /// Mints the process-local proof for one non-destructive raw-history slice
@@ -1634,9 +1780,12 @@ extension AtriaBLEManager {
     /// `CBPeripheral` object/callback epoch and atomically claim that canonical
     /// object before publishing a transport generation.
     ///
-    /// A materially stale foreground may also enter automatically. This does
-    /// not turn lifecycle state or a reason string into authority: the caller
-    /// must still mint the exact callback-source token on an accepted 2A37
+    /// Only an explicit queued pull (gym fill, missed-data Sync) may mint.
+    /// Autonomous background / foreground-automatic slices required a fresh
+    /// 2A37 epoch and then paused notify, which emptied Live Activity and
+    /// left Today on Reading… with a 10s-old beat. This does not turn a
+    /// lifecycle state or a reason string into authority: the caller must
+    /// still mint the exact callback-source token on an accepted 2A37
     /// boundary and win the canonical-object claim synchronously.
     nonisolated static func shouldMintConnectedRawHistoryCatchUpAuthority(
         applicationIsBackground: Bool,
@@ -1657,10 +1806,13 @@ extension AtriaBLEManager {
         acceptedFreshnessWindow: TimeInterval = 45,
         minimumSamples: Int = 10
     ) -> Bool {
-        guard applicationIsBackground
-                || queuedPullIntent
-                || foregroundAutomaticBacklog,
-              strapBacklogPending,
+        _ = applicationIsBackground
+        _ = foregroundAutomaticBacklog
+        guard queuedPullIntent,
+              connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: queuedPullIntent,
+                strapBacklogPending: strapBacklogPending
+              ),
               verifiedRawHistoryCapability,
               exactCallbackSourceAvailable,
               !syncInProgress,
@@ -1676,6 +1828,130 @@ extension AtriaBLEManager {
               acceptedAge >= 0,
               acceptedAge <= acceptedFreshnessWindow else { return false }
         return true
+    }
+
+    /// Automatic catch-up still keys on the whole-backlog detectors. An
+    /// explicit queued pull (workout End, missed-data Sync, pull-to-refresh)
+    /// may drain even when Start-fresh / cover-live suppression reports `.none`.
+    /// Gym 2026-09-17 Strength 21:05–21:37 IST saved 0 HR because catch-up was
+    /// queued, then dropped on `strapBacklogPending == false`.
+    nonisolated static func connectedRawHistoryCatchUpHasDrainableWork(
+        queuedPullIntent: Bool,
+        strapBacklogPending: Bool
+    ) -> Bool {
+        strapBacklogPending || queuedPullIntent
+    }
+
+    /// Idle-window drain unsubscribes 2A37 on the same connected link. A queued
+    /// gym pull must take that path: keeping notify on made every live 0x22
+    /// time out (2026-09-17 17:16Z) so Strength 21:05–21:37 IST never filled.
+    /// The connection stays up; Home stays Connected rather than Reconnecting.
+    nonisolated static func shouldDeferRawCatchUpForIdleWindowDrain(
+        queuedPullIntent: Bool
+    ) -> Bool {
+        _ = queuedPullIntent
+        return true
+    }
+
+    /// Post-workout and 0x22-timeout retries must outlive the ordinary 10-minute
+    /// UI pull. Device 123 queued on restore, then expired before mint because
+    /// present-bank capture held the radio for the same 10 minutes.
+    nonisolated static func queuedRawCatchUpIntentSurvivesLifetime(
+        reason: String
+    ) -> Bool {
+        reason == "post_workout_hr_backfill"
+            || reason == "history_write_22_timeout_retry"
+    }
+
+    nonisolated static func queuedRawCatchUpIntentIsExpired(
+        reason: String,
+        requestedAt: Date,
+        now: Date,
+        defaultLifetime: TimeInterval,
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        let lifetime = queuedRawCatchUpIntentSurvivesLifetime(reason: reason)
+            ? durableLifetime
+            : defaultLifetime
+        return now.timeIntervalSince(requestedAt) > lifetime
+    }
+
+    /// Walking 20:54–21:05 on 2026-09-17 already had 523 live samples. End
+    /// still queued leftover drain, which paused 2A37; Strength started one
+    /// second later and saved 0 HR. A workout that already has samples must
+    /// not seize the radio. Connect/restore may only retry metadata-only
+    /// windows still inside the durable pull lifetime — older gyms are gone
+    /// from strap flash, and re-queuing them is why Today sat on Reading…
+    /// with a 10s-old beat.
+    nonisolated static func shouldQueuePostWorkoutHistoryBackfill(
+        endedWorkoutSampleCount: Int?,
+        metadataOnlyWorkoutEnds: [Date],
+        now: Date,
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        if let samples = endedWorkoutSampleCount {
+            return samples <= 0
+        }
+        return metadataOnlyWorkoutEnds.contains { end in
+            let age = now.timeIntervalSince(end)
+            return age >= 0 && age <= durableLifetime
+        }
+    }
+
+    /// Device 2026-09-18: leftover idle-window `pending=5` survived abort and
+    /// the 6h gym-pull lifetime. Dry `no_rows` tails must not keep a 0x22
+    /// snapshot that can re-pause 2A37. Keep the pointer only while a queued
+    /// metadata-only gym is still inside the durable flash window.
+    nonisolated static func shouldRetireStuckIdleWindowLeftover(
+        pendingRecords: UInt32?,
+        queuedPullIntent: Bool,
+        metadataOnlyWorkoutEnds: [Date] = [],
+        now: Date = Date(),
+        durableLifetime: TimeInterval = 6 * 60 * 60
+    ) -> Bool {
+        guard let pending = pendingRecords, pending > 0 else { return false }
+        if queuedPullIntent,
+           shouldQueuePostWorkoutHistoryBackfill(
+               endedWorkoutSampleCount: nil,
+               metadataOnlyWorkoutEnds: metadataOnlyWorkoutEnds,
+               now: now,
+               durableLifetime: durableLifetime
+           ) {
+            return false
+        }
+        return true
+    }
+
+    /// Device 2026-09-18 21:17: idle-window `no_rows` left
+    /// `idleWindowAckedRange.pending=5` in UserDefaults after in-memory abort.
+    /// The next background scene then re-paused 2A37 (`live_hr_notifying=0`,
+    /// sample age 42s) while Today still showed Live from the session clock.
+    /// A dry live-tail leftover is not a drainable page — drop the 0x22
+    /// snapshot unless a queued gym pull still owns it.
+    nonisolated static func shouldClearIdleWindowPointerAfterDryTerminal(
+        durableRowsThisAttempt: Int,
+        pendingRecords: UInt32?,
+        queuedPullIntent: Bool
+    ) -> Bool {
+        guard durableRowsThisAttempt <= 0,
+              !queuedPullIntent,
+              let pending = pendingRecords,
+              pending > 0,
+              pending <= idleWindowConsumeLiveTailPendingLimit else {
+            return false
+        }
+        return true
+    }
+
+    /// A queued gym pull that already selected an idle window must not mint a
+    /// keep-2A37 0x22 on the same callback. Device 123 timed out every live
+    /// range write while notify stayed on.
+    nonisolated static func shouldHoldQueuedCatchUpForIdleWindowDrain(
+        queuedPullIntent: Bool,
+        idleWindowAdmitted: Bool,
+        idleWindowPreparing: Bool
+    ) -> Bool {
+        queuedPullIntent && (idleWindowAdmitted || idleWindowPreparing)
     }
 
     /// Gives a verified same-link raw backlog one finite first turn before a
@@ -1780,9 +2056,11 @@ extension AtriaBLEManager {
         bankArmedForCurrentConnection: Bool,
         bankArmedAt: Date?,
         now: Date,
-        minimumPresentCaptureInterval: TimeInterval = 120
+        minimumPresentCaptureInterval: TimeInterval = 120,
+        queuedPullIntent: Bool = false
     ) -> Date? {
-        guard bankArmedForCurrentConnection,
+        guard !queuedPullIntent,
+              bankArmedForCurrentConnection,
               let bankArmedAt,
               minimumPresentCaptureInterval.isFinite,
               minimumPresentCaptureInterval >= 0 else { return nil }
@@ -2185,7 +2463,8 @@ extension AtriaBLEManager {
         presentCaptureSharePause: TimeInterval =
             connectedRawCatchUpPresentCaptureSharePauseSecondsDefault,
         constrainedPresentCaptureShareAfterSlices: Int =
-            connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault
+            connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault,
+        queuedPullIntent: Bool = false
     ) -> ConnectedRawHistoryCatchUpContinuationDisposition {
         // ITEM-4 2026-08-15: on a low-battery discharging strap the cadence
         // stretches (2s→30s between slices, long pause every 2 instead of
@@ -2197,7 +2476,15 @@ extension AtriaBLEManager {
             ? constrainedDutyPauseAfterSlices : dutyPauseAfterSlices
         let effectiveDutyPause = strapPowerConstrained
             ? constrainedDutyPause : dutyPause
-        guard !cursorCaughtUp, backlogPending else { return .complete }
+        // 122 could mint a queued post-workout pull while Start-fresh reported
+        // `.none`. Completing that slice on the same detector dropped the
+        // intent after a 0x22 timeout, so gym Strength 21:05–21:37 IST never
+        // retried while live 2A37 stayed up.
+        guard !cursorCaughtUp,
+              connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: queuedPullIntent,
+                strapBacklogPending: backlogPending
+              ) else { return .complete }
         let thermalDisposition = connectedRawHistoryCatchUpThermalDisposition(
             thermalState: thermalState
         )
@@ -2331,6 +2618,102 @@ extension AtriaBLEManager {
         )
     }
 
+    /// Seconds past an accepted-unrecoverable unix the seek cursor must move
+    /// so `shouldSkipRangeLossRearm` (`cursor <= accepted + 1`) lets go. This
+    /// is a seek skip, not fill progress: no ACK is implied.
+    nonisolated static let historyDrainUnrecoverableSkipEpsilon: TimeInterval = 2
+
+    /// A parked oldest-first page is "behind live" once it is this far in the
+    /// past. Smaller than that and the cursor is already covering now.
+    nonisolated static let historyDrainLiveCoverageMinimumAge: TimeInterval = 60
+    /// One empty history page. Skip this far toward now so Last fill moves
+    /// without abandoning the rest of the gap in a single jump.
+    nonisolated static let historyDrainDeadPageSkip: TimeInterval = 15 * 60
+
+    /// True when oldest-first drain is parked on a dead page: no rows, first
+    /// frame timeout, or a zero-progress slice, and the park is no longer the
+    /// live frontier. Lost pages stay lost; live coverage should jump to now.
+    nonisolated static func historyDrainOldestPageIsStuck(
+        parkedCursorUnix: TimeInterval,
+        nowUnix: TimeInterval,
+        lastDrainYieldedRows: Bool?,
+        consecutiveZeroProgressSlices: Int,
+        lastStatus: String?,
+        coverLiveUnix: TimeInterval? = nil,
+        minimumAgeSeconds: TimeInterval = historyDrainLiveCoverageMinimumAge
+    ) -> Bool {
+        guard parkedCursorUnix.isFinite, parkedCursorUnix > 0,
+              nowUnix.isFinite,
+              nowUnix - parkedCursorUnix >= minimumAgeSeconds else {
+            return false
+        }
+        if let cover = coverLiveUnix, cover.isFinite, cover > 0,
+           parkedCursorUnix + 1 >= cover {
+            return false
+        }
+        if lastDrainYieldedRows == false { return true }
+        if consecutiveZeroProgressSlices >= 1 { return true }
+        guard let status = lastStatus, !status.isEmpty else { return false }
+        return status.contains("no_rows")
+            || status.contains("first_frame_timeout")
+            || status.contains("history_start_timeout")
+    }
+
+    /// When the oldest-first drain cursor is parked on a proven-dead page
+    /// (device 2026-09-08: Friday 09:44 IST), skip to the next recoverable
+    /// seek. A stuck park skips one 15-minute page toward now so Last fill
+    /// moves and remaining history can still land. A park already within one
+    /// page of live covers now. Never regresses, never jumps into the future,
+    /// and never treats a Start-fresh `drainedThrough == abandonedThrough`
+    /// stamp as a fill destination — that watermark is not a newest record.
+    nonisolated static func resilientHistoryDrainSeekUnix(
+        parkedCursorUnix: TimeInterval,
+        acceptedUnrecoverableUnix: TimeInterval,
+        abandonedThroughUnix: TimeInterval,
+        drainedThroughUnix: TimeInterval,
+        nextRecoverableStartUnix: TimeInterval?,
+        nowUnix: TimeInterval,
+        oldestPageIsStuck: Bool = false,
+        deadPageSkip: TimeInterval = historyDrainDeadPageSkip
+    ) -> TimeInterval? {
+        guard parkedCursorUnix.isFinite, parkedCursorUnix > 0,
+              nowUnix.isFinite, nowUnix >= parkedCursorUnix else {
+            return nil
+        }
+        var seek = parkedCursorUnix
+        if acceptedUnrecoverableUnix.isFinite,
+           acceptedUnrecoverableUnix > 0,
+           parkedCursorUnix <= acceptedUnrecoverableUnix + 1 {
+            seek = max(seek, acceptedUnrecoverableUnix + historyDrainUnrecoverableSkipEpsilon)
+        }
+        if let next = nextRecoverableStartUnix,
+           next.isFinite, next > 0,
+           next > seek,
+           next <= nowUnix {
+            seek = next
+        }
+        let startFreshStamp = abandonedThroughUnix.isFinite
+            && drainedThroughUnix.isFinite
+            && abandonedThroughUnix > 0
+            && drainedThroughUnix > 0
+            && abs(abandonedThroughUnix - drainedThroughUnix) <= 1
+        if !startFreshStamp,
+           abandonedThroughUnix.isFinite,
+           abandonedThroughUnix > seek,
+           abandonedThroughUnix <= nowUnix {
+            seek = abandonedThroughUnix
+        }
+        if oldestPageIsStuck, nowUnix > seek + 0.5 {
+            let skip = deadPageSkip.isFinite && deadPageSkip > 0
+                ? deadPageSkip
+                : historyDrainDeadPageSkip
+            seek = min(nowUnix, seek + skip)
+        }
+        seek = min(seek, nowUnix)
+        guard seek.isFinite, seek > parkedCursorUnix + 0.5 else { return nil }
+        return seek
+    }
+
     /// Advances the display-only strap-history frontier exclusively from
     /// generation-fenced timestamps released by a successful canonical flush.
     /// Clock-corrupt future rows are ignored and the persisted value is never
@@ -2395,14 +2778,18 @@ extension AtriaBLEManager {
 
     enum WorkoutHistoricalTransportPreemptionDisposition: Equatable {
         case noHistoryOwner
+        /// History is running on the same link that is already delivering
+        /// live 2A37. Pause the drain in-process; do not physically drop HR.
+        case pauseConnectedHistoryWithoutDisconnect
         case disconnectConnectedHistoryOwner
         case interruptOfflineHistoryOwner
     }
 
-    /// Starting a workout outranks history commands. A local owner release is
-    /// not proof that WHOOP stopped serving its current FIFO page, even when
-    /// standard HR shares the link. Every connected history owner therefore
-    /// crosses a physical disconnect fence before 69/01 can arm on a new epoch.
+    /// Starting a workout outranks history commands. A healthy live heart-rate
+    /// stream must stay up: the 2026-09-16 16:31 IST Strength start crossed a
+    /// disconnect fence, the chip stuck on Reading…, and the workout saved
+    /// `user_confirmed_no_hr` with zero samples. History can wait. Only drop
+    /// the link when there is no live HR owner to preserve.
     nonisolated static func workoutHistoricalTransportPreemptionDisposition(
         syncInProgress: Bool,
         historyProbeActive: Bool,
@@ -2412,10 +2799,16 @@ extension AtriaBLEManager {
         guard syncInProgress || historyProbeActive else {
             return .noHistoryOwner
         }
-        _ = preservesConnectedRealtimeOwner
-        return linkConnected
-            ? .disconnectConnectedHistoryOwner
-            : .interruptOfflineHistoryOwner
+        // A connected strap is already the live HR owner. Starting a workout
+        // must not physically drop 2A37 to chase history — that freeze is how
+        // the 2026-09-16 16:31 Strength session saved zero samples.
+        if linkConnected {
+            return .pauseConnectedHistoryWithoutDisconnect
+        }
+        if preservesConnectedRealtimeOwner {
+            return .interruptOfflineHistoryOwner
+        }
+        return .interruptOfflineHistoryOwner
     }
 
     /// Retry is a state marker, not a recursion trace. Normalize any legacy

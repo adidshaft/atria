@@ -14,6 +14,7 @@ enum AtriaHistoricalAggregateBuilder {
         case rowCountMismatch(expected: Int, actual: Int)
         case invalidTimestamp
         case sourceChangedDuringProjection
+        case maintenanceAuthorityRevoked
     }
 
     struct FileBuildResult {
@@ -64,15 +65,25 @@ enum AtriaHistoricalAggregateBuilder {
     static func build(sourceURL: URL,
                       chunkID: String,
                       createdAt: Date,
-                      materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = []) throws -> FileBuildResult {
+                      materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection] = [],
+                      shouldContinue: () -> Bool = { true }) throws -> FileBuildResult {
         guard FileManager.default.fileExists(atPath: sourceURL.path) else { throw BuildError.sourceMissing }
-        let identity = try AtriaHistoricalJSONLInput.identity(at: sourceURL)
+        let identity: AtriaHistoricalJSONLInput.Identity
+        do {
+            identity = try AtriaHistoricalJSONLInput.identity(
+                at: sourceURL,
+                shouldContinue: shouldContinue
+            )
+        } catch AtriaHistoricalJSONLInput.InputError.maintenanceAuthorityRevoked {
+            throw BuildError.maintenanceAuthorityRevoked
+        }
         return try build(
             sourceURL: sourceURL,
             chunkID: chunkID,
             createdAt: createdAt,
             materializedProjections: materializedProjections,
-            identity: identity
+            identity: identity,
+            shouldContinue: shouldContinue
         )
     }
 
@@ -133,9 +144,10 @@ enum AtriaHistoricalAggregateBuilder {
         chunkID: String,
         createdAt: Date,
         materializedProjections: [AtriaHistoricalAggregateChunk.MaterializedProjection],
-        identity: AtriaHistoricalJSONLInput.Identity
+        identity: AtriaHistoricalJSONLInput.Identity,
+        shouldContinue: () -> Bool = { true }
     ) throws -> FileBuildResult {
-        let scan = try decodeRecords(at: sourceURL)
+        let scan = try decodeRecords(at: sourceURL, shouldContinue: shouldContinue)
         guard !scan.records.isEmpty else { throw BuildError.emptySource }
         let timestamps = scan.records.compactMap(effectiveTimestamp)
         guard let first = timestamps.min(), let last = timestamps.max() else {
@@ -458,7 +470,10 @@ enum AtriaHistoricalAggregateBuilder {
         return Date(timeIntervalSince1970: TimeInterval(unix) + TimeInterval(record.subsec11) / 32_768)
     }
 
-    private static func decodeRecords(at url: URL) throws -> (records: [HistoricalArchive.Record], rowCount: Int, undecodableRows: Int) {
+    private static func decodeRecords(
+        at url: URL,
+        shouldContinue: () -> Bool = { true }
+    ) throws -> (records: [HistoricalArchive.Record], rowCount: Int, undecodableRows: Int) {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var records: [HistoricalArchive.Record] = []
@@ -466,6 +481,9 @@ enum AtriaHistoricalAggregateBuilder {
         var undecodable = 0
         do {
             try AtriaHistoricalJSONLInput.forEachLine(at: url) { line in
+                if rowCount.isMultiple(of: 256), !shouldContinue() {
+                    throw BuildError.maintenanceAuthorityRevoked
+                }
                 guard !line.isEmpty else { return }
                 rowCount += 1
                 // Foundation's JSON decoder temporaries are Objective-C backed
