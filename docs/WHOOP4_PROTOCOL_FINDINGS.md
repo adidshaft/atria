@@ -5244,3 +5244,47 @@ validation, auto-reconnect, per-frame decoded JSONL).
   are the period, not duplicates: consecutive payloads were never identical.
   Device-time gaps: 172 × 1 s, 7 × 0 s, none > 1 s.
 - Decoded samples: `/tmp/atria-ble/r10-samples.jsonl` (raw int16 + scales).
+
+### R11 (`2B`/`0B`) decoded from zero: raw multi-channel PPG at ~52 Hz
+
+Capture `r10_capture.py --raw` (16:28 → , log `/tmp/atria-ble/r11-raw.jsonl`),
+analyzer `tools/strap-mac/r11_analyze.py`. Every R11 frame is 1924 B (payload)
+and pairs with the R10 frame that has the same counter/second.
+
+| Bytes | Meaning |
+|---|---|
+| 0–2 | `2B 0B 00` |
+| 3–4 | u16le frame counter = paired R10 counter |
+| 5–6 | `97 01` (constant, same as R10) |
+| 7–10 | u32le device second = paired R10 |
+| 11–12 | varying (sub-second tick candidate, unverified) |
+| **13 + 425·k** (k = 0..3) | **slot k header**, 25 B; header[1] = samples per channel (`0x32` = 50, `0` = empty) |
+| **38 + 425·k** | slot k data: ch0 = 50 × int32le, ch1 = next 50 × int32le |
+| 1713–1923 | zero padding (`00 01 00 00` then zeros) |
+
+Slot headers were constant across frames:
+- slot0 `00 32 04 98 08 05 98 08 01 98 08 04 20 00 00 00 40 06 05 20 00 00 00 20 03`
+- slot1 `00 00 04 00 00 03 b4 14 01 …` (empty)
+- slot2 `00 00 02 b4 14 03 …` (empty)
+- slot3 `00 32 02 c8 00 05 00 00 01 00 00 02 20 00 00 00 00 00 05 20 …`
+
+`0x0898` (2200) in slot 0 vs `0x00c8` (200) in slot 3 is a per-slot drive or
+gain candidate (unverified).
+
+**Physiological validation (still windows, detrended DFT 40–200 bpm, fs =
+50/0.961 s ≈ 52 Hz):**
+
+| Window | 2A37 HR | s0c0 | s0c1 | s3c0 | s3c1 |
+|---|---|---|---|---|---|
+| 16:28:36–16:29:26 | 77.7 | 77 | 77 | 76 | 76 |
+| 16:30:51–16:31:21 | 71.8 | 71 | 71 | 71 | 71 |
+
+All four active channels peak at the heart rate (±1 bpm) → **R11 is raw PPG**.
+- Slot 0: large pulsatile AC (SD 1.1–3.7k counts), baselines ≈ −32k…−46k and
+  115k…161k → primary HR optical pair (green-LED candidate).
+- Slot 3: high DC (≈96–111k, ≈8.5k), small AC (SD 45–150) → red/IR (SpO2-pair
+  candidate).
+
+LED/wavelength identity is **unverified** until the off-wrist contrast is in.
+The same capture also shows the first loss accounting in action: 1 corrupt + 1
+missing R10 frame at the start (counter 47404 → 47406), counted, not filled.
