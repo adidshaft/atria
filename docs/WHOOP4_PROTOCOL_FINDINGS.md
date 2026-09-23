@@ -4904,3 +4904,16 @@ New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
 - Compact `0x33` = 0. The write type (WWR vs with-response) does not change
   the `3F` outcome. No cleanup `3F/00` went out (the link was gone), so `3F`
   may still be latched on the strap.
+
+#### Run A2 — 12:33 IST: passive reconnect (TX=0) after run A's drop
+
+- Advert after the `CBError 6` drop: **180D + 61080001** (as in pairing mode),
+  so 61080001 in the advert is not a pairing-mode-only marker.
+- With **zero TX**, type `2B` resumed at +3.4 s (16 per 10 s) and the link died
+  again with **`CBErrorDomain 6` at +21.9 s**. The `3F` latch survives
+  disconnects (same as July "mode persists on the strap"). Compact `0x33` = 0.
+- **R11 identified.** Type-`2B` frames alternate two sub-records, byte 5 after
+  the type: `2b 0a …` (1928 B = **R10**) and `2b 0b …` (1932 B = **R11**).
+  `SEND_R10_R11_REALTIME` therefore yields R10 and R11 both inside type `2B`.
+  The "compact `0x33` is the R11 half of `3F`" hypothesis is **refuted**. `2B`
+  is still not compact IMU and is not relabelled.
