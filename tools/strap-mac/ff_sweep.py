@@ -10,6 +10,8 @@ Modes:
                      3F/00, restore v0, read back (applied by the next reboot).
   reboot             1D/00 only.
   clock              GET_CLOCK 0B/00; SET_CLOCK 0A only if the strap clock is outside 2025-2027.
+  trimwatch          22 -> 19 trim -> 22 every 10 s for 60 s (live off) -> 3F/01 WWR -> 22 every 10 s
+                     for 60 s (live on) -> 3F/00. Tests whether the read cursor U follows W after a trim.
   trim3f             test D: 22/00 range -> 19 trim (FE*8+00, Jul 30 proven) -> 22/00 verify W==U
                      -> 3F/01 WWR -> listen (0x33 leaves 3F on; else 3F/00).
 
@@ -44,7 +46,7 @@ if "--log" in ARGS:
 if "--listen" in ARGS:
     i = ARGS.index("--listen"); LISTEN_S = float(ARGS[i + 1]); del ARGS[i:i + 2]
 MODE = ARGS[0] if ARGS else "read"
-assert MODE in ("read", "trial", "restore", "setreboot", "checkrestore", "reboot", "clock", "trim3f"), MODE
+assert MODE in ("read", "trial", "restore", "setreboot", "checkrestore", "reboot", "clock", "trim3f", "trimwatch"), MODE
 TRIAL_KEY = ARGS[1] if MODE in ("trial", "setreboot") else None
 TRIAL_VALUE = ARGS[2] if MODE == "trial" and len(ARGS) > 2 else None
 JOURNAL = "/tmp/atria-ble/ff-journal.json"
@@ -270,7 +272,7 @@ class Delegate(NSObject):
                 say({"event": "checkrestore_no_journal"})
                 self.hangup(); return
             self.check_flow(pending); return
-        if MODE in ("reboot", "clock", "trim3f"):
+        if MODE in ("reboot", "clock", "trim3f", "trimwatch"):
             self.main_flow(); return
         if pending:
             say({"event": "journal_restore_first", "journal": pending})
@@ -307,6 +309,9 @@ class Delegate(NSObject):
             self.clock_flow()
         elif MODE == "trim3f":
             self.trim_flow()
+        elif MODE == "trimwatch":
+            self.get_range("pre", lambda r: self.send(0x19, b"\xfe" * 8 + b"\x00", "trim_19",
+                                                       lambda d: self.watch(0, "live_off")))
         else:
             self.trial_flow()
 
@@ -468,6 +473,28 @@ class Delegate(NSObject):
             say({"event": "data_range", "label": label, "range": r})
             callback(r)
         self.send(0x22, b"\x00", f"range_{label}", got)
+
+    @objc.python_method
+    def watch(self, i, label):
+        if i >= 7:
+            if label == "live_off":
+                self.send(0x3F, b"\x01", "3f01_live", lambda d: None, wwr=True)
+                self.pending = None
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(2.0, self, "watchLive:", None, False)
+            else:
+                self.send(0x3F, b"\x00", "3f00", lambda d: self.hangup())
+            return
+        def next_(r):
+            self.watch_args = (i + 1, label)
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(10.0, self, "watchNext:", None, False)
+        self.get_range(f"{label}_{i * 10}s", next_)
+
+    def watchNext_(self, _t):
+        i, label = self.watch_args
+        self.watch(i, label)
+
+    def watchLive_(self, _t):
+        self.watch(0, "live_on")
 
     @objc.python_method
     def trim_flow(self):

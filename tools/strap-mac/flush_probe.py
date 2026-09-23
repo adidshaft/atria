@@ -6,7 +6,7 @@ Phases:
   C  reconnect; log the first R10 frames (counter / device-time / firmware-step jumps), then
      3F/00, 0x22 (backlog), 16/00 history drain with ACKs (17/01+token) until W==U, a sub-3
      complete, or DRAIN_MAX_S; every history frame is stored whole; then 3F/01 to resume live.
-Opcodes: 3F, 22, 16, 17 only. Output: JSONL events + raw frames (--log).
+Opcodes: 3F, 22, 16, 17, 14 (+19 trim with --trim-first). --poll re-enables 0x22 polling during drain. Output: JSONL events + raw frames (--log).
 Usage: flush_probe.py [--live S] [--gap S] [--drain-max S] [--log PATH]
 """
 from __future__ import annotations
@@ -27,6 +27,9 @@ opt = lambda n, d: A[A.index(n) + 1] if n in A else d
 LIVE_S = float(opt("--live", "30"))
 GAP_S = float(opt("--gap", "60"))
 DRAIN_MAX_S = float(opt("--drain-max", "120"))
+TRIM_FIRST = "--trim-first" in A
+POLL = "--poll" in A
+PRE_DRAIN = "--pre-drain" in A
 LOG = opt("--log", "/tmp/atria-ble/flush.jsonl")
 OUT = open(LOG, "a", buffering=1)
 NOTIFY = {"61080003", "61080004", "61080005", "61080007", "2A37"}
@@ -148,14 +151,36 @@ class D(NSObject):
 
     def rangeA_(self, _t):
         self.send(0x22, b"\x00", "range_A")
+        if TRIM_FIRST:
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.5, self, "trimA:", None, False)
+
+    def trimA_(self, _t):
+        # Live R10 supersedes history while connected: collapse the backlog to the head.
+        self.send(0x19, b"\xfe" * 8 + b"\x00", "trim_19")
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.5, self, "rangeA2:", None, False)
+
+    def rangeA2_(self, _t):
+        self.send(0x22, b"\x00", "range_A_after_trim")
 
     def goB_(self, _t):
+        if PRE_DRAIN and not getattr(self, "pre_drained", False):
+            self.pre_drained = True
+            self.gap_end_device = self.last_r10["sec"] if self.last_r10 else None
+            say({"event": "pre_drain_start", "target_device": self.gap_end_device})
+            self.phase = "C_flush"
+            self.after_flush = "pre"
+            self.send(0x3F, b"\x00", "3f00_pause_live_pre")
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.0, self, "drain:", None, False)
+            return
         self.phase = "B"
+        self.gap_start_device = self.last_r10["sec"] if self.last_r10 else None
         say({"event": "phase_B_disconnect", "last_r10": self.last_r10})
         self.c.cancelPeripheralConnection_(self.p)
 
     def startFlush_(self, _t):
-        say({"event": "phase_C_first_frames", "frames": self.first_after[:8]})
+        self.gap_end_device = self.first_after[0]["sec"] if self.first_after else None
+        say({"event": "phase_C_first_frames", "frames": self.first_after[:8],
+             "gap_device": [getattr(self, "gap_start_device", None), self.gap_end_device]})
         self.phase = "C_flush"
         self.send(0x3F, b"\x00", "3f00_pause_live")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.5, self, "rangeC:", None, False)
@@ -166,16 +191,18 @@ class D(NSObject):
 
     def drain_(self, _t):
         self.drain_started = time.time()
+        self.drain_timer_phase = self.phase
         self.send(0x16, b"\x00", "history_16")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.0, self, "drainTick:", None, True)
 
     def drainTick_(self, t):
-        if self.phase != "C_flush":
+        if self.phase != "C_flush" or self.drain_started is None:
+            t.invalidate()
             return
         if time.time() - self.drain_started > DRAIN_MAX_S:
             say({"event": "drain_timeout", "counts": self.hist_counts})
             self.finishFlush("timeout")
-        elif int(time.time() - self.drain_started) % 5 == 0:
+        elif POLL and int(time.time() - self.drain_started) % 5 == 0:
             self.send(0x22, b"\x00", "range_poll")
 
     @objc.python_method
@@ -183,13 +210,20 @@ class D(NSObject):
         if self.phase != "C_flush":
             return
         self.phase = "C_resume"
-        say({"event": "flush_done", "why": why, "seconds": round(time.time() - self.drain_started, 1),
+        started, self.drain_started = self.drain_started, None
+        say({"event": "flush_done", "why": why, "seconds": round(time.time() - started, 1),
+             "rows_served": getattr(self, "rows_served", 0),
              "counts": self.hist_counts, "ranges": self.ranges[-3:]})
         self.send(0x14, b"\x00", "abort_history_14")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.0, self, "resume:", None, False)
 
     def resume_(self, _t):
         self.send(0x3F, b"\x01", "3f01_resume", wwr=True)
+        if getattr(self, "after_flush", None) == "pre":
+            self.after_flush = None
+            self.phase = "A"
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(12.0, self, "goB:", None, False)
+            return
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(15.0, self, "end:", None, False)
 
     def end_(self, _t):
@@ -251,6 +285,12 @@ class D(NSObject):
                 key = f"{k[-2:]}:{typ:02x}"
                 self.hist_counts[key] = self.hist_counts.get(key, 0) + 1
                 say({"event": "hist", "uuid": k, "type": f"{typ:02x}", "len": len(fr), "hex": fr.hex()})
+                if typ == 0x2F and len(inner) >= 11:
+                    row_sec = int.from_bytes(inner[7:11], "little")
+                    self.rows_served = getattr(self, "rows_served", 0) + 1
+                    end = getattr(self, "gap_end_device", None)
+                    if end and row_sec >= end - 1:
+                        self.finishFlush("caught_up_to_reconnect_time")
                 if typ == 0x31 and len(inner) >= 21:
                     sub = inner[2]
                     if sub == 2:

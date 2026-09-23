@@ -5652,3 +5652,44 @@ must be re-validated on more people (population rule).
 - Not yet wired into the live BLE path. Production still blocks `3F`
   (`protectedStandardHRAllowsR10RealtimeFlood == false`); enabling it needs the
   iPhone link test.
+
+## 2026-09-23 — Disconnects: graceful, lossless flush (user requirement: out-of-range at a gym etc.)
+
+Tool: `tools/strap-mac/flush_probe.py` (controlled Mac disconnect = out-of-range
+stand-in; metronome walk during the gap). History rows are type `0x2F` (v24,
+104-byte frames), device second at inner [7:11], ~1 per second. 0x22 W/U are
+pages of ~10 rows.
+
+**What survives a disconnect:**
+- **Live R10/R11 raw: lost.** The frame counter keeps running (82 frames in
+  78 s) but frames are neither sent nor stored.
+- **Firmware step counter: keeps counting on the strap** (gap walks: +71 vs 60,
+  +48 vs 45, +57 vs 45 metronome steps; the stairs gaps also advanced).
+- **Flash history (1 Hz v24 rows with HR/motion): kept, drainable.**
+
+**Runs:**
+
+| Run | Setup | Result |
+|---|---|---|
+| flush1 | no trim, 75 s gap, 0x22 polled every 5 s during drain | 140 rows served in **9.2 s (14.6× realtime)**, then **stalled** (U +9 pages, then frozen for 110 s). Rows were the oldest (13:32) of a 1713-page / ~4.5 h backlog, oldest-first with no seek, so the gap was unreachable quickly |
+| flush2 | `0x19` trim first, 60 s gap, no polling | backlog after gap = 3 pages; drained to reconnect time in 2.2 s. **But rows started at 18:05:00, not the gap start 18:04:25 (~35 s lost)**: U had advanced 2624 → 2630 by itself |
+| trimwatch | after trim: live off 60 s, then live on 60 s | **live off: U follows W−1 every page with no data delivered (silently discarded)**; live on: U frozen, backlog +1 page per 10 s |
+| flush3 | no trim; pre-gap catch-up drain | catch-up 188 rows in 9.7 s (19× realtime), continuous 18:07:42–18:10:42 (0 holes). Post-gap drain aborted by a probe timer bug |
+| **flush4** | **no trim; catch-up drain → live → 60 s gap (walk 45) → reconnect → drain** | catch-up 185 rows / 18.9 s; **post-gap 129 rows / 7.3 s**, stopped at reconnect time; live resumed. **History covers 18:10:26–18:14:59 with 0 missing seconds; the 69-s disconnect covered 69/70 s** (the 70th is the first live frame). Firmware steps across gap 3562 → 3619 |
+
+**Conclusions → app design ("smart flush"):**
+1. **Never use `0x19` trim for ongoing management.** After a trim the strap
+   discards pages while connected with live off (data loss). Keep trim only
+   as an explicit one-time "start fresh" at pairing.
+2. **Live `3F` freezes the history read cursor**, so the backlog grows while
+   live. Keep it small with a **duty cycle**: every few minutes pause live
+   (`3F/00`), drain to the current time with ACKs (≈15–19× realtime, so a 5-min
+   backlog ≈ 20 s), `14/00`, resume live (`3F/01`). Stop by row timestamp, not
+   by polling (polling 0x22 mid-drain stalled the serve).
+3. **On reconnect:** credit gap steps immediately from the firmware counter
+   delta; pause live; drain the gap (seconds for minutes of gap); resume live.
+   Raw 104 Hz IMU/PPG for the gap is not recoverable; 1 Hz history + firmware
+   steps fill it honestly.
+4. Open: byte 17 of the v24 row is HR-like but one gap row read 3. The v24
+   layout is decoded elsewhere in the app; reuse that decoder rather than
+   guessing.
