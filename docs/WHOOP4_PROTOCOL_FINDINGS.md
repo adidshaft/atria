@@ -5124,3 +5124,29 @@ and `0x33` first appeared ~6 min after a history-end frame (01:29:40 →
 - `3F/01` WWR on the empty FIFO → **`2B` ×124 in 60 s**, `0x33` 0. The link
   held all 60 s. Cleanup `3F/00` sent. Strap history is now discarded (the
   user declared it expendable).
+
+#### Battery hypothesis — refuted (evidence, no TX)
+
+`atria.battery.level` vs last stream-5 type across the 14–21 Sep pulls: compact
+`0x33` ran at **99 %** (15 Sep 04:07), at **11 %** (19 Sep 10:21), while
+charging (15 Sep 01:36–03:25, 51 → 99 %) and while not charging (17 Sep
+13:45). After 19 Sep 15:22 it was absent at 60–80 %. Battery level and
+charge state do not gate `0x33`.
+
+#### Bond / encryption state of the Mac link — unknown, not observable passively
+
+- `blueutil --paired` (run via the runner; the Bash tool has no Bluetooth
+  TCC) lists `<strap-bt-address> "ADIDSHAFT'S WHO"` as **paired**, but
+  `blueutil --info <strap-bt-address>` reports **not paired**. The Mac holds a
+  stale entry (July 30 or 22 Sep).
+- 22 Sep stream-7 console: `PM_EVT_CONN_SEC_FAILED|…BONDING|Error 00000001h`,
+  `delete_disconnected_bonds`, `FlashChanged:YES`. The strap deleted bonds.
+  Sep 15–19 `0x33` ran on a bonded iPhone link. No strap characteristic
+  requires encryption (all reads/notifies/writes succeed), so CoreBluetooth
+  never pairs on its own. **H-BOND** (compact IMU only on an encrypted link) is
+  untested.
+- **Tool trap:** in this zsh, bare `log` is a shell builtin, and `log show …`
+  silently prints nothing. Use `/usr/bin/log`. With the real binary, bluetoothd
+  persists only ~9 lines per 75 min at default level and nothing about LE
+  security, so encryption state cannot be read from the unified log without a
+  sudo `log config` change (not done).
