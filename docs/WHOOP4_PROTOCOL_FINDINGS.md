@@ -5310,3 +5310,22 @@ missing R10 frame at the start (counter 47404 → 47406), counted, not filled.
   slot-0 DC jumped to ≈ +229k / +199k.
 - Post-reseat still (16:37:05 →, new header): s0c0/s0c1/s3c0/s3c1 dominant
   63/62/62/62 bpm vs 2A37 mean 65.1 (falling). Still PPG-locked.
+
+### R10 beyond accel/gyro — byte map from the same capture
+
+Non-IMU bytes that vary across 463 R10 frames: 2–4, 7–8, 11–15, 17–22, 27–31,
+42–57, 59–74, 76, 78–80, 84, 687, 1293–1294, 1299, 1315, 1516–1915, 1917.
+
+| Bytes | Meaning | Evidence |
+|---|---|---|
+| 3–4 | u16le frame counter (paired with R11) | +1 per frame, 0 missing across 180 s |
+| 7–10 | u32le device second | matches wall clock ±0 s |
+| **17** | HR (bpm) | equals 2A37 ±1 |
+| **18** | **RR count** (1–2) | 1 or 2 per frame |
+| **19–20 (21–22)** | **RR interval(s), u16le ms** | 786–1231 ms at 67–70 bpm, consistent with HR |
+| 42–57, 59–74 | float32-like groups (≈ `[0.01, 0.04, 0.34, 0.96]`) | **UNRESOLVED**: \|v\| ranges 0.78–4.77 and does not track accel gravity (median error 28–41°), so it is **not** a clean orientation quaternion |
+| 1492–1515 | third optical slot header: `32 04 00 00 05 00 00 01 00 00 03 …`; drive levels **0** | same format as R11 slot headers |
+| **1516–1915** | 2 × 50 int32: **ambient (LEDs-off) optical candidate** | ≈ −5 / +9…39 on-wrist; **382 / 468** as the strap came off into room light (16:33:40) |
+
+Unresolved: bytes 2, 11–15, 27–31, 76–84, 687, 1293–1315, 1917 (flags,
+sub-second tick, temperature/status candidates).
