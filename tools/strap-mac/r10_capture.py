@@ -120,7 +120,8 @@ class Delegate(NSObject):
         self.armed = False
         self.seq = 1
         self.buffers = {}
-        self.stats = {"r10": 0, "r11": 0, "corrupt": 0, "other": 0, "connects": 0, "disconnects": 0}
+        self.stats = {"r10": 0, "r11": 0, "corrupt": 0, "other": 0, "connects": 0, "disconnects": 0, "missing": 0, "seq_resets": 0}
+        self.last_seq = None
         self.win = {"r10": 0, "acc_sd": [], "gyr_mean": [], "hr": None}
         self.last_ts = None
         self.gaps = []
@@ -257,6 +258,16 @@ class Delegate(NSObject):
         acc = planar(payload, ACC_OFF)
         gyr = planar(payload, GYR_OFF)
         self.stats["r10"] += 1
+        if self.last_seq is not None:
+            delta = (seq - self.last_seq) & 0xFFFF
+            if 1 < delta < 0x8000:
+                self.stats["missing"] += delta - 1
+                say({"event": "missing_frames", "n": delta - 1, "from_seq": self.last_seq, "to_seq": seq,
+                     "device_second": ts})
+            elif delta == 0 or delta >= 0x8000:
+                self.stats["seq_resets"] += 1
+                say({"event": "seq_reset", "from_seq": self.last_seq, "to_seq": seq})
+        self.last_seq = seq
         gap = None
         if self.last_ts is not None:
             gap = ts - self.last_ts
@@ -267,7 +278,7 @@ class Delegate(NSObject):
         self.win["r10"] += 1
         self.win["acc_sd"].append(a_sd)
         self.win["gyr_mean"].append(g_mean)
-        SOUT.write(json.dumps({"wall": time.time(), "device_second": ts, "seq16": seq, "hr": hr, "gap": gap,
+        SOUT.write(json.dumps({"wall": time.time(), "device_second": ts, "seq16": seq, "missing_total": self.stats["missing"], "hr": hr, "gap": gap,
                                "acc_raw": acc, "gyr_raw": gyr, "acc_scale": ACC_SCALE,
                                "gyr_scale": GYR_SCALE}, separators=(",", ":")) + "\n")
 
