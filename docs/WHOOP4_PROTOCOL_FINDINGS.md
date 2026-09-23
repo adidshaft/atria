@@ -5580,3 +5580,35 @@ gyro ≥ 0.7 × firmware → gyro count; else firmware count.
 **Caveat:** the rule was designed on the same segments (in-sample) and
 evaluated per whole segment. A production version must run on rolling windows
 (~10 s) and be re-validated on fresh labelled walks before any product use.
+
+### Fused step estimator — continuous (windowed) version, validated on the whole stream
+
+The segment-level fused rule was too optimistic. Run continuously (no labels),
+it scored **900 vs 750 (+20 %)**: in ~10 s windows, rhythmic hand-talk bursts
+passed the periodicity gate and fell back to the firmware counter (+97 during
+the other-wrist hand-talk).
+
+Per-window features (10 frames, inside labelled segments):
+
+| Feature | Walks (70 windows) | Gestures (18) | Typing / hand-to-mouth (27) |
+|---|---|---|---|
+| accel periodicity | 0.275–0.732 | 0.104–**0.284** | 0–0.194 |
+| **gravity-vector SD (orientation wobble)** | **0.040–0.107** | **0.262–0.532** | 0.013–0.744 |
+| accel bounce SD | 0.107–0.259 | 0.246–0.470 | 0.011–0.110 |
+
+Orientation wobble separates walking from gesturing with margin (physical: the
+forearm holds a steady angle while walking, even with a phone or bag).
+
+**Estimator (`tools/strap-mac/fused_steps.py`):** 10-frame windows, hop 5;
+WALKING = gravity SD ≤ 0.18 **and** periodicity ≥ 0.25; bouts = frames covered by
+walking windows; per bout gyro-cadence if ≥ 0.7 × firmware delta else firmware
+delta.
+
+| Whole capture 17:13:52–17:44:03 (rests, turns, all conditions) | Result |
+|---|---|
+| Total vs labelled truth | **722.5 vs 750 (−3.7 %)** |
+| Per walk | −15 % (pockets) … +4 % |
+| Typing, hand-to-mouth, hand-talk ×2 wrists | **0, 0, 0, 0 false steps** |
+
+n = 1 subject, one session; thresholds are physical and wrist-agnostic, but
+must be re-validated on more people (population rule).
