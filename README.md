@@ -75,16 +75,53 @@ an enabled iPhone feature or a released build.
 
 Atria is usable for local backup and honest diagnostics on a physical iPhone. For the current single-strap build, personal baseline is the end-user ready HRV/recovery state; external-reference validation remains an optional/internal gate for HealthKit HRV and research claims, not a required user task.
 
-| Gate | Area | Status | What works | What remains |
-|---|---|---:|---|---|
-| A | BLE connection and live collection | Partial | Fresh scan/connect, standard `2A37` HR, battery, long-wear logging, reconnect watchdogs | Proprietary realtime stream remains diagnostic; custom RR stream is not reliable enough to be primary |
-| B | HRV | Personal baseline | Clean saved 5-minute RR window exists; RMSSD is shown with an honest personal-baseline/unverified badge; RR correction/confidence enforced | Real-device single-strap self-consistency and coverage evidence |
-| C | Recovery | Personal baseline | Recovery appears once local HRV and resting baselines are mature, with a personal-baseline/unverified confidence state | More real-device baseline maturity and long-wear coverage proof |
-| D | Strain and onboarding | Partial | HR-reserve TRIMP, learned resting HR, HRmax/profile controls, explainable strain | Workout-intensity calibration from real sustained captures |
-| E | Sleep and workout detection | User-confirmed evidence | Sleep/workout candidates, user-confirmed examples, daily rollups, honest blockers | Fully automatic workout detection from cleaner sustained coverage |
-| F | Trends and insights | Local progress | 7/30/90-day trend surfaces and anomaly routing from saved rollups | More real saved history and baseline-backed trend confidence |
-| G | Platform polish | Metric-gated | HealthKit HR/workout/sleep export, backups, notifications, widget/complication plumbing | HealthKit HRV write waits for validated HRV |
-| H | Protocol expansion | Research-ready | Historical/archive decoder evidence and protocol diagnostics | Additional sensor validation and broader strap-history decoding |
+### At a glance
+
+**✅ Implemented** · **🟡 Limited confidence** · **🔬 Research only** · **⏳ Pending** · **⛔ Blocked**
+
+“Implemented” describes working functionality, not independently validated health
+accuracy. Status includes development work; the branch boundaries above still
+apply. Confidence labels are evidence categories, not completion percentages.
+
+| Capability | Achieved | Confidence / availability | Next milestone |
+|---|---|---|---|
+| **Live HR, battery & local data** | iPhone collection, persistence and reconnect handling | ✅ Implemented; background acceptance remains | [Fresh onboarding](https://github.com/adidshaft/atria/issues/23) · [lease expiration](https://github.com/adidshaft/atria/issues/22) |
+| **HRV & recovery** | RR filtering, RMSSD and personal baselines | 🟡 Personal baseline; reference-unverified | [Resolve RR scaling](https://github.com/adidshaft/atria/issues/47) · [qualify recovery](https://github.com/adidshaft/atria/issues/2) |
+| **Strain** | Personalized HR-reserve TRIMP | 🟡 Local estimate; calibration pending | [Rest/high-effort reference comparison](https://github.com/adidshaft/atria/issues/3) |
+| **Sleep & workouts** | Candidates, saved sessions and daily summaries | 🟡 Coverage-dependent; review flow needs proof | [Physical sleep review](https://github.com/adidshaft/atria/issues/25) · [workout surfaces](https://github.com/adidshaft/atria/issues/45) |
+| **Trends, widgets & insights** | Local history views and shared display data | 🟡 Cross-surface consistency still under review | [Trend confidence](https://github.com/adidshaft/atria/issues/5) · [concise UI](https://github.com/adidshaft/atria/issues/48) |
+| **All-day steps** | Mac fused estimator; development-build count display | 🔬 All-day accuracy unproven | [Held-out walks, controls and gap coverage](https://github.com/adidshaft/atria/issues/21) |
+| **R10/R11 motion & optical streams** | Mac decoding and offline Swift port | 🔬 Local research; production iPhone path disabled | [Sustained iPhone integration](https://github.com/adidshaft/atria/issues/46) |
+| **Disconnect recovery** | Short Mac test recovered contiguous 1 Hz history | 🔬 Long-gap/iPhone proof pending; raw high-rate gaps remain lost | [Overnight analysis and lifecycle checks](https://github.com/adidshaft/atria/issues/46) |
+| **Skin temperature** | Thermal candidates; one R10 reference point | 🟡 Preliminary; absolute calibration unproven | [Repeated references and baseline stability](https://github.com/adidshaft/atria/issues/31) |
+| **SpO₂** | Pulsatile R11 optical data decoded on Mac | ⏳ No defensible percentage yet | [Channel/gain interpretation and reference validation](https://github.com/adidshaft/atria/issues/31) |
+| **HealthKit** | Supported HR/workout/sleep export plumbing | ✅ Implemented for supported data; HRV export gated | [Qualified HRV and device readback](https://github.com/adidshaft/atria/issues/6) |
+| **Integration & release** | Draft integration PR and local device builds | ⛔ Verification and distribution gates open | [Repair checks](https://github.com/adidshaft/atria/issues/44) · [TestFlight receipt](https://github.com/adidshaft/atria/issues/42) |
+
+### From working data to trusted features
+
+```mermaid
+flowchart TD
+    A["IMPLEMENTED · iPhone HR + local storage"] --> B["LIMITED CONFIDENCE · Personal HRV / recovery"]
+    B --> C["PENDING · RR scale + reference qualification"]
+    D["RESEARCH · Mac R10/R11 decoding"] --> E["RESEARCH · Offline Swift port"]
+    E --> F["PENDING · Sustained iPhone transport"]
+    G["RESEARCH · Short-gap 1 Hz recovery"] --> H["PENDING · Long-gap + overnight proof"]
+    F --> I["PENDING · All-day steps + sensor validation"]
+    H --> I
+    classDef implemented fill:#dcfce7,stroke:#166534,color:#14532d
+    classDef limited fill:#fef3c7,stroke:#92400e,color:#78350f
+    classDef research fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a
+    classDef pending fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-dasharray:5 5
+    class A implemented
+    class B limited
+    class D,E,G research
+    class C,F,H,I pending
+```
+
+Solid boxes describe existing functionality or research results; dashed boxes
+are unfinished milestones. The paths show dependencies, not a release timeline.
+See the [full status and issue index](docs/CURRENT_STATUS.md) for acceptance criteria.
 
 ## Principles
 
