@@ -4763,3 +4763,31 @@ Bluetooth **OFF**. Process pid **36721** still alive. Log
 - **Interpretation:** Compact IMU did **not** free-run overnight on this Mac
   link. Does **not** prove compact IMU will never return. Goal remains open.
   Holder / overnight watch left running.
+
+### 2026-09-23 — CORRECTION: the "~17.5h" overnight watch was ~4h of real link
+
+The previous entry overstates the evidence. The Mac **slept overnight** and
+`pmset -g log` shows ~20 s DarkWake cycles (dasd) until the full wake at
+**10:51:48 IST**. During each sleep, CoreBluetooth reports `state 4`
+(poweredOff) to the recorder, which tears the link down without a
+`disconnected` event. Each DarkWake reconnects, subscribes, and loses the
+radio again ~4 s later (median subscribed span **3.8 s**, **1353** spans).
+
+Real subscribed-and-awake time (recorder start 17:25 IST 22 Sep; `t` is
+seconds since then):
+
+| Window (IST) | Length | 2A37 | stream-5 | compact 0x33 |
+|---|---|---|---|---|
+| 22 Sep 17:25–18:04 | 39.5 min | ~2340 samples | 0 | 0 |
+| 22 Sep 19:08–21:09 | 120 min | **0** (strap off-wrist) | 0 | 0 |
+| 23 Sep 10:51–11:03+ | 12 min+ | resumed ~11:00 | 0 | 0 |
+| DarkWake blips | ~1350 × ~4 s | — | 0 | 0 |
+
+- Stream-5 = 0 and compact `0x33` = 0 **still hold**, but only over ~**40 min
+  of on-wrist live link**, not 17.5 h. A 2 h window was off-wrist, which
+  means no motion and no HR. Treat it as not an IMU observation.
+- Stream-7 identity lines (`gharvard` / `hboylston`) repeated on reconnects;
+  no new text.
+- Fix applied: `caffeinate -s -i -w 36721` (process-scoped assertion, ends
+  with the recorder). The lid must stay open. Any future "N hours passive"
+  claim must subtract `state != 5` time first.
