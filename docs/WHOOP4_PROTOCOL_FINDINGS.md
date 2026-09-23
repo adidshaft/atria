@@ -5515,3 +5515,34 @@ the counted walks gave soft truth.
   before and since (all six walks captured with 55–57 frames each). It started
   ~3 min after the charger was removed. The cause is unexplained (not walking
   distance).
+
+### Negative controls + arm-down orientation gate (17:21–17:25 IST)
+
+Guided controls (spoken cues, auto-labelled `/tmp/atria-ble/control-labels.jsonl`):
+
+| Control | Firmware | App gyro | Accel |
+|---|---|---|---|
+| Typing 120 s | 0 | 0 | 0 |
+| **Talking with hands 60 s** | **126** | **82.5** | **98.8** |
+| Hand-to-mouth 30 s | 0 | 0 | 0 |
+
+Animated gesturing is a false-step class for **every** wrist detector,
+including WHOOP's firmware counter.
+
+**Discriminator: the frame gravity vector (R10 floats @46).**
+
+| Segment | Gravity (x, y, z) mean ± SD |
+|---|---|
+| 6 walks | (+0.96…+1.01, +0.32…+0.35, ≈0) ± (0.02–0.03, 0.03–0.05, 0.05) — arm hanging, x along the forearm |
+| Hand-talk | (−0.42, +0.53, +0.42) ± (0.13, 0.26, 0.39) |
+| Typing | (+0.12, −0.02, +1.02) — wrist flat |
+| Hand-to-mouth | (−0.46, −0.23, +0.31) ± (0.11, 0.70, 0.34) |
+
+**Arm-down gate** (score gyro-cadence only over contiguous frames with gravity
+x ≥ thr): at thr = 0.5, 0.7 and 0.85 the walks are unchanged (mean |err| 6.6 %,
+max 11 %) and **hand-talk 82 → 0**; typing and hand-to-mouth stay 0.
+
+Limits: one subject, one wrist (x/y signs depend on wrist and side), one
+session. Not tested: hands in pockets, carrying objects, phone to the ear,
+treadmill handrails, stairs. These could fail the gate (under-count).
+Recommended default: gx ≥ 0.7 until more labelled data exists.
