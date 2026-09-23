@@ -4747,3 +4747,19 @@ this Mac reconnect did not emit a stream-7 security-success line, so `6A`
 stayed blocked. Compact IMU still off. Holder left on `2A37`.
 
 Overnight Mac recorder (TX=0): `tools/strap-mac/overnight_watch.py` → `/tmp/atria-ble/overnight.jsonl`.
+
+### 2026-09-23 — Mac overnight passive watch (TX=0): stream-5 = 0
+
+**PHYSICAL FAIL for compact IMU (overnight passive, TX=0).** Extends the
+15-minute passive result in commit `dbf6b473`. Read-only check of an already
+running Overnight Mac passive watch — **no radio re-run this turn.** iPhone
+Bluetooth **OFF**. Process pid **36721** still alive. Log
+`/tmp/atria-ble/overnight.jsonl` spanned ~**17h31m** (`t` **0→62795**).
+
+- Stream-5 (`61080005`) value notifies = **0** (type counts empty; only
+  `notify_state` lines).
+- Compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**.
+- `2A37` HR: **2354** samples; latest **82** bpm.
+- **Interpretation:** Compact IMU did **not** free-run overnight on this Mac
+  link. Does **not** prove compact IMU will never return. Goal remains open.
+  Holder / overnight watch left running.
