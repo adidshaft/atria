@@ -29,7 +29,7 @@ enum AtriaSpO2Copy {
     /// Full "why it's blank" explanation shown when the user taps SpO2 to open the
     /// About sheet. Explains SpO2 is a derived (ratio-of-ratios) value, not a
     /// direct read, and the open decode-vs-calibrate question. 2026-08-01.
-    static let whyBlank = "SpO\u{2082} isn't a number the sensor reads directly — it's worked out from how much red versus infrared light your blood absorbs (a \u{201c}ratio of ratios\u{201d}). The open question is whether this strap broadcasts WHOOP's already-computed SpO\u{2082} over Bluetooth — which Atria could simply decode and show — or only the raw red/infrared waveform, which would need a one-time calibration against a reference oximeter to become a percentage. Atria is working that out. Until it can confirm a real value, it shows nothing rather than guess a number you might act on."
+    static let whyBlank = "SpO\u{2082} isn't read directly — it's worked out from how much red versus infrared light your blood absorbs (a \u{201c}ratio of ratios\u{201d}). Atria doesn't yet know if this strap shares a ready-made value or only a raw waveform that would need a one-time calibration against a reference oximeter. Until it's sure, it shows nothing rather than guess a number you might act on."
 }
 
 /// The metrics that have an "About <metric>" education sheet.
@@ -104,23 +104,23 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     var definition: String {
         switch self {
         case .hrv:
-            return "The variation in the time between consecutive heartbeats, measured overnight from the beat-to-beat timing of your heart. Higher variation generally reflects more recovery capacity, but the \u{201c}right\u{201d} number is deeply individual."
+            return "The variation in time between heartbeats, measured overnight. Higher variation usually means more recovery capacity — but the \u{201c}right\u{201d} number is personal."
         case .stress:
-            return "A continuous 0–3 estimate of physiological stress from your cardiac response: Calm from 0–1, Moderate from 1–2, and High from 2–3. It describes physiological load, not a psychological diagnosis or a cortisol measurement."
+            return "A 0–3 read of physiological stress from your heart's response: Calm (0–1), Moderate (1–2), High (2–3). It's physical load, not a psychological diagnosis."
         case .recovery:
-            return "One readiness read that blends your overnight HRV, resting heart rate, sleep, and respiration against your own baseline. It answers \u{201c}how ready am I today,\u{201d} not a score to max out every day."
+            return "One readiness score blending overnight HRV, resting heart rate, sleep, and breathing rate against your own baseline. It answers \u{201c}how ready am I today,\u{201d} not a score to max out."
         case .restingHeartRate:
-            return "How many times your heart beats per minute at full rest, taken from overnight wear. It tracks cardiovascular fitness over months and day-to-day strain in the short term."
+            return "Beats per minute at full rest, from overnight wear. Tracks fitness over months and daily strain in the short term."
         case .respiration:
-            return "How many breaths you take per minute while asleep. It is normally stable night to night, so shifts outside your own usual range are often the first sign something is off."
+            return "Breaths per minute while asleep. Normally stable night to night, so a shift from your usual range is often the first sign something's off."
         case .sleep:
-            return "How long you slept against your personal goal, plus how consistent your recent sleep timing has been. It is a duration and consistency estimate, not a clinical sleep study."
+            return "Time slept against your personal goal, plus how consistent your recent bedtimes have been. A duration and consistency estimate, not a clinical sleep study."
         case .vo2max:
-            return "An estimate of your cardiorespiratory fitness (VO₂max) and how old your heart data reads versus your calendar age. It is a fitness signal from everyday wear, not a lab test."
+            return "An estimate of cardiorespiratory fitness (VO₂max), and how old your heart data reads versus your calendar age. A fitness signal from everyday wear, not a lab test."
         case .skinTemperature:
-            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria has not yet verified the Bluetooth decoder, so it does not currently publish a temperature value."
+            return "WHOOP 4 has a wrist-skin sensor meant for overnight trend tracking. Atria hasn't verified how to decode it yet, so it doesn't show a temperature value."
         case .bloodOxygen:
-            return "Blood-oxygen saturation is the percentage of your hemoglobin carrying oxygen. It normally sits in the high 90s at rest."
+            return "Blood-oxygen saturation is the share of your hemoglobin carrying oxygen. Normally in the high 90s at rest."
         }
     }
 
@@ -144,7 +144,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // HRV.swift: RR accepted 300–2000 ms; beats whose deviation from the
             // ±2-beat local median exceeds 20% are dropped; RMSSD over the window;
             // baseline prefers overnight/sleep samples.
-            return "Clean beat-to-beat intervals from overnight wear — 300–2000 ms, with any beat more than 20% off its neighbors dropped — then the beat-to-beat variation is measured over the most stable stretch of sleep."
+            return "Atria uses clean overnight beats (300–2000 ms, with outliers more than 20% off their neighbors dropped) and measures the variation over your most stable stretch of sleep."
         case .stress:
             // AtriaPhysiologicalStressModel.swift: overlapping five-minute
             // windows, evaluated once per minute. HR reserve drives a sigmoid;
@@ -152,32 +152,32 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // and robust MAD, with HR weighted more near rest. Qualified
             // activity attenuates rather than erases elevation; EMA half-life
             // is three minutes and telemetry gaps remain gaps.
-            return "Every minute, Atria looks back over the previous five minutes. It compares heart rate with your personal rest-to-maximum range and clean beat-to-beat timing with your recent overnight pattern. The two signals share the score according to the cardiac context. Confirmed movement can reduce likely exercise-related elevation by at most 35%, never erase it. Nearby readings are lightly smoothed, but genuine signal gaps stay blank. If usable beat timing is unavailable, Atria still shows a numeric heart-rate-only estimate and labels it lower confidence; it never invents a second signal or calm."
+            return "Every minute, Atria compares your heart rate and beat-to-beat timing with your own rest-to-max range. Confirmed movement can lower an exercise-related spike, but never erase it. If beat timing is unavailable, Atria still shows a heart-rate-only estimate, labeled lower confidence."
         case .recovery:
             // AtriaAnalytics.swift: z-blend HRV 0.60 / RHR 0.20 (inverted) / sleep
             // 0.15 / respiration 0.05, logistic → 1–99%.
-            return "Overnight HRV, resting heart rate, sleep, and respiration are each turned into a z-score against your own baseline, blended (weighted about 60% HRV, 20% resting HR, 15% sleep, 5% respiration) and mapped through a logistic curve to a 1–99% score. It starts appearing after about 4 nights of calibration and steadies as the baseline matures."
+            return "HRV, resting heart rate, sleep, and breathing rate are each compared with your own baseline, weighted (about 60/20/15/5%) and combined into a 1–99% score. It starts appearing after about 4 nights and steadies as your baseline matures."
         case .restingHeartRate:
             // Sessions.swift: 10th percentile (5th during a sleep window), not a
             // single lowest beat; Insights.swift EMA α 0.1, step-bounded ±2 bpm,
             // up to 90 nights, trusted after 14.
-            return "Read from the strap's heart-rate stream at rest, preferring overnight windows, as a low percentile of the session (the 10th, or 5th during a detected sleep window) rather than a single lowest beat. Your baseline is a step-bounded rolling average of up to 90 nights, trusted after 14 — one odd night can't yank it."
+            return "Taken as a low percentile of your overnight heart rate, not the single lowest beat, so one odd reading can't skew it. Your baseline is a rolling average of up to 90 nights, trusted after 14."
         case .respiration:
             // AtriaAnalytics.RespRateRsa: RSA from RR, 90 s window, 9–30 bpm band,
             // dominant peak must clear an SNR gate, fail-closed on gaps.
-            return "Derived from the breathing rhythm (respiratory sinus arrhythmia) visible in your overnight beat-to-beat timing — no extra sensor. Atria scans a 90-second window for the strongest cycle in the 9–30 breaths-per-minute band and reports it only when that peak clearly dominates. Nights without a clean overnight window simply don't produce a value."
+            return "Derived from the breathing rhythm visible in your overnight heartbeat timing — no extra sensor needed. Atria only reports a value when that rhythm is clear; noisy nights are simply left blank."
         case .sleep:
             // AtriaSleepWakeResearch.swift: HR delta/trend/variability + validated
             // motion stillness vs resting HR; 20-min gap tolerance; HR-only shows
             // no hypnogram; manual add has no stages.
-            return "Detected from continuous overnight heart-rate evidence, and — when trusted motion data is present — heart-rate trend, variability, and stillness are used to estimate stages relative to your resting heart rate. Brief sensor dropouts of up to 20 minutes between clearly-asleep stretches count toward duration; longer gaps are honestly excluded."
+            return "Detected from overnight heart rate, and — when motion data is available — heart-rate trend and stillness refine the stage estimate. Short dropouts of up to 20 minutes between clearly-asleep stretches still count; longer gaps don't."
         case .vo2max:
             // AtriaAnalytics.swift: 15.3 * maxHR/rest clamped 20–80 (Uth–Sørensen);
             // AtriaFitnessAge.swift: five factors → age offset clamped ±12; pace =
             // slope of the weekly offset.
-            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Body Age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
+            return "VO₂max comes from your measured maximum-to-resting heart-rate ratio. Body Age blends five factors — VO₂max, resting HR, HRV, weekly hard-effort minutes, and sleep consistency — into an age offset from your calendar age."
         case .skinTemperature:
-            return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
+            return "Atria can see sensor bytes but has not verified which ones represent wrist temperature, so it won't turn raw values into degrees. Once confirmed, it will show your reading as a change from your own baseline."
         case .bloodOxygen:
             return AtriaSpO2Copy.whyBlank
         }
@@ -189,24 +189,24 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // Corrected from the design's sample copy (which said "last 60 days"
             // and "4 clean nights"): the real HRV baseline is trusted after 14
             // distinct overnight readings and holds up to 90 nights.
-            return "\u{201c}Personal baseline\u{201d} means compared with your own recent overnight nights — never a population norm. A trusted baseline needs about 14 clean overnight readings before HRV appears at all."
+            return "Compared with your own recent overnight nights — never a population norm. Needs about 14 clean nights before HRV appears at all."
         case .stress:
-            return "A physiological estimate, not a medical or psychological diagnosis. Baselines learn from your own qualified history; missing heart rate stays blank, and HR-only values are explicitly lower confidence."
+            return "A physiological estimate, not a diagnosis. It learns from your own history; missing heart rate stays blank, and heart-rate-only values are labeled lower confidence."
         case .recovery:
-            return "Scored against your own baseline, never a population norm. Early scores are labeled as such; confidence reaches personal-baseline after 14 trusted nights, and missing essentials keep it Learning rather than guessing."
+            return "Scored against your own baseline, never a population norm. Confidence reaches full strength after 14 trusted nights; missing essentials show Learning rather than a guess."
         case .restingHeartRate:
-            return "Compared only with your own normal, not age tables. Until 14 trusted nights exist it shows Learning instead of a guessed range."
+            return "Compared only with your own normal, not age tables. Shows Learning until 14 trusted nights exist."
         case .respiration:
-            return "Compared with your own typical nights only. A missing night stays missing — no interpolated breaths."
+            return "Compared with your own typical nights only. A missing night stays missing — Atria never fills in a guess."
         case .sleep:
-            return "A duration and timing-consistency estimate from heart-rate evidence, not a clinical sleep study or a measurement of circadian phase. On heart-rate-only nights, the hypnogram is clearly labeled as an estimate and never changes your saved sleep numbers. When the strap also records enough motion, Atria can draw the fuller stage timeline. Manually added sleep has no stage breakdown. Unworn time is never counted as sleep."
+            return "A duration and timing-consistency estimate from heart-rate evidence, not a clinical sleep study or a measurement of circadian phase. On heart-rate-only nights the stage timeline is labeled an estimate. Manually added sleep has no stage breakdown, and unworn time is never counted as sleep."
         case .vo2max:
             // AtriaFitnessAge.swift footnote + thresholds; VO2max needs a measured
             // HRmax. There is no "Medium" confidence literal in source, so this
             // states the real early/confident day thresholds instead.
-            return "An estimate from heart data — not a medical measurement. It needs about 14 days before an early read appears and 28 for a confident baseline, and VO₂max stays \u{201c}preliminary\u{201d} until you've recorded a hard effort that measures your maximum heart rate."
+            return "An estimate from heart data, not a medical measurement. Needs about 14 days for an early read and 28 for a confident one, and stays \u{201c}preliminary\u{201d} until you've recorded an effort that reaches your real max heart rate."
         case .skinTemperature:
-            return "Decoder not verified. If enabled after validation, this remains a sleep-only relative signal — not core temperature or a fever check — kept on your device and never written to Health."
+            return "Decoder not verified. If it ships, it stays a sleep-only relative signal — not a fever check — kept on your device and never written to Health."
         case .bloodOxygen:
             return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
         }
