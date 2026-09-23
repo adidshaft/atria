@@ -5404,3 +5404,30 @@ are required before any step claim.
   multi-pace labelled set (slow / normal / brisk, ≥3 each) is the prerequisite
   for a better detector.
 - HRV from R10 RR is the validated metric (see above). Steps stay "research".
+
+### R10 bytes 1293–1294 = **native firmware step counter**; bytes 2 / 15 / 1917 after charger removal
+
+**u16le @1293 (inside the `00 01 00 00 00 <u16> …` block at 1288) is a cumulative on-strap step count:**
+- Flat at rest and during desk use (16:45–16:48: 1700 → 1700). **Walk 1 +156
+  (1700 → 1856), walk 2 +158 (1856 → 2014).** Also +56 during deliberate wrist
+  shaking and +131 across strap removal/reseat (a wrist counter responds to
+  arm motion).
+- Each bout opens with a **+11 … +13 jump** (16:29:38/16:30:20/16:33:42/16:41:36/
+  16:49:17/16:54:15/16:54:37/16:56:34), i.e. retroactive credit after gait
+  confirmation, then +1…+3 per frame (≈ 2 per 0.961 s ≈ 125 spm).
+- Bytes 1299 / 1315 flip to 36 / 8 on single frames only during walking
+  (step-event / state flag candidates).
+- Truth reconciliation is pending: the user's counted 100 per walk vs
+  firmware ~157, app gyro 161 / 113, accel 176 / 170. Walk durations
+  (~80–95 s of continuous gait) imply ~125 spm if the firmware is right, or
+  ~70 spm if exactly 100 steps were taken. Asked the user whether uncounted
+  steps (e.g. walking back to the desk) are inside the window.
+
+**Charger-off (flag cleared 16:55:21):**
+- **Byte 2 bit 1 = charging** (confirmed both edges: set ~16:38 after plug-in,
+  clear 16:55 after unplug).
+- Bytes **15** (74 → 214 while charging, now → 104) and **1917** (85 → 156, now →
+  103) rise under charge and decay after it, in smooth steps → **temperature
+  candidates**. 1917 also dropped 84 → 81 when the strap left the skin (15 did
+  not) → **1917 = skin/device temperature**, **15 = battery/charger temperature**
+  (both unscaled; units not yet calibrated).
