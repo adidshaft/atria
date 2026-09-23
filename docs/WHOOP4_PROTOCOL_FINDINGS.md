@@ -4939,3 +4939,25 @@ New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
   `0x33` = 0.** `3F` is latched again (no cleanup was possible).
 - **Conclusion:** `3F` does not take over a running history serve as `0x33`;
   it pre-empts history with `2B`.
+
+#### Run C — 12:45 IST: Sep 15 "zombie" stream-5 CCCD toggle, then `3F/01` WWR
+
+**PHYSICAL FAIL for compact `0x33`; link-stability change observed.**
+`r10r11_probe.py cccd_3f`, log `/tmp/atria-ble/r10r11-C.jsonl`. Latch cleared
+first (`3F/00` at 12:44:38; two leftover `2B`, then silence). RSSI −53.
+
+- Stream-5 silent for 10 s (0 frames), then **stream-5 CCCD off → 400 ms → on**
+  with 2A37 untouched. This replays `kickZombieProprietaryStreamIfNeeded`.
+  Both CCCD writes confirmed; **the link did not drop**, contradicting the
+  Sep 20 note "mid-link stream-5 CCCD toggle disconnects this V4" on this
+  Mac link.
+- 20 s later, `3F/01` WWR → type-24 `02 00 00 00` → type `2B` (R10 `0a` /
+  R11 `0b`) at ~20–22 per 10 s.
+- **No `CBErrorDomain 6` for the full 270 s of `2B`** (560 frames, 2A37 312
+  samples ≈ 1 Hz). Runs A / A2 / B died at 25 / 22 / 79 s. RSSI was better
+  here (−53 vs −63/−65/−70), so the toggle is not proven as the cause.
+- Compact `0x33` = **0**. Cleanup `3F/00` ACKed; latch off.
+- **Sep 15 ingredients now all replayed on the Mac without `0x33`:** `3F/01`
+  WWR (A), latched reconnect (A2), `3F` with history (B), stream-5 CCCD
+  toggle then `3F` (C). Still not replayed: the ~45-min repetition (eight `3F`
+  activations across reconnects) and the iPhone as central.

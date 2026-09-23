@@ -5,6 +5,8 @@ Modes (one variable per run):
   history_3f   16/00, ACK every type-31 sub 2, then 3F/01 WWR mid-serve, keep ACKing, listen.
   passive      subscribe all, TX=0, listen (what does a latched strap send on reconnect?).
   stop3f       one 3F/00 with response, listen.
+  cccd_3f      Sep 15 "zombie" repair: 10 s silent stream-5, stream-5 CCCD off -> 400 ms -> on
+               (2A37 untouched), 20 s, then 3F/01 WWR, listen.
 
 TX is limited to 3F/01 (WWR), 16/00, history ACK 17/01+token, and a final 3F/00
 only when no 0x33 was seen. Never 6A/69/51/1D/9A/60/34/35.
@@ -29,7 +31,7 @@ from Foundation import NSData, NSObject, NSTimer
 from PyObjCTools import AppHelper
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "3f_wwr"
-assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f"), MODE
+assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f", "cccd_3f"), MODE
 OUT_PATH = sys.argv[2] if len(sys.argv) > 2 else f"/tmp/atria-ble/r10r11-{MODE}.jsonl"
 LISTEN_S = float(sys.argv[3]) if len(sys.argv) > 3 else 300.0
 HISTORY_LEAD_S = float(sys.argv[4]) if len(sys.argv) > 4 else 30.0
@@ -87,6 +89,7 @@ class Delegate(NSObject):
         self.history_started_at = None
         self.hr_n = 0
         self.hr_last = None
+        self.stream5 = None
         return self
 
     # --- link ---------------------------------------------------------------
@@ -127,6 +130,8 @@ class Delegate(NSObject):
             s = short(char.UUID())
             if s == "61080002":
                 self.tx = char
+            if s == "61080005":
+                self.stream5 = char
             if s in NOTIFY_SHORT:
                 peripheral.setNotifyValue_forCharacteristic_(True, char)
 
@@ -145,6 +150,8 @@ class Delegate(NSObject):
                 self.send_with_response(0x3F, b"\x00", "3f00")
             elif MODE == "passive":
                 say({"event": "passive_tx0"})
+            elif MODE == "cccd_3f":
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(10.0, self, "cccdOff:", None, False)
             else:
                 self.history_started_at = time.time()
                 self.send_with_response(0x16, b"\x00", "history_1600")
@@ -171,6 +178,20 @@ class Delegate(NSObject):
         say({"event": "tx", "name": "3f01", "type": "without_response", "reason": reason, "hex": frame.hex()})
         self.peripheral.writeValue_forCharacteristic_type_(
             NSData.dataWithBytes_length_(frame, len(frame)), self.tx, CBCharacteristicWriteWithoutResponse)
+
+    def cccdOff_(self, _timer):
+        s5 = sum(v for k, v in self.counts.items() if k.startswith("05:"))
+        say({"event": "cccd_toggle_off", "uuid": "61080005", "stream5_frames_before": s5})
+        self.peripheral.setNotifyValue_forCharacteristic_(False, self.stream5)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(0.4, self, "cccdOn:", None, False)
+
+    def cccdOn_(self, _timer):
+        say({"event": "cccd_toggle_on", "uuid": "61080005"})
+        self.peripheral.setNotifyValue_forCharacteristic_(True, self.stream5)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(20.0, self, "after3F:", None, False)
+
+    def after3F_(self, _timer):
+        self.send_3f_wwr("after_stream5_cccd_toggle")
 
     def midServe3F_(self, _timer):
         self.send_3f_wwr(f"mid_history_{HISTORY_LEAD_S:.0f}s")
