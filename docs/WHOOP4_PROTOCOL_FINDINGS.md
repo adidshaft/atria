@@ -4887,3 +4887,20 @@ readings (on-wrist throughout). 61080004 type `0x30`: 27. 61080007: 2.
 runs A/B. The recorder is stopped for run A (the single link is needed).
 New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
 (WWR), `16/00`, `17/01`+token, and `3F/00` cleanup when no `0x33` was seen.
+
+#### Run A — 23 Sep 12:32 IST: `3F/01` write-WITHOUT-response on a fresh Mac link
+
+**PHYSICAL FAIL for compact `0x33`.** `r10r11_probe.py 3f_wwr`, log
+`/tmp/atria-ble/r10r11-A.jsonl`. Fresh link, advert 180D only, WWR MTU 244.
+
+- TX `aa0800a823013f0151afd8bd` (WWR). Type-24 `aa0c00fc24843f010200000067290206`:
+  data `02 00 00 00` (pending), same as the with-response `3F/01` on 22 Sep.
+- Type `2B` on stream-5 from +1.4 s: 1928/1932-byte frames (`aa8407f72b…` /
+  `aa88070b2b…`), **14 per 10 s**, each followed by an 8- or 4-byte tail chunk.
+  2A37 slowed to ~7–10 samples per 10 s (89–94 bpm).
+- **`CBErrorDomain 6` at +25.3 s.** The Mac link dies under the `2B` flood like
+  the July iPhone links. The 22 Sep Mac `3F` runs survived only because
+  `3F/00` stopped them at ~12 s.
+- Compact `0x33` = 0. The write type (WWR vs with-response) does not change
+  the `3F` outcome. No cleanup `3F/00` went out (the link was gone), so `3F`
+  may still be latched on the strap.
