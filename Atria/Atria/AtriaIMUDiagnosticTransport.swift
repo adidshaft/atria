@@ -242,9 +242,10 @@ enum AtriaIMUDiagnosticTransport {
             : liveOtherUUIDSource
     }
 
-    /// Standard-HR production connect/reseat must not emit 6A or 3F.
-    /// Quiet lease uses the same gate so a missed argv cannot leave the
-    /// writers live while the investigation is running.
+    /// Standard-HR production connect/reseat must not emit 6A, 3F, or the
+    /// all-day historical IMU toggle (0x69). Quiet lease uses the same gate
+    /// so a missed argv cannot leave the writers live while the investigation
+    /// is running. Explicit workout/calibration ownership may still arm 0x69.
     static func shouldInhibitAutomaticConnectIMUCommands(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment,

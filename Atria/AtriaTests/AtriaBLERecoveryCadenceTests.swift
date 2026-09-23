@@ -11519,6 +11519,101 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(AtriaBLEManager.allDayMotionCaptureEnabled(defaults: defaults))
     }
 
+    func testHistoricalIMUToggleSkipsAutomaticStandardHRConnect() {
+        // Production reconnect arms the all-day bank via writeProprietary /
+        // direct WWR, bypassing sendCommand's standard-HR gate. Keep 0x69 off
+        // the air unless an explicit workout/calibration owns the lease.
+        XCTAssertFalse(
+            AtriaBLEManager.shouldTransmitHistoricalIMUToggle(
+                connectIMUCommandsInhibited: true,
+                manualWorkoutActive: false,
+                calibrationHoldActive: false
+            ),
+            "normal launch/reconnect must not auto-send 0x69"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTransmitHistoricalIMUToggle(
+                connectIMUCommandsInhibited: true,
+                manualWorkoutActive: true,
+                calibrationHoldActive: false
+            ),
+            "explicit workout may still arm/stop the bank"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTransmitHistoricalIMUToggle(
+                connectIMUCommandsInhibited: true,
+                manualWorkoutActive: false,
+                calibrationHoldActive: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTransmitHistoricalIMUToggle(
+                connectIMUCommandsInhibited: true,
+                manualWorkoutActive: false,
+                calibrationHoldActive: false,
+                explicitWorkoutMotionOwner: true
+            ),
+            "endWorkoutMotionLease still holds the owner when it stops the bank"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTransmitHistoricalIMUToggle(
+                connectIMUCommandsInhibited: false,
+                manualWorkoutActive: false,
+                calibrationHoldActive: false
+            )
+        )
+    }
+
+    func testHistoricalIMUArmAndStopGateAutomaticConnectWrites() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let armStart = try XCTUnwrap(source.range(
+            of: "private func armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        let armEnd = try XCTUnwrap(source.range(
+            of: "private func checkpointDailyHistoricalMotionBankIfNeeded(",
+            range: armStart.upperBound..<source.endIndex
+        ))
+        let armBody = String(source[armStart.lowerBound..<armEnd.lowerBound])
+        XCTAssertTrue(
+            armBody.contains("shouldTransmitHistoricalIMUToggle("),
+            "arm must refuse automatic 0x69 under standard-HR/quiet lease"
+        )
+        XCTAssertTrue(armBody.contains("no_automatic_69_on_standard_hr_connect"))
+        let armGate = try XCTUnwrap(armBody.range(of: "shouldTransmitHistoricalIMUToggle("))
+        let armWrite = try XCTUnwrap(armBody.range(of: "Cmd.toggleIMUModeHistorical"))
+        XCTAssertLessThan(
+            armGate.lowerBound,
+            armWrite.lowerBound,
+            "gate must precede the 69/01 write"
+        )
+
+        let stopStart = try XCTUnwrap(source.range(
+            of: "private func stopWorkoutHistoricalMotionBankIfPossible("
+        ))
+        let stopEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func workoutHistoricalMotionBankOffloadRetryDelay(",
+            range: stopStart.upperBound..<source.endIndex
+        ))
+        let stopBody = String(source[stopStart.lowerBound..<stopEnd.lowerBound])
+        XCTAssertTrue(
+            stopBody.contains("shouldTransmitHistoricalIMUToggle("),
+            "stop must refuse automatic 69/00 under standard-HR/quiet lease"
+        )
+        XCTAssertTrue(stopBody.contains("no_automatic_69_on_standard_hr_connect"))
+        let stopGate = try XCTUnwrap(stopBody.range(of: "shouldTransmitHistoricalIMUToggle("))
+        let stopWrite = try XCTUnwrap(stopBody.range(of: "peripheral.writeValue("))
+        XCTAssertLessThan(
+            stopGate.lowerBound,
+            stopWrite.lowerBound,
+            "gate must precede the 69/00 write"
+        )
+    }
+
     func testHistoricalMotionBankTXDiscoveryGivesDeferredStopPriority() {
         XCTAssertEqual(
             AtriaBLEManager.historicalMotionBankTXDiscoveryAction(

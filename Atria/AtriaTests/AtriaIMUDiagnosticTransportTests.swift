@@ -186,7 +186,7 @@ final class AtriaIMUDiagnosticTransportTests: XCTestCase {
                 environment: [:],
                 standardHROnlyMode: true
             ),
-            "production standard-HR must not send 6A/3F on connect/reseat"
+            "production standard-HR must not send 6A/3F/69 on connect/reseat"
         )
         XCTAssertTrue(
             AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(

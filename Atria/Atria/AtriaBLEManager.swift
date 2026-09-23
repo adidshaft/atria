@@ -35342,6 +35342,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .none
     }
 
+    /// Production standard-HR / quiet-lease connect must not automatically
+    /// occupy the command channel with 0x69. Explicit workout or calibration
+    /// ownership retains the toggle; Settings leftover flush is unrelated.
+    nonisolated static func shouldTransmitHistoricalIMUToggle(
+        connectIMUCommandsInhibited: Bool,
+        manualWorkoutActive: Bool,
+        calibrationHoldActive: Bool,
+        explicitWorkoutMotionOwner: Bool = false
+    ) -> Bool {
+        !connectIMUCommandsInhibited
+            || manualWorkoutActive
+            || calibrationHoldActive
+            || explicitWorkoutMotionOwner
+    }
+
     nonisolated static func historicalMotionBankIsArmedForCurrentConnection(
         armed: Bool,
         armedConnectionStartedAt: Date?,
@@ -35658,6 +35673,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
         let calibrationHoldActive =
             workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        // Normal launch/reconnect is standard-HR: do not auto-send 69/01 for
+        // all-day banking. Unsupported straps still ACKed with status 03 and
+        // occupied the proprietary command channel on every connect.
+        guard Self.shouldTransmitHistoricalIMUToggle(
+            connectIMUCommandsInhibited:
+                AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+                    standardHROnlyMode: standardHROnlyMode
+                ),
+            manualWorkoutActive: manualWorkoutActive,
+            calibrationHoldActive: calibrationHoldActive,
+            explicitWorkoutMotionOwner: workoutMotionOwnerStartedAt != nil
+        ) else {
+            noteMotionBankDutyCycle("connect_imu_inhibited")
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank status=arm_skipped reason=%@ action=no_automatic_69_on_standard_hr_connect",
+                reason
+            )
+            return
+        }
         let explicitPresentCapturePriority =
             manualWorkoutActive || calibrationHoldActive
         // The continuation flag is a SCHEDULING latch that stays true across
@@ -36465,6 +36499,46 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return nil
         }
         let defaults = UserDefaults.standard
+        let now = Date()
+        let manualWorkoutActive =
+            AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
+        let calibrationHoldActive =
+            workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        // endWorkoutMotionLease still holds workoutMotionOwnerStartedAt when
+        // it requests this stop; all-day checkpoints must not send 69/00.
+        if !Self.shouldTransmitHistoricalIMUToggle(
+            connectIMUCommandsInhibited:
+                AtriaIMUDiagnosticTransport.shouldInhibitAutomaticConnectIMUCommands(
+                    standardHROnlyMode: standardHROnlyMode
+                ),
+            manualWorkoutActive: manualWorkoutActive,
+            calibrationHoldActive: calibrationHoldActive,
+            explicitWorkoutMotionOwner: workoutMotionOwnerStartedAt != nil
+        ) {
+            defaults.set(
+                false,
+                forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
+            )
+            defaults.set(
+                false,
+                forKey: Self.workoutHistoricalMotionBankStopPendingKey
+            )
+            if workoutHistoricalMotionBankArmed
+                || defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey)
+            {
+                workoutHistoricalMotionBankArmed = false
+                workoutHistoricalMotionBankArmedConnectionStartedAt = nil
+                defaults.set(
+                    false,
+                    forKey: Self.workoutHistoricalMotionBankEnabledKey
+                )
+            }
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank status=stop_skipped reason=%@ action=no_automatic_69_on_standard_hr_connect",
+                reason
+            )
+            return nil
+        }
         let wasEnabled = workoutHistoricalMotionBankArmed
             || defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey)
         let hadDeferredPrearm = defaults.bool(
