@@ -48,6 +48,6 @@ for line in open(labels_path):
     row = {"label": lab["label"], "spm": lab["spm"], "truth": t, "firmware": fw,
            "gyro": round(gyro, 1), "accel": round(det.steps * 1.11, 1), "frames": len(r10)}
     for k in ("firmware", "gyro", "accel"):
-        row[k + "_err_pct"] = None if row[k] is None else round(100 * (row[k] - t) / t, 1)
+        row[k + "_err_pct"] = None if row[k] is None or t == 0 else round(100 * (row[k] - t) / t, 1)
     rows.append(row)
     print(json.dumps(row))
