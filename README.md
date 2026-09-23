@@ -67,6 +67,12 @@ This project is independent and unaffiliated with WHOOP. It does not bypass paid
 
 ## Current Status
 
+**Status reviewed 23 September 2026.** The public default branch, published
+`dev`, and latest local research are at different checkpoints. See
+[Current product status](docs/CURRENT_STATUS.md) for the branch boundaries,
+active issues, and acceptance gates. The new Mac R10/R11 findings are not yet
+an enabled iPhone feature or a released build.
+
 Atria is usable for local backup and honest diagnostics on a physical iPhone. For the current single-strap build, personal baseline is the end-user ready HRV/recovery state; external-reference validation remains an optional/internal gate for HealthKit HRV and research claims, not a required user task.
 
 | Gate | Area | Status | What works | What remains |
@@ -109,19 +115,26 @@ Atria is usable for local backup and honest diagnostics on a physical iPhone. Fo
 - Clinically validated HRV. Atria can show local RMSSD as a personal baseline; independent RR/IBI validation is not part of the single-strap user path.
 - Fully validated recovery. Recovery can display as a personal baseline; the validated tier stays gated for export/research uses.
 - Fully automatic workout detection in all gym conditions. Current logic is honest about stream coverage and HR-intensity blockers.
-- **Whole-day step totals.** The strap holds the motion, but the historical drain
-  cannot yet finish against a live HR connection, so Atria withholds the daily
-  number rather than publishing a false lower bound. Counted-walk accuracy is
-  proven (110 truth → 112 strap steps, 1.82% error); autonomous all-day quantity
-  is not. Strap-only by design — no phone pedometer fallback.
-  ([#21](https://github.com/adidshaft/atria/issues/21))
-- **SpO₂.** The WHOOP 4 candidate fields are 1 Hz DC levels with no pulsatile
-  component; a ratio-of-ratios over them collapses to a constant ~80% artifact.
-  No defensible value can be derived from them, so the card stays blank with a
-  named reason. ([#31](https://github.com/adidshaft/atria/issues/31))
-- **Absolute skin temperature.** The thermal field is real and validated, but its
-  absolute scale reads several degrees hot with unknown per-device calibration.
-  Only relative deviation is usable.
+- **Validated whole-day steps.** Development builds have displayed step totals,
+  but display agreement does not establish all-day accuracy. September 23 Mac
+  experiments recovered 1 Hz history across a short disconnect and exercised a
+  fused step estimator. Fresh held-out walks, long gaps, and physical iPhone
+  integration remain open. Raw high-rate IMU is not stored during disconnects.
+  ([#21](https://github.com/adidshaft/atria/issues/21),
+  [#46](https://github.com/adidshaft/atria/issues/46))
+- **SpO₂.** Historical V24 DC candidate fields did not support a defensible
+  percentage. Newly decoded Mac R11 pulsatile optical data is a separate
+  research source, not a validated SpO₂ value.
+  ([#31](https://github.com/adidshaft/atria/issues/31))
+- **Calibrated absolute skin temperature.** The older V24 thermal signal and
+  the new R10 candidate have different evidence. R10 has one contact-thermometer
+  comparison; repeatability, slope and per-device calibration are unproven.
+  The product target remains deviation from a personal baseline.
+- **Confirmed WHOOP-specific RR scaling.** Mac source comparisons found a
+  discrepancy with the app's standard Heart Rate Service conversion. A
+  source-specific investigation is pending; independent HRV and HealthKit
+  validation gates remain unchanged.
+  ([#47](https://github.com/adidshaft/atria/issues/47))
 - Any claim that requires WHOOP cloud data. This project intentionally stays local.
 
 ## Quick Start
@@ -129,7 +142,7 @@ Atria is usable for local backup and honest diagnostics on a physical iPhone. Fo
 Requirements:
 
 - macOS with Xcode.
-- A physical iPhone. BLE collection cannot be validated in the Simulator.
+- A physical iPhone running iOS 26.1 or later. BLE collection cannot be validated in the Simulator.
 - A compatible strap that is free to advertise over BLE.
 - Apple Developer signing configured for the iOS app target.
 
@@ -148,10 +161,11 @@ Select the Atria app target, choose your physical iPhone, set signing if needed,
 For command-line physical-device verification:
 
 ```sh
-./live_device_debug.sh --seconds 45 --log logs/live-device/run.log --log-gate-status --standard-hr-only --long-wear-mode --leave-running
+ATRIA_DEVICE_ID="YOUR-PHYSICAL-DEVICE-ID" ./live_device_debug.sh --seconds 45 --log logs/live-device/run.log --log-gate-status --standard-hr-only --long-wear-mode --leave-running
 ```
 
-Fast local tooling checks:
+Local tooling checks (offline; the current development static gate has known
+failures tracked in [#44](https://github.com/adidshaft/atria/issues/44)):
 
 ```sh
 ./test_handoff_local.sh
@@ -160,7 +174,7 @@ Fast local tooling checks:
 Long-wear acceptance, when extended physical-device checks are allowed:
 
 ```sh
-ATRIA_DEVICE_ID=<physical-device-id> \
+ATRIA_DEVICE_ID="YOUR-PHYSICAL-DEVICE-ID" \
   python3 tools/monitor_long_wear.py \
   --preset overnight \
   --label overnight-$(date -u +%Y%m%dT%H%M%SZ)
@@ -201,6 +215,7 @@ python3 tools/audit_handoff_status.py \
 | `docs/` | Technical notes, validation plans, and protocol research — start at [`docs/README.md`](docs/README.md). |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
+| `test_*.py`, `test_*.sh` | Offline regression checks and evidence harnesses; physical capture scripts require a device. |
 | `assets/` | Logo and README screenshots. |
 | `evidence/` | Physical-device evidence trees. Gitignored — may contain personal health data. |
 
