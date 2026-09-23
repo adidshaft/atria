@@ -4791,3 +4791,34 @@ seconds since then):
 - Fix applied: `caffeinate -s -i -w 36721` (process-scoped assertion, ends
   with the recorder). The lid must stay open. Any future "N hours passive"
   claim must subtract `state != 5` time first.
+
+### 2026-09-23 — Pairing mode (side light pulsing blue): no bond, 6A still refused
+
+**PHYSICAL FAIL for compact IMU in pairing mode.** Mac is the only central, and
+iPhone Bluetooth is OFF.
+
+- **Advert in pairing mode** (`tools/strap-mac/pairing_window.py`, 8 s scan):
+  **180D + 61080001** on 98/99 packets, 180D-only on 1. The advert is NOT
+  61080001-only. The normal-mode baseline (22 Sep) was 2191 × 180D-only and
+  1 × 180D+61080001, so pairing mode is visible as "61080001 now advertised",
+  and 180D stays.
+- **Passive connect + read-all (TX=0), 11:11:53:** services 61080001, 180D,
+  180A, 180F. Every readable characteristic read without an auth error: 2A29 =
+  "WHOOP Inc.", 2A19 = 0x64 (100%). No attribute needs encryption, so macOS
+  never bonds, and the strap sent no security request. Stream-7 identity:
+  `hboylston` / `h17.2.2.0` / `kharvard_r10`. Stream-5 = 0 over ~2 min idle.
+- **Hello + ONE 6A/01 (`tools/strap-mac/pairing_6a.py`, 11:13:50, user-approved):**
+  - hello `aa0800a8230123009ac2a82c` → type-24 status 01, accepted (144 B).
+  - 6A/01 `aa0800a823026a0119b85278` → `aa0c00fc24836a0200010000`. This is the
+    same refusal as outside pairing mode (status 00, body `01 00 00`).
+  - 60 s listen: 64 × 2A37 (strap back on wrist at ~77 bpm), 2 × 0x30 events,
+    **stream-5 = 0, compact 0x33 = 0**, no stream-7 security text.
+- **Interpretation:** Pairing mode does not change the 6A refusal from a Mac
+  central, and a passive Mac central cannot create a bond, because the strap
+  does not require one. The "fresh bond unlocks IMU" hypothesis is untested,
+  not refuted, because no bond happened.
+- **Tooling note:** CoreBluetooth scripts get SIGKILLed by TCC
+  (`NSBluetoothAlwaysUsageDescription`) when the responsible app is Terminal
+  or the `claude` CLI. They run from the Claude desktop terminal panel
+  (Claude.app declares Bluetooth) or Cursor. Recorder restarted 11:15 under
+  `caffeinate -s -i` from that panel.
