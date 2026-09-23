@@ -5753,3 +5753,22 @@ encoding the Mac-validated flush design. It emits only `3F/01`, `3F/00`,
 Overnight capture status at 21:09 IST (`night2`, the same logic in Python):
 9431 R10 / 9431 R11 / 9905 HR samples, 33 drains all `caught_up`,
 0 timeouts, 1 disconnect (18 firmware steps bridged), 0 corrupt, 3 missing.
+
+### Evening incidents → two robustness fixes (night2, 21:05–22:28 IST)
+
+- **Recovery worked for every ordinary drop:** 21:07 / 21:13 / 21:23 / 21:30 /
+  21:37 / 21:59. Each ~12–15 s gap was drained in 10–22 s (`caught_up`) with
+  firmware steps bridged (0–19 per gap).
+- **Stalled drain (21:43):** after a burst of 8 rapid disconnects (21:42:23–21:43:06,
+  user moving) the reconnect drain received **0 rows for the full 600-s cap**. No
+  history was lost (the 21:55 periodic drain served 1011 rows in 41 s), but live
+  R10 was paused 21:43–21:53. **Fix:** a drain with no row for 20 s ends as
+  `stalled`, live resumes, and a retry drain runs 60 s later (`night_capture.py
+  --drain-stall`, and `AtriaWhoop4LiveFlushPlanner.drainStallTimeout` /
+  `stallRetryDelay`, test `testStalledDrainResumesLiveQuicklyAndRetries`).
+- **Hung connect (22:01–22:28):** after a restart the capture found no strap for
+  ~26 min although a scan-only check saw it advertising (93 adverts / 15 s,
+  −72 dBm). A CoreBluetooth connect request was pending forever. **Fix:**
+  20-s connect watchdog (cancel + rescan) and a `didFailToConnect` rescan.
+  Reconnected immediately at 22:28:20 (discovery RSSI −94 dBm, far).
+- Planner tests: 7/7 pass.

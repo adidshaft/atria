@@ -37,6 +37,9 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
     enum DrainEnd: String, Equatable, Sendable {
         case caughtUp
         case historyComplete
+        /// No history row for `drainStallTimeout` (seen after a burst of rapid
+        /// disconnects, 2026-09-23 21:43). Live resumes; a retry drain follows.
+        case stalled
         case timeout
     }
 
@@ -69,6 +72,8 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
 
     static let periodicDrainInterval: TimeInterval = 300
     static let maximumDrainDuration: TimeInterval = 600
+    static let drainStallTimeout: TimeInterval = 20
+    static let stallRetryDelay: TimeInterval = 60
     /// Reconnect without live frames (e.g. the strap rebooted and lost the 3F latch).
     static let awaitingFrameLiveRetry: TimeInterval = 5
 
@@ -83,7 +88,8 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
     private var awaitingSince: Date?
     private var awaitingRetried = false
     private var drain: (reason: DrainReason, target: UInt32, startedAt: Date, rows: Int,
-                        first: UInt32?, last: UInt32?)?
+                        first: UInt32?, last: UInt32?, progressAt: Date)?
+    private var retryDrainAt: Date?
 
     init() {}
 
@@ -158,6 +164,7 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
             let second = UInt32(payload[7]) | (UInt32(payload[8]) << 8)
                 | (UInt32(payload[9]) << 16) | (UInt32(payload[10]) << 24)
             d.rows += 1
+            d.progressAt = now
             d.first = d.first ?? second
             d.last = second
             drain = d
@@ -178,10 +185,18 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
     mutating func tick(now: Date) -> (commands: [Command], events: [Event]) {
         switch state {
         case .draining:
+            if let d = drain, now.timeIntervalSince(d.progressAt) > Self.drainStallTimeout {
+                retryDrainAt = now.addingTimeInterval(Self.stallRetryDelay)
+                return endDrain(.stalled, now: now)
+            }
             if let d = drain, now.timeIntervalSince(d.startedAt) > Self.maximumDrainDuration {
                 return endDrain(.timeout, now: now)
             }
         case .live:
+            if let retry = retryDrainAt, now >= retry {
+                retryDrainAt = nil
+                return beginDrain(reason: .periodic, now: now)
+            }
             let reference = lastDrainEndedAt ?? liveSince ?? now
             if now.timeIntervalSince(reference) >= Self.periodicDrainInterval {
                 return beginDrain(reason: .periodic, now: now)
@@ -209,14 +224,14 @@ struct AtriaWhoop4LiveFlushPlanner: Sendable {
         guard let offset = deviceMinusWall else { return ([], []) }
         let target = UInt32(max(0, (now.timeIntervalSince1970 + offset).rounded(.down) - 1))
         state = .draining
-        drain = (reason, target, now, 0, nil, nil)
+        drain = (reason, target, now, 0, nil, nil, now)
         accounting.drains += 1
         return ([.liveOff, .historyStart], [.drainStarted(reason: reason, targetDeviceSecond: target)])
     }
 
     private mutating func endDrain(_ end: DrainEnd, now: Date) -> ([Command], [Event]) {
         guard let d = drain else { return ([], []) }
-        if end == .timeout { accounting.drainTimeouts += 1 }
+        if end == .timeout || end == .stalled { accounting.drainTimeouts += 1 }
         drain = nil
         state = .live
         lastDrainEndedAt = now

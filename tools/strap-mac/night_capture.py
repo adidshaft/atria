@@ -9,7 +9,9 @@ no 0x19 trim (trim makes the strap discard pages while live is off).
 Disconnect: auto-reconnect; on reconnect the gap is drained the same way before live resumes; the
 firmware step counter (R10 u16 @1293) delta across the gap is logged as bridged steps.
 Opcodes: 3F, 16, 17, 14 only.
-Usage: night_capture.py [--duration S] [--drain-every S] [--drain-max S] [--log P] [--raw P]
+A drain with no row for --drain-stall s (default 20) ends as "stalled"; live resumes and a retry drain
+runs after --stall-retry s (default 60).
+Usage: night_capture.py [--duration S] [--drain-every S] [--drain-max S] [--drain-stall S] [--log P] [--raw P]
 """
 from __future__ import annotations
 
@@ -29,6 +31,8 @@ opt = lambda n, d: A[A.index(n) + 1] if n in A else d
 DURATION = float(opt("--duration", "36000"))
 DRAIN_EVERY = float(opt("--drain-every", "300"))
 DRAIN_MAX = float(opt("--drain-max", "90"))
+DRAIN_STALL = float(opt("--drain-stall", "20"))
+STALL_RETRY = float(opt("--stall-retry", "60"))
 LOG = opt("--log", "/tmp/atria-ble/night.jsonl")
 RAW = opt("--raw", "/tmp/atria-ble/night-raw.jsonl")
 OUT = open(LOG, "a", buffering=1)
@@ -107,7 +111,30 @@ class D(NSObject):
         c.stopScan()
         self.p = p
         p.setDelegate_(self)
-        c.connectPeripheral_options_(p, None)
+        self.request_connect("discovered", int(rssi))
+
+    @objc.python_method
+    def request_connect(self, why, rssi=None):
+        self.connect_requested_at = time.time()
+        say({"event": "connect_request", "why": why, "rssi": rssi})
+        self.c.connectPeripheral_options_(self.p, None)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(20.0, self, "connectWatchdog:", None, False)
+
+    def connectWatchdog_(self, _t):
+        # CoreBluetooth never times out a pending connect; a hung request left the strap
+        # advertising unseen for minutes (2026-09-23 22:01). Cancel and rescan.
+        if self.state == "connecting" and time.time() - getattr(self, "connect_requested_at", 0) >= 19.5 \
+                and (self.p is None or self.p.state() != 2):
+            say({"event": "connect_watchdog_rescan"})
+            if self.p is not None:
+                self.c.cancelPeripheralConnection_(self.p)
+            self.p = None
+            self.c.scanForPeripheralsWithServices_options_(None, None)
+
+    def centralManager_didFailToConnectPeripheral_error_(self, c, p, err):
+        say({"event": "connect_failed", "error": None if err is None else str(err.localizedDescription())})
+        self.p = None
+        c.scanForPeripheralsWithServices_options_(None, None)
 
     def centralManager_didConnectPeripheral_(self, c, p):
         self.connects += 1
@@ -126,7 +153,8 @@ class D(NSObject):
         if getattr(self, "finishing", False):
             AppHelper.stopEventLoop()
             return
-        c.connectPeripheral_options_(p, None)
+        if self.p is not None:
+            self.request_connect("reconnect")
 
     def peripheral_didDiscoverServices_(self, p, e):
         for s in p.services() or []:
@@ -196,7 +224,7 @@ class D(NSObject):
         self.state = "draining"
         self.stats["drains"] += 1
         self.drain = {"target": int(now) - 1, "started": time.time(), "rows": 0, "reason": reason,
-                      "first_row": None, "last_row": None}
+                      "first_row": None, "last_row": None, "progress_at": time.time()}
         say({"event": "drain_start", "reason": reason, "target_device": self.drain["target"]})
         self.send(0x3F, b"\x00", "3f00_pause")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.0, self, "drainGo:", None, False)
@@ -237,8 +265,19 @@ class D(NSObject):
             self.liveOn_(None)
 
     def tick_(self, _t):
-        if self.state == "draining" and self.drain and time.time() - self.drain["started"] > DRAIN_MAX:
-            self.end_drain("timeout")
+        if self.state == "draining" and self.drain:
+            if time.time() - self.drain["progress_at"] > DRAIN_STALL:
+                # Nothing served for DRAIN_STALL s (seen after a burst of rapid disconnects):
+                # stop waiting, resume live, retry soon. History stays on the strap.
+                self.stats["drain_stalls"] = self.stats.get("drain_stalls", 0) + 1
+                self.end_drain("stalled")
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(STALL_RETRY, self, "retryDrain:", None, False)
+            elif time.time() - self.drain["started"] > DRAIN_MAX:
+                self.end_drain("timeout")
+
+    def retryDrain_(self, _t):
+        if self.state == "live":
+            self.start_drain("stall_retry")
 
     def summary_(self, _t):
         say({"event": "summary", "state": self.state, "stats": self.stats, "last_r10": self.last_r10})
@@ -316,6 +355,7 @@ class D(NSObject):
                 if typ == 0x2F and len(pl) >= 11:
                     sec = int.from_bytes(pl[7:11], "little")
                     self.drain["rows"] += 1
+                    self.drain["progress_at"] = time.time()
                     self.stats["hist_rows"] += 1
                     self.drain["first_row"] = self.drain["first_row"] or sec
                     self.drain["last_row"] = sec
