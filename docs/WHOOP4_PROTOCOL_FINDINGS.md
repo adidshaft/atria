@@ -4961,3 +4961,33 @@ first (`3F/00` at 12:44:38; two leftover `2B`, then silence). RSSI −53.
   WWR (A), latched reconnect (A2), `3F` with history (B), stream-5 CCCD
   toggle then `3F` (C). Still not replayed: the ~45-min repetition (eight `3F`
   activations across reconnects) and the iPhone as central.
+
+#### Evidence scan: the same `3F/01` WWR produced `0x33` for four days, then `2B`
+
+**EVIDENCE (no TX).** Prefs across ~230 iPhone pulls, 14–19 Sep
+(`evidence/2026-09-1[4-9]*/preferences.plist` + `pull-summary.txt`):
+
+| Period (IST) | `3F` activation count | Last stream-5 notify |
+|---|---|---|
+| ≤ 14 Sep 15:32 | …498 | R10 `2B` valid (`passiveR10LastValidAt` 14 Sep 15:32:53, 342,937 frames) |
+| 14 Sep 15:32 → 15 Sep 01:05 | 498 → 601 | **silent** (stream-5 callbacks 0; `qualified_silent_stream_refresh`) |
+| 15 Sep 01:30 → 19 Sep 15:22 | 602 → **2852** | **`aa9400b533…` (compact `0x33`) in nearly every pull** |
+| 19 Sep 15:22 → 20 Sep | 2852 → 3288 | type-24 / `0x30` / `0x32`; no `0x33` |
+
+- Build `d82b42e6` (Sep 15) increments that counter at three sites. Two send
+  exactly `[23, seq, 3F, 01]` write-without-response (protected activation,
+  and the "r10_watchdog repair" in `full_protocol`). The third (`6A/01` +
+  `51`, one-time) never ran: `responseEventDataSequenceSentV9 = False`.
+- So for four days the strap answered the **same** `3F/01` with compact `0x33`,
+  where it answered R10/R11 `2B` before 14 Sep 15:32 and answers `2B` again
+  today (runs A–C). **The deciding variable is state inside the strap, not the
+  command bytes, the write type, history ordering, or the CCCD toggle.**
+- Other TX the Sep 15 build could send (via `sendCommand`): `03/00→03/01`
+  (realtime-HR re-assert when RR went to zero), `0x22`, `0x16`/`0x17` history
+  (a full drain was running: cursor 14 Sep 10:51 → 12:40 during 14 Sep 23:36 →
+  15 Sep 01:29), `0x0B`, haptics, battery. `3F`+`03` was already tried in July
+  (NOOP keeper, FAIL).
+- The July 30 feature-flag raw frames were deleted in the 19 Aug cleanup. The
+  `0x80` GET layout is not in git, so a flag diff against July would need a
+  guessed request. July had no `0x33` either, so it would not identify the
+  Sep 15 state anyway.
