@@ -5150,3 +5150,27 @@ charge state do not gate `0x33`.
   persists only ~9 lines per 75 min at default level and nothing about LE
   security, so encryption state cannot be read from the unified log without a
   sudo `log config` change (not done).
+
+#### H-BOND attempt — 23 Sep 16:08 / 16:10 IST (pairing mode, after Mac-side unpair)
+
+- `blueutil --unpair <strap-bt-address>`: rc 0, `--info` "not paired", but
+  `--paired` still lists the strap. System Settings "Forget" also failed
+  (user report). `blueutil --pair` → **`0x04 Page Timeout`**: blueutil pages
+  over BR/EDR, and the strap is LE-only. There is no CLI LE pairing on macOS.
+- Two pairing-mode connects (`r10r11_probe.py hello_3f`). Stream-7 console,
+  verbatim tokens:
+  `PM_EVT_BONDED_PEER_CONNECTED|Conn:0|Peer:2` → `PM_EVT_CONN_SEC_START|…|Procedure:BONDING`
+  → `PM_EVT_CONN_SEC_PARAMS_REQ|…|Bond:NO|MITM:NO|LESC:YES` → `PM_EVT_CONN_SEC_CONFIG_REQ`
+  → **`PM_EVT_CONN_SEC_FAILED|Conn:0|Peer:2|Procedure:BONDING|Error:00000001h`** ~30 s
+  after connect. The first boot-log line was `Reset Reason, RESETREAS=0x0`.
+  The second run showed `delete_disconnected_bonds called 0 times`.
+- **The strap still holds a bond for this Mac (peer 2).** The Mac side dropped
+  its keys, so it starts fresh LESC pairing on every connect, and the strap
+  fails it. Nordic SoftDevice `BLE_GAP_SEC_STATUS_TIMEOUT = 0x01` matches the
+  ~30 s timing.
+- **While that security procedure is pending, the strap answers nothing on
+  the command channel**: hello `23/00` got no type-24, and `3F/01` produced
+  no ACK and no `2B` for 60 s. 2A37 HR continued at ~1 Hz and stream-4 `0x30`
+  still arrived. The Sep 14 15:32 → Sep 15 01:05 "silent `3F`" phase in the
+  iPhone prefs has the same signature.
+- Compact `0x33` = 0 in both runs.
