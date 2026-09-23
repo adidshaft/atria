@@ -5071,3 +5071,36 @@ The user approved rebooting so that boot-time-only flags take effect. Per flag:
 `1D/00` → type-24 data `01 00 00 00`, clean disconnect ~0.5 s later. The first
 post-boot response sequence was **`01`** (it was 0x80–0xB0 before), which
 confirms a real firmware restart. The strap re-advertised within 20 s.
+| `general_ab_test` (13:16) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_capsense_wear_detect` (13:17) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_false_step_detection` (13:18) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `wear_detect_bias` (13:18) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_packets` (13:19) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v2_packets` (13:20) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v3_packets` (13:21) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v4_packets` (13:21) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+| `enable_r19_v5_packets` (13:22) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v6_packets` (13:23) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_write_r24_packets` (13:24) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+| `enable_write_r25_packets` (13:25) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+
+**Reboot-pass result: PHYSICAL FAIL for compact `0x33` (13/13 flags,
+boot-applied).** Every flag persisted across a real `1D/00` restart and was in
+effect at boot. `3F/01` still produced R10/R11 `2B` every time, and no
+`AA 94 00 B5 33` appeared. There were 14 reboots. The strap re-advertised
+within 20 s each time, with no watchdog timeouts and no stuck journal.
+
+Post-pass state (13:26 IST): final `1D/00`, then a full read. **All 13 values
+equal the pre-sweep snapshot.** `GET_CLOCK` = 1790150167 vs wall 1790150168
+(Δ 1 s), so a `1D` reboot does **not** reset the RTC and no `SET_CLOCK` was
+sent. `3F` is off.
+
+**Conclusion of the 23 Sep deep pass.** The same `3F/01` produced compact
+`0x33` from 15 to 19 Sep and produces `2B` now. That choice is not controlled
+by: write type, history ordering, stream-5 CCCD toggling, pairing mode, bond
+state, the RTC, any of the 13 exposed feature flags (live or boot-applied),
+or a firmware restart. The state that selected `0x33` is not reachable with any
+command whose payload is known. What remains is unpublished (`SET_DP_TYPE`
+`0x34` / `FORCE_DP_TYPE` `0x35` bodies), a strap that has no BLE DFU service,
+or the iPhone app/central from Sep 15 (build `d82b42e6`), which was not
+re-run. Goal remains open.
