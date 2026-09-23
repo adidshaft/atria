@@ -5,6 +5,8 @@ Modes (one variable per run):
   history_3f   16/00, ACK every type-31 sub 2, then 3F/01 WWR mid-serve, keep ACKing, listen.
   passive      subscribe all, TX=0, listen (what does a latched strap send on reconnect?).
   stop3f       one 3F/00 with response, listen.
+  hello_3f     pairing-window bond attempt: hello 23/00 (with response), 12 s watching stream-7
+               for security/bond text, then 3F/01 WWR, listen.
   cccd_3f      Sep 15 "zombie" repair: 10 s silent stream-5, stream-5 CCCD off -> 400 ms -> on
                (2A37 untouched), 20 s, then 3F/01 WWR, listen.
 
@@ -31,7 +33,7 @@ from Foundation import NSData, NSObject, NSTimer
 from PyObjCTools import AppHelper
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "3f_wwr"
-assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f", "cccd_3f"), MODE
+assert MODE in ("3f_wwr", "history_3f", "passive", "stop3f", "cccd_3f", "hello_3f"), MODE
 OUT_PATH = sys.argv[2] if len(sys.argv) > 2 else f"/tmp/atria-ble/r10r11-{MODE}.jsonl"
 LISTEN_S = float(sys.argv[3]) if len(sys.argv) > 3 else 300.0
 HISTORY_LEAD_S = float(sys.argv[4]) if len(sys.argv) > 4 else 30.0
@@ -150,6 +152,9 @@ class Delegate(NSObject):
                 self.send_with_response(0x3F, b"\x00", "3f00")
             elif MODE == "passive":
                 say({"event": "passive_tx0"})
+            elif MODE == "hello_3f":
+                self.send_with_response(0x23, b"\x00", "hello_2300")
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(12.0, self, "after3F:", None, False)
             elif MODE == "cccd_3f":
                 NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(10.0, self, "cccdOff:", None, False)
             else:
