@@ -5031,3 +5031,27 @@ strap state. Tool: `tools/strap-mac/ff_sweep.py`.
 | Time | Flag | v0 → v1 | Read back | 15 s after `3F/01` | Restore |
 |---|---|---|---|---|---|
 | 13:04:53 | `sigproc_10_sec_dp` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:08:13 | `general_ab_test` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:08:36 | `enable_capsense_wear_detect` | 2 → 1 | 1 | `2B` ×29, `0x33` 0 | 2 ✓ |
+| 13:08:59 | `enable_false_step_detection` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:09:22 | `wear_detect_bias` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:09:46 | `enable_r19_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:09 | `enable_r19_v2_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:32 | `enable_r19_v3_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:55 | `enable_r19_v4_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+| 13:11:18 | `enable_r19_v5_packets` | 2 → 1 | 1 | `2B` ×29, `0x33` 0 | 2 ✓ |
+| 13:11:41 | `enable_r19_v6_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:12:05 | `enable_write_r24_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+| 13:12:27 | `enable_write_r25_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+
+**Sweep result: PHYSICAL FAIL for compact `0x33` (13/13 flags, live-applied).**
+Every flag accepted its `0x78` write (exact key/value echo) and read back
+changed. Under each one, `3F/01` still produced R10/R11 `2B` within the listen
+window, and no `AA 94 00 B5 33` appeared. All 13 were restored and
+read-verified, and the journal is clear. The strap config is identical to the
+13:04 read pass. **Untested:** whether any flag only applies after a reboot
+(`0x1D`), and values other than raw "1"/"2".
+
+Tooling: `tools/strap-mac/runner.sh` is one long-lived Claude-panel tab that
+runs queued commands from `/tmp/atria-ble/runner.queue`. It works around the
+panel's six-tab limit and the TCC Bluetooth kill for non-panel shells.
