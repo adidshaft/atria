@@ -5693,3 +5693,24 @@ pages of ~10 rows.
 4. Open: byte 17 of the v24 row is HR-like but one gap row read 3. The v24
    layout is decoded elsewhere in the app; reuse that decoder rather than
    guessing.
+
+### Skin temperature reference point (18:21 IST)
+
+User's home digital thermometer on wrist skin at the strap edge: **92.1 °F = 33.4 °C**.
+Room ≈ 29 °C (windows open; weather app). Strap at 18:20–18:22 (99 frames, worn,
+not charging): **u16@1917 = 327–330 → 32.9 °C**; u16@15 = 320 → 32.0 °C.
+→ u16@1917 is consistent with **skin temperature in 0.1 °C**, reading ~0.5 °C
+below a contact thermometer at one point. u16@15 (32.0) sits between skin
+and room, consistent with an internal/battery temperature. One point: scale
+and offset plausible, slope unverified. Per the population rule, the app
+should show temperature as a per-user baseline deviation, not absolute °C.
+
+### Overnight capture tool (`tools/strap-mac/night_capture.py`)
+
+Live R10/R11/2A37 stored whole; lossless duty-cycle drain every 300 s (3F/00 →
+16 + ACK → stop at row ≥ target → 14 → 3F/01); on reconnect the gap is drained
+and the firmware-counter steps are bridged. 4-min trial (drain every 60 s):
+4 drains all `caught_up` (381 rows / 19.4 s, then 64 / 4.6 s, 93 / 5.8 s),
+0 corrupt, 0 disconnects. R10 frames not sent during deliberate drain pauses
+are counted as `drain_paused_frames` (covered by history rows), separate from
+`missing`.
