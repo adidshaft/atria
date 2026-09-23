@@ -4991,3 +4991,37 @@ first (`3F/00` at 12:44:38; two leftover `2B`, then silence). RSSI −53.
   `0x80` GET layout is not in git, so a flag diff against July would need a
   guessed request. July had no `0x33` either, so it would not identify the
   Sep 15 state anyway.
+
+### 2026-09-23 — Feature-flag sweep (user-authorized; strap declared expendable)
+
+**PLAN.** The user chose a bounded persistent-config sweep over the 13 firmware
+feature flags, because the evidence above puts the `0x33`-vs-`2B` choice inside
+strap state. Tool: `tools/strap-mac/ff_sweep.py`.
+
+- Opcodes: `75/01` (start key exchange), `76/01` (next key), `0x80` GET value,
+  `0x78` SET value, `3F/01` (WWR stimulus, as in Sep 15–19), `3F/00`. Nothing
+  else.
+- `0x78` body is the physically proven Jul 30 layout: `01 | key ASCII padded
+  to 32 | value ASCII padded to 32`.
+- `0x80` body is **inferred** as `01 | key padded to 32`. It is validated
+  read-only against the Jul 30 values (`enable_false_step_detection`="2",
+  `enable_r19_v4_packets`="1") before any write.
+- Per flag, one connection: read v0 → write v1 (raw "1"↔"2") → read back →
+  `3F/01` WWR → listen 20 s for `0x33` vs `2B` → `3F/00` → write v0 → read back.
+  A journal (`/tmp/atria-ble/ff-journal.json`) is written before every `0x78`
+  and cleared only after a verified restore. A pending journal is restored
+  first on the next connection.
+- Success = any 152-byte `AA 94 00 B5 33` frame. The flag is then left at v1
+  and the sweep stops.
+
+#### Read pass — 13:04 IST (no writes)
+
+- `75/01` → revision 1, count 13; `76/01` ×13 returned the same 13 keys as Jul 30.
+- **Inferred `0x80` layout confirmed**: `80 | 01 | key padded to 32` → data
+  `01 | 01 | key[32] | value…`. The value field is the ASCII digit followed by
+  stale firmware memory (`"2\0Micron continuous read mode e"` on every key).
+  The tool reads only the first ASCII token after the key.
+- **All 13 values equal the Jul 30 snapshot**: raw `"1"` = `enable_r19_v4_packets`,
+  `enable_write_r24_packets`, `enable_write_r25_packets`; raw `"2"` = the other
+  ten. So no flag changed between July (no `0x33`) and today. A flag flip is
+  still a candidate trigger, but the flags did not record the Sep 15 state.
