@@ -2928,8 +2928,8 @@ private struct AtriaVitalsLiveSignalCard: View {
 
     private var stressEmptyDescription: String {
         return isConnected
-            ? "Keep wearing your strap. A complete five-minute cardiac window produces the first 0–3 estimate; HR-only estimates are labeled lower confidence."
-            : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
+            ? "Keep wearing your strap — a full five-minute window gives you your first 0–3 estimate."
+            : "Reconnect your strap to resume live readings."
     }
 
     private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
