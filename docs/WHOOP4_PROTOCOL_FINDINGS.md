@@ -5431,3 +5431,18 @@ are required before any step claim.
   candidates**. 1917 also dropped 84 → 81 when the strap left the skin (15 did
   not) → **1917 = skin/device temperature**, **15 = battery/charger temperature**
   (both unscaled; units not yet calibrated).
+
+**Truth reconciliation (user):** "probably just a couple uncounted steps,
+otherwise I tried to complete at 100" → truth ≈ **102** per walk.
+
+| Walk (truth ≈ 102) | Firmware counter @1293 | App gyro-cadence | App accel-peak ×1.11 |
+|---|---|---|---|
+| 1 (slower, ~76 spm) | 156 (+53 %) | 161 (+58 %) | 176 (+73 %) |
+| 2 (normal, ~70–82 spm by duration) | 158 (+55 %) | **113 (+11 %)** | 170 (+67 %) |
+
+- The WHOOP firmware's own counter overcounts this user's indoor gait by
+  ~1.5× (≈ 2 increments per real step-second). It is a native signal, not
+  ground truth.
+- Best available: the app's gyro-cadence detector at normal pace (+11 %). Every
+  detector fails on slow/deliberate gait. The next step for steps is a labelled
+  multi-pace dataset, not retuning on two walks.
