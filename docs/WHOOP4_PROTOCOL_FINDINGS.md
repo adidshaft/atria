@@ -5631,3 +5631,24 @@ must be re-validated on more people (population rule).
   1. Bridge BLE gaps using the firmware counter delta when the frames on both
      sides of the gap are walking.
   2. Stairs need their own labelled capture within range before any stair claim.
+
+### App port (offline, no device) — 2026-09-23
+
+- `Atria/Atria/AtriaWhoop4R10Record.swift`: `AtriaWhoop4R10Record` (frame
+  counter, 32.768 kHz sub-second time, HR, RR ms, motion intensity, calibrated
+  gravity, firmware step counter, provisional skin/battery temperatures,
+  charging/wear/capsense) and `AtriaWhoop4R11PPGRecord` (4 slots × 2 × int32).
+- `Atria/Atria/AtriaWhoop4FusedStepEstimator.swift`: exact port of
+  `tools/strap-mac/fused_steps.py`.
+- `Atria/AtriaTests/AtriaWhoop4R10RecordTests.swift`: 5 tests on real Mac-captured
+  payloads, all **passed** (iPhone 17 Pro sim). Swift matches the Python
+  reference within ±1 step (walk 73.6 vs truth 75; bag 74 via firmware counter;
+  hand-talk 0; typing 0). R11 decodes slots 0/3 active, within the 20-bit range.
+- The fixture `Atria/AtriaTests/Fixtures/whoop4-r10-r11-mac-2026-09-23.jsonl`
+  (688 KB) holds the owner's HR/RR/motion and is **left untracked** (the repo
+  has a GitHub remote). Tests skip when it is absent.
+- `test_handoff_static_checks.py`: 77 failures with and without these files
+  (identical sets): pre-existing, none introduced.
+- Not yet wired into the live BLE path. Production still blocks `3F`
+  (`protectedStandardHRAllowsR10RealtimeFlood == false`); enabling it needs the
+  iPhone link test.
