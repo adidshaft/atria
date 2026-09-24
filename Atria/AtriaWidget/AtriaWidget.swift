@@ -621,6 +621,9 @@ struct AtriaWidgetEntryView: View {
                 systemWidget
             }
         }
+        // Net for every text without its own setting: shrink to fit rather
+        // than spill past the widget edge (owner report 2026-09-24).
+        .minimumScaleFactor(0.7)
         .widgetURL(atriaOverviewURL)
     }
 
@@ -2453,8 +2456,9 @@ private func liveActivityHeartRateAccessibilityLabel(heartRate: Int, isLive: Boo
 }
 
 private func liveActivityDisplayedZoneText(zoneIndex: Int?) -> String {
-    guard let zone = zoneIndex, zone > 0 else { return "<Z1" }
-    return "Z\(zone)"
+    // Below zone 1 is plain rest; "<Z1" read as a formatting error.
+    guard let zone = zoneIndex, zone > 0 else { return "Resting" }
+    return "Zone \(zone)"
 }
 
 private func liveActivityZoneAccessibilityLabel(
@@ -2686,10 +2690,19 @@ private func liveActivityDailyStepGoalPresentation(
     guard let capturedAt = state.dailyStepsCapturedAt,
           capturedAt <= now.addingTimeInterval(5),
           now.timeIntervalSince(capturedAt) <= atriaLiveActivityStepFreshness else {
-        return AtriaLiveActivityGoalPresentation(text: "Step goal stale",
-                                                 tint: .orange,
-                                                 fraction: nil,
-                                                 accessibilityText: "Daily step goal stale")
+        // Old evidence shows its own clock and never looks fresh: grey,
+        // no goal fraction, no check mark (was the jargon "Step goal stale").
+        guard let capturedAt = state.dailyStepsCapturedAt else {
+            return AtriaLiveActivityGoalPresentation(text: "Step goal --",
+                                                     tint: .secondary,
+                                                     fraction: nil,
+                                                     accessibilityText: "Daily step goal unavailable")
+        }
+        return AtriaLiveActivityGoalPresentation(
+            text: "\(steps) / \(goal) · \(atriaCaptureTimeText(capturedAt))",
+            tint: .secondary,
+            fraction: nil,
+            accessibilityText: "\(steps) of \(goal) daily steps as of \(atriaCaptureTimeText(capturedAt))")
     }
     let estimated = state.dailyStepsAreEstimated != false
     // Missing lower-bound provenance belongs to an older activity payload and
@@ -2996,8 +3009,10 @@ private struct AtriaLiveActivityLockScreenView: View {
             }
             compactLockScreenContent
         }
-        .padding(.horizontal, 2)
-        .padding(.vertical, 2)
+        // ActivityKit adds no inset to Lock Screen content: 2 pt let the
+        // header and hero run into the card edges (device 2026-09-24).
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
     }
 
     @ViewBuilder
@@ -3114,9 +3129,13 @@ private struct AtriaLiveActivityLockScreenView: View {
     private func lockScreenHeader(showsBattery: Bool) -> some View {
         HStack(spacing: 8) {
             ViewThatFits(in: .horizontal) {
-                Label(context.state.activityName ?? "Workout",
+                // All-day mode says "Atria": the status pill already says
+                // Live, and "Live · Live" read as a glitch.
+                Label(liveActivityIsExplicitWorkout(context.state)
+                        ? (context.state.activityName ?? "Workout")
+                        : "Atria",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
-                Label(liveActivityIsExplicitWorkout(context.state) ? "Workout" : "Live",
+                Label(liveActivityIsExplicitWorkout(context.state) ? "Workout" : "Atria",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
                 Image(systemName: context.state.activitySystemImage ?? "figure.mixed.cardio")
             }
@@ -3831,6 +3850,7 @@ struct AtriaMetricWidgetEntryView: View {
                 .widgetAccentable()
             }
         }
+        .minimumScaleFactor(0.7)
         .widgetURL(metric.deepLinkURL)
     }
 
