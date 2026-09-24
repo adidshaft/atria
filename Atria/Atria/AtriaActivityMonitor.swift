@@ -4472,6 +4472,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         )
     }
 
+    private var completedWorkoutStepsText: String? {
+        guard completedWorkoutStepsPresentation?.isAvailable == true else { return nil }
+        return completedWorkoutStepsPresentation?.valueText
+    }
+
     private var completedWorkoutStepsPresentation: AtriaWorkoutSharePresentation.CompletedSteps? {
         let resolvedActivity = AtriaWorkoutActivityType.resolved(
             activityType: workout.activityType,
