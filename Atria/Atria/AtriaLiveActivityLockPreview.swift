@@ -149,9 +149,18 @@ struct AtriaLiveActivityLockPreviewSheet: View {
                         AtriaLiveActivityLockPreview(snapshot: snapshot)
                             .padding(.horizontal, 16)
                     } else {
-                        Text("Waiting for live heart rate")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
+                        VStack(spacing: 10) {
+                            Image(systemName: "bolt.heart")
+                                .font(.system(size: 34, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Text("No Live Activity yet")
+                                .font(.headline)
+                            Text("Start a workout, or connect your strap, to see it here and on your Lock Screen.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
+                        }
                     }
                     Spacer()
                 }

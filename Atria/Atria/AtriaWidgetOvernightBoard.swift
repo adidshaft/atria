@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Published widget payload, with overnight clocks. This is not a second
-/// WidgetKit renderer: it prints the same `WidgetSnapshot` the extension
-/// already received, so Home/Lock faces cannot silently disagree with Today.
+/// Opens from a Lock Screen/overnight widget tap (`atria://widget-board`).
+/// This is not a second WidgetKit renderer: it prints the same
+/// `WidgetSnapshot` the extension already received, so Home/Lock faces
+/// cannot silently disagree with Today. Clean, simple recap by default;
+/// the raw payload-write timestamp stays one line, gated to developer mode.
 struct AtriaWidgetOvernightBoard: View {
     @State private var snapshot: WidgetSnapshot?
     @Environment(\.dismiss) private var dismiss
@@ -11,36 +13,35 @@ struct AtriaWidgetOvernightBoard: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(clockText)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    if hasOvernightNumbers {
+                        Text(clockText)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
 
-                    metricRow(title: "Recovery",
-                              value: snapshot?.recoveryPercent.map { "\($0)%" } ?? "--",
-                              tint: .green)
-                    metricRow(title: "HRV",
-                              value: snapshot?.hrvRMSSD.map { "\($0) ms" } ?? "--",
-                              tint: .purple)
-                    metricRow(title: "Resting HR",
-                              value: snapshot?.restingHR.map { "\($0) bpm" } ?? "--",
-                              tint: .cyan)
-
-                    if let live = snapshot?.heartRate, live > 0 {
-                        metricRow(title: "Live HR (widget tile)",
-                                  value: "\(live) bpm",
-                                  tint: .red.opacity(0.85))
+                        metricRow(title: "Recovery",
+                                  value: snapshot?.recoveryPercent.map { "\($0)%" } ?? "--",
+                                  tint: .green)
+                        metricRow(title: "HRV",
+                                  value: snapshot?.hrvRMSSD.map { "\($0) ms" } ?? "--",
+                                  tint: .purple)
+                        metricRow(title: "Resting HR",
+                                  value: snapshot?.restingHR.map { "\($0) bpm" } ?? "--",
+                                  tint: .cyan)
+                    } else {
+                        AtriaWidgetBoardEmptyState()
                     }
 
-                    if let createdAt = snapshot?.createdAt {
+                    if AtriaDeveloperMode.isEnabled, let createdAt = snapshot?.createdAt {
                         Text("Payload write \(createdAt.formatted(date: .omitted, time: .shortened)). Overnight numbers keep the morning clock above, not this write time.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color.black)
-            .navigationTitle("Widget payload")
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Overnight recap")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -48,7 +49,6 @@ struct AtriaWidgetOvernightBoard: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .accessibilityIdentifier("atria-widget-overnight-board")
@@ -57,10 +57,14 @@ struct AtriaWidgetOvernightBoard: View {
         }
     }
 
+    private var hasOvernightNumbers: Bool {
+        snapshot?.recoveryPercent != nil
+            || snapshot?.hrvRMSSD != nil
+            || snapshot?.restingHR != nil
+    }
+
     private var clockText: String {
-        guard let capturedAt = snapshot?.hrvCapturedAt else {
-            return snapshot == nil ? "No shared widget payload" : "Overnight clock missing"
-        }
+        guard let capturedAt = snapshot?.hrvCapturedAt else { return "Overnight" }
         return AtriaOvernightClockText.status(capturedAt)
     }
 
@@ -74,6 +78,24 @@ struct AtriaWidgetOvernightBoard: View {
                 .foregroundStyle(tint)
         }
         .padding(.vertical, 8)
+    }
+}
+
+private struct AtriaWidgetBoardEmptyState: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 40, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text("No overnight numbers yet")
+                .font(.title3.weight(.semibold))
+            Text("Recovery, HRV, and resting heart rate will appear here after your next night with Atria.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
     }
 }
 
