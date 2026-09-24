@@ -676,7 +676,7 @@ struct AtriaSleepDebtChartCard: View {
             AxisMarks(values: slots.map(\.day)) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(centered: true) {
+                AxisValueLabel(centered: true, verticalSpacing: 6) {
                     if let day = value.as(Date.self) {
                         Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day))
                             .font(.caption2)

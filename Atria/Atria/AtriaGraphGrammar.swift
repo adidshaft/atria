@@ -154,7 +154,12 @@ enum AtriaChartVisualGrammar {
         let markDay = calendar.startOfDay(for: mark)
         let fromStart = calendar.dateComponents([.day], from: start, to: markDay).day ?? 0
         let fromEnd = calendar.dateComponents([.day], from: markDay, to: end).day ?? 0
-        let edgeDays = max(2, spanDays / 8)
+        // Only marks whose label would actually overflow shift. A week day
+        // is ~45 pt wide, so only the first/last night need an edge anchor;
+        // right-aligning the last two or three nights crowded them into
+        // "T 22W 23" (visual pass 2026-09-24). A month day is ~11 pt, so a
+        // two-day margin still covers a "Sep 18" label.
+        let edgeDays = spanDays <= 8 ? 0 : max(1, spanDays / 12)
         if fromEnd <= edgeDays { return .topTrailing }
         if fromStart <= edgeDays { return .topLeading }
         return .top
@@ -443,18 +448,21 @@ extension View {
                 AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 if let date = value.as(Date.self) {
+                    // verticalSpacing: labels sat flush against the plot
+                    // edge and read as touching the bars (2026-09-24 render).
                     AxisValueLabel(
                         anchor: AtriaChartVisualGrammar.nightAxisLabelAnchor(
                             for: date,
                             domain: domain
-                        )
+                        ),
+                        verticalSpacing: 6
                     ) {
                         Text(AtriaChartVisualGrammar.nightAxisLabelText(
                             for: date,
                             domain: domain
                         ))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(AtriaChartVisualGrammar.axisLabelFont)
+                        .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
