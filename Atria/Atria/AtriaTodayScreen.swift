@@ -420,6 +420,15 @@ struct AtriaTodayScreen: View {
             }
 #endif
 
+            // Morning "what was it?" prompt (visual pass 2026-09-24): one
+            // optional, private question per night interruption, mornings
+            // only, gone once answered or skipped.
+            if let night = AtriaNightTimelineSource.latestForMorningPrompt() {
+                AtriaNightInterruptionPromptCard(
+                    episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(night.result),
+                    timeZone: night.timeZone)
+            }
+
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
             // big sections (user feedback 2026-07-07): the major blocks below
             // the ring render in a persisted order and reorder by
@@ -1573,6 +1582,7 @@ struct AtriaTodayScreen: View {
         case "rhr-detail", "rhr-detail-history": return .restingHeartRate
         case "respiratory-detail": return .respiratoryRate
         case "sleep-detail": return .sleep
+        case "night-timeline": return .sleep
         default: return nil
         }
     }
