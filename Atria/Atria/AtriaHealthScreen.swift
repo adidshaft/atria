@@ -3131,6 +3131,26 @@ struct AtriaSleepStressCard: View {
         }, gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap)
     }
 
+    /// The night's plotted span: first to last observed bucket in either
+    /// mode (the chart has no wider x domain, so there are no edge bands).
+    private var gapBandDomain: ClosedRange<Date> {
+        let dates = projection.samples.map(\.date) + projection.heartRateSamples.map(\.date)
+        guard let first = dates.min(), let last = dates.max(), last > first else {
+            let now = Date()
+            return now...now
+        }
+        return first...last
+    }
+
+    private var gapBands: [AtriaChartGapBand] {
+        let dates = mode == .load
+            ? projection.samples.map(\.date)
+            : projection.heartRateSamples.map(\.date)
+        return AtriaChartNoDataBands.bands(sampleDates: dates,
+                                           domain: gapBandDomain,
+                                           evidence: AtriaChartGapEvidenceProvider.current())
+    }
+
     private struct HRTracePoint: Identifiable {
         let date: Date
         let bpm: Double
@@ -3247,6 +3267,9 @@ struct AtriaSleepStressCard: View {
                     // rate) and the Stress monitor. Sparse once-a-day trends stay
                     // linear, where a smooth curve would bow past the measured
                     // days and imply values never recorded.
+                    // No-data bands (visual pass 2026-09-24): a missing
+                    // stretch inside the night is labeled, not just blank.
+                    AtriaNoDataBandMarks(bands: gapBands, domain: gapBandDomain)
                     if mode == .load {
                         ForEach(points) { point in
                             AreaMark(x: .value("Time", point.reading.date),
@@ -3321,7 +3344,7 @@ struct AtriaSleepStressCard: View {
                 }
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                        AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                         AxisTick().foregroundStyle(.clear)
                         AxisValueLabel {
                             if mode == .load, let value = value.as(Int.self) {
@@ -3345,8 +3368,8 @@ struct AtriaSleepStressCard: View {
                     AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                         AxisTick().foregroundStyle(.clear)
                         AxisValueLabel(format: .dateTime.hour().minute())
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(AtriaChartVisualGrammar.axisLabelFont)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
                 // 200pt (was 156): the declutter pass (D8) reclaimed the room

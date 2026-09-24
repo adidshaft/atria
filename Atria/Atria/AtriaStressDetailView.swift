@@ -1161,7 +1161,7 @@ struct AtriaStressDailyTrendCard: View {
         .chartYScale(domain: 0...1)
         .chartXAxis {
             AxisMarks(values: axisDays) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisValueLabel(format: .dateTime.day(), centered: true)
                     .foregroundStyle(.secondary)
                     .font(.caption2)
@@ -1462,6 +1462,15 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
 
+            // No-data bands (visual pass 2026-09-24) over the zone wash, under
+            // every context band and the trace.
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
             }) { interval in
@@ -1544,8 +1553,8 @@ private struct AtriaStressTimelineChart: View, Equatable {
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let score = value.as(Double.self) {
@@ -1561,7 +1570,8 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .atriaGraphPlotSurface()
@@ -1671,22 +1681,41 @@ private struct AtriaStressHeartRateTimelineChart: View {
     }
 
     var body: some View {
-        Chart(segmentedPoints, id: \.point.id) { item in
-            LineMark(x: .value("Time", item.point.t),
-                     y: .value("Heart rate", item.point.bpm),
-                     series: .value("Segment", item.segment))
-                .interpolationMethod(.monotone)
-                .lineStyle(AtriaChartVisualGrammar.traceLine)
-                .foregroundStyle(Metrics.electricRed)
+        Chart {
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.t),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+            ForEach(segmentedPoints, id: \.point.id) { item in
+                LineMark(x: .value("Time", item.point.t),
+                         y: .value("Heart rate", item.point.bpm),
+                         series: .value("Segment", item.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    // One HR color grammar everywhere (visual pass
+                    // 2026-09-24): the intensity ramp Vitals and Activity use,
+                    // not a flat red that read as an alarm.
+                    .foregroundStyle(Metrics.heartRateIntensityGradient)
+            }
         }
         .chartXScale(domain: xDomain)
         .chartYAxisLabel("bpm")
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel().font(AtriaChartVisualGrammar.axisLabelFont).foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
+            }
+        }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .atriaGraphPlotSurface()
@@ -1748,6 +1777,13 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                           yEnd: .value("High ceiling", 3))
                 .foregroundStyle(Metrics.electricRed.opacity(0.045))
 
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
             }) { interval in
@@ -1776,14 +1812,14 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
         .chartYScale(domain: 0...3)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let score = value.as(Int.self) {
                         Text("\(score)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(AtriaChartVisualGrammar.axisLabelFont)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -1793,7 +1829,8 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .atriaGraphPlotSurface()
