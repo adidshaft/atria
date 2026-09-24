@@ -604,6 +604,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Compact 0x33 is ingested on the BLE queue. Watchdog lastFrameAge must
     /// not wait for a MainActor hop or an 8s silence gate fires on live gyro.
     private nonisolated let liveIMULivenessUnix = OSAllocatedUnfairLock(initialState: 0.0)
+    /// Last compact 0x33 second fed to the step pipeline. Native R10 is fed
+    /// only when compact is absent, so one motion is never counted twice.
+    private nonisolated let lastCompactIMUIngestUnix = OSAllocatedUnfairLock(initialState: 0.0)
     /// A replacement CBCentralManager does not synchronously cancel callbacks
     /// already queued by the retired instance. Fence every central delegate
     /// entry with exact object identity and a replacement generation.
@@ -5687,6 +5690,121 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaIMUDiagnosticTransport.noteNewConnectionEpoch(bleCallbackEpochFence.epoch)
         scheduleDiagnosticSingleIMUEnableIfRequested()
         scheduleOrphanedHistoryAbortCheck(connectedAt: now)
+        scheduleR10LiveControl(connectedAt: now)
+    }
+
+    // MARK: Native R10 live motion (2026-09-24)
+
+    /// Default on. Developer override: `defaults write … atria.r10Live.enabled -bool NO`.
+    nonisolated static var r10LiveStepsEnabled: Bool {
+        UserDefaults.standard.object(forKey: "atria.r10Live.enabled") as? Bool ?? true
+    }
+    nonisolated static let compactIMUPreferenceWindow: TimeInterval = 5
+    static let r10LiveFirstCheckDelay: TimeInterval = 25
+    static let r10LiveCheckInterval: TimeInterval = 60
+    static let r10LiveResendAfter: TimeInterval = 120
+    static let r10FramesFreshWithin: TimeInterval = 10
+    private var r10LiveTask: Task<Void, Never>?
+    private var r10LivePowerPolicy = AtriaWhoop4PowerPolicy()
+    private var r10LiveLastOnAt: Date?
+    private var r10LiveOffSent = false
+
+    enum R10LiveCommand: Equatable { case on, off }
+
+    /// Pure rule for the live R10 stream (3F/01 on, 3F/00 off). 3F latches
+    /// on the strap across disconnects, so "on" is sent only when frames are
+    /// absent, and resent at most every `r10LiveResendAfter` (a history
+    /// transfer quiets R10 first and it must come back afterwards). Never
+    /// during a history transfer (live 3F freezes the history read cursor)
+    /// or the pairing check, and only once HR proves a settled, bonded link.
+    nonisolated static func r10LiveCommand(
+        enabled: Bool,
+        linkConnected: Bool,
+        heartRateFresh: Bool,
+        appOwnsHistoryTransfer: Bool,
+        pairingCheckInFlight: Bool,
+        liveAllowedByPower: Bool,
+        r10FramesFresh: Bool,
+        secondsSinceLastOn: TimeInterval?,
+        offAlreadySent: Bool
+    ) -> R10LiveCommand? {
+        guard linkConnected, !appOwnsHistoryTransfer, !pairingCheckInFlight else { return nil }
+        if enabled && liveAllowedByPower {
+            guard heartRateFresh, !r10FramesFresh else { return nil }
+            if let since = secondsSinceLastOn, since < r10LiveResendAfter { return nil }
+            return .on
+        }
+        return r10FramesFresh && !offAlreadySent ? .off : nil
+    }
+
+    private func scheduleR10LiveControl(connectedAt: Date) {
+        r10LiveTask?.cancel()
+        r10LiveLastOnAt = nil
+        r10LiveOffSent = false
+        guard !appReviewDemoMode else { return }
+        r10LiveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.r10LiveFirstCheckDelay))
+            while !Task.isCancelled {
+                guard let self, self.connectedAt == connectedAt else { return }
+                self.evaluateR10Live()
+                try? await Task.sleep(for: .seconds(Self.r10LiveCheckInterval))
+            }
+        }
+    }
+
+    private func r10PowerInputs() -> AtriaWhoop4PowerPolicy.Inputs {
+        let device = UIDevice.current
+        let phoneLevel = device.batteryLevel >= 0 ? Int((device.batteryLevel * 100).rounded()) : nil
+        let thermal: AtriaWhoop4PowerPolicy.Thermal
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = .nominal
+        case .fair: thermal = .fair
+        case .serious: thermal = .serious
+        case .critical: thermal = .critical
+        @unknown default: thermal = .nominal
+        }
+        return AtriaWhoop4PowerPolicy.Inputs(
+            strapBattery: batteryLevel >= 0 ? batteryLevel : nil,
+            strapCharging: batteryIsCharging,
+            phoneBattery: phoneLevel,
+            phoneCharging: device.batteryState == .charging || device.batteryState == .full,
+            phoneLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            phoneThermal: thermal
+        )
+    }
+
+    private func evaluateR10Live(now: Date = Date()) {
+        let decision = r10LivePowerPolicy.decide(r10PowerInputs())
+        let appOwnsHistory = offlineHistoricalSyncInProgress
+            || historyOnlyProbeEnabled
+            || historyOnlyProbeMode
+            || readOnlyHistoryCaptureRequested
+            || readOnlyHistoryCaptureActive
+        let framesFresh = lastR10MotionFrameAt.map { now.timeIntervalSince($0) <= Self.r10FramesFreshWithin } ?? false
+        guard let command = Self.r10LiveCommand(
+            enabled: Self.r10LiveStepsEnabled,
+            linkConnected: status == .connected,
+            heartRateFresh: currentConnectionHasFreshHeartRate,
+            appOwnsHistoryTransfer: appOwnsHistory,
+            pairingCheckInFlight: onboardingPairingPreflightInFlight,
+            liveAllowedByPower: decision.liveMotionAllowed,
+            r10FramesFresh: framesFresh,
+            secondsSinceLastOn: r10LiveLastOnAt.map { now.timeIntervalSince($0) },
+            offAlreadySent: r10LiveOffSent
+        ) else { return }
+        let sequence = cmdSeq
+        cmdSeq &+= 1
+        let frame = encodeFrame([Packet.command, sequence, Cmd.sendR10R11Realtime,
+                                 command == .on ? 0x01 : 0x00])
+        let sent = writeProprietaryWithoutResponse(frame, reason: "r10_live_\(command)")
+        if sent {
+            if command == .on { r10LiveLastOnAt = now; r10LiveOffSent = false } else { r10LiveOffSent = true }
+        }
+        AtriaDebugLog("ATRIADBG r10_live status=%@ command=%@ power=%@ seq=%d",
+                      sent ? "sent" : "unsent",
+                      command == .on ? "3f01" : "3f00",
+                      decision.reason,
+                      Int(sequence))
     }
 
     /// A strap left serving history by another client (or a crashed session)
@@ -56717,11 +56835,23 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     receivedAt: receivedAt
                 )
             }
-            if AtriaR10MotionDecoder.decode(frame: completeFrame) != nil {
-                // Keep decoding leftover type-2B / R10 for archive and
-                // metadata. Do not ingest it into the live strap-step
-                // pipeline: Today steps, workouts, widgets, and history
-                // must come only from compact 0x33 (compactIMUSecond below).
+            if let nativeR10 = AtriaR10MotionDecoder.decode(frame: completeFrame) {
+                // 2026-09-24 (Mac R10/R11 pass): compact 0x33 cannot be
+                // re-enabled on this firmware; native R10 carries the same
+                // 100-sample IMU, and the gyro-cadence detector this pipeline
+                // publishes scored 6.6 % mean error on metronome walks. Feed
+                // it to the live step pipeline unless compact 0x33 is also
+                // arriving (the same motion is never counted twice).
+                let compactRecent = receivedAt.timeIntervalSince1970
+                    - lastCompactIMUIngestUnix.withLock { $0 }
+                    < Self.compactIMUPreferenceWindow
+                if Self.r10LiveStepsEnabled, !compactRecent {
+                    ingestLiveMotionFrame(
+                        nativeR10,
+                        receivedAt: receivedAt,
+                        callbackSource: callbackSource
+                    )
+                }
                 if !storesProprietaryFrames {
                     let payloadLength = max(0, completeFrame.count - 8)
                     pendingMainActorWork.append(.r10Metadata(
@@ -56740,6 +56870,7 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     from: completeFrame,
                     receivedAt: receivedAt
                 ) {
+                    lastCompactIMUIngestUnix.withLock { $0 = receivedAt.timeIntervalSince1970 }
                     ingestLiveMotionFrame(
                         compactSecond,
                         receivedAt: receivedAt,
