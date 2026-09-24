@@ -76,11 +76,19 @@ struct AtriaWidgetProofDiagnostics: Equatable {
     }
 }
 
+/// Opens from a Home Screen widget tap (`atria://widget-proof`). Everyday
+/// readers only need one honest fact — "is my widget current" — never a
+/// second renderer of Recovery/Strain/HRV numbers that could quietly
+/// disagree with the one WidgetKit is actually showing on the Home Screen
+/// (see the type-level note on `AtriaWidgetProofDiagnostics`). The full
+/// technical breakdown (schema, storage key, layout config) stays one tap
+/// away, but only in developer mode.
 struct AtriaWidgetProofSheet: View {
     let snapshot: WidgetSnapshot?
     let layoutConfig: AtriaHomeLayoutConfig
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showDeveloperDiagnostics = false
 
     private var diagnostics: AtriaWidgetProofDiagnostics {
         AtriaWidgetProofDiagnostics(
@@ -92,40 +100,93 @@ struct AtriaWidgetProofSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    AtriaWidgetDiagnosticHeader(
-                        hasSnapshot: diagnostics.hasSnapshot,
-                        missingPayloadDetail: diagnostics.missingPayloadDetail
-                    )
-                    AtriaWidgetDiagnosticScopeCard()
-                    AtriaWidgetTargetDiagnosticsCard(
-                        homeScreenTargetText:
-                            diagnostics.homeScreenTargetText,
-                        lockScreenTargetText:
-                            diagnostics.lockScreenTargetText,
-                        appGroupText: diagnostics.appGroupText
-                    )
-                    AtriaWidgetPayloadDiagnosticsCard(
-                        diagnostics: diagnostics
-                    )
+            VStack(spacing: 22) {
+                Spacer(minLength: 0)
+
+                Image(systemName: diagnostics.hasSnapshot
+                      ? "square.grid.2x2.fill"
+                      : "square.grid.2x2")
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundStyle(diagnostics.hasSnapshot ? .green : .secondary)
+
+                VStack(spacing: 8) {
+                    Text(diagnostics.hasSnapshot
+                         ? "Your widgets are current"
+                         : "No widget yet")
+                        .font(.title3.weight(.semibold))
+                    Text(diagnostics.hasSnapshot
+                         ? "Home Screen and Lock Screen widgets are showing today's numbers."
+                         : "Add an Atria widget to your Home Screen or Lock Screen to see your numbers there.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .padding(18)
+                .padding(.horizontal, 28)
+
+                Spacer(minLength: 0)
+
+                if AtriaDeveloperMode.isEnabled {
+                    Button {
+                        showDeveloperDiagnostics = true
+                    } label: {
+                        Label("Developer diagnostics", systemImage: "wrench.and.screwdriver")
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .padding(.bottom, 8)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Widget diagnostics")
+            .navigationTitle("Your widgets")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
+            .navigationDestination(isPresented: $showDeveloperDiagnostics) {
+                AtriaWidgetRawDiagnosticsView(diagnostics: diagnostics)
+            }
         }
-        .presentationDetents([.large])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         // Retain the established identifier for existing UI automation while
         // the visible surface is honestly renamed from proof to diagnostics.
         .accessibilityIdentifier("atria-widget-proof-sheet")
+    }
+}
+
+/// The raw delivery-metadata breakdown this screen used to show by default.
+/// Kept intact for developer mode: technical readers (schema, storage key,
+/// configured layout) still need it; everyday readers do not.
+private struct AtriaWidgetRawDiagnosticsView: View {
+    let diagnostics: AtriaWidgetProofDiagnostics
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                AtriaWidgetDiagnosticHeader(
+                    hasSnapshot: diagnostics.hasSnapshot,
+                    missingPayloadDetail: diagnostics.missingPayloadDetail
+                )
+                AtriaWidgetDiagnosticScopeCard()
+                AtriaWidgetTargetDiagnosticsCard(
+                    homeScreenTargetText:
+                        diagnostics.homeScreenTargetText,
+                    lockScreenTargetText:
+                        diagnostics.lockScreenTargetText,
+                    appGroupText: diagnostics.appGroupText
+                )
+                AtriaWidgetPayloadDiagnosticsCard(
+                    diagnostics: diagnostics
+                )
+            }
+            .padding(18)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Widget diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

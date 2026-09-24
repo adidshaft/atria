@@ -865,16 +865,25 @@ struct AtriaWidgetEntryView: View {
                 Text(metric.title)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer(minLength: 4)
                 Text(dailyValue(metric))
                     .font(.subheadline.monospacedDigit().weight(.bold))
                     .foregroundStyle(dailyValueTint(metric))
+                    .lineLimit(1)
                     .minimumScaleFactor(0.75)
                     .atriaLiveActivityValueTransition(dailyValue(metric))
             }
+            // A generated detail sentence (e.g. "Heart-rate coverage is 62%
+            // for this physiological day...") has no fixed length — without a
+            // lineLimit here it could wrap indefinitely and push this row
+            // past the ring's fixed height, clipped by WidgetKit's outer
+            // frame (owner report 2026-09-24).
             Text(dailyDetail(metric))
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 10)
         }
@@ -909,6 +918,7 @@ struct AtriaWidgetEntryView: View {
                 Text(metric.title)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             Text(dailyDetail(metric))
                 .font(.system(size: 10, weight: .medium))
@@ -938,16 +948,22 @@ struct AtriaWidgetEntryView: View {
                     Text(metric.title)
                         .font(compact ? .system(size: 10, weight: .semibold) : .caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     Text(dailyValue(metric))
                         .font(compact ? .system(size: 12, weight: .bold, design: .rounded) : .headline.monospacedDigit().weight(.bold))
                         .foregroundStyle(dailyValueTint(metric))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                     Spacer(minLength: 4)
+                    // Same unbounded-detail-sentence risk as the legend row
+                    // above: cap it so a long evidence string cannot grow
+                    // this row past the widget's fixed height.
                     Text(dailyDetail(metric))
                         .font(compact ? .system(size: 9, weight: .medium) : .caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .ignore)
@@ -959,9 +975,13 @@ struct AtriaWidgetEntryView: View {
 
     private var mediumOverviewFooter: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // "Widget stale Nh · Open Atria" varies in length; without a
+            // lineLimit it can wrap to two lines and collide with the button
+            // and battery label that share this row.
             Text(widgetFreshnessFooter)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(widgetStatusTint)
+                .lineLimit(1)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             AtriaStartIdleLiveActivityButton()
@@ -3829,6 +3849,7 @@ struct AtriaMetricWidgetEntryView: View {
                         Text(metric.title.uppercased())
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                         Text(value)
                             .font(.title2.weight(.bold))
                             .monospacedDigit()
