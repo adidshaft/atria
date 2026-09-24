@@ -10446,6 +10446,14 @@ final class AtriaHomeModel {
     let liveActivityCoordinator = AtriaLiveActivityCoordinator()
     private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
     private var lastActivityKitCount: Int?
+    /// Overnight windows depend only on the rollups and the civil day, but the
+    /// diagnosis report is rebuilt on the ~1 Hz CoreLive lane, foreground and
+    /// background. Reuse them until either changes (2026-09-24 code review:
+    /// eight rollup scans and eight DateFormatters per tick before this).
+    private var diagnosisMetricWindowsMemo: (rollupsRevision: Int,
+                                             day: Date,
+                                             timeZone: TimeZone,
+                                             windows: AtriaDiagnosisReport.MetricWindows)?
     private var lastFrozenSceneWidgetPatchAt: Date?
     private var lastFrozenSceneWidgetHeartRate: Int?
     private var frozenSceneIdlePresenceStartedAt: Date?
@@ -12575,10 +12583,7 @@ final class AtriaHomeModel {
                     ).start,
                     now: now
                 )?.value,
-                metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
-                    rollups: rollups,
-                    now: now
-                ),
+                metricWindows: diagnosisMetricWindows(rollups: rollups, now: now),
                 liveActivityName: liveActivitySnapshot?.activityName,
                 liveActivityAvailability: liveActivitySnapshot?
                     .heartRateAvailability.rawValue,
@@ -12632,6 +12637,28 @@ final class AtriaHomeModel {
             ),
             reason: reason
         )
+    }
+
+    private func diagnosisMetricWindows(
+        rollups: [DailyRollupStoreEntry],
+        now: Date
+    ) -> AtriaDiagnosisReport.MetricWindows {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: now)
+        let revision = store.dailyRollupHistoryRevision
+        if let memo = diagnosisMetricWindowsMemo,
+           memo.rollupsRevision == revision,
+           memo.day == day,
+           memo.timeZone == calendar.timeZone {
+            return memo.windows
+        }
+        let windows = AtriaDiagnosisReport.overnightMetricWindows(
+            rollups: rollups,
+            now: now,
+            calendar: calendar
+        )
+        diagnosisMetricWindowsMemo = (revision, day, calendar.timeZone, windows)
+        return windows
     }
 
     /// Carry-over for the recovery-banner anti-flicker debounce above.
