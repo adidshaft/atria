@@ -141,6 +141,35 @@ final class AtriaStrapSetupTests: XCTestCase {
         XCTAssertEqual(v.problem, .linkUnstable)
     }
 
+    /// 2026-09-24 iPhone run: the transport rebuilt its Bluetooth manager
+    /// (radio briefly unknown) while the user re-paired; that is not a drop.
+    func testRadioResetDropsDoNotCountAsUnstable() {
+        var timeline: [(TimeInterval, S.Snapshot)] = [(0, snap())]
+        for i in 0..<(S.maxDrops + 2) {
+            timeline.append((Double(i * 4 + 1), snap(.poweredOn, .connected)))
+            timeline.append((Double(i * 4 + 2), snap(.unknown, .connecting)))
+        }
+        let (tracker, v) = run(timeline, at: Double((S.maxDrops + 2) * 4))
+        XCTAssertEqual(tracker.attempt.drops, 0)
+        XCTAssertNotEqual(v.problem, .linkUnstable)
+    }
+
+    func testOrphanedStrapHistoryAbortOnlyWhenSafe() {
+        typealias B = AtriaBLEManager
+        XCTAssertTrue(B.shouldAbortOrphanedStrapHistory(linkConnected: true, heartRateThisConnection: false,
+                                                        appOwnsHistoryTransfer: false, pairingCheckInFlight: false))
+        XCTAssertFalse(B.shouldAbortOrphanedStrapHistory(linkConnected: true, heartRateThisConnection: true,
+                                                         appOwnsHistoryTransfer: false, pairingCheckInFlight: false),
+                       "HR flowing: nothing is orphaned")
+        XCTAssertFalse(B.shouldAbortOrphanedStrapHistory(linkConnected: true, heartRateThisConnection: false,
+                                                         appOwnsHistoryTransfer: true, pairingCheckInFlight: false),
+                       "never abort the app's own transfer")
+        XCTAssertFalse(B.shouldAbortOrphanedStrapHistory(linkConnected: true, heartRateThisConnection: false,
+                                                         appOwnsHistoryTransfer: false, pairingCheckInFlight: true))
+        XCTAssertFalse(B.shouldAbortOrphanedStrapHistory(linkConnected: false, heartRateThisConnection: false,
+                                                         appOwnsHistoryTransfer: false, pairingCheckInFlight: false))
+    }
+
     func testHeartRateIsShownButNeverAGate() {
         let noHR = run([(0, snap(.poweredOn, .connected, secure: .confirmed, run: 1))], at: 1).1
         XCTAssertTrue(noHR.isReady)

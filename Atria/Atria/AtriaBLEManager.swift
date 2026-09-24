@@ -5686,6 +5686,51 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       peripheral.identifier.uuidString)
         AtriaIMUDiagnosticTransport.noteNewConnectionEpoch(bleCallbackEpochFence.epoch)
         scheduleDiagnosticSingleIMUEnableIfRequested()
+        scheduleOrphanedHistoryAbortCheck(connectedAt: now)
+    }
+
+    /// A strap left serving history by another client (or a crashed session)
+    /// stops standard 2A37 HR until that transfer ends (physical 2026-07-28
+    /// and 2026-09-24: a Mac capture exited right after 16/00 without 14/00;
+    /// the iPhone then connected and verified but never received HR). When
+    /// this app owns no history transfer and the link has delivered no HR for
+    /// `orphanedHistoryAbortDelay`, send one history abort per connection.
+    /// 14/00 only ends a transfer; it never acknowledges or discards data.
+    static let orphanedHistoryAbortDelay: TimeInterval = 20
+    private var orphanedHistoryAbortTask: Task<Void, Never>?
+
+    nonisolated static func shouldAbortOrphanedStrapHistory(
+        linkConnected: Bool,
+        heartRateThisConnection: Bool,
+        appOwnsHistoryTransfer: Bool,
+        pairingCheckInFlight: Bool
+    ) -> Bool {
+        linkConnected && !heartRateThisConnection && !appOwnsHistoryTransfer && !pairingCheckInFlight
+    }
+
+    private func scheduleOrphanedHistoryAbortCheck(connectedAt: Date) {
+        orphanedHistoryAbortTask?.cancel()
+        guard !appReviewDemoMode else { return }
+        orphanedHistoryAbortTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(Self.orphanedHistoryAbortDelay))
+            guard let self, !Task.isCancelled, self.connectedAt == connectedAt else { return }
+            let heartRateThisConnection = self.lastAcceptedHRAt.map { $0 >= connectedAt } ?? false
+            let appOwnsHistory = self.offlineHistoricalSyncInProgress
+                || self.historyOnlyProbeEnabled
+                || self.historyOnlyProbeMode
+                || self.readOnlyHistoryCaptureRequested
+                || self.readOnlyHistoryCaptureActive
+            guard Self.shouldAbortOrphanedStrapHistory(
+                linkConnected: self.status == .connected,
+                heartRateThisConnection: heartRateThisConnection,
+                appOwnsHistoryTransfer: appOwnsHistory,
+                pairingCheckInFlight: self.onboardingPairingPreflightInFlight
+            ) else { return }
+            let sent = self.sendCommand(Cmd.abortHistoricalTransmits, [0x00], mode: .withoutResponse)
+            AtriaDebugLog("ATRIADBG orphaned_history_abort status=%@ reason=no_hr_%.0fs_no_app_history_owner",
+                          sent ? "sent" : "unsent",
+                          Self.orphanedHistoryAbortDelay)
+        }
     }
 
     private func acceptsBLECallback(
