@@ -380,7 +380,14 @@ enum AtriaStrapStepLedger {
         // gyro records intentionally retain raw peaks only as diagnostics;
         // forcing a cross-detector ratio would reject a valid durable walking
         // prefix (and lose it on relaunch).
+        // 2026-09-24: native R10 (the live step source once compact 0x33
+        // proved unrecoverable) publishes the gyro count while its label is
+        // still `r10_live_preliminary`. The accel-peak ratio is a
+        // cross-detector check and wrong for any gyro-coordinate record:
+        // on the first iPhone R10 run every checkpoint failed as
+        // `malformed_ledger`, so no R10 step was ever persisted.
         let usesPromotedGyroCoordinate = record.state == "r10_live_validated"
+            || record.state == "r10_live_preliminary"
         if !usesPromotedGyroCoordinate,
            record.segmentRawSteps == 0,
            record.segmentSteps != 0 { return false }
