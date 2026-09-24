@@ -71,7 +71,7 @@ final class AtriaStrapSetupTests: XCTestCase {
             (3, snap(.poweredOn, .connected, secure: .running, run: 1)),
         ]
         let early = run(timeline, at: 5).1
-        XCTAssertEqual(early.headline, "Securing the connection…")
+        XCTAssertEqual(early.headline, "Pairing securely…")
         XCTAssertEqual(early.state(.pair), .working)
         let prompt = run(timeline, at: 3 + S.pairPromptHint + 1).1
         XCTAssertEqual(prompt.headline, "Tap Pair on your iPhone")
@@ -100,6 +100,8 @@ final class AtriaStrapSetupTests: XCTestCase {
         XCTAssertEqual(bond.problem, .pairedElsewhere)
         XCTAssertEqual(bond.state(.pair), .problem)
         XCTAssertTrue(bond.problem!.steps[0].contains("Forget This Device"))
+        XCTAssertTrue(S.Problem.pairingNotCompleted.steps[0].contains("Forget This Device"),
+                      "the stale-key fix comes first (first iPhone run took four blind retries)")
 
         let declined = run([(0, snap(.poweredOn, .connected)),
                             (1, snap(.poweredOn, .connected, secure: .running, run: 1)),
@@ -177,7 +179,15 @@ final class AtriaStrapSetupTests: XCTestCase {
         XCTAssertNil(noHR.heartRate)
         XCTAssertTrue(noHR.detail.contains("wrist"))
 
+        XCTAssertEqual(noHR.scene, .wear)
+        let loose = run([(0, snap(.poweredOn, .connected, secure: .confirmed, run: 1))],
+                        at: S.heartRateHintAfter + 1).1
+        XCTAssertTrue(loose.isReady, "fit advice never blocks setup")
+        XCTAssertEqual(loose.state(.heartRate), .problem)
+        XCTAssertTrue(loose.detail.contains("wrist bone"))
+
         let live = run([(0, snap(.poweredOn, .connected, secure: .confirmed, run: 1, hr: 64))], at: 1).1
+        XCTAssertEqual(live.headline, "64 bpm")
         XCTAssertEqual(live.state(.heartRate), .done)
         XCTAssertEqual(live.heartRate, 64)
     }
