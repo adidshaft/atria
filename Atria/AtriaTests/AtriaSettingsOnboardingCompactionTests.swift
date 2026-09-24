@@ -289,7 +289,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
                                                range: start.upperBound..<content.endIndex))
         let sharing = String(content[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(flow.contains(".frame(maxWidth: 260)"))
+        // 2026-09-24: one screen per page; pictures size to the visible
+        // height (the decorative welcome ring left to avoid scrolling).
+        XCTAssertTrue(flow.contains("private func visualHeight("))
+        XCTAssertTrue(flow.contains(".scrollBounceBehavior(.basedOnSize)"))
         // 2026-09-02: the hand-set 28pt title became the shared page-title token
         // (.title rounded bold — 28pt by default, and it scales with Dynamic Type).
         XCTAssertTrue(flow.contains(".font(AtriaDesignTokens.Typography.pageTitle)"))

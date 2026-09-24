@@ -293,6 +293,10 @@ struct AtriaOnboardingFlow: View {
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
     @State private var restoreInProgress = false
+    @State private var pairingHelpPresented = false
+    /// Offered on About you: deleting the app erases its local history
+    /// (2026-09-24: a reinstall wiped 38 + 692 sessions with no backup).
+    @AtriaDefault(SessionStore.iCloudBackupEnabledKey) private var iCloudBackupEnabled = false
 
     private enum Step: Int, CaseIterable {
         case welcome
@@ -466,10 +470,10 @@ struct AtriaOnboardingFlow: View {
     @ViewBuilder
     private var currentPage: some View {
         switch step {
-        case .welcome: page { welcomePage }
-        case .strap: page { strapPage }
-        case .you: page { youPage }
-        case .tonight: page { tonightPage }
+        case .welcome: page { welcomePage(height: $0) }
+        case .strap: page { strapPage(height: $0) }
+        case .you: page { _ in youPage }
+        case .tonight: page { _ in tonightPage }
         }
     }
 
@@ -541,57 +545,80 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    private func page<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ScrollView(showsIndicators: false) {
-            OnboardingEntrance {
-                VStack(alignment: .leading, spacing: 12) {
-                    content()
+    /// One screen per page (2026-09-24, owner: less scroll, more breathing
+    /// room, use the screen). Pages get the visible height so their picture
+    /// can size to it; the scroll view only moves when text is too large to
+    /// fit (accessibility sizes) and does not bounce otherwise.
+    private func page<Content: View>(@ViewBuilder content: @escaping (CGFloat) -> Content) -> some View {
+        GeometryReader { proxy in
+            ScrollView(showsIndicators: false) {
+                OnboardingEntrance {
+                    VStack(alignment: .leading, spacing: 24) {
+                        content(proxy.size.height)
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 8)
+                    .padding(.bottom, 24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 116)
             }
+            .scrollBounceBehavior(.basedOnSize)
         }
+    }
+
+    /// Picture height for a page: a share of the visible height, bounded so
+    /// small phones keep room for text and large ones don't over-scale.
+    private func visualHeight(_ available: CGFloat, share: CGFloat, minimum: CGFloat, maximum: CGFloat) -> CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? minimum : min(max(available * share, minimum), maximum)
     }
 
     // MARK: - Pages
 
-    private var welcomePage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            onboardingLifestyleHero
-            Text("Your strap. Your data.")
-                .font(AtriaDesignTokens.Typography.pageTitle)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
-            onboardingRingCard
-            NavigationLink {
-                AtriaCompatibleHardwareScreen()
-            } label: {
-                Label("Compatible hardware", systemImage: "applewatch.radiowaves.left.and.right")
-                    .font(.footnote.weight(.semibold))
+    private func welcomePage(height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
+            onboardingLifestyleHero(height: visualHeight(height, share: 0.5, minimum: 200, maximum: 430))
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Your strap. Your data.")
+                    .font(AtriaDesignTokens.Typography.pageTitle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
+                Text("Sleep, recovery and strain from your strap. Setup takes about a minute.")
+                    .font(.body)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("atria.onboarding.hardware-signals")
+            welcomeLinks
+        }
+    }
+
+    /// Quiet secondary paths, one line: explore without a strap, restore,
+    /// or check which straps work.
+    private var welcomeLinks: some View {
+        VStack(alignment: .leading, spacing: 4) {
             Button(AtriaAppReviewDemo.exploreButtonTitle) {
                 onAppReviewDemo()
             }
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .frame(minHeight: 44)
             .accessibilityIdentifier("atria.onboarding.explore-sample-data")
             .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
             if onRestoreBackup != nil {
                 restoreBackupRow
             }
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Text("Compatible hardware")
+            }
+            .frame(minHeight: 44)
+            .accessibilityIdentifier("atria.onboarding.hardware-signals")
         }
+        .font(.subheadline.weight(.semibold))
+        .tint(.secondary)
+        .foregroundStyle(.secondary)
     }
 
     private var restoreBackupRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Coming back to Atria?")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
             Button {
                 backupImportPresented = true
             } label: {
@@ -600,44 +627,45 @@ struct AtriaOnboardingFlow: View {
                         ProgressView()
                             .controlSize(.small)
                     }
-                    Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
-                          systemImage: "tray.and.arrow.down")
-                        .font(.footnote.weight(.semibold))
+                    Text(restoreInProgress ? "Restoring…" : "Restore a backup")
                 }
             }
             .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
             .disabled(restoreInProgress)
             if let restoreMessage {
                 Text(restoreMessage)
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.top, 8)
     }
 
-    private var strapPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
+    private func strapPage(height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
             Text("Connect your strap")
                 .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
             StrapSetupPanel(setup: strapSetup,
                             historyBootstrap: historyBootstrap,
-                            onReady: strapVerified)
+                            sceneHeight: visualHeight(height, share: 0.42, minimum: 180, maximum: 380),
+                            onReady: strapVerified,
+                            onHelp: { pairingHelpPresented = true })
             ConnectedDebugObserver(ble: ble,
                                    historyBootstrap: historyBootstrap) {
                 onComplete(draft)
             }
         }
+        .sheet(isPresented: $pairingHelpPresented) {
+            PairingHelpSheet()
+                .presentationDetents([.medium, .large])
+        }
     }
 
-    /// About you: nickname plus the two fields heart-rate zones need. Height
-    /// and weight stay optional; blank means unset.
+    /// About you: name plus the two fields heart-rate zones need. Height and
+    /// weight stay optional; blank means unset.
     private var youPage: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 20) {
             onboardingHeader("About you", systemImage: "person.crop.circle.fill", tint: .purple)
             VStack(alignment: .leading, spacing: 12) {
                 profileFieldLayout(title: "Name", suffix: "") {
@@ -664,14 +692,27 @@ struct AtriaOnboardingFlow: View {
                 .frame(minHeight: 44)
                 optionalNumericProfileField("Height", value: heightBinding, suffix: "cm")
                 optionalNumericProfileField("Weight", value: weightBinding, suffix: "kg")
-
-                Text("Age and sex set heart-rate zones. Everything else is optional.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(14)
+            .padding(18)
             .atriaCard(emphasis: .soft)
+
+            Toggle(isOn: $iCloudBackupEnabled) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("Back up to iCloud Drive", systemImage: "icloud.and.arrow.up")
+                        .font(.body.weight(.semibold))
+                    Text("Keeps your history if you delete the app or change phones.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(18)
+            .atriaCard(emphasis: .soft)
+
+            Text("Age and sex set heart-rate zones. Everything else is optional.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
@@ -679,7 +720,7 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var tonightPage: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 24) {
             onboardingHeader("Wear it tonight", systemImage: "moon.stars.fill", tint: .indigo)
             VStack(alignment: .leading, spacing: 0) {
                 expectationStep(icon: "moon.fill",
@@ -696,7 +737,7 @@ struct AtriaOnboardingFlow: View {
                                 detail: "Scores firm up as Atria learns your baseline.",
                                 isLast: true)
             }
-            .padding(18)
+            .padding(20)
             .atriaCard(emphasis: .soft)
             Text("Rings, journal and cycle tracking can be set up anytime in Settings.")
                 .font(.footnote)
@@ -716,32 +757,6 @@ struct AtriaOnboardingFlow: View {
             }
         }
         .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
-    }
-
-    // Decorative pre-data ring: the same honest "--" state the Home ring shows
-    // before real nights arrive.
-    private var onboardingRingCard: some View {
-        AtriaTriRing(slots: [
-                        ringSlot(.sleep, title: "Sleep", icon: "bed.double.fill", tint: Metrics.electricSleep),
-                        ringSlot(.recovery, title: "Recovery", icon: "heart.text.square.fill", tint: Metrics.electricGreen),
-                        ringSlot(.strain, title: "Strain", icon: "flame.fill", tint: Metrics.electricStrain)
-                     ],
-                     centerValue: "--",
-                     centerState: "Recovery",
-                     accessibilitySummary: "Preview ring. Real numbers appear after your first night of wear.",
-                     actions: [:])
-            .frame(maxWidth: 260)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 12)
-            .atriaCard(emphasis: .soft)
-    }
-
-    private func ringSlot(_ slot: AtriaTriRingSlot, title: String, icon: String, tint: Color) -> AtriaTriRingSlotContent {
-        // `fill: nil` is the learning sentinel — the dashed pre-data band.
-        AtriaTriRingSlotContent(slot: slot,
-                                metric: AtriaTriRingMetric(title: title, value: "--", detail: "Preview",
-                                                           systemImage: icon, tint: tint, fill: nil))
     }
 
     private var ageBinding: Binding<Int> {
@@ -786,13 +801,19 @@ struct AtriaOnboardingFlow: View {
     }
 
     @ViewBuilder
-    private var onboardingLifestyleHero: some View {
+    private func onboardingLifestyleHero(height: CGFloat) -> some View {
         if let lifestyleImage = UIImage(named: "AtriaOnboardingLifestyle") {
-            Image(uiImage: lifestyleImage)
-                .resizable()
-                .scaledToFill()
+            // Color.clear takes the page width exactly; a bare aspect-fill
+            // image reports its overflow width and pushes text off-screen.
+            Color.clear
                 .frame(maxWidth: .infinity)
-                .frame(height: 180)
+                .frame(height: height)
+                .overlay {
+                    Image(uiImage: lifestyleImage)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero,
                                             style: .continuous))
                 .overlay {
@@ -946,24 +967,27 @@ struct AtriaOnboardingFlow: View {
     }
 }
 
-/// The strap step's live panel: checklist, then either the current status or
-/// one coded problem with its fix. Observes only the setup coordinator, so a
-/// verdict change re-renders this panel and nothing else.
+/// The strap step's live panel (2026-09-24 visual rebuild): one full-width
+/// picture of what to do now, one instruction in large type on it, a
+/// four-step rail, and — only when something is wrong — the coded fix.
+/// Observes only the setup coordinator, so a verdict change re-renders this
+/// panel and nothing else.
 private struct StrapSetupPanel: View {
     @ObservedObject var setup: AtriaStrapSetupCoordinator
     @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
+    let sceneHeight: CGFloat
     let onReady: () -> Void
+    let onHelp: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var verdict: AtriaStrapSetup.Verdict { setup.verdict }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            checklist
+        VStack(alignment: .leading, spacing: 20) {
+            sceneCard
+            stepRail
             if let problem = verdict.problem {
                 problemCard(problem)
-            } else {
-                statusLine
             }
             if let warning = verdict.batteryWarning {
                 Label(warning, systemImage: "battery.25percent")
@@ -976,24 +1000,12 @@ private struct StrapSetupPanel: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 12) {
-                    StrapSetupShowcase()
-                    Group {
-                        Text("\(AtriaStrapSetup.Problem.pairingMode) Tap Pair when iPhone asks. Already paired with another phone? Forget it there first.")
-                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
-                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.top, 8)
-            } label: {
-                Label("How to pair", systemImage: "questionmark.circle")
+            Button(action: onHelp) {
+                Label("Pairing help", systemImage: "questionmark.circle")
                     .font(.subheadline.weight(.semibold))
             }
             .tint(.secondary)
+            .frame(minHeight: 44)
         }
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: verdict)
         .onAppear {
@@ -1006,40 +1018,116 @@ private struct StrapSetupPanel: View {
         }
     }
 
-    private var checklist: some View {
-        VStack(spacing: 0) {
+    // MARK: Scene
+
+    private var sceneCard: some View {
+        ZStack(alignment: .bottomLeading) {
+            sceneArtwork
+                .id(verdict.scene)
+                .transition(.opacity)
+            LinearGradient(colors: [.clear, Color.black.opacity(0.78)],
+                           startPoint: .center, endPoint: .bottom)
+                .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 6) {
+                if let bpm = verdict.heartRate, verdict.isReady {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "heart.fill")
+                            .font(.title2)
+                            .foregroundStyle(.red)
+                            .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
+                        Text("\(bpm)")
+                            .font(.system(size: 48, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        Text("bpm")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(bpm) beats per minute")
+                } else {
+                    Text(verdict.headline)
+                        .font(.title2.weight(.bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !verdict.detail.isEmpty {
+                    Text(verdict.detail)
+                        .font(.callout)
+                        .foregroundStyle(.white.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .foregroundStyle(.white)
+            .padding(20)
+            .accessibilityElement(children: .combine)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: sceneHeight)
+        .background(Color(red: 0.03, green: 0.05, blue: 0.10))
+        .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero, style: .continuous)
+                .stroke(verdict.problem == nil ? Color.white.opacity(0.14) : Color.orange.opacity(0.7),
+                        lineWidth: verdict.problem == nil ? 1 : 2)
+        }
+    }
+
+    @ViewBuilder
+    private var sceneArtwork: some View {
+        switch verdict.scene {
+        case .bluetooth:
+            ZStack {
+                LinearGradient(colors: [Color(red: 0.05, green: 0.08, blue: 0.16),
+                                        Color(red: 0.02, green: 0.03, blue: 0.07)],
+                               startPoint: .top, endPoint: .bottom)
+                Image(systemName: verdict.problem == nil
+                      ? "antenna.radiowaves.left.and.right"
+                      : "antenna.radiowaves.left.and.right.slash")
+                    .font(.system(size: 64, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .symbolRenderingMode(.hierarchical)
+                    .offset(y: -sceneHeight * 0.12)
+            }
+        case .pair, .wear, .charge:
+            Color.clear
+                .overlay {
+                    Image(sceneImageName)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipped()
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var sceneImageName: String {
+        switch verdict.scene {
+        case .wear: return "AtriaSetupWearScene"
+        case .charge: return "AtriaSetupChargeScene"
+        case .pair, .bluetooth: return "AtriaSetupPairScene"
+        }
+    }
+
+    // MARK: Step rail
+
+    private var stepRail: some View {
+        HStack(alignment: .top, spacing: 0) {
             ForEach(AtriaStrapSetup.Step.allCases, id: \.rawValue) { item in
-                HStack(spacing: 12) {
+                VStack(spacing: 6) {
                     indicator(verdict.state(item))
                         .frame(width: 26, height: 26)
                     Text(item.title)
-                        .font(.body.weight(.semibold))
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(verdict.state(item) == .waiting ? .secondary : .primary)
-                    Spacer(minLength: 8)
-                    if item == .heartRate, let bpm = verdict.heartRate {
-                        HStack(alignment: .firstTextBaseline, spacing: 3) {
-                            Text("\(bpm)")
-                                .font(.title3.weight(.bold))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                            Text("bpm")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if item == .heartRate, verdict.isReady {
-                        Text("Put it on")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44)
                 .accessibilityElement(children: .combine)
                 .accessibilityValue(accessibilityValue(verdict.state(item)))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .atriaCard(emphasis: .soft)
     }
 
     @ViewBuilder
@@ -1071,52 +1159,64 @@ private struct StrapSetupPanel: View {
         }
     }
 
-    private var statusLine: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(verdict.headline)
-                .font(.headline)
-            if !verdict.detail.isEmpty {
-                Text(verdict.detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
+    // MARK: Problem
 
     private func problemCard(_ problem: AtriaStrapSetup.Problem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(problem.title, systemImage: "exclamationmark.triangle.fill")
-                .font(.headline)
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(problem.steps.enumerated()), id: \.offset) { index, text in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(index + 1).")
-                            .font(.footnote.weight(.bold))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                        Text(text)
-                            .font(.footnote)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(problem.steps.enumerated()), id: \.offset) { index, text in
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text("\(index + 1)")
+                        .font(.subheadline.weight(.bold))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Color.orange))
+                    Text(text)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
-            if !verdict.detail.isEmpty {
-                Text(verdict.detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Text("Code \(problem.code)")
                 .font(.caption2.weight(.semibold))
                 .monospaced()
                 .foregroundStyle(.tertiary)
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// Everything about pairing in one place, out of the way of the main flow:
+/// the illustrated steps and the honest data-handling notes.
+private struct PairingHelpSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    StrapSetupShowcase()
+                    Group {
+                        Text("\(AtriaStrapSetup.Problem.pairingMode) Tap Pair when iPhone asks.")
+                        Text("Paired with another phone or the WHOOP app before? Forget it there first, and on this iPhone in Settings → Bluetooth.")
+                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
+                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(20)
+            }
+            .navigationTitle("Pairing help")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }

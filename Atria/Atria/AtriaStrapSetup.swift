@@ -107,6 +107,7 @@ enum AtriaStrapSetup {
         var linkErrorCountAtStart = 0
         var secureRunAtStart = 0
         var verified = false
+        var verifiedAt: Date?
         var last: Snapshot?
 
         var strapSeen: Bool { (last?.signals.strapsSeen ?? 0) > strapsSeenAtStart }
@@ -124,11 +125,13 @@ enum AtriaStrapSetup {
         /// errors and adverts never leak into the new attempt's verdict.
         mutating func restart(now: Date, snapshot: Snapshot) {
             let wasVerified = attempt.verified
+            let wasVerifiedAt = attempt.verifiedAt
             attempt = Attempt(startedAt: now,
                               strapsSeenAtStart: snapshot.signals.strapsSeen,
                               linkErrorCountAtStart: snapshot.signals.linkErrorCount,
                               secureRunAtStart: snapshot.signals.secureCheckRun)
             attempt.verified = wasVerified
+            attempt.verifiedAt = wasVerifiedAt
             observe(snapshot, now: now)
         }
 
@@ -194,8 +197,9 @@ enum AtriaStrapSetup {
             } else {
                 attempt.secureRunningSince = nil
             }
-            if s.link == .connected, Self.verifies(s.signals.secureCheck) {
+            if s.link == .connected, Self.verifies(s.signals.secureCheck), !attempt.verified {
                 attempt.verified = true
+                attempt.verifiedAt = now
             }
             attempt.last = s
         }
@@ -221,6 +225,10 @@ enum AtriaStrapSetup {
     }
 
     enum StepState: Equatable, Sendable { case waiting, working, done, problem }
+
+    /// The picture that explains the current action: the strap with its
+    /// blue pairing light, the strap on a wrist, the charger, or Bluetooth.
+    enum Scene: Equatable, Sendable { case pair, wear, charge, bluetooth }
 
     /// `wait`: nothing to tap; the problem clears on its own (e.g. Bluetooth
     /// turned back on).
@@ -297,8 +305,12 @@ enum AtriaStrapSetup {
                         Self.pairingMode,
                         "Tap Try again."]
             case .pairingNotCompleted:
-                return ["Tap Try again, then tap Pair when iPhone asks.",
-                        "No prompt? Forget WHOOP in Settings → Bluetooth and put the strap in pairing mode again."]
+                // The common cause is an old pairing key on this iPhone (the
+                // strap forgot it). Lead with that fix; it took four blind
+                // retries on the first iPhone run (2026-09-24).
+                return ["Settings → Bluetooth → ⓘ next to WHOOP → Forget This Device.",
+                        Self.pairingMode,
+                        "Tap Try again, then tap Pair."]
             case .verifyTimedOut:
                 return [Self.pairingMode, "Tap Try again and accept Pair."]
             case .verifyFailed:
@@ -323,6 +335,7 @@ enum AtriaStrapSetup {
         var isReady: Bool
         var heartRate: Int?
         var batteryWarning: String?
+        var scene: Scene = .pair
 
         func state(_ step: Step) -> StepState { steps[step.rawValue] }
     }
@@ -338,6 +351,9 @@ enum AtriaStrapSetup {
     static let verifyBudget: TimeInterval = 75
     /// Re-pairing itself can cost a drop or two (forgetting the device,
     /// iOS tearing down the link after a pairing change), so four.
+    /// Connected and verified but still no HR after this long: say how to
+    /// fix the fit (off-wrist pauses HR by design). Advisory, never a gate.
+    static let heartRateHintAfter: TimeInterval = 30
     static let maxDrops = 4
     static let lowBattery = 15
 
@@ -358,14 +374,32 @@ enum AtriaStrapSetup {
         func failing(_ p: Problem) -> Verdict {
             var states: [StepState] = Step.allCases.map { $0.rawValue < p.step.rawValue ? .done : .waiting }
             states[p.step.rawValue] = .problem
-            return verdict(states, p.title, "", problem: p)
+            var v = verdict(states, p.title, "", problem: p)
+            switch p {
+            case .bluetoothOff, .bluetoothDenied, .bluetoothUnsupported, .bluetoothUnavailable, .tooManyPairedDevices:
+                v.scene = .bluetooth
+            case .strapNotFound, .verifyFailed:
+                v.scene = .charge
+            default:
+                v.scene = .pair
+            }
+            return v
         }
 
         if attempt.verified {
-            return verdict([.done, .done, .done, hr == nil ? .working : .done],
-                           "Strap connected",
-                           hr == nil ? "Put it on your wrist to see your heart rate." : "Heart rate is live.",
-                           ready: true)
+            var v: Verdict
+            if let hr {
+                v = verdict([.done, .done, .done, .done], "\(hr) bpm", "You're all set.", ready: true)
+            } else if elapsed(attempt.verifiedAt) >= heartRateHintAfter {
+                v = verdict([.done, .done, .done, .problem], "No heart rate yet",
+                            "Slide the strap above your wrist bone and tighten it until it doesn't move.",
+                            ready: true)
+            } else {
+                v = verdict([.done, .done, .done, .working], "Connected",
+                            "Heart rate shows once the strap is snug on your wrist.", ready: true)
+            }
+            v.scene = .wear
+            return v
         }
 
         switch s.radio {
@@ -374,7 +408,9 @@ enum AtriaStrapSetup {
         case .poweredOff: return failing(.bluetoothOff)
         case .unknown, .resetting:
             if elapsed(attempt.radioWaitSince) >= radioBudget { return failing(.bluetoothUnavailable) }
-            return verdict([.working, .waiting, .waiting, .waiting], "Starting Bluetooth…", "")
+            var v = verdict([.working, .waiting, .waiting, .waiting], "Starting Bluetooth…", "")
+            v.scene = .bluetooth
+            return v
         case .poweredOn:
             break
         }
@@ -398,11 +434,11 @@ enum AtriaStrapSetup {
             if waited >= verifyBudget { return failing(.verifyTimedOut) }
             let promptLikely = elapsed(attempt.secureRunningSince) >= pairPromptHint
             return verdict([.done, .done, .working, hr == nil ? .waiting : .done],
-                           promptLikely ? "Tap Pair on your iPhone" : "Securing the connection…",
-                           promptLikely ? "iPhone asks once. It keeps your strap's data private." : "")
+                           promptLikely ? "Tap Pair on your iPhone" : "Pairing securely…",
+                           promptLikely ? "iPhone asks once. It keeps your data private." : "Keep the strap close.")
         case .connecting:
             if elapsed(attempt.connectingSince) >= connectBudget { return failing(.connectTimedOut) }
-            return verdict([.done, .done, .waiting, .waiting], "Connecting…", "")
+            return verdict([.done, .done, .waiting, .waiting], "Connecting…", "Keep the strap close.")
         case .idle, .searching:
             if attempt.connectingSince == nil, elapsed(attempt.searchingSince) >= findBudget {
                 var v = failing(.strapNotFound)
@@ -410,8 +446,8 @@ enum AtriaStrapSetup {
                 return v
             }
             return verdict([.done, .working, .waiting, .waiting],
-                           attempt.drops > 0 ? "Reconnecting…" : "Looking for your strap…",
-                           Problem.pairingMode)
+                           attempt.drops > 0 ? "Reconnecting…" : "Put your strap in pairing mode",
+                           attempt.drops > 0 ? "Keep the strap close." : Problem.pairingMode)
         }
     }
 }

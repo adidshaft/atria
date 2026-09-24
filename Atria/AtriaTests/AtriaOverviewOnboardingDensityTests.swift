@@ -18,7 +18,8 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         let panel = String(source[start.lowerBound...])
 
         XCTAssertTrue(panel.contains("StrapSetupShowcase()"))
-        XCTAssertTrue(panel.contains("DisclosureGroup"))
+        XCTAssertTrue(panel.contains("private struct PairingHelpSheet"),
+                      "pairing detail lives one tap away in a sheet, not on the page")
         XCTAssertFalse(panel.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
         XCTAssertEqual(panel.components(separatedBy: "setupStepTile(").count - 1, 0)
         XCTAssertTrue(panel.contains("AtriaStrapSetup.Problem.pairingMode"))
@@ -110,7 +111,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
     // generic decoration stays.
     func testWelcomeUsesAtriaLogoInsteadOfGenericSparkles() throws {
         let source = try source("AtriaOnboardingFlow.swift")
-        let pageStart = try XCTUnwrap(source.range(of: "private var welcomePage"))
+        let pageStart = try XCTUnwrap(source.range(of: "private func welcomePage"))
         let pageEnd = try XCTUnwrap(source.range(of: "private var restoreBackupRow",
                                                  range: pageStart.upperBound..<source.endIndex))
         let page = String(source[pageStart.lowerBound..<pageEnd.lowerBound])
@@ -128,14 +129,14 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         let parserStart = try XCTUnwrap(source.range(of: "enum AtriaOptionalProfileNumber",
                                                       range: showcaseStart.upperBound..<source.endIndex))
         let showcase = String(source[showcaseStart.lowerBound..<parserStart.lowerBound])
-        let listStart = try XCTUnwrap(source.range(of: "private var checklist: some View"))
+        let listStart = try XCTUnwrap(source.range(of: "private var stepRail: some View"))
         let listEnd = try XCTUnwrap(source.range(of: "private func indicator",
                                                  range: listStart.upperBound..<source.endIndex))
         let checklist = String(source[listStart.lowerBound..<listEnd.lowerBound])
 
         XCTAssertGreaterThanOrEqual(showcase.components(separatedBy: ".frame(width: 44, height: 44)").count - 1, 2,
                                     "The rotate action and each scene selector need full touch targets")
-        XCTAssertTrue(checklist.contains(".frame(minHeight: 44)"))
+        XCTAssertTrue(checklist.contains("minHeight: 44"))
         XCTAssertFalse(checklist.contains(".minimumScaleFactor"),
                        "Step names should wrap instead of shrinking below a readable size")
         XCTAssertTrue(source.contains("if dynamicTypeSize.isAccessibilitySize"))
