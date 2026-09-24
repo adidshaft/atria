@@ -598,15 +598,18 @@ struct TachogramChart: View {
         }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(format: .dateTime.hour().minute())
-                    .font(.caption2.monospacedDigit())
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
-                AxisValueLabel().font(.caption2.monospacedDigit())
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel().font(AtriaChartVisualGrammar.axisLabelFont).foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .atriaGraphPlotSurface()

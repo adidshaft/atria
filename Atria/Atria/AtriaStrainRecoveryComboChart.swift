@@ -165,7 +165,7 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartXScale(domain: xDomain ?? Date()...Date())
         .chartXAxis {
             AxisMarks(values: weekDays) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(centered: true) {
                     if let day = value.as(Date.self) {
@@ -179,7 +179,7 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartYScale(domain: 0...strainAxisMax)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 7, 14, 21]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
