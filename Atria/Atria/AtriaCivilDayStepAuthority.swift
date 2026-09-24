@@ -127,6 +127,17 @@ final class AtriaCivilDayStepAuthority {
         fallback.merging(exact) { _, exactValue in exactValue }
     }
 
+    /// End of the civil day that starts at `dayStart`: the next local
+    /// midnight. A fixed 86,400 s is wrong twice a year wherever clocks
+    /// change — the spring-forward day is 23 h (the fixed end reads an hour
+    /// of the next day into this one) and the fall-back day is 25 h (its last
+    /// hour belongs to no day at all). 2026-09-24 code review.
+    static func civilDayEnd(after dayStart: Date,
+                            calendar: Calendar = .current) -> Date {
+        calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(86_400)
+    }
+
     /// After compact IMU shards rotate (four UTC days), `sourceFingerprint`
     /// is nil. A closed day's cached total is still the last exact count.
     static func shouldKeepCompleteDayAfterShardsRotate(_ record: DayRecord) -> Bool {
@@ -167,7 +178,7 @@ final class AtriaCivilDayStepAuthority {
         var dirty = false
 
         for day in days {
-            let dayEnd = day.addingTimeInterval(86_400)
+            let dayEnd = Self.civilDayEnd(after: day)
             let readEnd = min(dayEnd, now)
             guard readEnd > day else { continue }
             // Fingerprint the WHOLE day's buckets even while the day is open,
@@ -234,7 +245,10 @@ final class AtriaCivilDayStepAuthority {
         guard let data = try? Data(contentsOf: url),
               let list = try? JSONDecoder().decode([DayRecord].self, from: data)
         else { return [:] }
-        return Dictionary(uniqueKeysWithValues: list.map { ($0.dayStartUnix, $0) })
+        // uniquingKeysWith, not uniqueKeysWithValues: a file with a repeated
+        // day must degrade like any other bad file, not trap (2026-09-24 review).
+        return Dictionary(list.map { ($0.dayStartUnix, $0) },
+                          uniquingKeysWith: { _, last in last })
     }
 
     private static func persist(_ records: [Double: DayRecord], to url: URL) {
