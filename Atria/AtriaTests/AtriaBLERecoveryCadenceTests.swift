@@ -2334,8 +2334,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             value.contains("else if !historyPhase.isActive"),
             "leftover history metadata must not freeze compact IMU ingest"
         )
-        // R10/2B may still decode for archive/metadata, but only compact
-        // 0x33 seconds may call ingestLiveMotionFrame for the daily product.
+        // 2026-09-24 product-rule migration: compact 0x33 cannot be
+        // re-enabled on this firmware (Mac R10/R11 pass), and native R10's
+        // gyro-cadence count scored 6.6 % mean error on metronome walks. R10
+        // now feeds the step pipeline, but only while compact 0x33 is absent,
+        // so compact keeps priority and nothing is counted twice.
         let r10DecodeRange = try XCTUnwrap(value.range(
             of: "AtriaR10MotionDecoder.decode(frame: completeFrame)"
         ))
@@ -2345,13 +2348,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let betweenR10AndCompact = String(
             value[r10DecodeRange.upperBound..<compactIngestRange.lowerBound]
         )
-        XCTAssertFalse(
-            betweenR10AndCompact.contains("ingestLiveMotionFrame("),
-            "leftover R10/2B must not feed Today strap steps while compact 0x33 is the product source"
+        XCTAssertTrue(
+            betweenR10AndCompact.contains("if Self.r10LiveStepsEnabled, !compactRecent {"),
+            "native R10 may feed steps only when compact 0x33 is not arriving"
+        )
+        XCTAssertTrue(
+            String(value[compactIngestRange.lowerBound...])
+                .contains("lastCompactIMUIngestUnix.withLock { $0 = receivedAt.timeIntervalSince1970 }"),
+            "every compact second must mark its preference window before ingest"
         )
         XCTAssertTrue(
             String(value[compactIngestRange.lowerBound...]).contains("ingestLiveMotionFrame("),
-            "compact 0x33 seconds remain the only live motion ingest into the step pipeline"
+            "compact 0x33 seconds still ingest into the step pipeline"
         )
         let r10Start = try XCTUnwrap(source.range(
             of: "private nonisolated func ingestLiveMotionFrame("
@@ -2387,10 +2395,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
-    /// Product rule: leftover type-2B / R10 may still be decoded and archived,
-    /// but only compact `0x33` seconds may enter `ingestLiveMotionFrame` for
-    /// Today steps / workouts / widgets. R10 decoder stays; it just cannot
-    /// satisfy the daily strap-step product.
+    /// Product rule (migrated 2026-09-24): compact `0x33` has priority; native
+    /// R10 feeds `ingestLiveMotionFrame` only while compact is absent, because
+    /// compact cannot be re-enabled on current firmware and R10's gyro-cadence
+    /// count is validated (6.6 % mean error). The name is kept for history.
     func testOnlyCompact33SecondsIngestIntoLiveStrapStepPipeline() throws {
         let managerURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -2420,19 +2428,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let compactLoop = try XCTUnwrap(value.range(
             of: "for compactSecond in compactIMUSecond("
         ))
-        XCTAssertFalse(
-            String(value[decodeRange.upperBound..<compactLoop.lowerBound])
-                .contains("ingestLiveMotionFrame("),
-            "R10/2B must not call ingestLiveMotionFrame"
+        let r10Branch = String(value[decodeRange.upperBound..<compactLoop.lowerBound])
+        XCTAssertTrue(
+            r10Branch.contains("let compactRecent = receivedAt.timeIntervalSince1970"),
+            "R10 ingest must be gated on compact 0x33 being absent"
         )
         let compactTail = String(value[compactLoop.lowerBound...])
         XCTAssertTrue(
             compactTail.contains("ingestLiveMotionFrame(\n                        compactSecond,"),
             "only compactIMUSecond frames may ingest into the live step pipeline"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             value.contains("ingestLiveMotionFrame(\n                        nativeR10,"),
-            "native R10 frames must not be the daily strap-step source"
+            "native R10 frames are the step source when compact is absent"
         )
     }
 
