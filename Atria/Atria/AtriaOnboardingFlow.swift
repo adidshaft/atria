@@ -61,39 +61,6 @@ private struct AtriaOnboardingBackdrop: View {
     }
 }
 
-/// The generated metric haloes are intentionally quiet decoration behind the
-/// sample ring, never an additional data signal. Reduce Transparency removes
-/// them completely so the existing code-drawn ring remains the clean fallback.
-private struct OnboardingMetricAccents: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    var body: some View {
-        if !reduceTransparency {
-            GeometryReader { proxy in
-                let accentSize = min(proxy.size.width, proxy.size.height) * 0.56
-                ZStack {
-                    accent("AtriaMetricSleepAccent", size: accentSize)
-                        .position(x: proxy.size.width * 0.27, y: proxy.size.height * 0.28)
-                    accent("AtriaMetricRecoveryAccent", size: accentSize)
-                        .position(x: proxy.size.width * 0.49, y: proxy.size.height * 0.60)
-                    accent("AtriaMetricStrainAccent", size: accentSize)
-                        .position(x: proxy.size.width * 0.74, y: proxy.size.height * 0.50)
-                }
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-    }
-
-    private func accent(_ name: String, size: CGFloat) -> some View {
-        Image(name)
-            .resizable()
-            .scaledToFit()
-            .frame(width: size, height: size)
-            .opacity(0.10)
-    }
-}
-
 /// A user-controlled product turntable inspired by premium hardware onboarding,
 /// not a perpetual animation. Each tap advances the render to the next setup
 /// moment; Reduce Motion keeps the same choice immediate and fully functional.
@@ -297,7 +264,16 @@ enum AtriaOptionalProfileNumber {
         .replacingOccurrences(of: #"\.$"#, with: "", options: .regularExpression)
     }
 }
-
+/// First-run setup, reworked 2026-09-24 (owner: "easier, deterministic, non
+/// sluggish, 100% success rate or clear classified error").
+///
+/// Four pages: welcome → strap → about you → tonight. Pages are an explicit
+/// step switch, not a swipeable paged TabView: paging mounted every page (slow
+/// first frame) and let a swipe skip the strap step, which then bounced the
+/// user back from the last page. Ring layout, tracked behaviours and cycle
+/// tracking keep their defaults and live in Customize / Journal / Settings.
+/// The strap page renders `AtriaStrapSetup` verdicts: a four-row checklist
+/// and, when something is wrong, one coded problem with the exact fix.
 struct AtriaOnboardingFlow: View {
     @State private var draft: AthleteProfile
     let ble: AtriaBLEManager
@@ -308,165 +284,90 @@ struct AtriaOnboardingFlow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.openURL) private var openURL
-    @State private var step: Step = .whatThisIs
-    @State private var focusMetric: OnboardingFocusMetric = .recovery
-    // Design-parity slice 6 (2026-08-01) page state. Each is seeded from — and
-    // written back to — the real backing store via AtriaOnboardingPersonalization
-    // (nickname / ring slots / ring center) and AtriaCycleTracking (cycle), so
-    // the onboarding choice takes effect the moment it is made.
+    @State private var step: Step = .welcome
+    /// Held in @State (not @StateObject) so its 1 s verdicts re-render only
+    /// the views that observe it, never the whole flow.
+    @State private var strapSetup: AtriaStrapSetupCoordinator
+    @State private var autoAdvanceScheduled = false
     @State private var nicknameDraft = ""
-    @State private var ringSlots: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder
-    @State private var ringCenterMetric: AtriaHomeLayoutConfig.RingCenterMetric = .recovery
-    @State private var cycleTrackingEnabled = false
     @State private var backupImportPresented = false
     @State private var restoreMessage: String?
     @State private var restoreInProgress = false
-    // Which journal behaviors the user wants to track. Shared key with the deck
-    // and the Settings picker (see AtriaTrackedBehaviors); empty falls back to
-    // the default set, so skipping this step keeps the proven default check-in.
-    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
-
-    private enum OnboardingFocusMetric: String, CaseIterable, Identifiable {
-        case recovery
-        case sleep
-        case strain
-
-        var id: String { rawValue }
-
-        var title: String {
-            switch self {
-            case .recovery: return "Recovery"
-            case .sleep: return "Sleep"
-            case .strain: return "Strain"
-            }
-        }
-
-        var detail: String {
-            switch self {
-            // Short enough to fit the three-across legend chip at the ring's
-            // 260pt width. "Morning readiness" rendered as "Morning re…" even
-            // at minimumScaleFactor(0.6) — a truncation on the very first
-            // screen a user sees.
-            case .recovery: return "Readiness"
-            case .sleep: return "Night review"
-            case .strain: return "Day load"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .recovery: return "heart.text.square.fill"
-            case .sleep: return "bed.double.fill"
-            case .strain: return "flame.fill"
-            }
-        }
-
-        var tint: Color {
-            switch self {
-            case .recovery: return Metrics.electricGreen
-            case .sleep: return Metrics.electricSleep
-            case .strain: return Metrics.electricStrain
-            }
-        }
-
-        // No sample numbers anywhere in the product (2026-07-31): the
-        // onboarding ring shows the same honest pre-data state the Home ring
-        // uses — "--" centers and dashed learning bands — so the first thing
-        // a new user sees is exactly what the app will look like until real
-        // nights arrive, not a fabricated 64%.
-        var centerValue: String { "--" }
-    }
 
     private enum Step: Int, CaseIterable {
-        case whatThisIs
-        // 2026-08-01 (design-parity slice 6): nickname (P1), rings (P2), and
-        // cycle (P3) pages were woven INTO this flow. They sit between the
-        // existing pages rather than replacing any of them, so whatThisIs stays
-        // first and expectations stays last exactly as before. Research (P4)
-        // keeps its existing inspector-gated post-flow consent step so the user
-        // is never asked to consent twice.
-        case nickname
+        case welcome
         case strap
         case you
-        case rings
-        case behaviors
-        case cycle
-        case expectations
+        case tonight
 
-        var isFirst: Bool { self == .whatThisIs }
-        var isLast: Bool { self == .expectations }
+        var isFirst: Bool { self == .welcome }
+        var isLast: Bool { self == .tonight }
 
         init?(debugName: String?) {
             guard let debugName else { return nil }
             switch debugName.lowercased() {
-            case "welcome", "what-this-is", "what", "hardware", "compatible", "signals": self = .whatThisIs
-            case "nickname", "name", "you-name": self = .nickname
+            case "welcome", "what-this-is", "what", "hardware", "compatible", "signals": self = .welcome
             case "strap", "connect": self = .strap
-            case "you", "profile": self = .you
-            case "rings", "ring": self = .rings
-            case "behaviors", "track", "tracking": self = .behaviors
-            case "cycle", "womens-health", "cycle-tracking": self = .cycle
-            case "expectations", "expect", "tomorrow": self = .expectations
+            case "you", "profile", "nickname", "name", "you-name": self = .you
+            // Pages folded out of onboarding land on the nearest remaining one.
+            case "rings", "ring", "behaviors", "track", "tracking", "cycle", "womens-health", "cycle-tracking":
+                self = .you
+            case "expectations", "expect", "tomorrow", "tonight": self = .tonight
             default: return nil
             }
         }
     }
 
     private struct PrimaryActionButton: View {
-        @ObservedObject var ble: AtriaBLEManager
+        @ObservedObject var setup: AtriaStrapSetupCoordinator
         @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
         let step: Step
         let action: () -> Void
 
-        private var strapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
-
-        private var bluetoothRecovery: AtriaOnboardingBluetoothRecovery {
-            AtriaOnboardingBluetoothRecovery(status: ble.status,
-                                              permissionDenied: ble.bluetoothPermissionDenied)
-        }
-
         var body: some View {
             Button(action: action) {
-                Text(title)
-                    .font(.headline.weight(.bold))
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 30)
+                HStack(spacing: 8) {
+                    if showsProgress {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(title)
+                        .font(.headline.weight(.bold))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 30)
             }
             .controlSize(.large)
-            .atriaCardAction(tint: step == .strap && !strapIsReady ? .blue : .green)
-            .disabled(step == .strap && strapActionIsUnavailable)
+            .atriaCardAction(tint: step == .strap && !strapDone ? .blue : .green)
+            .disabled(step == .strap && !strapActionAvailable)
+            .accessibilityIdentifier("atria.onboarding.primary")
         }
 
-        private var strapActionIsUnavailable: Bool {
-            // Permission denial is persistent and needs a user-owned recovery
-            // action. Keep Open Settings tappable even if transport work was
-            // interrupted while CoreBluetooth changed to unauthorized.
-            if bluetoothRecovery == .permissionDenied { return false }
-            return historyBootstrap.isWorking
-                || ble.onboardingPairingPreflightInFlight
-                || bluetoothRecovery.disablesPrimaryAction
+        private var strapDone: Bool {
+            setup.verdict.isReady || historyBootstrap.isSetupComplete
+        }
+
+        private var strapActionAvailable: Bool {
+            strapDone || (setup.verdict.problem.map { $0.action != .wait } ?? false)
+        }
+
+        private var showsProgress: Bool {
+            step == .strap && !strapDone && setup.verdict.problem == nil
         }
 
         private var title: String {
             switch step {
-            case .whatThisIs: return "Get started"
-            case .nickname: return "Continue"
+            case .welcome: return "Get started"
             case .strap:
-                if bluetoothRecovery == .permissionDenied { return "Open Settings" }
-                if strapIsReady { return "Continue" }
-                if let recoveryTitle = bluetoothRecovery.primaryActionTitle {
-                    return recoveryTitle
+                if strapDone { return "Continue" }
+                switch setup.verdict.problem?.action {
+                case .openSettings: return "Open Settings"
+                case .retry: return "Try again"
+                case .wait: return "Waiting for Bluetooth"
+                case nil: return "Connecting…"
                 }
-                if ble.onboardingPairingPreflightInFlight { return "Confirming strap…" }
-                if historyBootstrap.isWorking { return "Setting up…" }
-                if historyBootstrap.snapshot.phase == .failed { return "Retry" }
-                return ble.onboardingLiveHeartRateThisConnection ? "Continue" : "Connect"
             case .you: return "Continue"
-            case .rings: return "Continue"
-            case .behaviors: return "Continue"
-            case .cycle: return "Continue"
-            case .expectations:
-                return strapIsReady ? "Start using Atria" : "Finish strap setup"
+            case .tonight:
+                return historyBootstrap.isSetupComplete ? "Start using Atria" : "Finish strap setup"
             }
         }
     }
@@ -484,7 +385,7 @@ struct AtriaOnboardingFlow: View {
                 .task(id: ble.status) {
 #if DEBUG
                     guard ProcessInfo.processInfo.arguments.contains("--atria-ui-onboarding-complete-connected-strap") else { return }
-                    guard historyBootstrap.isCompleteForCurrentStrap, !didComplete else { return }
+                    guard historyBootstrap.isSetupComplete, !didComplete else { return }
                     didComplete = true
                     AtriaDebugLog("ATRIADBG onboarding status=debug_complete_connected_strap action=complete")
                     try? await Task.sleep(nanoseconds: 700_000_000)
@@ -503,7 +404,8 @@ struct AtriaOnboardingFlow: View {
          onAppReviewDemo: @escaping () -> Void = {},
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
-        _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
+        _step = State(initialValue: Step(debugName: debugInitialStep) ?? .welcome)
+        _strapSetup = State(initialValue: AtriaStrapSetupCoordinator(ble: ble))
         self.ble = ble
         self.historyBootstrap = historyBootstrap
         self.onRestoreBackup = onRestoreBackup
@@ -517,31 +419,17 @@ struct AtriaOnboardingFlow: View {
                 AtriaOnboardingBackdrop()
                     .ignoresSafeArea()
 
-                TabView(selection: $step) {
-                    page { whatThisIsPage }
-                        .tag(Step.whatThisIs)
-                    page { nicknamePage }
-                        .tag(Step.nickname)
-                    page { strapPage }
-                        .tag(Step.strap)
-                    page { youPage }
-                        .tag(Step.you)
-                    page { ringsPage }
-                        .tag(Step.rings)
-                    page { behaviorsPage }
-                        .tag(Step.behaviors)
-                    page { cyclePage }
-                        .tag(Step.cycle)
-                    page { expectationsPage }
-                        .tag(Step.expectations)
-                }
-                .tabViewStyle(.page(indexDisplayMode: .never))
+                currentPage
+                    .id(step)
+                    .transition(reduceMotion ? .opacity : .asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .opacity))
             }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if !step.isFirst {
                         Button {
-                            move(to: Step(rawValue: step.rawValue - 1) ?? .whatThisIs)
+                            move(to: Step(rawValue: step.rawValue - 1) ?? .welcome)
                         } label: {
                             Label("Back", systemImage: "chevron.left")
                         }
@@ -562,45 +450,10 @@ struct AtriaOnboardingFlow: View {
             .safeAreaBar(edge: .bottom) {
                 VStack(spacing: 8) {
                     progressDots
-                    PrimaryActionButton(ble: ble,
+                    PrimaryActionButton(setup: strapSetup,
                                         historyBootstrap: historyBootstrap,
                                         step: step) {
-                        dismissKeyboard()
-                        if step == .strap,
-                           onboardingBluetoothRecovery == .permissionDenied {
-                            openApplicationSettings()
-                        } else if step == .strap, !onboardingStrapIsReady {
-                            // A connected strap is enough to leave this page.
-                            // Bootstrap still records the link; do not wait for
-                            // a 15-second accepted-HR window that never arrives.
-                            if historyBootstrap.snapshot.phase == .failed {
-                                historyBootstrap.retry()
-                            } else if ble.status != .connected {
-                                ble.startScan(reason: "onboarding_primary_connect")
-                            } else {
-                                historyBootstrap.startOrResumeIfPossible()
-                                if historyBootstrap.isCompleteForCurrentStrap {
-                                    move(to: .you)
-                                }
-                            }
-                        } else if step.isLast {
-                            if onboardingStrapIsReady {
-                                onComplete(draft)
-                            } else {
-                                move(to: .strap)
-                            }
-                        } else {
-                            move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
-                        }
-                    }
-                    if stepIsSkippablePersonalization {
-                        Button("Skip for now") {
-                            move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(minHeight: 44)
-                        .accessibilityHint("Skips this optional setup step. You can set it later in Settings.")
+                        primaryAction()
                     }
                 }
                 .padding(.horizontal, 20)
@@ -610,24 +463,64 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    private var onboardingStrapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
+    @ViewBuilder
+    private var currentPage: some View {
+        switch step {
+        case .welcome: page { welcomePage }
+        case .strap: page { strapPage }
+        case .you: page { youPage }
+        case .tonight: page { tonightPage }
+        }
+    }
 
-    private var onboardingBluetoothRecovery: AtriaOnboardingBluetoothRecovery {
-        AtriaOnboardingBluetoothRecovery(status: ble.status,
-                                          permissionDenied: ble.bluetoothPermissionDenied)
+    private func primaryAction() {
+        dismissKeyboard()
+        switch step {
+        case .welcome:
+            move(to: .strap)
+        case .strap:
+            if strapSetup.verdict.isReady || historyBootstrap.isSetupComplete {
+                recordVerifiedStrap()
+                if historyBootstrap.isSetupComplete { move(to: .you) }
+                return
+            }
+            switch strapSetup.verdict.problem?.action {
+            case .openSettings: openApplicationSettings()
+            case .retry: strapSetup.retry()
+            case .wait, nil: break
+            }
+        case .you:
+            move(to: .tonight)
+        case .tonight:
+            if historyBootstrap.isSetupComplete {
+                onComplete(draft)
+            } else {
+                move(to: .strap)
+            }
+        }
+    }
+
+    /// Setup proved this strap; bind completion to its identity. Called on the
+    /// verdict edge and again on Continue, so a failed save can be retried.
+    private func recordVerifiedStrap() {
+        guard let identifier = ble.currentPeripheralIdentifier ?? ble.savedPeripheralIdentifier else { return }
+        historyBootstrap.completeVerifiedSetup(peripheralIdentifier: identifier)
+    }
+
+    private func strapVerified() {
+        recordVerifiedStrap()
+        guard !autoAdvanceScheduled, historyBootstrap.isSetupComplete else { return }
+        autoAdvanceScheduled = true
+        Task { @MainActor in
+            // A short beat so the finished checklist is seen, then move on.
+            try? await Task.sleep(for: .seconds(1.2))
+            if step == .strap { move(to: .you) }
+        }
     }
 
     private func openApplicationSettings() {
         guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
         openURL(settingsURL)
-    }
-
-    /// The three design-adopted personalization pages are optional: each persists
-    /// continuously with a sensible default (blank nickname, default ring layout,
-    /// cycle off), so a "Skip for now" simply advances and leaves the defaults in
-    /// place. Everything here is changeable later from Settings/Customize.
-    private var stepIsSkippablePersonalization: Bool {
-        step == .nickname || step == .rings || step == .cycle
     }
 
     private func dismissKeyboard() {
@@ -661,11 +554,9 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    private var whatThisIsPage: some View {
-        // Image-led + minimal (2026-07-31, user: onboarding should lead with imagery,
-        // "not just texts"). Lead with the lifestyle hero, then the tagline, then the
-        // interactive sample ring. Visible copy stays to the one honest "sample
-        // numbers" line and the quiet returning-user restore path.
+    // MARK: - Pages
+
+    private var welcomePage: some View {
         VStack(alignment: .leading, spacing: 16) {
             onboardingLifestyleHero
             Text("Your strap. Your data.")
@@ -691,409 +582,78 @@ struct AtriaOnboardingFlow: View {
             .accessibilityIdentifier("atria.onboarding.explore-sample-data")
             .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
             if onRestoreBackup != nil {
-                // Restoring a backup is the rare path — a returning user, not
-                // a new one. It previously sat directly under the picker as a
-                // full-width glass button, reading as a co-equal first action.
-                // Pushed to the foot of the page behind a quiet lead-in so the
-                // common path (Get started) stays unambiguous.
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Coming back to Atria?")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Button {
-                        backupImportPresented = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            if restoreInProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
-                                  systemImage: "tray.and.arrow.down")
-                                .font(.footnote.weight(.semibold))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .disabled(restoreInProgress)
-                    if let restoreMessage {
-                        Text(restoreMessage)
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.top, 8)
+                restoreBackupRow
             }
         }
     }
 
-    // MARK: - Design-parity slice 6 pages (2026-08-01)
-
-    /// P1 Welcome + nickname. Binds to the real "atria.user.nickname" store the
-    /// Today screen reads for its greeting (via AtriaOnboardingPersonalization) —
-    /// leaving it blank removes the key, so skipping looks like skipping.
-    private var nicknamePage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            onboardingBrandTile
-            Text("Welcome to Atria")
-                .font(AtriaDesignTokens.Typography.pageTitle)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("What should we call you?")
-                .font(.subheadline)
+    private var restoreBackupRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Coming back to Atria?")
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 8) {
-                TextField("Nickname", text: $nicknameDraft)
-                    .textInputAutocapitalization(.words)
-                    .autocorrectionDisabled()
-                    .submitLabel(.done)
-                    .frame(minHeight: 44)
-                    .onSubmit { dismissKeyboard() }
-                    .onChange(of: nicknameDraft) { _, newValue in
-                        AtriaOnboardingPersonalization.persistNickname(newValue)
-                    }
-            }
-            .padding(16)
-            .atriaCard(emphasis: .soft)
-
-            Text("Optional.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .onAppear {
-            nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
-        }
-    }
-
-    /// P2 Choose your rings. Ring assignment + CENTER NUMBER picker wired to the
-    /// SAME real stores the Today screen and Customize sheet use: the
-    /// "atria.today.ringMetrics" CSV and `ringCenterMetric` inside the
-    /// AtriaHomeLayoutConfig JSON blob. The preview ring stays in the honest
-    /// pre-data state (dashed learning bands, "--" center) — no sample numbers.
-    private var ringsPage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ringsPreviewCard
-            Text("Choose your rings")
-                .font(AtriaDesignTokens.Typography.pageTitle)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Three rings. Change anytime in Customize.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(ringSlots.enumerated()), id: \.offset) { index, slot in
-                    HStack(spacing: 10) {
-                        Circle()
-                            .fill(ringSlotTint(slot))
-                            .frame(width: 10, height: 10)
-                            .accessibilityHidden(true)
-                        Text(Self.ringPositionLabels[index])
-                            .font(.subheadline.weight(.semibold))
-                        Spacer(minLength: 8)
-                        Picker(Self.ringPositionLabels[index], selection: Binding(
-                            get: { slot },
-                            set: { assignRing($0, toPosition: index) }
-                        )) {
-                            ForEach(AtriaTriRingSlot.allCases, id: \.self) { option in
-                                Text(option.label).tag(option)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                    .frame(minHeight: 44)
-                }
-            }
-            .padding(16)
-            .atriaCard(emphasis: .soft)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Center number")
-                    .font(.subheadline.weight(.semibold))
-                Picker("Center metric", selection: Binding(
-                    get: { ringCenterMetric },
-                    set: { setRingCenterMetric($0) }
-                )) {
-                    ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
-                        Text(ringCenterMetricLabel(metric)).tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(minHeight: 44)
-                .accessibilityHint("Selects the metric shown in the center of the ring")
-            }
-            .padding(16)
-            .atriaCard(emphasis: .soft)
-        }
-        .onAppear {
-            ringSlots = AtriaOnboardingPersonalization.loadRingSlots()
-            ringCenterMetric = AtriaOnboardingPersonalization.loadRingCenterMetric()
-        }
-    }
-
-    private var ringsPreviewCard: some View {
-        AtriaTriRing(slots: ringSlots.map { slot in
-                         // fill: nil is the learning sentinel — the preview shows
-                         // the same honest dashed pre-data band the live Home ring
-                         // uses before real nights arrive.
-                         AtriaTriRingSlotContent(slot: slot,
-                                                 metric: AtriaTriRingMetric(title: slot.label,
-                                                                            value: "--",
-                                                                            detail: "Preview",
-                                                                            systemImage: ringSlotIcon(slot),
-                                                                            tint: ringSlotTint(slot),
-                                                                            fill: nil))
-                     },
-                     centerValue: "--",
-                     centerState: ringCenterMetricLabel(ringCenterMetric),
-                     accessibilitySummary: "Preview of your ring choices. Real numbers appear after your first night of wear.",
-                     actions: [:])
-            .frame(maxWidth: 240)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 12)
-            .atriaCard(emphasis: .soft)
-    }
-
-    /// P3 Cycle tracking opt-in. Toggle wired to the real AtriaCycleTracking
-    /// enable flag through its canonical `setEnabled` path (default OFF), so
-    /// enabling it here is exactly the same action Settings/Journal perform.
-    private var cyclePage: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            onboardingGradientTile(systemImage: "calendar.circle.fill",
-                                   colors: [Self.cycleHue.opacity(0.38),
-                                            Color.red.opacity(0.22)])
-            Text("Cycle tracking")
-                .font(AtriaDesignTokens.Typography.pageTitle)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Off by default. Stays on this phone.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(isOn: Binding(
-                    get: { cycleTrackingEnabled },
-                    set: { setCycleTracking($0) }
-                )) {
-                    Label("Enable cycle tracking", systemImage: "calendar.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                }
-                .tint(Self.cycleHue)
-            }
-            .padding(16)
-            .atriaCard(emphasis: .soft)
-
-            DisclosureGroup {
-                Text("Estimates only. Stays on this phone. Not a diagnosis.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
+            Button {
+                backupImportPresented = true
             } label: {
-                Label("How it works", systemImage: "questionmark.circle")
-                    .font(.subheadline.weight(.semibold))
+                HStack(spacing: 8) {
+                    if restoreInProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Label(restoreInProgress ? "Restoring…" : "Restore backup from Files",
+                          systemImage: "tray.and.arrow.down")
+                        .font(.footnote.weight(.semibold))
+                }
             }
-            .tint(.secondary)
-        }
-        .onAppear {
-            cycleTrackingEnabled = AtriaCycleTracking.isEnabled
-        }
-    }
-
-    // MARK: - Slice 6 helpers
-
-    private static let ringPositionLabels = ["Outer ring", "Middle ring", "Inner ring"]
-    /// Design cycle hue #FF6482 (spec §0 · Cycle #FF6482). Kept local so this
-    /// slice never edits the shared Metrics palette.
-    private static let cycleHue = Color(red: 1.0, green: 0.392, blue: 0.51)
-
-    private var onboardingBrandTile: some View {
-        Image("AtriaLogo")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 84, height: 84)
-            .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile,
-                                        style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile,
-                                 style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+            .disabled(restoreInProgress)
+            if let restoreMessage {
+                Text(restoreMessage)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
-            .accessibilityHidden(true)
-    }
-
-    private func onboardingGradientTile(systemImage: String, colors: [Color]) -> some View {
-        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
-            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: 84, height: 84)
-            .overlay {
-                Image(systemName: systemImage)
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .symbolRenderingMode(.hierarchical)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-    }
-
-    private func assignRing(_ slot: AtriaTriRingSlot, toPosition position: Int) {
-        let updated = AtriaOnboardingPersonalization.assign(slot, toPosition: position, in: ringSlots)
-        ringSlots = updated
-        AtriaOnboardingPersonalization.persistRingSlots(updated)
-    }
-
-    private func setRingCenterMetric(_ metric: AtriaHomeLayoutConfig.RingCenterMetric) {
-        ringCenterMetric = metric
-        AtriaOnboardingPersonalization.persistRingCenterMetric(metric)
-    }
-
-    private func setCycleTracking(_ enabled: Bool) {
-        cycleTrackingEnabled = enabled
-        AtriaCycleTracking.setEnabled(enabled)
-    }
-
-    private func ringCenterMetricLabel(_ metric: AtriaHomeLayoutConfig.RingCenterMetric) -> String {
-        switch metric {
-        case .recovery: return "Recovery"
-        case .sleep: return "Sleep"
-        case .strain: return "Strain"
         }
-    }
-
-    private func ringSlotTint(_ slot: AtriaTriRingSlot) -> Color {
-        switch slot {
-        case .sleep: return Metrics.electricSleep
-        case .recovery: return Metrics.electricGreen
-        case .strain: return Metrics.electricStrain
-        case .hrv: return Metrics.electricHRV
-        case .rhr: return Metrics.electricRHR
-        }
-    }
-
-    private func ringSlotIcon(_ slot: AtriaTriRingSlot) -> String {
-        switch slot {
-        case .sleep: return "bed.double.fill"
-        case .recovery: return "heart.fill"
-        case .strain: return "flame.fill"
-        case .hrv: return "waveform.path.ecg"
-        case .rhr: return "heart.circle.fill"
-        }
+        .padding(.top, 8)
     }
 
     private var strapPage: some View {
         VStack(alignment: .leading, spacing: 16) {
-            // Image-led + minimal (2026-07-31, user: onboarding should be minimal
-            // and image-first like the WHOOP reference screens, "not just texts").
-            // The showcase already narrates setup (Meet / Charge / Wear / Pair) in
-            // pictures, so the old redundant "Connect your strap" header + the
-            // Charge/Close WHOOP/Tap tiles + the pairing wall-of-text are gone. Live
-            // status stays visible; the exact pairing steps and the honest data-
-            // handling details collapse behind one clearly-labeled tap — nothing is
-            // hidden, just tidied out of the default view.
-            StrapSetupShowcase()
-
-            OnboardingConnectionStatusView(ble: ble)
-            onboardingHistoryStatus
-
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Strap off. Wait until the green lights stop. Tap the top until the side light pulses blue. Tap Pair, then put the strap back on.")
-                        .accessibilityLabel("Pairing instructions")
-                    Text("Already paired elsewhere? Settings → Bluetooth → forget that device, then pulse blue again.")
-                    Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
-                    Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure)
-                    Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            Text("Connect your strap")
+                .font(AtriaDesignTokens.Typography.pageTitle)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 6)
-            } label: {
-                Label("Pairing help",
-                      systemImage: "questionmark.circle")
-                    .font(.subheadline.weight(.semibold))
-            }
-            .tint(.secondary)
-
+            StrapSetupPanel(setup: strapSetup,
+                            historyBootstrap: historyBootstrap,
+                            onReady: strapVerified)
             ConnectedDebugObserver(ble: ble,
                                    historyBootstrap: historyBootstrap) {
                 onComplete(draft)
             }
         }
-        .onAppear {
-            ble.startScan(reason: "onboarding_strap")
-            historyBootstrap.startOrResumeIfPossible()
-        }
-        .onChange(of: ble.status) { _, _ in
-            historyBootstrap.startOrResumeIfPossible()
-        }
-        .onChange(of: ble.heartRate) { _, _ in
-            historyBootstrap.startOrResumeIfPossible()
-        }
-        .onChange(of: historyBootstrap.snapshot.phase) { _, phase in
-            if phase == .complete, onboardingStrapIsReady, step == .strap {
-                move(to: .you)
-            }
-        }
-        .onChange(of: ble.onboardingPairingPreflightInFlight) { wasInFlight, isInFlight in
-            guard wasInFlight, !isInFlight else { return }
-            historyBootstrap.startOrResumeIfPossible()
-        }
     }
 
-    @ViewBuilder
-    private var onboardingHistoryStatus: some View {
-        switch historyBootstrap.snapshot.phase {
-        case .waitingForStrap:
-            Label(historyBootstrap.snapshot.detail,
-                  systemImage: "dot.radiowaves.left.and.right")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.blue)
-        case .importing, .publishing:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(historyBootstrap.snapshot.detail)
-                    .font(.footnote.weight(.semibold))
-            }
-            Text("Keep the strap nearby. Tap Pair if iPhone asks.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .complete:
-            if historyBootstrap.isCompleteForCurrentStrap {
-                Label(historyBootstrap.snapshot.importedRows > 0
-                      ? "Ready · \(historyBootstrap.snapshot.importedRows) records safely added"
-                      : historyBootstrap.snapshot.detail,
-                      systemImage: "checkmark.seal.fill")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.green)
-            } else {
-                // The completion record survives process death, but it is bound
-                // to one exact peripheral. Until CoreBluetooth restores that
-                // identity, "Ready" would overstate what this launch has proved.
-                Label("Saved setup found · reconnect your strap to verify it",
-                      systemImage: "clock.arrow.circlepath")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.blue)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        case .failed:
-            Label(historyBootstrap.snapshot.detail,
-                  systemImage: "exclamationmark.triangle.fill")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
+    /// About you: nickname plus the two fields heart-rate zones need. Height
+    /// and weight stay optional; blank means unset.
     private var youPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            onboardingHeader("You", systemImage: "person.crop.circle.fill", tint: .purple)
+            onboardingHeader("About you", systemImage: "person.crop.circle.fill", tint: .purple)
             VStack(alignment: .leading, spacing: 12) {
+                profileFieldLayout(title: "Name", suffix: "") {
+                    TextField("Name", text: $nicknameDraft, prompt: Text("Optional"))
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .submitLabel(.done)
+                        .multilineTextAlignment(.trailing)
+                        .frame(minWidth: 88, idealWidth: 140, maxWidth: 180)
+                        .frame(minHeight: 44)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { dismissKeyboard() }
+                        .onChange(of: nicknameDraft) { _, newValue in
+                            AtriaOnboardingPersonalization.persistNickname(newValue)
+                        }
+                }
                 numericProfileField("Age", value: ageBinding, suffix: "years")
                 Picker("Sex", selection: $draft.biologicalSex) {
                     ForEach(AthleteProfile.BiologicalSex.allCases) { sex in
@@ -1105,7 +665,7 @@ struct AtriaOnboardingFlow: View {
                 optionalNumericProfileField("Height", value: heightBinding, suffix: "cm")
                 optionalNumericProfileField("Weight", value: weightBinding, suffix: "kg")
 
-                Text("Age and sex set heart-rate zones. Height and weight are optional.")
+                Text("Age and sex set heart-rate zones. Everything else is optional.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1113,143 +673,14 @@ struct AtriaOnboardingFlow: View {
             .padding(14)
             .atriaCard(emphasis: .soft)
         }
-    }
-
-    private var behaviorsPage: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            onboardingHeader("What to track", systemImage: "checklist", tint: .cyan)
-            Text("Morning log. Change anytime in Journal.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            ForEach(behaviorGroups, id: \.title) { group in
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(group.title.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tertiary)
-                    LazyVGrid(columns: behaviorGridColumns,
-                              alignment: .leading, spacing: 8) {
-                        ForEach(group.tags) { tag in
-                            behaviorChip(tag)
-                        }
-                    }
-                }
-                .padding(14)
-                .atriaCard(emphasis: .soft)
-            }
+        .onAppear {
+            nicknameDraft = AtriaOnboardingPersonalization.loadNickname()
         }
     }
 
-    private var trackedBehaviorSet: Set<BehaviorJournalEntry.Tag> {
-        Set(AtriaTrackedBehaviors.parse(trackedBehaviorsRaw))
-    }
-
-    private var behaviorGroups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
-        AtriaTrackedBehaviors.groups
-    }
-
-    private var behaviorGridColumns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible())]
-        }
-        return [GridItem(.adaptive(minimum: 150), spacing: 8)]
-    }
-
-    private func behaviorChip(_ tag: BehaviorJournalEntry.Tag) -> some View {
-        let selected = trackedBehaviorSet.contains(tag)
-        return Button {
-            toggleTrackedBehavior(tag)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: tag.symbolName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(selected ? .cyan : .secondary)
-                    .frame(width: 18)
-                Text(tag.label)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(selected ? .primary : .secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.caption)
-                    .foregroundStyle(selected ? Color.cyan : Color.secondary.opacity(0.45))
-            }
-            .padding(.horizontal, 10)
-            .frame(minHeight: 44)
-            .frame(maxWidth: .infinity)
-            .background(selected ? Color.cyan.opacity(0.12) : Color.secondary.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(selected ? Color.cyan.opacity(0.4) : Color.clear, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(tag.label)
-        .accessibilityValue(selected ? "Tracked" : "Not tracked")
-        .accessibilityHint(tag.prompt)
-    }
-
-    private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {
-        var set = trackedBehaviorSet
-        if set.contains(tag) { set.remove(tag) } else { set.insert(tag) }
-        // Never persist an empty set — parse() treats empty as "use defaults".
-        if set.isEmpty { set = [.sleep] }
-        let ordered = BehaviorJournalEntry.Tag.allCases.filter { set.contains($0) }
-        trackedBehaviorsRaw = AtriaTrackedBehaviors.serialize(ordered)
-    }
-
-    // Ring preview. Tap a ring to change the center metric; the old extra
-    // Recovery/Sleep/Strain picker on this page was removed as duplicate copy.
-    private var onboardingRingCard: some View {
-        ZStack {
-            OnboardingMetricAccents()
-            AtriaTriRing(slots: onboardingRingSlots,
-                         centerValue: focusMetric.centerValue,
-                         centerState: focusMetric.title,
-                         accessibilitySummary: "Preview ring focused on \(focusMetric.title). Tap a ring to change the center metric.",
-                         actions: [
-                            .sleep: { moveFocus(to: .sleep) },
-                            .recovery: { moveFocus(to: .recovery) },
-                            .strain: { moveFocus(to: .strain) }
-                         ])
-        }
-            .frame(maxWidth: 260)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
-            .padding(.horizontal, 12)
-            .atriaCard(emphasis: .soft)
-    }
-
-    private var onboardingRingSlots: [AtriaTriRingSlotContent] {
-        [
-            AtriaTriRingSlotContent(slot: .sleep, metric: onboardingMetric(.sleep)),
-            AtriaTriRingSlotContent(slot: .recovery, metric: onboardingMetric(.recovery)),
-            AtriaTriRingSlotContent(slot: .strain, metric: onboardingMetric(.strain))
-        ]
-    }
-
-    private func onboardingMetric(_ metric: OnboardingFocusMetric) -> AtriaTriRingMetric {
-        // `fill: nil` is the learning sentinel — the ring draws its dashed
-        // pre-data band, identical to a genuinely fresh install's Home ring.
-        AtriaTriRingMetric(title: metric.title,
-                           value: metric.centerValue,
-                           detail: metric.detail,
-                           systemImage: metric.icon,
-                           tint: metric.tint,
-                           fill: nil)
-    }
-
-    private var expectationsPage: some View {
+    private var tonightPage: some View {
         VStack(alignment: .leading, spacing: 20) {
             onboardingHeader("Wear it tonight", systemImage: "moon.stars.fill", tint: .indigo)
-
-            // A visible "what to expect" timeline (2026-07-30). The old page was
-            // three compact pills whose useful copy ("Recovery begins after 3-4
-            // nights") lived only in an invisible accessibilityHint, leaving the
-            // page ~60% empty. Surfacing the sequence as a connected timeline sets
-            // honest first-run expectations (numbers build over time) and fills the
-            // space with meaningful, visual intel rather than blank margin.
             VStack(alignment: .leading, spacing: 0) {
                 expectationStep(icon: "moon.fill",
                                 tint: .indigo,
@@ -1258,17 +689,23 @@ struct AtriaOnboardingFlow: View {
                 expectationStep(icon: "sunrise.fill",
                                 tint: .orange,
                                 title: "Tomorrow morning",
-                                detail: "Review last night. First recovery score.")
+                                detail: "Your first sleep review to confirm, and a first recovery score.")
                 expectationStep(icon: "chart.line.uptrend.xyaxis",
                                 tint: .green,
                                 title: "Over the first two weeks",
-                                detail: "Scores settle to your baseline.",
+                                detail: "Scores firm up as Atria learns your baseline.",
                                 isLast: true)
             }
             .padding(18)
             .atriaCard(emphasis: .soft)
+            Text("Rings, journal and cycle tracking can be set up anytime in Settings.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
+
+    // MARK: - Pieces
 
     private var progressDots: some View {
         HStack(spacing: 8) {
@@ -1279,6 +716,32 @@ struct AtriaOnboardingFlow: View {
             }
         }
         .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
+    }
+
+    // Decorative pre-data ring: the same honest "--" state the Home ring shows
+    // before real nights arrive.
+    private var onboardingRingCard: some View {
+        AtriaTriRing(slots: [
+                        ringSlot(.sleep, title: "Sleep", icon: "bed.double.fill", tint: Metrics.electricSleep),
+                        ringSlot(.recovery, title: "Recovery", icon: "heart.text.square.fill", tint: Metrics.electricGreen),
+                        ringSlot(.strain, title: "Strain", icon: "flame.fill", tint: Metrics.electricStrain)
+                     ],
+                     centerValue: "--",
+                     centerState: "Recovery",
+                     accessibilitySummary: "Preview ring. Real numbers appear after your first night of wear.",
+                     actions: [:])
+            .frame(maxWidth: 260)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 12)
+            .atriaCard(emphasis: .soft)
+    }
+
+    private func ringSlot(_ slot: AtriaTriRingSlot, title: String, icon: String, tint: Color) -> AtriaTriRingSlotContent {
+        // `fill: nil` is the learning sentinel — the dashed pre-data band.
+        AtriaTriRingSlotContent(slot: slot,
+                                metric: AtriaTriRingMetric(title: title, value: "--", detail: "Preview",
+                                                           systemImage: icon, tint: tint, fill: nil))
     }
 
     private var ageBinding: Binding<Int> {
@@ -1305,26 +768,14 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    private func moveFocus(to next: OnboardingFocusMetric) {
-        if reduceMotion {
-            focusMetric = next
-        } else {
-            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) { focusMetric = next }
-        }
-    }
-
-    private func onboardingIcon(_ systemName: String, tint: Color) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 34, weight: .semibold))
-            .foregroundStyle(tint)
-            .symbolRenderingMode(.hierarchical)
-    }
-
     private func onboardingHeader(_ title: String,
                                   systemImage: String,
                                   tint: Color) -> some View {
         HStack(alignment: .center, spacing: 12) {
-            onboardingIcon(systemImage, tint: tint)
+            Image(systemName: systemImage)
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(tint)
+                .symbolRenderingMode(.hierarchical)
                 .frame(width: 40)
                 .accessibilityHidden(true)
             Text(title)
@@ -1334,9 +785,6 @@ struct AtriaOnboardingFlow: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// Optional lifestyle art from the onboarding image handoff. It gives the
-    /// introduction a warmer visual anchor while the sample ring stays the
-    /// primary explanation of Atria's recovery, sleep, and strain model.
     @ViewBuilder
     private var onboardingLifestyleHero: some View {
         if let lifestyleImage = UIImage(named: "AtriaOnboardingLifestyle") {
@@ -1400,13 +848,9 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    /// Height and weight are optional, and the model already treats 0 as
-    /// "unset" (both bindings clamp to max(0, …)). Bound through
-    /// `TextField(_:value:format:)` that sentinel rendered as a reading —
-    /// "0 cm", "0 kg" — which is not a height and not a weight, and disagreed
-    /// with Settings, where unset profile fields already show as blank rather
-    /// than zero. The field is empty when unset, with the unit as its prompt,
-    /// so skipping it looks like skipping it.
+    /// Height and weight are optional, and the model treats 0 as "unset". The
+    /// field is empty when unset, with "Optional" as its prompt, so skipping
+    /// it looks like skipping it (never "0 cm").
     private func optionalNumericProfileField(_ title: String,
                                              value: Binding<Double>,
                                              suffix: String) -> some View {
@@ -1437,9 +881,11 @@ struct AtriaOnboardingFlow: View {
                     .font(.headline)
                 HStack(spacing: 8) {
                     editor()
-                    Text(suffix)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    if !suffix.isEmpty {
+                        Text(suffix)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: 0)
                 }
             }
@@ -1449,9 +895,11 @@ struct AtriaOnboardingFlow: View {
                 Text(title)
                 Spacer(minLength: 8)
                 editor()
-                Text(suffix)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
             .frame(minHeight: 44)
         }
@@ -1494,6 +942,181 @@ struct AtriaOnboardingFlow: View {
 
             Spacer(minLength: 0)
         }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The strap step's live panel: checklist, then either the current status or
+/// one coded problem with its fix. Observes only the setup coordinator, so a
+/// verdict change re-renders this panel and nothing else.
+private struct StrapSetupPanel: View {
+    @ObservedObject var setup: AtriaStrapSetupCoordinator
+    @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
+    let onReady: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var verdict: AtriaStrapSetup.Verdict { setup.verdict }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            checklist
+            if let problem = verdict.problem {
+                problemCard(problem)
+            } else {
+                statusLine
+            }
+            if let warning = verdict.batteryWarning {
+                Label(warning, systemImage: "battery.25percent")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+            if historyBootstrap.snapshot.phase == .failed {
+                Label(historyBootstrap.snapshot.detail, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 12) {
+                    StrapSetupShowcase()
+                    Group {
+                        Text("\(AtriaStrapSetup.Problem.pairingMode) Tap Pair when iPhone asks. Already paired with another phone? Forget it there first.")
+                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary)
+                        Text(AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 8)
+            } label: {
+                Label("How to pair", systemImage: "questionmark.circle")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .tint(.secondary)
+        }
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: verdict)
+        .onAppear {
+            setup.start()
+            if verdict.isReady { onReady() }
+        }
+        .onDisappear { setup.stop() }
+        .onChange(of: verdict.isReady) { _, ready in
+            if ready { onReady() }
+        }
+    }
+
+    private var checklist: some View {
+        VStack(spacing: 0) {
+            ForEach(AtriaStrapSetup.Step.allCases, id: \.rawValue) { item in
+                HStack(spacing: 12) {
+                    indicator(verdict.state(item))
+                        .frame(width: 26, height: 26)
+                    Text(item.title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(verdict.state(item) == .waiting ? .secondary : .primary)
+                    Spacer(minLength: 8)
+                    if item == .heartRate, let bpm = verdict.heartRate {
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("\(bpm)")
+                                .font(.title3.weight(.bold))
+                                .monospacedDigit()
+                                .contentTransition(.numericText())
+                            Text("bpm")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if item == .heartRate, verdict.isReady {
+                        Text("Put it on")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 44)
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(accessibilityValue(verdict.state(item)))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .atriaCard(emphasis: .soft)
+    }
+
+    @ViewBuilder
+    private func indicator(_ state: AtriaStrapSetup.StepState) -> some View {
+        switch state {
+        case .waiting:
+            Circle()
+                .stroke(Color.secondary.opacity(0.35), lineWidth: 2)
+                .frame(width: 20, height: 20)
+        case .working:
+            ProgressView().controlSize(.small)
+        case .done:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.green)
+        case .problem:
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.title3)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func accessibilityValue(_ state: AtriaStrapSetup.StepState) -> String {
+        switch state {
+        case .waiting: return "Not started"
+        case .working: return "In progress"
+        case .done: return "Done"
+        case .problem: return "Needs attention"
+        }
+    }
+
+    private var statusLine: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verdict.headline)
+                .font(.headline)
+            if !verdict.detail.isEmpty {
+                Text(verdict.detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func problemCard(_ problem: AtriaStrapSetup.Problem) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(problem.title, systemImage: "exclamationmark.triangle.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(problem.steps.enumerated()), id: \.offset) { index, text in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(index + 1).")
+                            .font(.footnote.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        Text(text)
+                            .font(.footnote)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if !verdict.detail.isEmpty {
+                Text(verdict.detail)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Code \(problem.code)")
+                .font(.caption2.weight(.semibold))
+                .monospaced()
+                .foregroundStyle(.tertiary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
     }
 }

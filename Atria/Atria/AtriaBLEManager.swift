@@ -1961,6 +1961,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// One read-only 22/00 transaction may establish the iOS bond before a new
     /// strap can emit standard HR. It owns neither history nor live authority.
     @Published private(set) var onboardingPairingPreflightInFlight = false
+    /// First-run setup facts for `AtriaStrapSetupCoordinator` (2026-09-24):
+    /// distinct WHOOP adverts, classified link errors and the secure-check
+    /// verdict. Published only on change; never per advert or per sample.
+    @Published private(set) var strapSetupSignals = AtriaStrapSetup.TransportSignals()
+    private var strapSetupSeenIdentifiers: Set<UUID> = []
     private var onboardingPairingPreflightGeneration: UInt64 = 0
     private var onboardingPairingPreflightTask: Task<Void, Never>?
     private nonisolated let callbackPolicyState = AtriaBLECallbackPolicyState(
@@ -5590,6 +5595,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         onboardingPairingPreflightSequence = nil
         onboardingPairingPreflightWriteResult = nil
         onboardingPairingPreflightAttemptedConnection = nil
+        if strapSetupSignals.secureCheck != .notStarted {
+            strapSetupSignals.secureCheck = .notStarted
+        }
         clearHistoryCapabilityQualification()
         serviceDiscoveryCallbackObservedForConnection = false
         // The silent-stream repair budget bounds repairs WITHIN one reconnect
@@ -14327,6 +14335,67 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 || saved.strapDeviceTimestamp != nil)
     }
 
+    // MARK: First-run setup signals (2026-09-24)
+
+    var strapSetupRadio: AtriaStrapSetup.Radio { AtriaStrapSetup.Radio(central.state) }
+
+    /// The strap this phone last bonded with, even while it is out of range.
+    var savedPeripheralIdentifier: String? {
+        UserDefaults.standard.string(forKey: LinkDefaults.savedPeripheralUUID)
+    }
+
+    func noteStrapSetupCandidate(_ identifier: UUID) {
+        guard strapSetupSeenIdentifiers.insert(identifier).inserted else { return }
+        strapSetupSignals.strapsSeen = strapSetupSeenIdentifiers.count
+    }
+
+    func noteStrapSetupLinkError(domain: String, code: Int) {
+        guard let error = AtriaStrapSetup.LinkError.classify(domain: domain, code: code) else { return }
+        strapSetupSignals.linkErrorCount += 1
+        strapSetupSignals.lastLinkError = error
+        AtriaDebugLog("ATRIADBG strap_setup status=link_error domain=%@ code=%d class=%@",
+                      domain, code, String(describing: error))
+    }
+
+    private func setStrapSetupSecureCheck(_ check: AtriaStrapSetup.SecureCheck) {
+        var next = strapSetupSignals
+        if check == .running { next.secureCheckRun += 1 }
+        next.secureCheck = check
+        if next != strapSetupSignals { strapSetupSignals = next }
+    }
+
+    nonisolated static func strapSetupSecureCheck(
+        for result: AtriaBLEReadOnlyHistoryCapturePolicy.WriteConfirmationResult
+    ) -> AtriaStrapSetup.SecureCheck {
+        switch result {
+        case .confirmed: return .confirmed
+        case .securityRequired: return .securityRequired
+        case .failed: return .failed
+        case .timedOut: return .timedOut
+        case .interrupted: return .interrupted
+        }
+    }
+
+    /// Setup "Try again": abandon any running check (its late callbacks are
+    /// fenced by generation) and give this connection one fresh 22/00 run.
+    func retryOnboardingSecureCheck() {
+        if onboardingPairingPreflightInFlight {
+            onboardingPairingPreflightTask?.cancel()
+            finishOnboardingPairingPreflight(generation: onboardingPairingPreflightGeneration,
+                                             reason: "setup_retry",
+                                             outcome: .interrupted)
+        }
+        onboardingPairingPreflightAttemptedConnection = nil
+        requestOnboardingPairingPreflightIfNeeded()
+    }
+
+    /// Debug quiet-lease sessions forbid proprietary TX; setup cannot prove
+    /// the channel there and must not hang on it.
+    func markOnboardingSecureCheckSkipped() {
+        guard strapSetupSignals.secureCheck != .skipped else { return }
+        setStrapSetupSecureCheck(.skipped)
+    }
+
     /// Gives iOS one bounded opportunity to establish the strap bond before
     /// standard HR is available. The only protocol mutation reachable here is
     /// GET_DATA_RANGE 22/00 with response. It does not activate the history
@@ -14356,6 +14425,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         onboardingPairingPreflightGeneration &+= 1
         let generation = onboardingPairingPreflightGeneration
         onboardingPairingPreflightInFlight = true
+        setStrapSetupSecureCheck(.running)
         onboardingPairingPreflightDiscoveryRequested = true
         onboardingPairingPreflightSequence = nil
         onboardingPairingPreflightWriteResult = nil
@@ -14377,7 +14447,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       self.peripheral?.state == .connected else {
                     self.finishOnboardingPairingPreflight(
                         generation: generation,
-                        reason: "transport_interrupted"
+                        reason: "transport_interrupted",
+                        outcome: .interrupted
                     )
                     return
                 }
@@ -14391,7 +14462,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   self.writeCompletionLedger.pending.isEmpty else {
                 self.finishOnboardingPairingPreflight(
                     generation: generation,
-                    reason: "tx_or_single_flight_unavailable"
+                    reason: "tx_or_single_flight_unavailable",
+                    outcome: .failed
                 )
                 return
             }
@@ -14417,7 +14489,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       self.peripheral?.state == .connected else {
                     self.finishOnboardingPairingPreflight(
                         generation: generation,
-                        reason: "pairing_settle_completed_or_interrupted"
+                        reason: "pairing_settle_completed_or_interrupted",
+                        outcome: .interrupted
                     )
                     return
                 }
@@ -14427,7 +14500,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             self.finishOnboardingPairingPreflight(
                 generation: generation,
-                reason: "range_write_\(result)"
+                reason: "range_write_\(result)",
+                outcome: Self.strapSetupSecureCheck(for: result)
             )
         }
     }
@@ -14480,9 +14554,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func finishOnboardingPairingPreflight(
         generation: UInt64,
-        reason: String
+        reason: String,
+        outcome: AtriaStrapSetup.SecureCheck
     ) {
         guard onboardingPairingPreflightGeneration == generation else { return }
+        setStrapSetupSecureCheck(outcome)
         onboardingPairingPreflightInFlight = false
         onboardingPairingPreflightDiscoveryRequested = false
         onboardingPairingPreflightSequence = nil
@@ -52951,7 +53027,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             guard self.centralEventFence.accepts(
                 centralToken,
                 central: central
-            ), Self.shouldClaimCurrentScanCandidate(
+            ) else { return }
+            self.noteStrapSetupCandidate(peripheral.identifier)
+            guard Self.shouldClaimCurrentScanCandidate(
                 hasStrapIdentity: isStrap,
                 isActivelyScanning: self.isActivelyScanning,
                 hasCurrentPeripheralOwner: self.peripheral != nil
@@ -53507,8 +53585,12 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         } else if endedNaturally, idleWindowFlagEnabled || naturalGapFlagEnabled {
             idleWindowDrainArmFence.arm()
         }
+        let strapSetupLinkError = (error as NSError?).map { ($0.domain, $0.code) }
         Task { @MainActor [weak self] in
             guard let self else { return }
+            if let strapSetupLinkError {
+                self.noteStrapSetupLinkError(domain: strapSetupLinkError.0, code: strapSetupLinkError.1)
+            }
             self.priorConnectionEndedNaturally = endedNaturally
             if drainOwnedDisconnect {
                 self.idleWindowDrainPausesHeartRate = false
@@ -54441,6 +54523,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             // same-UUID object may already own the live link.
             connectedPeripheralRetainer.release(peripheral)
         }
+        let strapSetupLinkError = (error as NSError?).map { ($0.domain, $0.code) }
         Task { @MainActor in
             guard self.centralEventFence.accepts(
                 centralToken,
@@ -54456,6 +54539,9 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 AtriaDebugLog("ATRIADBG ble_epoch status=stale_connect_failure_ignored peripheral=%@",
                               peripheral.identifier.uuidString)
                 return
+            }
+            if let strapSetupLinkError {
+                self.noteStrapSetupLinkError(domain: strapSetupLinkError.0, code: strapSetupLinkError.1)
             }
             if synchronousReconnectIssued {
                 self.peripheral = peripheral

@@ -217,15 +217,18 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                       "Sleep, workout, and review markers must share one non-overlapping lane")
     }
 
+    // 2026-09-24: OnboardingConnectionStatusView was replaced by the strap
+    // setup checklist (StrapSetupPanel). Same guarantee, new subject: status
+    // and fix steps render as visible text and combine for VoiceOver.
     func testOnboardingConnectionCardKeepsGuidanceVisibleAndAvailableToVoiceOver() throws {
-        let source = try source("ContentView.swift")
-        let start = try XCTUnwrap(source.range(of: "struct OnboardingConnectionStatusView"))
-        let end = try XCTUnwrap(source.range(of: "extension View", range: start.upperBound..<source.endIndex))
-        let card = String(source[start.lowerBound..<end.lowerBound])
+        let source = try source("AtriaOnboardingFlow.swift")
+        let start = try XCTUnwrap(source.range(of: "private struct StrapSetupPanel"))
+        let card = String(source[start.lowerBound...])
 
-        XCTAssertTrue(card.contains("Text(subtitle)"))
-        XCTAssertTrue(card.contains(".accessibilityLabel(\"\\(title). \\(subtitle)\")"))
-        XCTAssertTrue(card.contains(".padding(.vertical, 12)"))
+        XCTAssertTrue(card.contains("Text(verdict.headline)"))
+        XCTAssertTrue(card.contains("Text(verdict.detail)"))
+        XCTAssertTrue(card.contains("Text(text)"), "fix steps are visible text, not VoiceOver-only hints")
+        XCTAssertTrue(card.contains(".accessibilityElement(children: .combine)"))
     }
 
     func testLiveWorkoutKeepsPrimaryActionsSideBySideWithoutInstructionCopy() throws {
