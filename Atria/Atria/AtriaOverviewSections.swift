@@ -2063,7 +2063,7 @@ struct AtriaWeeklyReportSheet: View {
                 .atriaDailyQuantityYAxis()
                 .chartXAxis {
                     AxisMarks(values: weekDays) { value in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                        AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                         AxisTick().foregroundStyle(.clear)
                         if let date = value.as(Date.self) {
                             AxisValueLabel(centered: true) {
@@ -4913,6 +4913,15 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
+                // Night timeline (visual pass 2026-09-24): episode lane + HR
+                // line + 1–3 insight lines from AtriaNightTimelineAnalyzer,
+                // then the optional "what was it?" prompt. No stages claimed.
+                if let nightTimeline = AtriaNightTimelineSource.latest() {
+                    AtriaNightTimelineCard(model: nightTimeline)
+                    AtriaNightInterruptionPromptCard(
+                        episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(nightTimeline.result),
+                        timeZone: nightTimeline.timeZone)
+                }
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
                     // HYPNOGRAM" card); renders the honest needs-motion /
