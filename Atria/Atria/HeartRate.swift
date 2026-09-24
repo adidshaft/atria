@@ -2,8 +2,12 @@ import SwiftUI
 import Charts
 
 /// One timestamped heart-rate sample.
-struct HRSample: Identifiable {
-    let id = UUID()
+///
+/// No per-sample identity (2026-09-24 code review): nothing read the old
+/// `let id = UUID()`, yet every live sample and every projected session
+/// minted one — a random UUID per sample and 16 extra bytes per element in
+/// arrays that hold a full day at 1 Hz.
+struct HRSample {
     let t: Date
     let bpm: Int
 }
