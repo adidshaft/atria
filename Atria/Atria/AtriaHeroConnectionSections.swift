@@ -506,15 +506,6 @@ private struct AtriaHeartRateZoneRail: View, Equatable {
 }
 
 
-private struct AtriaHeroMetricItem: Identifiable, Equatable {
-    let title: String
-    let value: String
-    let detail: String
-    let tint: Color
-
-    var id: String { title }
-}
-
 
 private struct AtriaHeroNextActionRow: View, Equatable {
     let nextAction: String

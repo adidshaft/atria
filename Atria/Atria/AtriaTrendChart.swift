@@ -942,26 +942,6 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         }
     }
 
-    private func reportBar(label: String, value: Double, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.76))
-                        .frame(width: max(8, width * min(max(value, 0), 1)))
-                }
-            }
-            .frame(height: 7)
-        }
-        .frame(maxWidth: .infinity)
-    }
 }
 
 

@@ -449,10 +449,6 @@ enum AtriaJournalInsights {
         return ranks
     }
 
-    private static func pearson(_ a: [Double], _ b: [Double]) -> Double? {
-        pearsonCancellable(a, b, shouldContinue: { true })
-    }
-
     private static func pearsonCancellable(
         _ a: [Double],
         _ b: [Double],

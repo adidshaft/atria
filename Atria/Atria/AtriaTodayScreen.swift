@@ -2572,10 +2572,6 @@ struct AtriaTodayScreen: View {
         return summary
     }
 
-    private var healthValue: String {
-        displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Learning"
-    }
-
     private var coachContext: AtriaCoachContext {
         AtriaCoachContext(guidance: displayHero.guidance,
                           strain: displayHero.strain,

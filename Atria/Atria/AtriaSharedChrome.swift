@@ -293,22 +293,6 @@ struct AtriaIconTileBackground: View {
 
 }
 
-struct AtriaChecklistBadgeBackground: View {
-    let tint: Color
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Circle()
-            .fill(
-                LinearGradient(colors: [
-                    colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.80),
-                    colorScheme == .dark ? tint.opacity(0.16) : tint.opacity(0.10)
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-    }
-}
-
 extension View {
     @ViewBuilder
     func atriaRaisedCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.card,
