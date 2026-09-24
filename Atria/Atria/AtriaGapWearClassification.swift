@@ -241,6 +241,14 @@ enum AtriaGapWearClassification {
             return total + (currentEnd - currentStart)
         }
 
+        /// Retained proven off-wrist spans, oldest first. Read-only context
+        /// for chart no-data bands ("Not worn"); never an archive.
+        static func retainedSpans(now: Date = Date(),
+                                  defaults: UserDefaults = .standard) -> [Span] {
+            retained(load(defaults: defaults), now: now)
+                .sorted { $0.startUnix < $1.startUnix }
+        }
+
         private static func load(defaults: UserDefaults) -> [Span] {
             guard let data = defaults.data(forKey: defaultsKey),
                   let spans = try? JSONDecoder().decode([Span].self, from: data) else {

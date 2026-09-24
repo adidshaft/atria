@@ -2653,7 +2653,15 @@ struct AtriaActivityMonitorTab: View {
         let domain = AtriaHeartRateChartSeries.yDomain(for: points.map {
             .init(t: $0.t, bpm: $0.bpm)
         })
+        let gapBands = AtriaChartNoDataBands.bands(
+            sampleDates: points.map(\.t),
+            domain: range,
+            evidence: AtriaChartGapEvidenceProvider.current()
+        )
         return Chart {
+            // No-data bands first so the trace draws above them (visual
+            // pass 2026-09-24): an empty stretch is labeled, never blank.
+            AtriaNoDataBandMarks(bands: gapBands, domain: range)
             ForEach(points) { point in
                 // Translucent fill descending to the x-axis, matching the Vitals
                 // Live-monitor HR chart. Same per-segment series as the line so it
@@ -2682,8 +2690,8 @@ struct AtriaActivityMonitorTab: View {
         .chartYScale(domain: domain)
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
-                AxisValueLabel().font(.system(size: 9, weight: .medium, design: .rounded))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisValueLabel().font(AtriaChartVisualGrammar.axisLabelFont).foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
@@ -2738,7 +2746,13 @@ struct AtriaActivityMonitorTab: View {
         spans: [TimelineSpan]
     ) -> some View {
         let points = stressProjection.points
+        let gapBands = AtriaChartNoDataBands.bands(
+            sampleDates: points.map(\.t),
+            domain: range,
+            evidence: AtriaChartGapEvidenceProvider.current()
+        )
         return Chart {
+            AtriaNoDataBandMarks(bands: gapBands, domain: range)
             ForEach(points) { point in
                 // Translucent fill descending to the x-axis, matching the Vitals
                 // monitor. Same per-segment series as the line so a real >5-min
@@ -2781,8 +2795,8 @@ struct AtriaActivityMonitorTab: View {
         .chartYScale(domain: 0...3)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 1, 2, 3]) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
-                AxisValueLabel().font(.system(size: 9, weight: .medium, design: .rounded))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisValueLabel().font(AtriaChartVisualGrammar.axisLabelFont).foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
@@ -2830,7 +2844,7 @@ struct AtriaActivityMonitorTab: View {
         _ axisTicks: [AtriaActivityTimelineAxisTick]
     ) -> some AxisContent {
         AxisMarks(values: axisTicks.map(\.date)) { value in
-            AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+            AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
             AxisValueLabel {
                 if let date = value.as(Date.self),
                    let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
@@ -5294,7 +5308,7 @@ struct AtriaWorkoutStressTraceChart: View {
             .atriaChartXScale(effectiveWindow)
             .chartYAxis {
                 AxisMarks(values: [0, 1, 2, 3]) { _ in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                     AxisValueLabel()
                         .font(.caption2)
                 }
@@ -5302,7 +5316,8 @@ struct AtriaWorkoutStressTraceChart: View {
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                     AxisValueLabel(format: .dateTime.hour().minute())
-                        .font(.caption2)
+                        .font(AtriaChartVisualGrammar.axisLabelFont)
+                        .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                 }
             }
             .atriaGraphPlotSurface()

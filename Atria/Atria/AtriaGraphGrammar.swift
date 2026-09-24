@@ -231,6 +231,28 @@ enum AtriaChartVisualGrammar {
         return max(1, min(Int(scaled.rounded()), totalDays))
     }
 
+    // MARK: Shared axis + band style (visual pass 2026-09-24)
+    //
+    // One axis grammar for every chart: faint gridlines at a single opacity,
+    // no tick marks, caption2 secondary labels with monospaced digits. The
+    // audit found six gridline opacities (0.10–0.18) and two label fonts
+    // (caption2 vs a 9 pt rounded system font) for the same kind of axis.
+
+    static let axisGridOpacity: Double = 0.14
+    static let axisLabelFont: Font = .caption2.monospacedDigit()
+    /// A concrete gray, not the hierarchical `.secondary`: inside
+    /// `AxisValueLabel(format:)` the hierarchical style resolves against the
+    /// app tint and time labels rendered accent-blue next to gray bpm labels.
+    static let axisLabelColor = Color.secondary
+    /// Time-of-day axes on intraday traces: three labels read at a glance
+    /// on a phone without colliding ("06:00  12:00  18:00").
+    static let intradayTimeTickCount = 4
+
+    /// No-data band: quieter than the typical-range band (0.12) so a gap
+    /// never reads as a data region, but visible on the plot fill.
+    static let noDataBandFill = Color.secondary.opacity(0.09)
+    static let noDataBandLabelFont: Font = .caption2.weight(.semibold)
+
     static let trendLine = StrokeStyle(
         lineWidth: 2.25,
         lineCap: .round,
@@ -392,7 +414,7 @@ extension View {
     func atriaDailyQuantityYAxis() -> some View {
         chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel()
                     .font(.caption2.monospacedDigit())
@@ -418,7 +440,7 @@ extension View {
                     domain: domain
                 )
             ) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 if let date = value.as(Date.self) {
                     AxisValueLabel(
