@@ -3082,7 +3082,7 @@ struct AtriaHomeView: View {
         let shouldOpenHeartRateTimeline = Self.debugLaunchFixtureValue(arguments: arguments) == "heart-rate-timeline"
         let shouldShowConnectivityPillFixture = Self.debugLaunchFixtureValue(arguments: arguments) == "refresh-connectivity-pill"
         // Night timeline + morning prompt fixtures (visual pass 2026-09-24).
-        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions"]
+        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions", "night-timeline-no-motion"]
             .contains(Self.debugLaunchFixtureValue(arguments: arguments) ?? "")
         guard requestedScreen != "overview"
                 || requestedOverviewSegment != nil

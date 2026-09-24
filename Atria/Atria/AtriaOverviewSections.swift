@@ -4383,6 +4383,9 @@ struct AtriaMetricDetailSheet: View {
     var onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil
     var onDismissMaxHRSuggestion: ((Int) -> Void)? = nil
     @State private var maxHRSuggestionHandled = false
+    /// Saved sessions overlapping a window: live HR fallback and RR for the
+    /// Sleep night timeline. nil = timeline built from the archives alone.
+    var nightSessions: ((DateInterval) -> [SavedSession])? = nil
 
     #if DEBUG
     /// `--atria-ui-range week` (or day/month/quarter/six-months/year/all).
@@ -4472,6 +4475,7 @@ struct AtriaMetricDetailSheet: View {
          // Cycle-truth strain series (2026-08-30). Default [:] keeps every
          // caller without it byte-identical: absent days chart civil values.
          cycleStrainByDisplayDay: [Date: Double] = [:],
+         nightSessions: ((DateInterval) -> [SavedSession])? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -4498,6 +4502,7 @@ struct AtriaMetricDetailSheet: View {
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.provenance = provenance
+        self.nightSessions = nightSessions
         self.maxHRSuggestion = maxHRSuggestion
         self.onAcceptMaxHRSuggestion = onAcceptMaxHRSuggestion
         self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
@@ -4913,15 +4918,13 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
-                // Night timeline (visual pass 2026-09-24): episode lane + HR
-                // line + 1–3 insight lines from AtriaNightTimelineAnalyzer,
-                // then the optional "what was it?" prompt. No stages claimed.
-                if let nightTimeline = AtriaNightTimelineSource.latest() {
-                    AtriaNightTimelineCard(model: nightTimeline)
-                    AtriaNightInterruptionPromptCard(
-                        episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(nightTimeline.result),
-                        timeZone: nightTimeline.timeZone)
-                }
+                // Night timeline (visual pass 2026-09-24; real data
+                // 2026-09-24): episode lane + HR line + 1–3 insight lines from
+                // AtriaNightTimelineAnalyzer over the latest confirmed main
+                // sleep, the personal "your usual" comparison, then the
+                // optional "what was it?" prompt. No stages claimed.
+                AtriaNightTimelineSection(sleepHistory: sleepHistory,
+                                          sessions: nightSessions)
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
                     // HYPNOGRAM" card); renders the honest needs-motion /

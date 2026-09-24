@@ -421,13 +421,15 @@ struct AtriaTodayScreen: View {
 #endif
 
             // Morning "what was it?" prompt (visual pass 2026-09-24): one
-            // optional, private question per night interruption, mornings
-            // only, gone once answered or skipped.
-            if let night = AtriaNightTimelineSource.latestForMorningPrompt() {
-                AtriaNightInterruptionPromptCard(
-                    episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(night.result),
-                    timeZone: night.timeZone)
-            }
+            // optional, private question per night interruption, in the first
+            // hours after the latest main sleep's wake (sleep-anchored, so a
+            // shifted sleeper waking at 19:15 is asked too), gone once
+            // answered or skipped.
+            AtriaNightMorningPromptHost(
+                sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
+                sessions: { [store] window in
+                    store.sessions.filter { $0.end > window.start && $0.start < window.end }
+                })
 
             // Cognitive-relief grouping (UX audit 2026-07-07) + user-arranged
             // big sections (user feedback 2026-07-07): the major blocks below
@@ -497,6 +499,9 @@ struct AtriaTodayScreen: View {
                                        onDismissMaxHRSuggestion: { store.dismissMaxHRSuggestion(observedPeak: $0) },
                                        cycleStrainByDisplayDay:
                                         store.physiologicalCycleStrainByDisplayDay,
+                                       nightSessions: { [store] window in
+                                           store.sessions.filter { $0.end > window.start && $0.start < window.end }
+                                       },
                                        initialRange: route.range)
                     .id("\(route.id).r\(sessionProjectionStore.state.dailyRollupHistoryRevision)")
                     .presentationDetents([.large])
@@ -1582,7 +1587,7 @@ struct AtriaTodayScreen: View {
         case "rhr-detail", "rhr-detail-history": return .restingHeartRate
         case "respiratory-detail": return .respiratoryRate
         case "sleep-detail": return .sleep
-        case "night-timeline": return .sleep
+        case "night-timeline", "night-timeline-no-motion": return .sleep
         default: return nil
         }
     }

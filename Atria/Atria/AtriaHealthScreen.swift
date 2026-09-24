@@ -1134,7 +1134,10 @@ struct AtriaHealthScreen: View {
                                    // with dailyRollupHistory, whose revision
                                    // already invalidates this sheet.
                                    cycleStrainByDisplayDay:
-                                    store.physiologicalCycleStrainByDisplayDay)
+                                    store.physiologicalCycleStrainByDisplayDay,
+                                   nightSessions: { [store] window in
+                                       store.sessions.filter { $0.end > window.start && $0.start < window.end }
+                                   })
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
