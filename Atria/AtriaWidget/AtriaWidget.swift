@@ -3000,6 +3000,9 @@ private struct AtriaLiveActivityLockScreenView: View {
                                        heartRateAvailability: heartRateAvailability)
     }
 
+    /// Settings → Lock Screen & Widgets: what shows next to heart rate.
+    private var items: Set<AtriaGlanceSettings.LiveItem> { AtriaGlanceSettings.liveItems() }
+
     var body: some View {
         ViewThatFits(in: .vertical) {
             if dynamicTypeSize.isAccessibilitySize {
@@ -3019,15 +3022,18 @@ private struct AtriaLiveActivityLockScreenView: View {
     private var regularLockScreenContent: some View {
         let steps = liveActivityStepsPresentation(for: context.state, now: presentationNow)
         VStack(alignment: .leading, spacing: 8) {
-            lockScreenHeader(showsBattery: true)
+            lockScreenHeader(showsBattery: items.contains(.battery))
 
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 lockScreenHeartRateHero
                     .frame(width: 112, alignment: .leading)
                     .layoutPriority(2)
 
-                lockScreenZoneSummary
-                    .layoutPriority(1)
+                if items.contains(.zone) {
+                    lockScreenZoneSummary
+                        .layoutPriority(1)
+                }
+                Spacer(minLength: 0)
 
                 if liveActivityIsExplicitWorkout(context.state) {
                     liveActivityTimer(state: context.state,
@@ -3047,7 +3053,9 @@ private struct AtriaLiveActivityLockScreenView: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(lockScreenHeroAccessibilityLabel)
 
-            liveActivityZoneBar(for: context.state, availability: heartRateAvailability)
+            if items.contains(.zone) {
+                liveActivityZoneBar(for: context.state, availability: heartRateAvailability)
+            }
 
             HStack(spacing: 8) {
                 HStack(spacing: 9) {
@@ -3056,10 +3064,12 @@ private struct AtriaLiveActivityLockScreenView: View {
                                                 systemImage: "bolt.fill",
                                                 tint: liveActivityStrainProgressColor(for: context.state,
                                                                                       now: presentationNow))
-                        lockScreenCompactMetric(value: steps.compactText,
-                                                systemImage: "figure.walk",
-                                                tint: steps.tint)
-                    } else if let daily = liveActivityDailyStepGoalPresentation(
+                        if items.contains(.steps) {
+                            lockScreenCompactMetric(value: steps.compactText,
+                                                    systemImage: "figure.walk",
+                                                    tint: steps.tint)
+                        }
+                    } else if items.contains(.steps), let daily = liveActivityDailyStepGoalPresentation(
                         for: context.state,
                         now: presentationNow
                     ) {
@@ -3100,8 +3110,11 @@ private struct AtriaLiveActivityLockScreenView: View {
                     .frame(width: 112, alignment: .leading)
                     .layoutPriority(2)
 
-                lockScreenZoneSummary
-                    .layoutPriority(1)
+                if items.contains(.zone) {
+                    lockScreenZoneSummary
+                        .layoutPriority(1)
+                }
+                Spacer(minLength: 0)
 
                 if liveActivityIsExplicitWorkout(context.state) {
                     liveActivityTimer(state: context.state,
