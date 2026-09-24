@@ -5858,3 +5858,39 @@ structured findings, never compute or invent numbers.
   invariance, isolated bursts ≠ up, sustained walking → up and asked,
   off-wrist → not worn, no sustained rest → no sleep claimed. Fixture
   `whoop4-night-2026-09-23-minutes.json` is untracked (private).
+
+### Personal baselines: ups and downs (2026-09-24)
+
+`Atria/Atria/AtriaNightBaseline.swift`. Each night becomes an
+`AtriaNightSummary`: onset, wake, asleep = window − restless/up/not-worn
+minutes, disturbed minutes, interruptions, ups, sleeping HR (median of
+still/unknown minutes), sleeping RMSSD (RR from still/unknown minutes, 20 %
+artefact filter, ≥ 20 beats) and coverage (data minutes / window minutes).
+
+`AtriaNightBaseline.compare(tonight:history:)` compares a night only with
+**the same person's** prior nights. The population rule applies: no fixed
+norms.
+
+- **Qualifying nights:** coverage ≥ 0.8. Uses the last 28. With fewer than
+  5 it returns `.learning(n, 5)`, not a guess.
+- **Robust centre and spread:** median and 1.4826·MAD. Bedtime and wake use
+  circular mean and circular MAD on the 24 h clock. Bedtimes around midnight
+  and afternoon sleepers (the owner sleeps ~13:15–19:15 on shifted days) work
+  without the noon-anchor split.
+- **Flag rule:** it needs both a z-score over the person's own spread (with a
+  per-metric floor) **and** a minimum absolute effect (bedtime/wake 45 min,
+  asleep 30 min, disturbed 20 min, HR 4 bpm, HRV 10 ms). |z| ≥ 1 is notable
+  and ≥ 2.5 is unusual. A very consistent person is not alarmed by a 2 bpm
+  wobble.
+- **Output:** templated sentences, e.g. "Sleeping heart rate 70 bpm,
+  10 unusually higher than usual." They say "unusual for you" and never give
+  a diagnosis. A language model may rephrase them but gets only these
+  structured fields.
+- **Tests:** `AtriaNightBaselineTests` passed 9/9. They cover the learning
+  state, the low-coverage exclusion, an all-typical night, the +10 bpm HR →
+  unusual/higher case, and minimum-effect gating. They also cover midnight
+  circular bedtime, afternoon sleeper typical versus late → unusual/later,
+  and circular helpers (bug found and fixed: the mean could return 1440
+  instead of 0). The golden-night summary is plausible: coverage > 0.95,
+  1 up, HR ~64. With one real night, the owner is in `.learning` until
+  5 qualifying nights exist.
