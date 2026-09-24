@@ -111,6 +111,20 @@ final class AtriaTrendChartWindowTests: XCTestCase {
         XCTAssertTrue(trendSource.contains("coverageNoun: metric.coverageNoun,"))
     }
 
+    /// 2026-09-24 code review: the trailing window counts calendar days. At
+    /// 00:30 on the Monday after a spring-forward Sunday, `now - 7 × 86,400`
+    /// lands at 23:30 eight days back and the week opened a day early.
+    func testTrailingWindowCountsCalendarDaysAcrossAClockChange() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 3, day: 9,
+                                                     hour: 0, minute: 30))!
+        let cutoff = AtriaTrendRange.week.cutoffDate(now: now, calendar: calendar)
+        XCTAssertEqual(cutoff, calendar.date(from: DateComponents(year: 2026, month: 3, day: 2)))
+        let prior = AtriaTrendRange.week.priorPeriodCutoff(before: cutoff, calendar: calendar)
+        XCTAssertEqual(prior, calendar.date(from: DateComponents(year: 2026, month: 2, day: 23)))
+    }
+
     /// Trailing windows: a week ending today contains today's own sample.
     func testTrailingWindowContainsTodayForEveryPrimaryRange() {
         var calendar = Calendar(identifier: .gregorian)

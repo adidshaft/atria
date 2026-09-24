@@ -9969,7 +9969,6 @@ final class SessionStore: ObservableObject {
                 dailyRollupStore.upsert(entry)
             }
             dailyRollupHistory = filledRollups
-            dailyRollupHistoryRevision &+= 1
         }
         let frozenNeed = confirmedSleeps
             .compactMap { sleep -> (Date, TimeInterval)? in
@@ -10220,6 +10219,12 @@ final class SessionStore: ObservableObject {
         didSet {
             backupCanonicalRevision &+= 1
             refreshLearnedInsights()
+            // Bumped here, not at each assignment (2026-09-24 code review):
+            // the demo-seed and data-reset paths reassigned the history
+            // without a bump, so revision-keyed memos (Today glance tiles,
+            // metric sheets) could keep serving the old rollups. Last, as the
+            // hand-placed bumps were: after the assignment's other effects.
+            dailyRollupHistoryRevision &+= 1
         }
     }
     /// Bumped every time `dailyRollupHistory` is reassigned (measured-perf pass,
@@ -13100,7 +13105,6 @@ final class SessionStore: ObservableObject {
             dailyRollupStore.reconcile(cycleAlignedEntries,
                                        replacingDays: preparation.invalidatedDays)
             dailyRollupHistory = dailyRollupStore.rollups(last: 400)
-            dailyRollupHistoryRevision &+= 1
             if let transactionTicket = recoveredDataMutationTransaction.activeTicket {
                 _ = recoveredDataMutationTransaction.registerCommit(
                     ticket: transactionTicket
@@ -13837,7 +13841,6 @@ final class SessionStore: ObservableObject {
                                            calendar: calendar)
         dailyRollupStore.upsert(merged)
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
-        dailyRollupHistoryRevision &+= 1
         let proteinBodyMassKg = healthBodyMassKg ?? (profile.weightKg > 0 ? profile.weightKg : nil)
         applyNutritionAutoTags(summary.autoJournalTags(bodyMassKg: proteinBodyMassKg),
                                day: normalizedDay,
@@ -17149,7 +17152,6 @@ final class SessionStore: ObservableObject {
         dailyMetricSparklines = snapshot.dailyMetricSparklines
         dailyRollupStore.replaceAll(snapshot.dailyRollups)
         dailyRollupHistory = snapshot.dailyRollups
-        dailyRollupHistoryRevision &+= 1
         pendingDailyDerivedInvalidationDays = snapshot.pendingDailyDerivedInvalidationDays
         overviewTrendPoints = snapshot.overviewTrendPoints
         overviewTrendPointsRevision &+= 1
@@ -20936,9 +20938,9 @@ final class SessionStore: ObservableObject {
         biologicalSex: AthleteProfile.BiologicalSex = .unspecified,
         calendar: Calendar
     ) -> [DailyRollup] {
-        var byDay = Dictionary(uniqueKeysWithValues: live.map {
+        var byDay = Dictionary(live.map {
             (calendar.startOfDay(for: $0.day), $0)
-        })
+        }, uniquingKeysWith: { _, last in last })
         let activityByDay = Dictionary(grouping: sources.flatMap(\.activity.candidates)) {
             calendar.startOfDay(for: $0.start)
         }
@@ -21808,7 +21810,10 @@ final class SessionStore: ObservableObject {
             let hrvs = recentRows.compactMap(\.localRMSSD).filter { $0 > 0 }
             let respiratoryRates = recentRows.compactMap(\.sleepRespiratoryRate)
             let respiratoryBaseline = respiratoryBaselineStatsSnapshot(respiratoryRates)
-            let rollupsByDay = Dictionary(uniqueKeysWithValues: recentRollups.map { (calendar.startOfDay(for: $0.day), $0) })
+            // Last wins on a shared civil day, as in the rollup merge above;
+            // uniqueKeysWithValues trapped on duplicate days (2026-09-24 review).
+            let rollupsByDay = Dictionary(recentRollups.map { (calendar.startOfDay(for: $0.day), $0) },
+                                          uniquingKeysWith: { _, last in last })
             let recoveries: [Int] = recentRows.compactMap { row in
                 let session = row.session
                 let sleepRollup = rollupsByDay[row.day]
@@ -21929,10 +21934,11 @@ final class SessionStore: ObservableObject {
             let respiratoryBaseline = respiratoryBaselineStatsSnapshot(
                 respiratoryRates
             )
-            let rollupsByDay = Dictionary(uniqueKeysWithValues:
+            let rollupsByDay = Dictionary(
                 recentRollups.map {
                     (calendar.startOfDay(for: $0.day), $0)
-                }
+                },
+                uniquingKeysWith: { _, last in last }
             )
             var recoveries: [Int] = []
             for (index, row) in recentRows.enumerated() {
@@ -24842,7 +24848,6 @@ final class SessionStore: ObservableObject {
         let changed = dailyRollupStore.updateCalendar(.current)
         if changed {
             dailyRollupHistory = dailyRollupStore.rollups(last: 400)
-            dailyRollupHistoryRevision &+= 1
             cachedWeeklyPlanRevision = nil
             cachedWeeklyPlanWeekStart = nil
             cachedWeeklyPlanValue = nil
@@ -24984,7 +24989,6 @@ final class SessionStore: ObservableObject {
     func debugResetForEmptyAssistantAnswers() {
         baseline = PersonalBaseline()
         dailyRollupHistory = []
-        dailyRollupHistoryRevision &+= 1
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [], confirmedSleeps: [])
         behaviorInsightsRevision &+= 1
         behaviorImpactSummariesCache = []
@@ -54685,7 +54689,6 @@ final class SessionStore: ObservableObject {
         }
         if prepared.envelope.dailyRollups != nil {
             dailyRollupHistory = prepared.dailyRollups
-            dailyRollupHistoryRevision &+= 1
             dailyRollupStore.replaceAll(prepared.dailyRollups)
         }
         if prepared.envelope.confirmedSleeps != nil {
@@ -56894,7 +56897,6 @@ final class SessionStore: ObservableObject {
         let expectedMetricRevision = dailyMetricHistoryRevision
         dailyRollupStore.upsert(rollup)
         dailyRollupHistory = dailyRollupStore.rollups(last: 400)
-        dailyRollupHistoryRevision &+= 1
         let expectedRollupRevision = dailyRollupHistoryRevision
         let expectedSleepRevision = confirmedSleepsRevision
 
