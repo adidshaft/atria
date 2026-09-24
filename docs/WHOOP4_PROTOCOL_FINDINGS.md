@@ -5826,3 +5826,35 @@ inconsistent, as expected from a predictive fever thermometer used on skin.
 **A clinical thermometer cannot calibrate absolute skin temperature;** the
 strap field is trusted for relative change only (deviation-from-baseline
 policy stands).
+
+## 2026-09-24 — Night-timeline analyzer (deterministic, on-device) + morning "what was it?" prompts
+
+Decision (owner Q "train a small language model or do it statically?"):
+**deterministic on-device analysis**; any language model may only *phrase*
+structured findings, never compute or invent numbers.
+
+- Reference `tools/strap-mac/night_timeline.py`; app port
+  `Atria/Atria/AtriaNightTimelineAnalyzer.swift`. Input: per-minute HR,
+  motion-intensity float @42 (`nil` for history-only minutes), firmware steps,
+  RR ms, off-wrist.
+- Self-calibrating rules (population rule): still = motion ≤ 2.5 × the night's
+  10th-percentile motion with 0 steps; up = ≥ 2 consecutive minutes with steps
+  totalling ≥ 40 (roll-overs are isolated 12–55-step one-minute bursts, walking
+  runs many minutes); onset/final wake = first/last 20-min window ≥ 80 % still;
+  interruptions merge across ≤ 2-min still gaps and split into restless lead-in
+  / walking core / restless tail; "longest undisturbed stretch" between
+  interruptions. **No deep/REM staging is claimed.** Final wake has ~±10 min
+  uncertainty (lying still after waking reads as rest).
+- Golden night (owner-confirmed): asleep 23:41 (truth ~23:40), up 01:43–02:28
+  (~1,019 steps; truth "around 2 am"), restless 00:31–01:12 and 04:04, wake
+  08:09 (truth 08:01).
+- Morning prompt model (owner idea): `interruptionsToAsk` (all up episodes +
+  restless ≥ 5 min in the sleep window) and `AtriaNightInterruptionLabel`
+  (bathroom, water/food, child/pet, work/task, couldn't sleep, noise/partner,
+  intimacy, other). `isSensitive` (intimacy) keeps a label off every
+  off-device path by default. The morning card UI is pending (UI pass).
+- `AtriaNightTimelineAnalyzerTests` 7/7 **passed**: exact Python parity
+  (onset, wake, episode kinds), ground-truth tolerances, 3×-noisier-strap
+  invariance, isolated bursts ≠ up, sustained walking → up and asked,
+  off-wrist → not worn, no sustained rest → no sleep claimed. Fixture
+  `whoop4-night-2026-09-23-minutes.json` is untracked (private).
