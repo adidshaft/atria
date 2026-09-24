@@ -661,6 +661,13 @@ struct AtriaSettingsView: View {
                 AtriaRingLayoutSection()
                 Section {
                     NavigationLink {
+                        AtriaGlanceSettingsView()
+                    } label: {
+                        Label("Lock Screen & Widgets", systemImage: "rectangle.on.rectangle")
+                    }
+                    .accessibilityHint("Choose what the Live Activity and widgets show")
+
+                    NavigationLink {
                         coachSettingsPage
                     } label: {
                         Label("Coach", systemImage: "brain.head.profile")
@@ -1780,7 +1787,7 @@ private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
 /// Activity-style rings vs WHOOP-style separate side-by-side rings. Writes the
 /// shared `AtriaRingLayoutStyle.defaultsKey` that `AtriaTriRing` and the share
 /// card read live, so the whole app switches at once.
-private struct AtriaRingLayoutSection: View {
+struct AtriaRingLayoutSection: View {
     @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
 
     var body: some View {

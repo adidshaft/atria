@@ -293,7 +293,12 @@ final class AtriaLiveActivityCoordinator {
     nonisolated static let lastStartErrorKey = AtriaIdleLiveActivityStart.lastStartErrorKey
 
     func update(_ snapshot: Snapshot, forceActivityWrite: Bool = false) {
-        let snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)
+        var snapshot = Self.holdingLastKnownWorkoutMetrics(snapshot, previous: lastSnapshot)
+        // Settings → Lock Screen & Widgets → Live Activity "Off" ends and
+        // blocks every activity, workouts included (2026-09-24).
+        if !AtriaGlanceSettings.liveActivityMode().allowsWorkoutActivity {
+            snapshot.isRecording = false
+        }
         let now = Date()
         let pendingWorkoutIsActive = !snapshot.isRecording
             && AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
@@ -424,8 +429,12 @@ final class AtriaLiveActivityCoordinator {
         workoutActive: Bool,
         linkUsable: Bool,
         heldHeartRate: Int,
-        presenceAlreadyStarted: Bool
+        presenceAlreadyStarted: Bool,
+        mode: AtriaGlanceSettings.LiveActivityMode = AtriaGlanceSettings.liveActivityMode()
     ) -> Bool {
+        // All-day live heart rate is the user's choice ("Always"); with
+        // "Workouts" or "Off" no idle activity starts or stays.
+        guard mode.allowsIdlePresence else { return false }
         guard !workoutActive, linkUsable else { return false }
         if heldHeartRate > 0 { return true }
         return presenceAlreadyStarted
