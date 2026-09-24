@@ -248,3 +248,36 @@ final class AtriaStrapSetupTests: XCTestCase {
         XCTAssertTrue(source.contains("StrapSetupPanel(setup: strapSetup"))
     }
 }
+
+final class AtriaR10LiveControlTests: XCTestCase {
+    private func cmd(enabled: Bool = true, connected: Bool = true, hr: Bool = true, history: Bool = false,
+                     pairing: Bool = false, power: Bool = true, frames: Bool = false,
+                     since: TimeInterval? = nil, offSent: Bool = false) -> AtriaBLEManager.R10LiveCommand? {
+        AtriaBLEManager.r10LiveCommand(enabled: enabled, linkConnected: connected, heartRateFresh: hr,
+                                       appOwnsHistoryTransfer: history, pairingCheckInFlight: pairing,
+                                       liveAllowedByPower: power, r10FramesFresh: frames,
+                                       secondsSinceLastOn: since, offAlreadySent: offSent)
+    }
+
+    func testTurnsOnOnlyOnASettledBondedLinkWithoutFrames() {
+        XCTAssertEqual(cmd(), .on)
+        XCTAssertNil(cmd(hr: false), "no HR yet: link not proven")
+        XCTAssertNil(cmd(frames: true), "3F latches on the strap; frames already flowing")
+        XCTAssertNil(cmd(since: 30), "at most one on-command per resend window")
+        XCTAssertEqual(cmd(since: AtriaBLEManager.r10LiveResendAfter + 1), .on,
+                       "after a history transfer quiets R10, live comes back")
+    }
+
+    func testNeverDuringHistoryOrPairingOrWhenDisconnected() {
+        XCTAssertNil(cmd(history: true), "live 3F freezes the history read cursor")
+        XCTAssertNil(cmd(pairing: true))
+        XCTAssertNil(cmd(connected: false))
+    }
+
+    func testPowerPolicyOrUserTurnsItOffOnce() {
+        XCTAssertEqual(cmd(power: false, frames: true), .off)
+        XCTAssertNil(cmd(power: false, frames: true, offSent: true))
+        XCTAssertNil(cmd(power: false, frames: false), "nothing streaming: nothing to stop")
+        XCTAssertEqual(cmd(enabled: false, frames: true), .off)
+    }
+}
