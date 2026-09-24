@@ -55,10 +55,15 @@ struct AtriaWhoop4PowerPolicy: Equatable, Sendable {
         var reason: String
     }
 
-    static let liveStrapMinimum = 25
-    static let liveStrapResume = 30
-    static let flushStrapMinimum = 20
-    static let flushStrapResume = 25
+    // 2026-09-24 owner: "22% is still a good amount of battery" — the first
+    // floors (25/20) switched live motion off for most of an ordinary day.
+    // Nothing is lost while live is off (the strap keeps history and the app
+    // catches up), but live gyro steps are the accurate ones, so live stays on
+    // until the strap is genuinely low.
+    static let liveStrapMinimum = 15
+    static let liveStrapResume = 18
+    static let flushStrapMinimum = 10
+    static let flushStrapResume = 13
     static let strapShutoff = 5
     static let phoneMinimum = 20
     static let phoneResume = 25
@@ -116,5 +121,51 @@ struct AtriaWhoop4PowerPolicy: Equatable, Sendable {
     private static func isBelow(_ level: Int?, minimum: Int, resume: Int, wasBlocked: Bool) -> Bool {
         guard let level else { return false }
         return wasBlocked ? level < resume : level < minimum
+    }
+}
+
+/// One line under the top-bar status pill when the app is deliberately not
+/// streaming live data, so the user always knows why (owner 2026-09-24).
+/// Nil when everything is live.
+enum AtriaLiveDataNote: Equatable, Sendable {
+    case catchingUpHistory
+    case liveMotionPausedStrapBattery(Int)
+    case liveMotionPausedPhoneBattery
+    case liveMotionPausedLowPowerMode
+    case liveMotionPausedPhoneHot
+
+    var text: String {
+        switch self {
+        case .catchingUpHistory: return "Catching up strap history"
+        case .liveMotionPausedStrapBattery(let level): return "Live steps paused · strap \(level)%"
+        case .liveMotionPausedPhoneBattery: return "Live steps paused · phone battery low"
+        case .liveMotionPausedLowPowerMode: return "Live steps paused · Low Power Mode"
+        case .liveMotionPausedPhoneHot: return "Live steps paused · phone is hot"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .catchingUpHistory: return "arrow.triangle.2.circlepath"
+        case .liveMotionPausedStrapBattery: return "battery.25percent"
+        case .liveMotionPausedPhoneBattery: return "iphone.gen3"
+        case .liveMotionPausedLowPowerMode: return "leaf"
+        case .liveMotionPausedPhoneHot: return "thermometer.sun"
+        }
+    }
+
+    /// History catch-up outranks a pause: it is what the user is waiting on.
+    static func from(decision: AtriaWhoop4PowerPolicy.Decision,
+                     inputs: AtriaWhoop4PowerPolicy.Inputs,
+                     catchingUpHistory: Bool) -> AtriaLiveDataNote? {
+        if catchingUpHistory { return .catchingUpHistory }
+        guard !decision.liveMotionAllowed else { return nil }
+        if let strap = inputs.strapBattery, !inputs.strapCharging,
+           strap < AtriaWhoop4PowerPolicy.liveStrapResume {
+            return .liveMotionPausedStrapBattery(strap)
+        }
+        if inputs.phoneThermal >= .serious { return .liveMotionPausedPhoneHot }
+        if inputs.phoneLowPowerMode { return .liveMotionPausedLowPowerMode }
+        return .liveMotionPausedPhoneBattery
     }
 }
