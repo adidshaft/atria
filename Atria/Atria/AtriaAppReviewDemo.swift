@@ -10,6 +10,10 @@ enum AtriaAppReviewDemo {
     static let eraseAndReturnTitle = "Erase sample data and return to setup"
     static let exploreButtonTitle = "Explore sample data"
     static let horizonDays = 21
+    /// Plausible "last motion" age shown by the Steps card's freshness badge
+    /// in demo mode. Never claims literal live BLE motion (which demo mode
+    /// never has); reads as a normal recent strap sync.
+    static let demoMotionAge: TimeInterval = 4 * 60
 
     static var isActive: Bool {
         UserDefaults.standard.bool(forKey: activeKey)
@@ -84,23 +88,70 @@ enum AtriaAppReviewDemo {
             ))
         }
 
-        let hour = calendar.component(.hour, from: now)
-        if hour >= 9 {
-            let walkStart = calendar.date(byAdding: .minute, value: 8 * 60 + 15, to: today) ?? today
-            let walkEnd = min(now.addingTimeInterval(-5 * 60), walkStart.addingTimeInterval(28 * 60))
-            if walkEnd > walkStart {
-                let walkPoints = stride(from: 0.0, through: walkEnd.timeIntervalSince(walkStart), by: 20.0)
-                    .enumerated()
-                    .map { index, t in SavedSession.Point(t: t, bpm: 98 + (index % 8)) }
-                result.append(SavedSession(
-                    id: UUID(), start: walkStart, end: walkEnd,
-                    label: bannerTitle, points: walkPoints, hrv: nil,
-                    biologicalSex: .unspecified, kind: "demo_walk",
-                    eventTimeZoneIdentifier: calendar.timeZone.identifier
-                ))
-            }
+        if let liveSession = liveDaySession(now: now, calendar: calendar) {
+            result.append(liveSession)
         }
         return result.sorted { $0.start < $1.start }
+    }
+
+    /// Continuous, plausible background heart-rate recording for the open
+    /// "today" cycle, from this morning's wake boundary (same formula as
+    /// `dailyMetrics(offset: 0)`, so the two never disagree) through `now`.
+    /// Without this, live-cycle surfaces (Strain, day HR-wear coverage) have
+    /// no evidence for the in-progress day and read as broken ("Day HR
+    /// incomplete", strain stuck at 0.0) even though the prior `horizonDays`
+    /// of history look fine. A few short elevated bouts stand in for normal
+    /// daytime activity — never applied past `now`, since the loop below
+    /// simply stops emitting points once it reaches `end`. Never touches
+    /// Bluetooth: this is plain local fixture data.
+    static func liveDaySession(now: Date = Date(), calendar: Calendar = .current) -> SavedSession? {
+        let wake = todayWakeTime(now: now, calendar: calendar)
+        guard now > wake else { return nil }
+        // Bound to a sane single-day window even if the clock has drifted.
+        let end = min(now, wake.addingTimeInterval(20 * 3600))
+        guard end > wake else { return nil }
+
+        let activityWindows: [(startMinute: Int, durationMinute: Int, peakBPM: Int)] = [
+            (150, 28, 122),
+            (330, 30, 128),
+            (540, 20, 118)
+        ]
+        var points: [SavedSession.Point] = []
+        var t: TimeInterval = 0
+        let step: TimeInterval = 300
+        while wake.addingTimeInterval(t) <= end {
+            let minute = Int(t / 60)
+            var bpm = 62 + Int(6 * sin(Double(minute) / 95.0))
+            for window in activityWindows {
+                let windowEnd = window.startMinute + window.durationMinute
+                guard minute >= window.startMinute, minute <= windowEnd else { continue }
+                let progress = Double(minute - window.startMinute) / Double(max(1, window.durationMinute))
+                let shape = sin(progress * .pi)
+                bpm = 66 + Int(Double(window.peakBPM - 66) * shape)
+            }
+            points.append(SavedSession.Point(t: t, bpm: max(52, min(150, bpm))))
+            t += step
+        }
+        guard !points.isEmpty else { return nil }
+
+        return SavedSession(
+            id: UUID(), start: wake, end: end,
+            label: bannerTitle, points: points, hrv: nil,
+            respiratoryRate: 15.0, biologicalSex: .unspecified,
+            kind: "demo_daytime", eventTimeZoneIdentifier: calendar.timeZone.identifier
+        )
+    }
+
+    /// End of the fixture's most recent completed night — the wake boundary
+    /// "today" starts from. Uses the identical duration formula as
+    /// `dailyMetrics(offset: 0)` so the two never disagree about when today
+    /// began.
+    static func todayWakeTime(now: Date = Date(), calendar: Calendar = .current) -> Date {
+        let today = calendar.startOfDay(for: now)
+        let priorDay = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+        let nightStart = calendar.date(byAdding: .minute, value: 22 * 60 + 20, to: priorDay) ?? priorDay
+        let nightDuration: TimeInterval = TimeInterval((7 * 60 + 25 + horizonDays % 4 * 8) * 60)
+        return nightStart.addingTimeInterval(nightDuration)
     }
 
     static func dailyMetrics(now: Date = Date(), calendar: Calendar = .current) -> [SavedDailyMetric] {
