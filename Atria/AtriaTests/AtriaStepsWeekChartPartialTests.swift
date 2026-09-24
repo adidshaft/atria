@@ -42,3 +42,47 @@ final class AtriaStepsWeekChartPartialTests: XCTestCase {
                                                             dayLength: 23 * 3_600))
     }
 }
+
+/// Live R10 off under the power policy (strap below its battery floor): the
+/// Today count comes only from the strap's history bank. It must read as a
+/// partial count from history, never as zero and never as a finished day.
+final class AtriaStepsLivePausedPresentationTests: XCTestCase {
+    private func presentation(count: Int?, completeness: AtriaDailyStepPresentation.Completeness,
+                              source: AtriaDailyStepPresentation.Source,
+                              note: AtriaLiveDataNote?) -> AtriaDailyStepPresentation {
+        var p = AtriaDailyStepPresentation(day: Date(timeIntervalSince1970: 1_790_000_000),
+                                           count: count, completeness: completeness, source: source,
+                                           isValidated: true, capturedAt: nil, coverageFraction: 0.4)
+        p.livePauseNote = note
+        return p
+    }
+
+    func testPausedPartialCountIsLabelledAsHistoryNotZero() {
+        let p = presentation(count: 2_310, completeness: .partial, source: .verifiedCanonical,
+                             note: .liveMotionPausedStrapBattery(12))
+        XCTAssertEqual(p.valueText, "2310")
+        XCTAssertEqual(p.detailText, "Live steps paused · strap 12% · from strap history")
+        XCTAssertEqual(p.motionAvailabilityFootnote?.hasPrefix("Live steps are paused"), true)
+    }
+
+    func testPausedWithNothingDrainedYetIsDashesNotZero() {
+        let p = presentation(count: 0, completeness: .partial, source: .verifiedCanonical,
+                             note: .liveMotionPausedStrapBattery(9))
+        XCTAssertEqual(p.valueText, "--", "an undrained bank is not a zero-step day")
+        let none = presentation(count: nil, completeness: .unavailable, source: .none,
+                                note: .liveMotionPausedLowPowerMode)
+        XCTAssertEqual(none.detailText, "Live steps paused · Low Power Mode · from strap history")
+    }
+
+    func testCatchUpNoteAndNoNoteKeepTheExistingCopy() {
+        let base = presentation(count: 2_310, completeness: .partial, source: .verifiedCanonical, note: nil)
+        let catchingUp = presentation(count: 2_310, completeness: .partial, source: .verifiedCanonical,
+                                      note: .catchingUpHistory)
+        XCTAssertEqual(catchingUp.detailText, base.detailText)
+        XCTAssertEqual(catchingUp.motionAvailabilityFootnote, base.motionAvailabilityFootnote)
+        // A complete, verified day never gets the paused wording.
+        let complete = presentation(count: 9_000, completeness: .complete, source: .verifiedCanonical,
+                                    note: .liveMotionPausedStrapBattery(12))
+        XCTAssertEqual(complete.detailText, "Verified complete day")
+    }
+}
