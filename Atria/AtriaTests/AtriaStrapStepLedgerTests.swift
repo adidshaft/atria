@@ -45,6 +45,26 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertFalse((try Data(contentsOf: target)).isEmpty)
     }
 
+    /// 2026-09-24 first iPhone R10 run: the gyro count (published) and the
+    /// accel-peak count (diagnostic) disagree by design, e.g. arm movement
+    /// with no gait or gait the accel detector misses. A preliminary R10
+    /// gyro checkpoint must persist instead of failing as malformed.
+    func testPreliminaryR10GyroCheckpointIsNotHeldToTheAccelRatio() throws {
+        let segment = UUID()
+        let gaitNoPeaks = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment, segmentStartedAt: now.addingTimeInterval(-60),
+            segmentSteps: 40, segmentRawSteps: 0, deviceTimestamp: 1_790_249_430,
+            state: "r10_live_preliminary", gyroCadenceResearchSteps: 40, now: now, at: target)
+        XCTAssertEqual(gaitNoPeaks.cumulativeSteps, 40)
+        let peaksNoGait = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment, segmentStartedAt: now.addingTimeInterval(-60),
+            segmentSteps: 40, segmentRawSteps: 300, deviceTimestamp: 1_790_249_431,
+            state: "r10_live_preliminary", gyroCadenceResearchSteps: 40,
+            now: now.addingTimeInterval(1), at: target)
+        XCTAssertEqual(peaksNoGait.cumulativeSteps, 40)
+        XCTAssertNotNil(AtriaStrapStepLedger.load(now: now.addingTimeInterval(1), from: target))
+    }
+
     func testDelayedOlderWriteCannotRegressCountOrWatermark() throws {
         let segment = UUID()
         _ = try checkpoint(segment: segment, steps: 111, raw: 100, timestamp: 5_010)
