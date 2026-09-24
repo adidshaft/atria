@@ -66,12 +66,15 @@ final class AtriaTrendChartWindowTests: XCTestCase {
         let overview = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaOverviewSections.swift"), encoding: .utf8)
-        XCTAssertTrue(overview.contains("return \"\\(points.count) of \\(days) \\(coverageNoun) recorded\""))
+        // 2026-09-24 visual pass: coverage joined the one summary line
+        // ("Avg 60% · Range 28–82% · 6 of 7 nights"), so "recorded" was cut.
+        XCTAssertTrue(overview.contains("return \"\\(points.count) of \\(days) \\(coverageNoun)\""))
+        XCTAssertTrue(overview.contains("AtriaDetailPeriodSummaryLine(summary: summary, coverageText: coverageText)"))
         XCTAssertTrue(overview.contains("guard let days = windowMissingDayCount, days <= 31 else { return nil }"),
                       "silent past a month of window")
         XCTAssertTrue(overview.contains("guard !prepared.hasMinMaxBand, let xDomain = prepared.xDomain else { return nil }"),
                       "silent on a full window, a single day, and any bucketed series")
-        XCTAssertTrue(overview.contains("if let coverageText {"), "and it is rendered under the summary line")
+        XCTAssertTrue(overview.contains("} else if let coverageText {"), "and alone when there is no summary line")
     }
 
     /// Resting HR, HRV, respiration, sleep and recovery are read from a
