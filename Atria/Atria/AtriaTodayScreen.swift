@@ -2674,9 +2674,7 @@ struct AtriaTodayScreen: View {
     /// record must not draw as a value. Fewer than
     /// `AtriaGlanceSparkline.minimumPoints` real readings draws nothing at all.
     private func glanceTrend(for metric: AtriaTodayMetric) -> [Double] {
-        let history = sessionProjectionStore.state.dailyRollupHistory
-            .sorted { $0.day < $1.day }
-            .suffix(21)
+        let history = glanceTrendHistory
         switch metric {
         case .recovery:
             return Array(history.compactMap { $0.recovery.map(Double.init) }.suffix(7))
@@ -2716,6 +2714,23 @@ struct AtriaTodayScreen: View {
         default:
             return []
         }
+    }
+
+    /// The newest 21 rollups, oldest first, shared by every glance card.
+    /// Memoized on the rollup revision (2026-09-24 code review): each card
+    /// used to re-sort the whole history on every body evaluation.
+    private var glanceTrendHistory: [DailyRollupStoreEntry] {
+        let revision = sessionProjectionStore.state.dailyRollupHistoryRevision
+        if glanceMemo.trendHistoryRevision == revision,
+           let cached = glanceMemo.trendHistoryValue {
+            return cached
+        }
+        let value = Array(sessionProjectionStore.state.dailyRollupHistory
+            .sorted { $0.day < $1.day }
+            .suffix(21))
+        glanceMemo.trendHistoryRevision = revision
+        glanceMemo.trendHistoryValue = value
+        return value
     }
 
     /// Loads the strap-step sparkline through the same day-folding rule the
@@ -3382,6 +3397,8 @@ private final class AtriaTodayGlanceMemo {
     var coachPayloadValue: AtriaCoachPayload?
     var sleepNeedKey: AtriaTodaySleepNeedKey?
     var sleepNeedValue: AtriaTodaySleepNeedSnapshot?
+    var trendHistoryRevision: Int?
+    var trendHistoryValue: [DailyRollupStoreEntry]?
 }
 
 /// Rebuilds an open metric sheet when overnight rollups remint, without
