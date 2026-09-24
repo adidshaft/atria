@@ -91,6 +91,19 @@ final class AtriaCivilDayStepAuthority {
         return now.timeIntervalSince1970 - record.computedAtUnix < openDayRefresh
     }
 
+    /// Share of a calendar day the strap's rows must cover before its total
+    /// is shown as a whole day. Below it the bar is a partial "at least"
+    /// count (strap off, charging, or history not yet drained). A coverage
+    /// ratio, so it holds for every wearer; nothing here is per-person.
+    static let wholeDayCoverageFraction = 0.8
+
+    /// A day still open, or covered for under `wholeDayCoverageFraction` of
+    /// its length (DST-aware via `dayLength`), is partial.
+    static func isPartial(record: DayRecord, dayLength: TimeInterval) -> Bool {
+        guard record.dayWasComplete, dayLength > 0 else { return true }
+        return Double(record.knownCoverageSeconds) / dayLength < wholeDayCoverageFraction
+    }
+
     /// Confirmed non-gait workout windows, for `excludedIntervals`.
     static func nonGaitExclusionWindows(
         workouts: [UserConfirmedWorkout]
@@ -154,6 +167,42 @@ final class AtriaCivilDayStepAuthority {
                 continuation.resume(
                     returning: Self.overlay(fallback: fallback, exact: exact)
                 )
+            }
+        }
+    }
+
+    /// `dailyTotals` plus the days whose count is only partial: today (still
+    /// open), exact days under the coverage floor, and days the shards could
+    /// not answer (receipt fallback only). Never inflates a count; only
+    /// labels it.
+    func dailyTotalsAndPartialDays(days: [Date],
+                                   strapIdentifier: String,
+                                   nonGaitExclusions: [DateInterval],
+                                   fallback: [Date: Int],
+                                   now: Date = Date(),
+                                   calendar: Calendar = .current) async -> (totals: [Date: Int], partial: Set<Date>) {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                let exact = exactTotalsLocked(
+                    days: days,
+                    strapIdentifier: strapIdentifier,
+                    nonGaitExclusions: nonGaitExclusions,
+                    now: now
+                )
+                let totals = Self.overlay(fallback: fallback, exact: exact)
+                var partial = Set<Date>()
+                for day in totals.keys {
+                    guard exact[day] != nil,
+                          let record = records?[day.timeIntervalSince1970],
+                          let dayEnd = calendar.date(byAdding: .day, value: 1, to: day) else {
+                        partial.insert(day)
+                        continue
+                    }
+                    if Self.isPartial(record: record, dayLength: dayEnd.timeIntervalSince(day)) {
+                        partial.insert(day)
+                    }
+                }
+                continuation.resume(returning: (totals, partial))
             }
         }
     }

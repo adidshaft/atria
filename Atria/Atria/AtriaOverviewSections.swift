@@ -2773,6 +2773,9 @@ struct AtriaStrapStepsDetailSheet: View {
     /// loaded once from the durable motion-tick day store. Days without a
     /// verified receipt simply have no entry (and no bar).
     @State private var weekSteps: [Date: Int] = [:]
+    /// Days on the week chart whose count is partial (today so far, thin
+    /// strap coverage, or receipt fallback only).
+    @State private var weekPartialDays: Set<Date> = []
 
     var body: some View {
         NavigationStack {
@@ -2997,7 +3000,7 @@ struct AtriaStrapStepsDetailSheet: View {
 
     private var stepsWeekChartCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal, partialDays: weekPartialDays)
             // The bars are CALENDAR days computed exactly from the strap's
             // recorded rows; the count at the top of this sheet is since your
             // wake. Saying so stops the two honest numbers reading as a bug
@@ -3021,6 +3024,8 @@ struct AtriaStrapStepsDetailSheet: View {
         // the fallback for days whose shards have rotated out.
         let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
         weekSteps = fallback
+        // Until the exact read lands every bar is a receipt fold: partial.
+        weekPartialDays = Set(fallback.keys)
         // Then the exact per-calendar-day totals from the shards themselves.
         // Receipts are cycle-scoped, frozen at publication, and can be missing
         // for whole days — the 2026-08-27 audit measured a day showing 505
@@ -3031,7 +3036,7 @@ struct AtriaStrapStepsDetailSheet: View {
         let days = (0..<7).compactMap {
             calendar.date(byAdding: .day, value: -$0, to: today)
         }
-        weekSteps = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+        let week = await AtriaCivilDayStepAuthority.shared.dailyTotalsAndPartialDays(
             days: days,
             strapIdentifier: identifier,
             // The wearer's "Not walking" answers join the labelled non-gait
@@ -3041,6 +3046,8 @@ struct AtriaStrapStepsDetailSheet: View {
             fallback: fallback,
             now: now
         )
+        weekSteps = week.totals
+        weekPartialDays = week.partial
         await refreshUnverifiedClusters(identifier: identifier, now: now)
     }
 
