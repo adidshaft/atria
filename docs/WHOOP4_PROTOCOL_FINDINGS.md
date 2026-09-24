@@ -5894,3 +5894,64 @@ norms.
   instead of 0). The golden-night summary is plausible: coverage > 0.95,
   1 up, HR ~64. With one real night, the owner is in `.learning` until
   5 qualifying nights exist.
+
+### First-run setup rework: deterministic, coded errors (2026-09-24)
+
+The owner asked to rework onboarding: "easier, deterministic, non sluggish,
+100% success rate or clear classified error".
+
+- **Flow:** four pages, in order: welcome → strap → about you → tonight.
+  - It is an explicit step switch, not a swipeable paged `TabView`. The paged
+    view mounted all 8 pages up front (slow first frame). It also let a swipe
+    skip strap setup, and the last page then bounced the user back.
+  - The nickname field moved onto the About you page.
+  - Rings, tracked behaviours and cycle tracking keep their defaults and stay
+    editable in Customize / Journal / Settings.
+- **Engine:** `Atria/Atria/AtriaStrapSetup.swift`, a pure model.
+  - `Tracker` records one attempt's timeline: radio wait, searching,
+    connecting, connected, secure-check run, drops, and classified errors.
+    Counters are relative to the attempt start, so a retry never inherits old
+    errors.
+  - `evaluate` returns a four-row checklist (Bluetooth / Find strap /
+    Secure pairing / Heart rate) and at most one coded problem.
+- **Ready rule:** this attempt's read-only `22/00` write-with-response is
+  confirmed. That proves the iOS bond and the protected command channel.
+  - Ready latches, so later link blips never un-verify setup.
+  - Heart rate is shown live but is **not** a gate. The wear gate pauses HR
+    while the strap is off-wrist; waiting for HR was the old "stuck waiting
+    for a fresh signal" failure.
+- **Budgets:** radio 8 s, find 30 s, connect 20 s, verify 75 s. The "Tap Pair"
+  hint appears after 8 s of the secure check. ≥ 3 drops before verification
+  count as an unstable link.
+  - A unit test (`AtriaStrapSetupTests.testNoStateSpinsPastTheLongestBudget`)
+    enumerates radio × link × secure-check states. Every one resolves to ready
+    or a coded problem, so no state can spin without an explanation.
+  - Problems stay advisory while the scan keeps working: "not found" clears by
+    itself the moment the strap appears.
+- **Transport signals:** the BLE manager publishes `strapSetupSignals`:
+  - distinct WHOOP adverts seen;
+  - classified `didFailToConnect` / `didDisconnect` errors;
+  - the secure-check verdict, plus a run counter that stops a stale verdict
+    being read as the current one.
+- **Retry:** `retryOnboardingSecureCheck()` gives the current connection one
+  fresh check. Late callbacks from the abandoned check are fenced by
+  generation.
+- **Bootstrap:** completion now requires a verified secure check. Before, a
+  bare connection completed setup even after a declined pairing.
+  `isSetupComplete` binds to the current strap, else the saved one, so a
+  finished user is never bounced back into setup by a dropped link.
+
+| Code | Problem | Trigger | Action |
+|---|---|---|---|
+| AT-101 | Bluetooth is off | radio powered off | wait (resumes by itself) |
+| AT-102 | Atria can't use Bluetooth | permission denied | Open Settings |
+| AT-103 | No Bluetooth LE | radio unsupported | wait |
+| AT-104 | Bluetooth isn't responding | radio unknown/resetting > 8 s | Try again |
+| AT-201 | Strap not found | no connection within 30 s of searching | Try again (scan continues) |
+| AT-202 | Found, won't connect | connecting > 20 s | Try again |
+| AT-203 | Connection keeps dropping | ≥ 3 drops before verification | Try again |
+| AT-204 | Too many paired devices | CBError 16 | Try again |
+| AT-301 | Strap forgot this iPhone | CBError 14 (bond removed) | Forget in Settings, then Try again |
+| AT-302 | Pairing wasn't accepted | CBError 15 / ATT 0x05·0x0C·0x0F / secure check needs security | Try again, then tap Pair |
+| AT-303 | Pairing taking too long | connected > 75 s without verification | Try again |
+| AT-304 | Strap didn't answer | secure check failed (no TX / write error) | Try again |

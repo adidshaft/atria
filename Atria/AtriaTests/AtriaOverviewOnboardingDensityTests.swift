@@ -1,4 +1,5 @@
 import XCTest
+@testable import Atria
 
 final class AtriaOverviewOnboardingDensityTests: XCTestCase {
     private func source(_ relativePath: String) throws -> String {
@@ -8,55 +9,51 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
     }
 
     func testStrapOnboardingIsImageLedWithDetailCollapsedButHonest() throws {
-        // 2026-07-31 redesign (user: onboarding should be minimal + image-first
-        // like the reference screens, "not just texts"). The strap page now leads
-        // with the visual StrapSetupShowcase; the old compact setupStepTile strip
-        // and the always-on pairing/data wall-of-text were removed. Details collapse
-        // behind ONE tap -- but the honest pairing + data-handling copy must remain
-        // present (now inside the DisclosureGroup), never dropped.
+        // 2026-09-24 setup rework: the strap page is a live checklist
+        // (StrapSetupPanel). The image-led showcase and the honest pairing and
+        // data-handling copy moved behind ONE "How to pair" tap — present,
+        // never dropped.
         let source = try source("AtriaOnboardingFlow.swift")
-        let start = try XCTUnwrap(source.range(of: "private var strapPage"))
-        let end = try XCTUnwrap(source.range(of: "private var youPage", range: start.upperBound..<source.endIndex))
-        let page = String(source[start.lowerBound..<end.lowerBound])
+        let start = try XCTUnwrap(source.range(of: "private struct StrapSetupPanel"))
+        let panel = String(source[start.lowerBound...])
 
-        // Image-led, minimal: showcase leads; no tile strip, no always-visible wall.
-        XCTAssertTrue(page.contains("StrapSetupShowcase()"))
-        XCTAssertFalse(page.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
-        XCTAssertEqual(page.components(separatedBy: "setupStepTile(").count - 1, 0)
-        XCTAssertTrue(page.contains("DisclosureGroup"))
-        // Honesty preserved: pairing truth + data-handling detail still present.
-        XCTAssertTrue(page.contains("side light pulses blue"))
-        XCTAssertTrue(page.contains("The strap stops its blue light when pairing finishes"))
-        XCTAssertTrue(page.contains("Atria does not force the light off"))
-        XCTAssertTrue(page.contains("FreshStartPolicy.summary"))
-        XCTAssertFalse(page.contains("StrapChargeIllustration"))
+        XCTAssertTrue(panel.contains("StrapSetupShowcase()"))
+        XCTAssertTrue(panel.contains("DisclosureGroup"))
+        XCTAssertFalse(panel.contains("LazyVGrid(columns: [GridItem(.adaptive(minimum: 92)"))
+        XCTAssertEqual(panel.components(separatedBy: "setupStepTile(").count - 1, 0)
+        XCTAssertTrue(panel.contains("AtriaStrapSetup.Problem.pairingMode"))
+        XCTAssertTrue(AtriaStrapSetup.Problem.pairingMode.contains("side light pulses blue"))
+        XCTAssertTrue(panel.contains("FreshStartPolicy.summary"))
+        XCTAssertTrue(panel.contains("FreshStartPolicy.interruptionDisclosure"))
+        XCTAssertFalse(panel.contains("StrapChargeIllustration"))
     }
 
     func testConnectActionCannotAdvanceBeforeDurableHistoryBootstrap() throws {
+        // 2026-09-24: the strap step advances only on a verified setup (the
+        // read-only secure check confirmed) or a completion already bound to
+        // this strap; the last page routes back instead of completing.
         let source = try source("AtriaOnboardingFlow.swift")
         let bootstrap = try self.source("AtriaOnboardingHistoryBootstrap.swift")
-        let actionStart = try XCTUnwrap(source.range(of: "PrimaryActionButton(ble: ble,"))
-        let actionEnd = try XCTUnwrap(source.range(of: ".padding(.horizontal, 20)",
+        let actionStart = try XCTUnwrap(source.range(of: "private func primaryAction()"))
+        let actionEnd = try XCTUnwrap(source.range(of: "private func recordVerifiedStrap()",
                                                   range: actionStart.upperBound..<source.endIndex))
         let action = String(source[actionStart.lowerBound..<actionEnd.lowerBound])
 
-        XCTAssertTrue(action.contains("if step == .strap, !onboardingStrapIsReady"))
-        XCTAssertTrue(action.contains("ble.startScan(reason: \"onboarding_primary_connect\")"))
-        XCTAssertTrue(action.contains("if onboardingStrapIsReady {"))
+        XCTAssertTrue(action.contains("if strapSetup.verdict.isReady || historyBootstrap.isSetupComplete"))
+        XCTAssertTrue(action.contains("if historyBootstrap.isSetupComplete { move(to: .you) }"))
+        XCTAssertTrue(action.contains("case .retry: strapSetup.retry()"))
         XCTAssertTrue(action.contains("onComplete(draft)"))
         XCTAssertTrue(action.contains("move(to: .strap)"),
-                      "Swiping past strap setup must route back instead of completing")
+                      "an incomplete setup on the last page must route back instead of completing")
 
-        XCTAssertTrue(source.contains("historyBootstrap.isCompleteForCurrentStrap"),
-                      "Live HR alone must not bypass durable import and publication")
-        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.summary"))
-        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.disclosure"))
-        XCTAssertTrue(source.contains("AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.interruptionDisclosure"))
+        XCTAssertTrue(bootstrap.contains("!AtriaStrapSetup.Tracker.verifies(ble.strapSetupSignals.secureCheck)"),
+                      "connected alone must not complete setup; the protected channel must be proven")
+        XCTAssertTrue(bootstrap.contains("func completeVerifiedSetup(peripheralIdentifier: String)"))
         XCTAssertTrue(bootstrap.contains("durableTransportAuthorityAndLiveRestored"))
         XCTAssertTrue(bootstrap.contains("recoveredDataPublished"))
         XCTAssertTrue(bootstrap.contains("currentPeripheralIdentifier == requestedPeripheralIdentifier"),
                       "completion must be bound to the exact strap that was imported")
-        XCTAssertTrue(bootstrap.contains("verified replay pages are acknowledged only after they are saved on this iPhone"))
+        XCTAssertTrue(bootstrap.contains("Verified replay pages are acknowledged only after they are saved on this iPhone"))
         XCTAssertTrue(bootstrap.contains("It never disconnects live tracking or discards unseen strap data to force a fresh start."))
         XCTAssertTrue(bootstrap.contains("Atria does not send a physical-erase command"),
                       "onboarding must not promise an unverified destructive erase")
@@ -83,7 +80,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         // stacks and adapts to narrow widths / larger text by construction (no
         // fixed horizontal grid to overflow).
         let source = try source("AtriaOnboardingFlow.swift")
-        let start = try XCTUnwrap(source.range(of: "private var expectationsPage"))
+        let start = try XCTUnwrap(source.range(of: "private var tonightPage"))
         let end = try XCTUnwrap(source.range(of: "private var progressDots",
                                               range: start.upperBound..<source.endIndex))
         let page = String(source[start.lowerBound..<end.lowerBound])
@@ -108,76 +105,73 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("detail: \"First sleep\""))
     }
 
+    // 2026-09-24: the nickname page (and its logo tile) folded into About
+    // you. The welcome page leads with the lifestyle hero; the guard against
+    // generic decoration stays.
     func testWelcomeUsesAtriaLogoInsteadOfGenericSparkles() throws {
         let source = try source("AtriaOnboardingFlow.swift")
-        let pageStart = try XCTUnwrap(source.range(of: "private var nicknamePage"))
-        let pageEnd = try XCTUnwrap(source.range(of: "private var ringsPage",
+        let pageStart = try XCTUnwrap(source.range(of: "private var welcomePage"))
+        let pageEnd = try XCTUnwrap(source.range(of: "private var restoreBackupRow",
                                                  range: pageStart.upperBound..<source.endIndex))
         let page = String(source[pageStart.lowerBound..<pageEnd.lowerBound])
 
-        XCTAssertTrue(page.contains("onboardingBrandTile"))
+        XCTAssertTrue(page.contains("onboardingLifestyleHero"))
         XCTAssertFalse(page.contains("systemImage: \"sparkles\""))
-        XCTAssertTrue(source.contains("Image(\"AtriaLogo\")"),
-                      "The first onboarding impression should use Atria's real brand mark")
+        XCTAssertFalse(source.contains("systemImage: \"sparkles\""))
     }
 
     func testOnboardingCustomControlsKeepFullTargetsAndReadableBehaviorLabels() throws {
+        // 2026-09-24: behaviour chips left onboarding (Journal owns them); the
+        // setup checklist rows inherit the full-target rule.
         let source = try source("AtriaOnboardingFlow.swift")
         let showcaseStart = try XCTUnwrap(source.range(of: "private struct StrapSetupShowcase"))
         let parserStart = try XCTUnwrap(source.range(of: "enum AtriaOptionalProfileNumber",
                                                       range: showcaseStart.upperBound..<source.endIndex))
         let showcase = String(source[showcaseStart.lowerBound..<parserStart.lowerBound])
-        let chipStart = try XCTUnwrap(source.range(of: "private func behaviorChip"))
-        let chipEnd = try XCTUnwrap(source.range(of: "private func toggleTrackedBehavior",
-                                                 range: chipStart.upperBound..<source.endIndex))
-        let chip = String(source[chipStart.lowerBound..<chipEnd.lowerBound])
+        let listStart = try XCTUnwrap(source.range(of: "private var checklist: some View"))
+        let listEnd = try XCTUnwrap(source.range(of: "private func indicator",
+                                                 range: listStart.upperBound..<source.endIndex))
+        let checklist = String(source[listStart.lowerBound..<listEnd.lowerBound])
 
         XCTAssertGreaterThanOrEqual(showcase.components(separatedBy: ".frame(width: 44, height: 44)").count - 1, 2,
                                     "The rotate action and each scene selector need full touch targets")
-        XCTAssertTrue(source.contains("private var behaviorGridColumns: [GridItem]"))
+        XCTAssertTrue(checklist.contains(".frame(minHeight: 44)"))
+        XCTAssertFalse(checklist.contains(".minimumScaleFactor"),
+                       "Step names should wrap instead of shrinking below a readable size")
         XCTAssertTrue(source.contains("if dynamicTypeSize.isAccessibilitySize"))
-        XCTAssertTrue(chip.contains(".frame(minHeight: 44)"))
-        XCTAssertTrue(chip.contains(".lineLimit(2)"))
-        XCTAssertFalse(chip.contains(".minimumScaleFactor"),
-                       "Behavior names should wrap instead of shrinking below a readable size")
     }
 
     func testRestoredOnboardingDoesNotClaimReadyBeforeSavedStrapIdentityMatches() throws {
-        let flow = try source("AtriaOnboardingFlow.swift")
-        let statusStart = try XCTUnwrap(flow.range(of: "private var onboardingHistoryStatus"))
-        let pageStart = try XCTUnwrap(flow.range(of: "private var youPage",
-                                                 range: statusStart.upperBound..<flow.endIndex))
-        let status = String(flow[statusStart.lowerBound..<pageStart.lowerBound])
+        // 2026-09-24: completion is bound to the strap this phone is bonded to
+        // (current link, else the saved identity), so a restored backup from
+        // another strap never reads as done, and a link blip never bounces a
+        // finished user back into setup.
+        let bootstrap = try source("AtriaOnboardingHistoryBootstrap.swift")
+        let content = try source("ContentView.swift")
+        let start = try XCTUnwrap(bootstrap.range(of: "var isSetupComplete: Bool"))
+        let body = String(bootstrap[start.lowerBound...].prefix(400))
 
-        XCTAssertTrue(status.contains("if historyBootstrap.isCompleteForCurrentStrap"))
-        XCTAssertTrue(status.contains("Saved setup found · reconnect your strap to verify it"))
-        XCTAssertTrue(status.contains("Ready · \\(historyBootstrap.snapshot.importedRows) records safely added"))
-        XCTAssertTrue(status.contains(": historyBootstrap.snapshot.detail"),
-                      "A zero-row completion must retain the bootstrap's truthful live-ready detail")
+        XCTAssertTrue(body.contains("snapshot.phase == .complete"))
+        XCTAssertTrue(body.contains("ble.currentPeripheralIdentifier ?? ble.savedPeripheralIdentifier"))
+        XCTAssertEqual(content.components(separatedBy: "onboardingHistoryBootstrap.isSetupComplete").count - 1, 3)
+        XCTAssertFalse(content.contains("isCompleteForCurrentStrap"))
     }
 
     func testConnectionPermissionGuidanceIsVisibleAndAdaptsAtAccessibilitySizes() throws {
-        let content = try source("ContentView.swift")
+        // 2026-09-24: permission denial is its own coded problem (AT-102) with
+        // an always-enabled Open Settings action; powered-off Bluetooth is a
+        // different problem that resumes by itself.
         let flow = try source("AtriaOnboardingFlow.swift")
-        let start = try XCTUnwrap(content.range(of: "struct OnboardingConnectionStatusView"))
-        let end = try XCTUnwrap(content.range(of: "extension View",
-                                              range: start.upperBound..<content.endIndex))
-        let status = String(content[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(status.contains("Text(subtitle)"),
-                      "Bluetooth and pairing guidance must not be VoiceOver-only")
-        XCTAssertTrue(status.contains("Bluetooth access needed"))
-        XCTAssertTrue(status.contains("Allow Atria to use Bluetooth in Settings"))
-        XCTAssertTrue(status.contains("Turn on Bluetooth in Control Center or Settings to connect."))
-        XCTAssertTrue(status.contains("ble.bluetoothPermissionDenied"),
-                      "Permission denial must not be presented as a powered-off radio")
-        XCTAssertTrue(status.contains("if dynamicTypeSize.isAccessibilitySize"))
-        XCTAssertTrue(status.contains("VStack(alignment: .leading, spacing: 10)"))
-        XCTAssertTrue(flow.contains("if bluetoothRecovery == .permissionDenied { return false }"),
-                      "Denied users need an enabled recovery action, not a permanent dead end")
-        XCTAssertTrue(flow.contains("onboardingBluetoothRecovery == .permissionDenied"))
+        XCTAssertEqual(AtriaStrapSetup.Problem.bluetoothDenied.action, .openSettings)
+        XCTAssertEqual(AtriaStrapSetup.Problem.bluetoothOff.action, .wait)
+        XCTAssertNotEqual(AtriaStrapSetup.Problem.bluetoothDenied.title, AtriaStrapSetup.Problem.bluetoothOff.title)
+        XCTAssertTrue(AtriaStrapSetup.Problem.bluetoothDenied.steps.joined().contains("Settings"))
+        XCTAssertTrue(flow.contains("case .openSettings: return \"Open Settings\""))
+        XCTAssertTrue(flow.contains("case .openSettings: openApplicationSettings()"))
         XCTAssertTrue(flow.contains("UIApplication.openSettingsURLString"),
                       "Permission recovery must use the supported per-app Settings URL")
+        XCTAssertTrue(flow.contains(".fixedSize(horizontal: false, vertical: true)"),
+                      "fix steps wrap at accessibility sizes")
     }
 
     // 2026-08-28: `testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint`
@@ -265,17 +259,15 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertFalse(stages.contains("case nickname"))
         XCTAssertFalse(stages.contains("case ringPicker"))
         XCTAssertFalse(stages.contains("case womensHealth"))
-        // The flow owns all 8 first-launch pages, including the three
-        // personalization pages adopted from the design.
-        XCTAssertEqual(steps.components(separatedBy: "\n        case ").count - 1, 8)
-        XCTAssertTrue(steps.contains("case whatThisIs"))
+        // 2026-09-24 (owner: "rework the onboarding entirely. make it
+        // easier"): the flow is four pages. Nickname folded into About you;
+        // rings, tracked behaviours and cycle tracking keep their defaults and
+        // stay editable in Customize / Journal / Settings.
+        XCTAssertEqual(steps.components(separatedBy: "\n        case ").count - 1, 4)
+        XCTAssertTrue(steps.contains("case welcome"))
         XCTAssertTrue(steps.contains("case strap"))
         XCTAssertTrue(steps.contains("case you"))
-        XCTAssertTrue(steps.contains("case behaviors"))
-        XCTAssertTrue(steps.contains("case expectations"))
-        XCTAssertTrue(steps.contains("case nickname"))
-        XCTAssertTrue(steps.contains("case rings"))
-        XCTAssertTrue(steps.contains("case cycle"))
+        XCTAssertTrue(steps.contains("case tonight"))
         XCTAssertTrue(content.contains("onboardingStage = .sharingChoice("))
         XCTAssertFalse(content.contains("onboardingStage = .nickname(profile)"))
     }
