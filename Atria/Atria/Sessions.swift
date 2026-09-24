@@ -7769,22 +7769,6 @@ extension SavedSession {
                      reason: "low_hr_window")
     }
 
-    private func sustainedElevatedEvidence(rest: Int,
-                                           maxHR: Int,
-                                           thresholdFraction: Double = 0.50) -> (total: TimeInterval,
-                                                                                longestBout: TimeInterval,
-                                                                                observedDuration: TimeInterval,
-                                                                                droppedGapSeconds: TimeInterval,
-                                                                                maxGap: TimeInterval,
-                                                                                gapCount: Int) {
-        try! sustainedElevatedEvidenceCore(
-            rest: rest,
-            maxHR: maxHR,
-            thresholdFraction: thresholdFraction,
-            cooperativeDeadline: nil
-        )
-    }
-
     private func sustainedElevatedEvidenceCore(
         rest: Int,
         maxHR: Int,
@@ -7801,18 +7785,6 @@ extension SavedSession {
             minimumHR: elevatedThreshold,
             cooperativeDeadline: cooperativeDeadline
         )
-    }
-
-    private func sustainedEvidence(minimumHR: Int) -> (total: TimeInterval,
-                                                       longestBout: TimeInterval,
-                                                       observedDuration: TimeInterval,
-                                                       droppedGapSeconds: TimeInterval,
-                                                       maxGap: TimeInterval,
-                                                       gapCount: Int) {
-        (try? sustainedEvidenceCore(
-            minimumHR: minimumHR,
-            cooperativeDeadline: nil
-        )) ?? (0, 0, 0, 0, 0, 0)
     }
 
     private func sustainedEvidenceCore(
@@ -10390,7 +10362,6 @@ final class SessionStore: ObservableObject {
         finishColdSessionPersistence(upTo: revision)
     }
     #endif
-    private static let checkpointPersistenceDelay: TimeInterval = 2.25
     private nonisolated static let workoutReviewSettleDelay: TimeInterval = 10 * 60
     /// Permanent ghost-killer ceiling (2026-07-05): a review candidate whose
     /// window ended longer ago than this is never surfaced, regardless of its
@@ -25728,10 +25699,6 @@ final class SessionStore: ObservableObject {
         cachedLatestLocalRMSSD = source?.value
     }
 
-    private func refreshBackupStatusCache() {
-        cachedSessionBackupStatus = computeSessionBackupStatus()
-    }
-
     nonisolated static func latestLocalRMSSD(in sessions: [SavedSession]) -> Int? {
         // Recovery freezes to the overnight/morning reading like WHOOP: prefer the
         // most recent overnight-window session's HRV; only fall back to any session
@@ -28894,28 +28861,8 @@ final class SessionStore: ObservableObject {
         sessions.reduce(0) { $0 + $1.rrSampleCount }
     }
 
-    private func totalMotionHints(in sessions: [SavedSession]) -> Int {
-        sessions.reduce(0) { $0 + $1.motionHintCountValue }
-    }
-
-    private func totalMotionShortSamples(in sessions: [SavedSession]) -> Int {
-        sessions.reduce(0) { $0 + $1.motionShortCountValue }
-    }
-
-    private func totalHRRaw2A37(in sessions: [SavedSession]) -> Int {
-        sessions.reduce(0) { $0 + $1.hrRaw2A37Value }
-    }
-
     private func totalHRAccepted(in sessions: [SavedSession]) -> Int {
         sessions.reduce(0) { $0 + $1.hrAcceptedValue }
-    }
-
-    private func totalHRRawGaps(in sessions: [SavedSession]) -> Int {
-        sessions.reduce(0) { $0 + $1.hrRawGapsValue }
-    }
-
-    private func totalHRAcceptedGaps(in sessions: [SavedSession]) -> Int {
-        sessions.reduce(0) { $0 + $1.hrAcceptedGapsValue }
     }
 
     private func recentCanonicalSessions(windowDays: Int? = nil,
@@ -32627,16 +32574,6 @@ final class SessionStore: ObservableObject {
     private nonisolated static func workoutOverlapRatioForReview(workout: UserConfirmedWorkout,
                                                                  start: Date,
                                                                  end: Date) -> Double {
-        let overlap = min(workout.end, end).timeIntervalSince(max(workout.start, start))
-        guard overlap > 0 else { return 0 }
-        let shortest = min(workout.duration, end.timeIntervalSince(start))
-        guard shortest > 0 else { return 0 }
-        return min(1, overlap / shortest)
-    }
-
-    private func workoutOverlapRatio(workout: UserConfirmedWorkout,
-                                     start: Date,
-                                     end: Date) -> Double {
         let overlap = min(workout.end, end).timeIntervalSince(max(workout.start, start))
         guard overlap > 0 else { return 0 }
         let shortest = min(workout.duration, end.timeIntervalSince(start))
@@ -40542,18 +40479,6 @@ final class SessionStore: ObservableObject {
         return session.start.addingTimeInterval(points[onsetIndex].t)
     }
 
-    /// Trims `session` to only the samples at/before `wakePoint`, so the
-    /// existing cluster -> `AggregateSleepCandidate` math in
-    /// `aggregateSleepCandidates(in:...)` computes avgHR/SD/median/P90/
-    /// elevatedFraction over the sleep portion only, with `end == wakePoint`.
-    private nonisolated static func sessionTrimmedAtWakePoint(_ session: SavedSession, wakePoint: Date) -> SavedSession? {
-        try? sessionTrimmedAtWakePointCore(
-            session,
-            wakePoint: wakePoint,
-            cooperativeDeadline: nil
-        )
-    }
-
     private nonisolated static func sessionTrimmedAtWakePointCore(
         _ session: SavedSession,
         wakePoint: Date,
@@ -41483,21 +41408,6 @@ final class SessionStore: ObservableObject {
                                        motionValidated: true,
                                        motionSource: candidate.motionEvidenceSource,
                                        isHROnly: false)
-    }
-
-    private nonisolated static func windowOverlapsSleepCore(start: Date,
-                                                            end: Date,
-                                                            calendar: Calendar) -> Bool {
-        let startDay = calendar.startOfDay(for: start)
-        for offset in -1...1 {
-            guard let day = calendar.date(byAdding: .day, value: offset, to: startDay),
-                  let coreStart = calendar.date(bySettingHour: 0, minute: 0, second: 0, of: day),
-                  let coreEnd = calendar.date(bySettingHour: 6, minute: 0, second: 0, of: day) else { continue }
-            if start < coreEnd && end > coreStart {
-                return true
-            }
-        }
-        return false
     }
 
     private nonisolated static func sleepWindowsOverlap(_ sleep: UserConfirmedSleep, candidate: AggregateSleepCandidate) -> Bool {
@@ -54901,47 +54811,12 @@ final class SessionStore: ObservableObject {
         url.deletingLastPathComponent().appendingPathComponent("atria-backups")
     }
 
-    private func iCloudSessionBackupDirectory() -> URL? {
-        guard let container = FileManager.default.url(forUbiquityContainerIdentifier: nil) else {
-            return nil
-        }
-        return container
-            .appendingPathComponent("Documents")
-            .appendingPathComponent("Atria Backups")
-    }
-
     private func legacySessionBackupDirectory() -> URL {
         url.deletingLastPathComponent().appendingPathComponent("whoop-backups")
     }
 
     private func sessionBackupDirectoriesForReading() -> [URL] {
         [sessionBackupDirectory(), legacySessionBackupDirectory()]
-    }
-
-    private func mirrorSessionBackupToICloudIfEnabled(_ backupURL: URL) {
-        guard UserDefaults.standard.bool(forKey: Self.iCloudBackupEnabledKey) else {
-            AtriaDebugLog("ATRIADBG session_backup_icloud status=skipped_toggle path=%@",
-                          backupRelativePath(for: backupURL))
-            return
-        }
-        guard let iCloudDir = iCloudSessionBackupDirectory() else {
-            AtriaDebugLog("ATRIADBG session_backup_icloud status=unavailable path=%@",
-                          backupRelativePath(for: backupURL))
-            return
-        }
-        do {
-            try FileManager.default.createDirectory(at: iCloudDir, withIntermediateDirectories: true)
-            let destination = iCloudDir.appendingPathComponent(backupURL.lastPathComponent)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: backupURL, to: destination)
-            pruneAutomaticBackups(in: iCloudDir, keep: 3)
-            AtriaDebugLog("ATRIADBG session_backup_icloud status=ok path=Documents/Atria Backups/%@",
-                          destination.lastPathComponent)
-        } catch {
-            AtriaDebugLog("ATRIADBG session_backup_icloud status=error error=%@", String(describing: error))
-        }
     }
 
     private func backupRelativePath(for backupURL: URL) -> String {
@@ -54987,60 +54862,6 @@ final class SessionStore: ObservableObject {
               deleted,
               files.count,
               automatic.count)
-    }
-
-    private func verifySessionBackup(at latest: URL) {
-        do {
-            let data = try Self.sessionBackupPayloadData(at: latest)
-            let envelope = try Self.decodeSessionBackupEnvelope(from: data)
-            let countMatches = envelope.sessions.count == sessions.count
-            let schemaOK = Self.supportedBackupSchemas.contains(envelope.schema)
-            let rollups = dailyRollupHistory.isEmpty ? dailyRollupStore.rollups(last: 400) : dailyRollupHistory
-            let backupDigest = backupContentDigest(sessions: envelope.sessions,
-                                                   baseline: envelope.baseline,
-                                                   profile: envelope.profile,
-                                                   dailyMetrics: envelope.dailyMetrics,
-                                                   dailyRollups: envelope.dailyRollups,
-                                                   confirmedSleeps: envelope.confirmedSleeps,
-                                                   confirmedWorkouts: envelope.confirmedWorkouts)
-            let currentDigest = backupContentDigest(sessions: sessions,
-                                                    baseline: baseline,
-                                                    profile: profile,
-                                                    dailyMetrics: envelope.schema >= 2 ? dailyMetricHistory : nil,
-                                                    dailyRollups: envelope.schema >= 2 ? rollups : nil,
-                                                    confirmedSleeps: envelope.schema >= 2 ? cachedConfirmedSleeps : nil,
-                                                    confirmedWorkouts: envelope.schema >= 4 ? cachedConfirmedWorkouts : nil)
-            let digestMatches = backupDigest != nil && backupDigest == currentDigest
-            let status = countMatches && schemaOK && digestMatches ? "ok" : "mismatch"
-            AtriaDebugLog("ATRIADBG session_backup_verify status=%@ path=%@ schema=%d sessions=%d current_sessions=%d rr_samples=%d current_rr_samples=%d motion_hints=%d current_motion_hints=%d motion_short_samples=%d current_motion_short_samples=%d hr_raw_2a37=%d current_hr_raw_2a37=%d hr_accepted=%d current_hr_accepted=%d hr_raw_gaps=%d current_hr_raw_gaps=%d hr_accepted_gaps=%d current_hr_accepted_gaps=%d bytes=%d profile_max_hr=%d baseline_samples=%d digest=%@ current_digest=%@ digest_match=%d",
-                  status,
-                  backupRelativePath(for: latest),
-                  envelope.schema,
-                  envelope.sessions.count,
-                  sessions.count,
-                  totalRRSamples(in: envelope.sessions),
-                  totalRRSamples(in: sessions),
-                  totalMotionHints(in: envelope.sessions),
-                  totalMotionHints(in: sessions),
-                  totalMotionShortSamples(in: envelope.sessions),
-                  totalMotionShortSamples(in: sessions),
-                  totalHRRaw2A37(in: envelope.sessions),
-                  totalHRRaw2A37(in: sessions),
-                  totalHRAccepted(in: envelope.sessions),
-                  totalHRAccepted(in: sessions),
-                  totalHRRawGaps(in: envelope.sessions),
-                  totalHRRawGaps(in: sessions),
-                  totalHRAcceptedGaps(in: envelope.sessions),
-                  totalHRAcceptedGaps(in: sessions),
-                  data.count,
-                  envelope.profile.maxHR,
-                  envelope.baseline.sessions,
-                  backupDigest ?? "error",
-                  currentDigest ?? "error",
-                  digestMatches ? 1 : 0)
-        } catch {
-            AtriaDebugLog("ATRIADBG session_backup_verify status=error error=%@", String(describing: error))
-        }
     }
 
     private func backupContentDigest(sessions: [SavedSession],
@@ -55327,23 +55148,6 @@ final class SessionStore: ObservableObject {
         return formatter.string(from: Date())
     }
 
-    private func trendAnomalies(rollups recent: [DailyRollup]) -> [String] {
-        let ordered = recent.sorted { $0.day < $1.day }
-        guard let latest = ordered.last else { return [] }
-        let rhrs = ordered.compactMap(\.restingHR).filter { $0 > 0 }
-        let strains = ordered.map(\.strain).filter { $0 > 0 }
-        var out: [String] = []
-        if let latestRHR = latest.restingHR,
-           isHighOutlier(Double(latestRHR), in: rhrs.map(Double.init)) {
-            out.append("RHR elevated")
-        }
-        if latest.strain > 0,
-           isHighOutlier(latest.strain, in: strains) {
-            out.append("Strain spike")
-        }
-        return out
-    }
-
     private func trendConfidence(coverageDays: Int, windowDays: Int) -> String {
         guard coverageDays > 0 else { return "learning" }
         if coverageDays >= trendRequiredCoverageDays(windowDays: windowDays) { return "high" }
@@ -55380,29 +55184,6 @@ final class SessionStore: ObservableObject {
             parts.append("flags \(anomalies.joined(separator: ","))")
         }
         return parts.joined(separator: " · ")
-    }
-
-    private func trendSummaryBlockers(coverageDays: Int,
-                                      requiredCoverageDays: Int,
-                                      avgRecovery: Int?,
-                                      avgHRV: Int?,
-                                      hrvState: String) -> String {
-        var blockers: [String] = []
-        if coverageDays <= 0 {
-            blockers.append("no_saved_history")
-        } else if coverageDays < requiredCoverageDays {
-            blockers.append("coverage_below_70pct")
-        }
-        if hrvState == "learning" {
-            blockers.append("hrv_learning")
-        }
-        if avgRecovery == nil {
-            blockers.append("recovery_points_missing")
-        }
-        if avgHRV == nil {
-            blockers.append("hrv_points_missing")
-        }
-        return blockers.isEmpty ? "none" : blockers.joined(separator: "+")
     }
 
     private func trendBlockers(summary: TrendSummary?, hrvValidated _: Int) -> String {
@@ -55462,14 +55243,6 @@ final class SessionStore: ObservableObject {
             return defaultValue
         }
         return min(max(value, range.lowerBound), range.upperBound)
-    }
-
-    private func isHighOutlier(_ value: Double, in values: [Double]) -> Bool {
-        guard values.count >= 3 else { return false }
-        let mean = values.reduce(0, +) / Double(values.count)
-        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
-        let sd = sqrt(variance)
-        return sd > 0.1 && value > mean + 2 * sd
     }
 
     private func averageInt(_ values: [Int]) -> Int? {

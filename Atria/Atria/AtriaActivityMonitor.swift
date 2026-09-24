@@ -3729,10 +3729,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         AtriaActivityWorkoutStressProjection.evidence(readings: stressReadings)
     }
 
-    private var hasWorkoutStressEvidence: Bool {
-        workoutStressProjection.presentation != .empty
-    }
-
     private var workoutStressAccessibilityLabel: String {
         switch workoutStressProjection.presentation {
         case .physiologicalStress:
@@ -4474,11 +4470,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             routeFileURL: routeFileURL,
             routePoints: routeSharePreviewPoints
         )
-    }
-
-    private var completedWorkoutStepsText: String? {
-        guard completedWorkoutStepsPresentation?.isAvailable == true else { return nil }
-        return completedWorkoutStepsPresentation?.valueText
     }
 
     private var completedWorkoutStepsPresentation: AtriaWorkoutSharePresentation.CompletedSteps? {

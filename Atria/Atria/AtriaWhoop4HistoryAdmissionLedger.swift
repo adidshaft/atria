@@ -1093,13 +1093,6 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         try queryOne(sql, bindings: bindings) { Int(sqlite3_column_int64($0, 0)) } ?? 0
     }
 
-    private func scalarInt64(_ sql: String, bindings: [Binding] = []) throws -> Int64? {
-        try queryOne(sql, bindings: bindings) { statement in
-            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
-            return sqlite3_column_int64(statement, 0)
-        } ?? nil
-    }
-
     private static func boundPrefixDigest(
         previousPrefixSHA256: String?,
         admissionBatchSHA256: String,
@@ -1252,47 +1245,6 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             AtriaHistoricalArchiveDurableStore.identityBatchDigest(keys),
             UInt64(keys.count)
         )
-    }
-
-    private func prefixSnapshot(
-        attempt: Attempt,
-        through ordinal: UInt64
-    ) throws -> (sha256: String, recordCount: UInt64, byteCount: UInt64) {
-        guard let database else { throw LedgerError.open(SQLITE_MISUSE) }
-        let sql = """
-            SELECT last_ordinal, frame FROM history_frame
-            WHERE last_attempt_id = ? AND last_ordinal <= ? AND archive_durable = 1
-            ORDER BY last_ordinal ASC
-            """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            throw LedgerError.sqlite(code: sqlite3_errcode(database), operation: "prepare_prefix_receipt")
-        }
-        defer { sqlite3_finalize(statement) }
-        try bind([.text(attempt.identifier), .int64(Int64(ordinal))], to: statement)
-        var hasher = SHA256()
-        var count: UInt64 = 0
-        var bytes: UInt64 = 0
-        while true {
-            let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { break }
-            guard result == SQLITE_ROW else {
-                throw LedgerError.sqlite(code: result, operation: "prefix_receipt_query")
-            }
-            var value = UInt64(sqlite3_column_int64(statement, 0)).littleEndian
-            withUnsafeBytes(of: &value) { hasher.update(data: Data($0)) }
-            let length = Int(sqlite3_column_bytes(statement, 1))
-            if let pointer = sqlite3_column_blob(statement, 1), length > 0 {
-                let data = Data(bytes: pointer, count: length)
-                hasher.update(data: data)
-                bytes &+= UInt64(length)
-            }
-            count &+= 1
-        }
-        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(),
-                count,
-                bytes)
     }
 
     private func execute(_ sql: String, bindings: [Binding] = []) throws {

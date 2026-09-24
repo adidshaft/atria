@@ -464,27 +464,6 @@ private struct AtriaHealthMonitorPreparedData {
     }
 }
 
-private struct AtriaHealthMonitorRangeStat {
-    let storedStat: DailyRollupVitals.Stat?
-
-    init(points: [AtriaHealthMonitorSparkPoint]) {
-        guard points.count >= 3 else {
-            storedStat = nil
-            return
-        }
-        var n = 0
-        var mean = 0.0
-        var m2 = 0.0
-        for value in points.map(\.value) {
-            n += 1
-            let delta = value - mean
-            mean += delta / Double(n)
-            m2 += delta * (value - mean)
-        }
-        storedStat = DailyRollupVitals.Stat(mean: mean, sd: sqrt(m2 / Double(max(n - 1, 1))), n: n)
-    }
-}
-
 private struct AtriaHealthMonitorRow: Identifiable, Equatable {
     let kind: AtriaHealthMonitorVitalKind
     let valueText: String

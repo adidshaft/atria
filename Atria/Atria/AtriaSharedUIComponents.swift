@@ -175,38 +175,6 @@ struct AtriaSkeletonBlock: View {
     }
 }
 
-struct AtriaLoadingPanel: View, Equatable {
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-            }
-            if !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            AtriaSkeletonBlock(height: 58)
-            HStack(spacing: 8) {
-                AtriaSkeletonBlock(height: 38)
-                AtriaSkeletonBlock(height: 38)
-            }
-        }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(subtitle.isEmpty ? title : "\(title). \(subtitle)")
-    }
-}
-
 struct AtriaPanelSectionHeader: View, Equatable {
     let title: String
     let subtitle: String
