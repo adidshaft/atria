@@ -255,7 +255,7 @@ struct AtriaStepsWeekChart: View {
 
                 Text(partialDays.isEmpty
                      ? "Green met goal · amber under · red well under. No bar, no reading."
-                     : "Green met goal · amber under · red well under · faded + = partial so far.")
+                     : "Green met · amber under · red well under · grey + so far.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
