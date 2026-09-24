@@ -661,7 +661,7 @@ struct AtriaSleepDebtChartCard: View {
         .chartXScale(domain: AtriaSleepDebtChartPresentation.weekXDomain(slots: slots) ?? Date()...Date())
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let value = value.as(Double.self) {
@@ -674,9 +674,9 @@ struct AtriaSleepDebtChartCard: View {
         }
         .chartXAxis {
             AxisMarks(values: slots.map(\.day)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(centered: true) {
+                AxisValueLabel(centered: true, verticalSpacing: 6) {
                     if let day = value.as(Date.self) {
                         Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day))
                             .font(.caption2)

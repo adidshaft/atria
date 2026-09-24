@@ -83,12 +83,14 @@ struct AtriaStrainRecoveryComboChart: View {
         return "\(strainDays) of \(window) days · \(recoveryNights) of \(window) nights recorded"
     }
 
-    /// Domain padded half a day each side so edge ticks/points aren't clipped.
+    /// First day's midnight to the end of the last day. Day bars and dots
+    /// (`unit: .day`) sit at each day's centre, so the old half-day shift
+    /// (first-12h...last+12h) cut the newest bar and its recovery dot in
+    /// half at the plot edge (visual pass 2026-09-24 render).
     private var xDomain: ClosedRange<Date>? {
         guard let first = weekDays.first, let last = weekDays.last else { return nil }
-        let lo = calendar.date(byAdding: .hour, value: -12, to: first) ?? first
-        let hi = calendar.date(byAdding: .hour, value: 12, to: last) ?? last
-        return lo...hi
+        let hi = calendar.date(byAdding: .day, value: 1, to: last) ?? last
+        return first...hi
     }
 
     var body: some View {
@@ -165,13 +167,13 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartXScale(domain: xDomain ?? Date()...Date())
         .chartXAxis {
             AxisMarks(values: weekDays) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(centered: true) {
+                AxisValueLabel(centered: true, verticalSpacing: 6) {
                     if let day = value.as(Date.self) {
                         Text(Self.dayTickLabel(for: day, calendar: calendar))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(AtriaChartVisualGrammar.axisLabelFont)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -179,7 +181,7 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartYScale(domain: 0...strainAxisMax)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 7, 14, 21]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {

@@ -3081,6 +3081,9 @@ struct AtriaHomeView: View {
         let shouldSeedStrengthWorkoutProof = arguments.contains("--atria-seed-strength-workout-proof")
         let shouldOpenHeartRateTimeline = Self.debugLaunchFixtureValue(arguments: arguments) == "heart-rate-timeline"
         let shouldShowConnectivityPillFixture = Self.debugLaunchFixtureValue(arguments: arguments) == "refresh-connectivity-pill"
+        // Night timeline + morning prompt fixtures (visual pass 2026-09-24).
+        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions"]
+            .contains(Self.debugLaunchFixtureValue(arguments: arguments) ?? "")
         guard requestedScreen != "overview"
                 || requestedOverviewSegment != nil
                 || shouldOpenMetricDetailFixture
@@ -3095,7 +3098,8 @@ struct AtriaHomeView: View {
                 || shouldSeedCustomLayout
                 || shouldSeedStrengthWorkoutProof
                 || shouldOpenHeartRateTimeline
-                || shouldShowConnectivityPillFixture else {
+                || shouldShowConnectivityPillFixture
+                || shouldShowNightTimelineFixture else {
             return
         }
 
@@ -3130,7 +3134,7 @@ struct AtriaHomeView: View {
         if shouldOpenMetricDetailFixture {
             debugShowsOverviewSegmentContent = true
         }
-        if shouldShowOverviewFixture {
+        if shouldShowOverviewFixture || shouldShowNightTimelineFixture {
             debugShowsOverviewSegmentContent = true
         }
         if shouldOpenShareSheet {

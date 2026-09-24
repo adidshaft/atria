@@ -472,14 +472,18 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaDetailRangeDotStrip: View, Equatable",
             "private struct Bar: Equatable, Identifiable",
             "private let bars: [Bar]",
-            "AtriaDetailPeriodSummaryLine(summary: summary)",
+            # 2026-09-24 visual pass: coverage joined the one summary line.
+            "AtriaDetailPeriodSummaryLine(summary: summary, coverageText: coverageText)",
             # 2026-07-06: AtriaDetailPeriodReportCard call removed from metricChart
             # (detail-sheet redesign collapsed 3 redundant latest/avg/change cards
             # into one summary surface).
             "comparison: comparison,",
             "let latestPosition: Double",
             "private enum AtriaDetailPeriodChangeDirection",
-            "Latest \\(summary.latestText)\\(summary.changeDirection.triangleText)",
+            # 2026-09-24 visual pass: latest + arrow moved to the chart header;
+            # the line under the plot carries Avg/Range/coverage only.
+            "Text(valueText(latest.value) + (summary?.changeDirection.triangleText ?? \"\"))",
+            "var parts = [\"Avg \\(summary.averageText)\"]",
             "Avg \\(summary.averageText)",
             "Range \\(summary.rangeText)",
             # 2026-07-07: domain also covers the dashed prior-average rule
