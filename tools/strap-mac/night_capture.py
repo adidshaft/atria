@@ -216,7 +216,7 @@ class D(NSObject):
 
     @objc.python_method
     def start_drain(self, reason):
-        if self.state == "draining" or self.p is None:
+        if self.state == "draining" or self.p is None or getattr(self, "finishing", False):
             return
         now = self.device_now()
         if now is None:
@@ -230,7 +230,7 @@ class D(NSObject):
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(1.0, self, "drainGo:", None, False)
 
     def drainGo_(self, _t):
-        if self.state == "draining":
+        if self.state == "draining" and not getattr(self, "finishing", False):
             self.send(0x16, b"\x00", "history_16")
 
     @objc.python_method
@@ -285,6 +285,10 @@ class D(NSObject):
     def finish_(self, _t):
         self.finishing = True
         say({"event": "finish", "stats": self.stats})
+        # Never leave the strap serving history: a transfer left open (16/00
+        # without 14/00) stops standard 2A37 HR for the next client
+        # (2026-09-24: the iPhone connected and verified but got no HR).
+        self.send(0x14, b"\x00", "abort_14_end")
         self.send(0x3F, b"\x00", "3f00_end")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(2.0, self, "hang:", None, False)
 

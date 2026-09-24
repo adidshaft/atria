@@ -5920,7 +5920,7 @@ The owner asked to rework onboarding: "easier, deterministic, non sluggish,
   - Heart rate is shown live but is **not** a gate. The wear gate pauses HR
     while the strap is off-wrist; waiting for HR was the old "stuck waiting
     for a fresh signal" failure.
-- **Budgets:** radio 8 s, find 30 s, connect 20 s, verify 75 s. The "Tap Pair"
+- **Budgets:** radio 8 s, find 30 s, connect 30 s, verify 75 s. Connect was raised from 20 s after the first iPhone run: the transport holds a stale state-restored "connecting" strap for its own 20 s watchdog before scanning. The "Tap Pair"
   hint appears after 8 s of the secure check. ≥ 3 drops before verification
   count as an unstable link.
   - A unit test (`AtriaStrapSetupTests.testNoStateSpinsPastTheLongestBudget`)
@@ -5948,10 +5948,51 @@ The owner asked to rework onboarding: "easier, deterministic, non sluggish,
 | AT-103 | No Bluetooth LE | radio unsupported | wait |
 | AT-104 | Bluetooth isn't responding | radio unknown/resetting > 8 s | Try again |
 | AT-201 | Strap not found | no connection within 30 s of searching | Try again (scan continues) |
-| AT-202 | Found, won't connect | connecting > 20 s | Try again |
+| AT-202 | Found, won't connect | connecting > 30 s | Try again |
 | AT-203 | Connection keeps dropping | ≥ 3 drops before verification | Try again |
 | AT-204 | Too many paired devices | CBError 16 | Try again |
 | AT-301 | Strap forgot this iPhone | CBError 14 (bond removed) | Forget in Settings, then Try again |
 | AT-302 | Pairing wasn't accepted | CBError 15 / ATT 0x05·0x0C·0x0F / secure check needs security | Try again, then tap Pair |
 | AT-303 | Pairing taking too long | connected > 75 s without verification | Try again |
 | AT-304 | Strap didn't answer | secure check failed (no TX / write error) | Try again |
+
+### First iPhone run of the new setup (2026-09-24, 13:28–13:40 IST)
+
+- **Order of events:**
+  - AT-101 while phone Bluetooth was off; it cleared by itself when Bluetooth
+    came on. Strap found in 0.3 s, connected 0.7 s later.
+  - AT-302 twice: "Encryption is insufficient", then "Authentication is
+    insufficient". That is the iPhone's stale key after the Mac bond test
+    wiped the strap's side.
+  - After re-pairing, the secure check was confirmed at 13:30:39 and setup was
+    recorded as complete.
+- **Two false or early verdicts, both fixed:**
+  - AT-203 fired on the transport's own central rebuild (radio briefly
+    unknown) while the user re-paired. Drops now count only when the radio is
+    on on both sides, and the limit is raised to 4.
+  - AT-304 appeared after Try again: TX had not yet been rediscovered after
+    that rebuild, so the 15 s wait ran out. `.failed` now gets the same quiet
+    automatic retry as `.interrupted`, and the verdict re-reads state after an
+    automatic retry so the replaced failure never flashes.
+  - The connect budget went from 20 s to 30 s, above the transport's 20 s
+    watchdog for a stale restored candidate.
+- **Connected and verified, but no 2A37 HR for about 9 minutes:**
+  - The Mac recorder's shutdown sent `3F/00` and then, from a drain timer in
+    the same second, `16/00`, and disconnected without `14/00`. A strap
+    serving history stops 2A37 (see 2026-07-28).
+  - Fixes:
+    - the recorder never starts a drain while finishing and sends `14/00` on
+      exit;
+    - the app sends one `14/00` per connection when the link has delivered no
+      HR for 20 s and the app owns no history transfer
+      (`shouldAbortOrphanedStrapHistory`).
+  - HR resumed on the next launch within 20 s, so the abort never fired. The
+    orphaned-transfer cause is **plausible, not proven**; a fit adjustment
+    happened at the same time.
+- **Data loss (not caused by the installs):**
+  - The app container was recreated between 13:23 (38 resident + 692 archived
+    sessions) and 13:28 (0), consistent with the app being deleted. The only
+    file afterwards was the 13:31 onboarding backup.
+  - A partial pull from 2026-09-20 22:21 exists at
+    `/private/tmp/atria-imu-240-nokill-pull`: sessions, rollups, metrics,
+    workouts, preferences and motion stores. It has no raw HR archive.

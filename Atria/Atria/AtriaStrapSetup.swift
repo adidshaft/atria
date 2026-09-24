@@ -165,13 +165,20 @@ enum AtriaStrapSetup {
                 case .connecting:
                     if attempt.connectingSince == nil { attempt.connectingSince = now }
                     attempt.connectedSince = nil
+                    // A failed connect falls back to searching with a fresh
+                    // find budget, not one already spent while connecting.
+                    attempt.searchingSince = nil
                 case .connected:
                     if attempt.connectedSince == nil { attempt.connectedSince = now }
                     attempt.connectingSince = nil
                     attempt.searchingSince = nil
                 }
             }
-            if previous?.link == .connected, s.link != .connected, !attempt.verified {
+            // A radio reset or the transport rebuilding its Bluetooth manager
+            // is not an unstable link (2026-09-24 iPhone run: AT-203 fired
+            // on the app's own central rebuild while the user was re-pairing).
+            if previous?.link == .connected, s.link != .connected, !attempt.verified,
+               s.radio == .poweredOn, previous?.radio == .poweredOn {
                 attempt.drops += 1
                 // Searching restarts its budget after a drop.
                 attempt.searchingSince = s.link == .connecting ? nil : now
@@ -322,12 +329,16 @@ enum AtriaStrapSetup {
 
     static let radioBudget: TimeInterval = 8
     static let findBudget: TimeInterval = 30
-    static let connectBudget: TimeInterval = 20
+    /// Longer than the transport's 20 s watchdog for a stale state-restored
+    /// "connecting" candidate, so that expected hand-off never flashes AT-202.
+    static let connectBudget: TimeInterval = 30
     /// The read-only 22/00 write normally confirms in < 1 s. An iOS pairing
     /// prompt holds it until the user answers (encryption times out ~30 s).
     static let pairPromptHint: TimeInterval = 8
     static let verifyBudget: TimeInterval = 75
-    static let maxDrops = 3
+    /// Re-pairing itself can cost a drop or two (forgetting the device,
+    /// iOS tearing down the link after a pairing change), so four.
+    static let maxDrops = 4
     static let lowBattery = 15
 
     static func evaluate(_ attempt: Attempt, now: Date) -> Verdict {
@@ -477,7 +488,11 @@ final class AtriaStrapSetupCoordinator: ObservableObject {
     private func step(now: Date = Date()) {
         let raw = Self.snapshot(ble)
         tracker.observe(raw, now: now)
-        drive(raw: raw, effective: tracker.effective(raw), now: now)
+        if drive(raw: raw, effective: tracker.effective(raw), now: now) {
+            // An automatic retry just started: judge the new state, so the
+            // failure it replaces never flashes on screen.
+            tracker.observe(Self.snapshot(ble), now: now)
+        }
         let next = AtriaStrapSetup.evaluate(tracker.attempt, now: now)
         if next != verdict { verdict = next }
         if next.isReady, !readyAnnounced {
@@ -493,8 +508,10 @@ final class AtriaStrapSetupCoordinator: ObservableObject {
 
     private var lastLoggedProblem: AtriaStrapSetup.Problem?
 
-    private func drive(raw: AtriaStrapSetup.Snapshot, effective s: AtriaStrapSetup.Snapshot, now: Date) {
-        guard !tracker.attempt.verified, s.radio == .poweredOn else { return }
+    /// Returns true when it started an automatic secure-check retry.
+    @discardableResult
+    private func drive(raw: AtriaStrapSetup.Snapshot, effective s: AtriaStrapSetup.Snapshot, now: Date) -> Bool {
+        guard !tracker.attempt.verified, s.radio == .poweredOn else { return false }
         switch s.link {
         case .idle:
             if lastScanKickAt.map({ now.timeIntervalSince($0) >= Self.scanKickInterval }) ?? true {
@@ -509,17 +526,23 @@ final class AtriaStrapSetupCoordinator: ObservableObject {
                 // otherwise this is the connection's one first check.
                 if raw.signals.secureCheck.isFinal {
                     ble.retryOnboardingSecureCheck()
+                    return true
                 } else {
                     ble.requestOnboardingPairingPreflightIfNeeded()
                 }
-            } else if s.signals.secureCheck == .interrupted,
+            } else if [.interrupted, .failed].contains(s.signals.secureCheck),
                       interruptedRetries < Self.maxInterruptedRetries {
+                // .failed here means the command channel was not ready (TX
+                // not yet rediscovered after a Bluetooth rebuild): retry
+                // quietly before showing AT-304 (2026-09-24 iPhone run).
                 interruptedRetries += 1
                 ble.retryOnboardingSecureCheck()
+                return true
             }
         case .searching, .connecting:
             break
         }
+        return false
     }
 
     static func snapshot(_ ble: AtriaBLEManager) -> AtriaStrapSetup.Snapshot {
