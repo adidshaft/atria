@@ -14,6 +14,10 @@ struct AtriaStepsWeekChart: View {
     /// The day the 7-day window ends on (defaults to today). A parameter so a
     /// test can anchor deterministically.
     var referenceDate: Date = Date()
+    /// Days whose count is only partial (still open, strap off or history not
+    /// synced). Drawn faded with an "at least" `+`, never coloured as a
+    /// missed goal.
+    var partialDays: Set<Date> = []
 
     private let calendar = Calendar.current
 
@@ -143,12 +147,31 @@ struct AtriaStepsWeekChart: View {
     /// deliberately NOT `Metrics.stepsZone`, which never reds a *mid-day* Today
     /// card; here every bar is a COMPLETED day where under-target is a real
     /// read. Bars are still verified LOWER BOUNDS, so the honest caption stays.
-    private func barTint(steps: Int) -> Color {
-        let safeGoal = max(goal, 1)
-        let ratio = Double(steps) / Double(safeGoal)
-        if ratio >= 1.0 { return Metrics.electricGreen }
-        if ratio >= 0.5 { return .orange }
-        return .red
+    enum BarStyle: Equatable { case met, under, wellUnder, partial }
+
+    /// 2026-09-24: a partial day (today so far, or not fully covered) is not a
+    /// completed day, so it is never judged against the goal: before this the
+    /// in-progress bar for today turned red every morning. A partial day that
+    /// already met the goal still shows met, since the count is a lower bound.
+    static func barStyle(steps: Int, goal: Int, isPartial: Bool) -> BarStyle {
+        let ratio = Double(steps) / Double(max(goal, 1))
+        if ratio >= 1.0 { return .met }
+        if isPartial { return .partial }
+        return ratio >= 0.5 ? .under : .wellUnder
+    }
+
+    /// "4,210+" for a partial day: an at-least count, never a fake total.
+    static func countLabel(steps: Int, isPartial: Bool) -> String {
+        steps.formatted(.number.grouping(.automatic)) + (isPartial ? "+" : "")
+    }
+
+    private func barTint(_ style: BarStyle) -> Color {
+        switch style {
+        case .met: return Metrics.electricGreen
+        case .under: return .orange
+        case .wellUnder: return .red
+        case .partial: return Color.secondary.opacity(0.55)
+        }
     }
 
     var body: some View {
@@ -172,10 +195,13 @@ struct AtriaStepsWeekChart: View {
                 Chart {
                     ForEach(days, id: \.self) { day in
                         if let steps = stepsByDay[day] {
+                            let isPartial = partialDays.contains(day)
                             BarMark(x: .value("Day", day, unit: .day),
                                     y: .value("Steps", steps),
                                     width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
-                                .foregroundStyle(barTint(steps: steps).opacity(0.85))
+                                .foregroundStyle(barTint(Self.barStyle(steps: steps, goal: goal,
+                                                                       isPartial: isPartial))
+                                    .opacity(isPartial ? 0.6 : 0.85))
                                 .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                                 // Per-bar count (2026-08-08): bars alone gave no
                                 // read of the actual number. Small label above
@@ -186,7 +212,7 @@ struct AtriaStepsWeekChart: View {
                                 // value the reader most wants. Let Charts pull
                                 // an overflowing label back inside the plot.
                                 .annotation(position: .top, spacing: 2) {
-                                    Text(steps.formatted(.number.grouping(.automatic)))
+                                    Text(Self.countLabel(steps: steps, isPartial: partialDays.contains(day)))
                                         .font(.system(size: 9, weight: .semibold))
                                         .foregroundStyle(.secondary)
                                         .fixedSize()
@@ -227,7 +253,9 @@ struct AtriaStepsWeekChart: View {
                 // recent column, which is the one the reader wants most. Let it
                 // fit the card instead.
 
-                Text("Vs your daily goal — green met, amber under, red well under. Verified so far; no bar means no reading.")
+                Text(partialDays.isEmpty
+                     ? "Green met goal · amber under · red well under. No bar, no reading."
+                     : "Green met goal · amber under · red well under · faded + = partial so far.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
