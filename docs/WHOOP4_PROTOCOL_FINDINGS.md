@@ -5802,3 +5802,27 @@ Tests: `AtriaWhoop4PowerPolicyTests` 8/8, `AtriaWhoop4LiveFlushPlannerTests`
 
 **Sleep ground truth 2026-09-23:** lights off **22:49 IST** (user report). Wake time and a morning thermometer reading will follow. Capture: `night4` (started 22:28, `night4.jsonl` / `night4-raw.jsonl`).
 Bluetooth speaker (ACTON III) switched off by the user at ~23:35 IST (possible 2.4 GHz contention before this).
+
+### Night 2026-09-23/24 — coverage, first-read sleep timeline, ground truth
+
+**Coverage (lights-off 22:49 → 08:05):** 33,356 / 33,374 s covered (99.95 %);
+live 104 Hz R10 for 30,304 s (90.8 %), flash history filled the rest. The only
+hole was the undrained last 18 s (08:03:21–38). 138 drains: 126 `caught_up`,
+10 `stalled` (retried by the new stall logic, no loss), 0 timeouts.
+132 disconnects, clustered in the 05 h (38) and 07 h (85) hours (movement /
+arm under body); 9 before 05:00. The Bluetooth speaker was switched off at bedtime.
+
+**First-read timeline (10-min bins of R10 HR, motion-intensity float @42, RR
+RMSSD, firmware steps, skin u16@1917):** settling 22:49–23:40 → asleep ~23:40 →
+restless 00:30–01:50 → **up 02:00–02:25** (HR 92, ~950 firmware steps, skin
+34.6 → 28.7 °C) → deepest/steadiest 02:30–06:30 (HR 70 → 60, RMSSD 42–63 ms) →
+light sleep / quiet wake 06:40–08:05 (HR 57–64, RMSSD 54–80 ms).
+**User confirmed:** up around 2 am (correct); woke **08:01**.
+
+**Temperature reference, second point:** home thermometer 97.8 °F = 36.6 °C at
+~08:10 vs strap u16@1917 = 34.1–34.3 °C (−2.3 °C). The evening point was −0.5 °C.
+The strap moved +1.3 °C and the thermometer +3.2 °C between the points:
+inconsistent, as expected from a predictive fever thermometer used on skin.
+**A clinical thermometer cannot calibrate absolute skin temperature;** the
+strap field is trusted for relative change only (deviation-from-baseline
+policy stands).
