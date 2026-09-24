@@ -1254,7 +1254,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "healthy live sources must not waste Lock Screen space on a redundant status row")
         XCTAssertTrue(source.contains("\\(label) last \\(atriaCaptureTimeText($0))"),
                       "stale sensor values must reveal their actual capture time")
-        XCTAssertTrue(source.contains("text: \"Step goal stale\""),
+        // 2026-09-24: the fail-closed branch shows the last count with its
+        // clock in grey instead of the jargon "Step goal stale".
+        XCTAssertTrue(source.contains("text: \"\\(steps) / \\(goal) · \\(atriaCaptureTimeText(capturedAt))\""),
                       "stale daily-goal evidence must keep its fail-closed presentation branch")
         XCTAssertTrue(source.contains("text: \"Step goal --\""),
                       "missing daily-goal evidence must keep its fail-closed presentation branch")
