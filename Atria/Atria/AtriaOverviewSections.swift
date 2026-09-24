@@ -2063,10 +2063,10 @@ struct AtriaWeeklyReportSheet: View {
                 .atriaDailyQuantityYAxis()
                 .chartXAxis {
                     AxisMarks(values: weekDays) { value in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                        AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                         AxisTick().foregroundStyle(.clear)
                         if let date = value.as(Date.self) {
-                            AxisValueLabel(centered: true) {
+                            AxisValueLabel(centered: true, verticalSpacing: 6) {
                                 Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: date,
                                                                                    calendar: reportCalendar))
                                     .font(.caption2)
@@ -4913,6 +4913,15 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
+                // Night timeline (visual pass 2026-09-24): episode lane + HR
+                // line + 1–3 insight lines from AtriaNightTimelineAnalyzer,
+                // then the optional "what was it?" prompt. No stages claimed.
+                if let nightTimeline = AtriaNightTimelineSource.latest() {
+                    AtriaNightTimelineCard(model: nightTimeline)
+                    AtriaNightInterruptionPromptCard(
+                        episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(nightTimeline.result),
+                        timeZone: nightTimeline.timeZone)
+                }
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
                     // HYPNOGRAM" card); renders the honest needs-motion /
@@ -7144,7 +7153,11 @@ private struct AtriaPreparedMetricChart: View {
                 // verbatim (hero + header + Latest + Avg + row = 5 renders).
                 if let latest = latestVisiblePoint, points.count >= 2 {
                     // Ink, not tint (2026-08-29 theme): hue lives in the plot.
-                    Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    // The latest value + change arrow live here only; the
+                    // line under the chart no longer repeats "Latest ..."
+                    // (visual pass 2026-09-24: fewer words, same facts).
+                    Text(valueText(latest.value) + (summary?.changeDirection.triangleText ?? ""))
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 if let onExpand, points.count >= 2 {
                     // 40pt circular affordance — same chrome as the sheet's
@@ -7189,10 +7202,11 @@ private struct AtriaPreparedMetricChart: View {
             // the plot carries Latest/Avg/Range. `summary.hasSpread` keeps it
             // when a bucket override collapses a multi-day window into one
             // displayed point (Latest vs Avg still differ there).
+            // One insight line under the plot: average, range and coverage
+            // together (was three stacked caption lines).
             if let summary, points.count >= 2 || summary.hasSpread {
-                AtriaDetailPeriodSummaryLine(summary: summary)
-            }
-            if let coverageText {
+                AtriaDetailPeriodSummaryLine(summary: summary, coverageText: coverageText)
+            } else if let coverageText {
                 Text(coverageText)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -7227,7 +7241,7 @@ private struct AtriaPreparedMetricChart: View {
 
     private var coverageText: String? {
         guard let days = windowMissingDayCount, days <= 31 else { return nil }
-        return "\(points.count) of \(days) \(coverageNoun) recorded"
+        return "\(points.count) of \(days) \(coverageNoun)"
     }
 
     /// The gradient under the line is decoration, and it can only be drawn
@@ -7467,10 +7481,18 @@ private struct AtriaPreparedMetricChart: View {
 
     @ViewBuilder private var chartLegendAndCompanions: some View {
         if prepared.hasMinMaxBand {
-            Text("Weekly averages \u{00b7} shaded band is that week's real min\u{2013}max").font(.caption2).foregroundStyle(.secondary)
+            Text("Weekly averages \u{00b7} band shows each week's min\u{2013}max").font(.caption2).foregroundStyle(.secondary)
         }
         if comparison != nil {
-            Text("Dashed line: your previous-period average").font(.caption2).foregroundStyle(.secondary)
+            // A swatch says "dashed line" without the words.
+            HStack(spacing: 6) {
+                Capsule()
+                    .stroke(Color.secondary.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                    .frame(width: 16, height: 1.5)
+                Text("Previous period average").font(.caption2).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Dashed line: previous period average")
         }
         if scrubbedDay != nil, onOpenDay != nil {
             Text("Double-tap the chart to open this day").font(.caption2).foregroundStyle(.tertiary)
@@ -8796,6 +8818,8 @@ private enum AtriaDetailPeriodChangeDirection: Sendable {
 /// survives as a plain ▲/▼ next to Latest.
 private struct AtriaDetailPeriodSummaryLine: View {
     let summary: AtriaDetailPeriodSummary
+    /// "6 of 7 nights" when the window has holes; nil on a full window.
+    var coverageText: String? = nil
 
     var body: some View {
         Text(lineText)
@@ -8804,15 +8828,18 @@ private struct AtriaDetailPeriodSummaryLine: View {
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).")
+            .accessibilityLabel("Period summary. Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), change \(summary.changeText).\(coverageText.map { " \($0) recorded." } ?? "")")
     }
 
+    /// Visual pass 2026-09-24: the latest value and its change arrow sit in
+    /// the chart header, so this line carries only what the header does not
+    /// (average, range, coverage) in one row.
     private var lineText: String {
-        var parts = ["Latest \(summary.latestText)\(summary.changeDirection.triangleText)",
-                     "Avg \(summary.averageText)"]
+        var parts = ["Avg \(summary.averageText)"]
         if summary.hasSpread {
             parts.append("Range \(summary.rangeText)")
         }
+        if let coverageText { parts.append(coverageText) }
         return parts.joined(separator: " · ")
     }
 }

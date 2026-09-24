@@ -832,7 +832,7 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
             .atriaGraphPlotSurface()
             .chartXAxis {
                 AxisMarks(values: compactAxisDates) { value in
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisTick().foregroundStyle(.clear)
                     if let date = value.as(Date.self) {
                         AxisValueLabel {
                             Text(date, format: .dateTime.weekday(.narrow))
@@ -3298,6 +3298,16 @@ private struct AtriaVitalsStressTimelineChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
 
+            // No-data bands (visual pass 2026-09-24): a stale or missing
+            // stretch is labeled instead of an unexplained blank.
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    now: referenceDate,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
             }) { interval in
@@ -3358,7 +3368,7 @@ private struct AtriaVitalsStressTimelineChart: View {
         .chartXScale(domain: xDomain)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let value = value.as(Int.self) {
@@ -3373,8 +3383,8 @@ private struct AtriaVitalsStressTimelineChart: View {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(format: .dateTime.hour().minute())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .padding(.vertical, 8)
@@ -4725,8 +4735,22 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         return output
     }
 
+    /// No-data bands over the plotted span (visual pass 2026-09-24).
+    private var gapBands: (bands: [AtriaChartGapBand], domain: ClosedRange<Date>)? {
+        let dates = buckets.map { $0.map(\.t) } ?? points.map(\.t)
+        guard let first = dates.min(), let last = dates.max() else { return nil }
+        let domain = effectiveXDomain ?? (first...last)
+        return (AtriaChartNoDataBands.bands(sampleDates: dates,
+                                            domain: domain,
+                                            evidence: AtriaChartGapEvidenceProvider.current()),
+                domain)
+    }
+
     private var baseChart: some View {
         Chart {
+            if let gapBands {
+                AtriaNoDataBandMarks(bands: gapBands.bands, domain: gapBands.domain)
+            }
             if let buckets {
                 // Smoothed mode: one calm average line per run with a soft
                 // gradient fill beneath it. The old per-bucket min-max band
@@ -4805,8 +4829,8 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 // the compact Vitals canvas) rendered the same "11a" text under
                 // several neighbouring gridlines.
                 AxisMarks(values: xAxisTicks.map(\.date)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                    AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let time = value.as(Date.self),
                            let label = xAxisTickLabel(for: time) {
@@ -4826,8 +4850,8 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             // fabricated axis (chart-honesty rule, 2026-08-04).
             if !plotIsEmpty, !usesLeadingValueAxis {
                 AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                    AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
@@ -4845,7 +4869,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             // read as one grammar.
             if !plotIsEmpty, usesLeadingValueAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                     AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let bpm = value.as(Int.self) {
