@@ -7960,33 +7960,6 @@ private struct AtriaMissedDataBanner: View, Equatable {
                             : "Start fresh; clear this unrecoverable gap")
     }
 
-    private var missedDataDurationText: String {
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return "3.2 h"
-        }
-        let defaults = UserDefaults.standard
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let reference = requestedAt ?? startedAt
-        guard let reference else { return "0.0 h" }
-        let hours = max(0, Date().timeIntervalSince1970 - reference) / 3600
-        return String(format: "%.1f h", hours)
-    }
-
-    private var catchUpProgress: Double {
-        // Retained for older handoff fixture compatibility; the current UI is a calm
-        // status row and no longer renders a progress bar.
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return 0.42
-        }
-        let defaults = UserDefaults.standard
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let reference = startedAt ?? requestedAt
-        guard let reference else { return 0.08 }
-        return min(0.96, max(0.08, Date().timeIntervalSince1970 - reference) / (30 * 60))
-    }
-
     #if DEBUG
     private static func debugShowsCatchUpPill(arguments: [String]) -> Bool {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }

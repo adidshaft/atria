@@ -1805,29 +1805,6 @@ final class AtriaHistoricalArchiveDurableStore {
         }
     }
 
-    private func upsertLiveIdentityLookupBestEffort(_ entry: IndexEntry) {
-        guard let liveIdentityLookup else { return }
-        do {
-            try liveIdentityLookup.upsert(
-                AtriaHistoricalLiveIdentityLookup.Entry(
-                    stableKey: entry.key,
-                    observedAtUnix: entry.observedAtUnix,
-                    archivePath: entry.archivePath,
-                    lineOffset: entry.lineOffset,
-                    lineLength: entry.lineLength,
-                    lineCRC32: entry.lineCRC32
-                )
-            )
-        } catch {
-            // The canonical row and identity JSONL retain sole durability
-            // authority. A failed accelerator hint is always a safe miss.
-            AtriaDebugLog(
-                "ATRIADBG historical_identity_lookup status=upsert_deferred error=%@ action=canonical_receipt_unchanged",
-                String(describing: error)
-            )
-        }
-    }
-
     private func populateLiveIdentityLookupBestEffort(entries: [IndexEntry]) {
         guard let liveIdentityLookup, !entries.isEmpty else { return }
         let maximum = AtriaHistoricalLiveIdentityLookup
