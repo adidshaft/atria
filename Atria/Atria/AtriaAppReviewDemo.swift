@@ -118,18 +118,35 @@ enum AtriaAppReviewDemo {
         ]
         var points: [SavedSession.Point] = []
         var t: TimeInterval = 0
-        let step: TimeInterval = 300
+        // Wear-coverage union only bridges consecutive points whose gap is
+        // within AtriaAnalytics.Strain.maximumLoadEvidenceGap (15s). The
+        // once-per-5-minutes cadence used for past nights (where strain is a
+        // precomputed static number, never recomputed from these points) is
+        // far too sparse here: the OPEN "today" cycle's Strain and wear
+        // coverage are computed live from this exact point union, so 5-minute
+        // gaps collapsed observed coverage to a handful of isolated seconds
+        // and left the Strain/Steps cards reading "Day HR incomplete" again.
+        let step: TimeInterval = 10
         while wake.addingTimeInterval(t) <= end {
             let minute = Int(t / 60)
-            var bpm = 62 + Int(6 * sin(Double(minute) / 95.0))
+            // A resting-awake baseline clearly above the night fixture's
+            // 53-59 bpm sleep range, with three overlapping periods so it
+            // never holds still for long stretches — a flat, sleep-like
+            // signal for 20+ minutes is exactly what the daytime-quiescence
+            // detector reads as an unconfirmed nap candidate, which is not
+            // demo data's job to manufacture.
+            let slowDrift = sin(Double(minute) / 47.0) * 7
+            let midWobble = sin(Double(minute) / 6.0) * 5
+            let microJitter = sin(t / 23.0) * 3
+            var bpm = 78 + Int(slowDrift + midWobble + microJitter)
             for window in activityWindows {
                 let windowEnd = window.startMinute + window.durationMinute
                 guard minute >= window.startMinute, minute <= windowEnd else { continue }
                 let progress = Double(minute - window.startMinute) / Double(max(1, window.durationMinute))
                 let shape = sin(progress * .pi)
-                bpm = 66 + Int(Double(window.peakBPM - 66) * shape)
+                bpm = 78 + Int(Double(window.peakBPM - 78) * shape)
             }
-            points.append(SavedSession.Point(t: t, bpm: max(52, min(150, bpm))))
+            points.append(SavedSession.Point(t: t, bpm: max(60, min(150, bpm))))
             t += step
         }
         guard !points.isEmpty else { return nil }
