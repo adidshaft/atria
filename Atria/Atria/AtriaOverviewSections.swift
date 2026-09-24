@@ -2696,6 +2696,19 @@ struct AtriaStrapStepLiveStatus: Equatable {
                      capturedAt: Date?,
                      now: Date,
                      authorityQualified: Bool = true) -> Self {
+        // App Review demo never touches Bluetooth, so `capturedAt` (a real
+        // R10 motion timestamp) is always nil here and this tile would
+        // otherwise read "Not live · no motion" next to an otherwise-healthy
+        // demo Steps card. Show the same labelled fixture count as a plain
+        // "last count" instead of literally claiming a live strap.
+        if AtriaAppReviewDemo.isActive {
+            let demoCount = AtriaAppReviewDemo.stepCount(on: now, now: now) ?? max(0, count)
+            return Self(count: demoCount,
+                        isValidated: true,
+                        freshness: .stale,
+                        motionAge: AtriaAppReviewDemo.demoMotionAge,
+                        productRoute: .unspecified)
+        }
         let safeCount = max(0, count)
         let isValidated = authorityQualified
             && WidgetSnapshotPublisher.strapStepsAreValidated(
