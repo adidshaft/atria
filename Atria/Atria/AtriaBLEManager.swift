@@ -5701,13 +5701,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
     nonisolated static let compactIMUPreferenceWindow: TimeInterval = 5
     static let r10LiveFirstCheckDelay: TimeInterval = 25
-    static let r10LiveCheckInterval: TimeInterval = 60
+    static let r10LiveCheckInterval: TimeInterval = 15
     static let r10LiveResendAfter: TimeInterval = 120
     static let r10FramesFreshWithin: TimeInterval = 10
     private var r10LiveTask: Task<Void, Never>?
     private var r10LivePowerPolicy = AtriaWhoop4PowerPolicy()
     private var r10LiveLastOnAt: Date?
     private var r10LiveOffSent = false
+    /// Why live data is deliberately not streaming right now (top-bar note).
+    @Published private(set) var liveDataNote: AtriaLiveDataNote?
 
     enum R10LiveCommand: Equatable { case on, off }
 
@@ -5745,6 +5747,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         r10LiveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.r10LiveFirstCheckDelay))
             while !Task.isCancelled {
+                // Checked every 15 s so the top-bar note follows catch-up
+                // and battery changes promptly; commands stay rate-limited
+                // by `r10LiveCommand` itself.
                 guard let self, self.connectedAt == connectedAt else { return }
                 self.evaluateR10Live()
                 try? await Task.sleep(for: .seconds(Self.r10LiveCheckInterval))
@@ -5774,12 +5779,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func evaluateR10Live(now: Date = Date()) {
-        let decision = r10LivePowerPolicy.decide(r10PowerInputs())
+        let inputs = r10PowerInputs()
+        let decision = r10LivePowerPolicy.decide(inputs)
         let appOwnsHistory = offlineHistoricalSyncInProgress
             || historyOnlyProbeEnabled
             || historyOnlyProbeMode
             || readOnlyHistoryCaptureRequested
             || readOnlyHistoryCaptureActive
+        assignIfChanged(\.liveDataNote, Self.r10LiveStepsEnabled
+            ? AtriaLiveDataNote.from(decision: decision, inputs: inputs, catchingUpHistory: appOwnsHistory)
+            : nil)
         let framesFresh = lastR10MotionFrameAt.map { now.timeIntervalSince($0) <= Self.r10FramesFreshWithin } ?? false
         guard let command = Self.r10LiveCommand(
             enabled: Self.r10LiveStepsEnabled,

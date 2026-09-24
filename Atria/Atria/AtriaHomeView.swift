@@ -5339,6 +5339,7 @@ struct AtriaHomeView: View {
 
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
+                           liveDataNoteStore: model.liveDataNoteStore,
                            coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            prefersLiveActivityStatus: workoutSession != nil,
@@ -11288,6 +11289,12 @@ final class AtriaHomeModel {
         }
     }
 
+    /// Only the top-bar note; separate so HR ticks never re-render it.
+    final class LiveDataNoteStore: ObservableObject {
+        @Published fileprivate(set) var note: AtriaLiveDataNote?
+    }
+    let liveDataNoteStore = LiveDataNoteStore()
+
     let heroStore: HeroStore
     let heroPulseStore: HeroPulseStore
     let statusStore: StatusStore
@@ -11675,6 +11682,13 @@ final class AtriaHomeModel {
         )
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
         historicalStressFallbackRestSubject.send(initialLiveSessionDerived.rest)
+        ble.$liveDataNote
+            .combineLatest(ble.$status)
+            .map { note, status in status == .connected ? note : nil }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak noteStore = liveDataNoteStore] in noteStore?.note = $0 }
+            .store(in: &cancellables)
         bind()
         scheduleSavedAggregateCycleRolloverRefresh()
         coreRefreshSubject.send(())
@@ -15393,6 +15407,7 @@ enum AtriaHomeChromeLayout {
 
 private struct AtriaHomeTopChrome: View {
     let statusStore: AtriaHomeModel.StatusStore
+    let liveDataNoteStore: AtriaHomeModel.LiveDataNoteStore
     let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let prefersLiveActivityStatus: Bool
@@ -15417,7 +15432,9 @@ private struct AtriaHomeTopChrome: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             } else {
-                HStack(alignment: .center, spacing: 10) {
+                // Top-aligned: the optional live-data note under the pill
+                // must not push the action buttons down.
+                HStack(alignment: .top, spacing: 10) {
                     if AtriaHomeChromeLayout.showsHomeStatusChip(
                         workoutIsActive: prefersLiveActivityStatus
                     ) {
@@ -15440,11 +15457,14 @@ private struct AtriaHomeTopChrome: View {
     }
 
     private var statusChip: some View {
-        AtriaTopStatusChipHost(statusStore: statusStore,
-                               coreLiveStore: coreLiveStore,
-                               pulseLiveStore: pulseLiveStore,
-                               onTapWhenConnected: onShowStrap,
-                               onTapWhenNotConnected: onTapStatusWhenNotConnected)
+        VStack(alignment: .leading, spacing: 4) {
+            AtriaTopStatusChipHost(statusStore: statusStore,
+                                   coreLiveStore: coreLiveStore,
+                                   pulseLiveStore: pulseLiveStore,
+                                   onTapWhenConnected: onShowStrap,
+                                   onTapWhenNotConnected: onTapStatusWhenNotConnected)
+            AtriaLiveDataNoteCaption(store: liveDataNoteStore)
+        }
     }
 
     private var actionButtons: some View {
@@ -15477,6 +15497,25 @@ private struct AtriaHomeTopChrome: View {
             }
             .buttonStyle(AtriaHeaderActionButtonStyle())
             .accessibilityLabel("Settings")
+        }
+    }
+}
+
+/// One quiet line under the status pill: why live data is paused or what is
+/// catching up. Nothing renders when everything is live.
+private struct AtriaLiveDataNoteCaption: View {
+    @ObservedObject var store: AtriaHomeModel.LiveDataNoteStore
+
+    var body: some View {
+        if let note = store.note {
+            Label(note.text, systemImage: note.systemImage)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.leading, 12)
+                .transition(.opacity)
+                .accessibilityLabel(note.text)
         }
     }
 }
