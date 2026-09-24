@@ -170,17 +170,19 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
                       "pairing preflight must finish before fresh-HR import admission")
     }
 
+    // 2026-09-24: the flow no longer re-enters the bootstrap on the raw
+    // preflight edge (that completed setup even after a declined pairing). The
+    // setup panel's verified edge records completion for the exact strap.
     func testOnboardingReentersBootstrapWhenPairingPreflightFinishes() throws {
         let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let flowURL = testsURL.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaOnboardingFlow.swift")
         let flow = try String(contentsOf: flowURL, encoding: .utf8)
-        let observer = try XCTUnwrap(flow.range(
-            of: ".onChange(of: ble.onboardingPairingPreflightInFlight)"
-        )?.lowerBound)
-        let observerBody = String(flow[observer...].prefix(420))
-        XCTAssertTrue(observerBody.contains("guard wasInFlight, !isInFlight else { return }"))
-        XCTAssertTrue(observerBody.contains("historyBootstrap.startOrResumeIfPossible()"))
+        XCTAssertFalse(flow.contains(".onChange(of: ble.onboardingPairingPreflightInFlight)"))
+        XCTAssertTrue(flow.contains("onReady: strapVerified"))
+        let record = try XCTUnwrap(flow.range(of: "private func recordVerifiedStrap()")?.lowerBound)
+        XCTAssertTrue(String(flow[record...].prefix(360))
+            .contains("historyBootstrap.completeVerifiedSetup(peripheralIdentifier: identifier)"))
     }
 
     func testBootstrapSourceNamesTheFailClosedCompletionBoundaries() throws {

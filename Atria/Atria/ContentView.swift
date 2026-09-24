@@ -81,7 +81,7 @@ struct ContentView: View {
                                             // imported and retired. Keep first-run setup visible
                                             // until the strap-specific bootstrap fence completes.
                                             showOnboarding = !store.profile.hasCompletedOnboarding
-                                                || !onboardingHistoryBootstrap.isCompleteForCurrentStrap
+                                                || !onboardingHistoryBootstrap.isSetupComplete
                                             return true
                                         },
                                         onAppReviewDemo: {
@@ -106,7 +106,7 @@ struct ContentView: View {
                             // sharing stays off — onboarding still completes.
                             showOnboardingConsentSheet = true
                         } else {
-                            if onboardingHistoryBootstrap.isCompleteForCurrentStrap {
+                            if onboardingHistoryBootstrap.isSetupComplete {
                                 store.completeOnboarding(with: profile)
                                 showOnboarding = false
                             } else {
@@ -117,7 +117,7 @@ struct ContentView: View {
                     .interactiveDismissDisabled()
                     .sheet(isPresented: $showOnboardingConsentSheet,
                            onDismiss: {
-                               if onboardingHistoryBootstrap.isCompleteForCurrentStrap {
+                               if onboardingHistoryBootstrap.isSetupComplete {
                                    store.completeOnboarding(with: profile)
                                    showOnboarding = false
                                } else {
@@ -290,193 +290,6 @@ struct AtriaDashboardBackdrop: View {
 
     private var bottomGlowColor: Color {
         colorScheme == .dark ? Color.blue.opacity(0.10) : Color.cyan.opacity(0.12)
-    }
-}
-
-/// Recovery action for Bluetooth states that CoreBluetooth folds into the
-/// transport's `.poweredOff` presentation. Permission denial is persistent until
-/// the user changes Atria's system setting, while a powered-off radio is a
-/// transient device state; onboarding must never present them as the same fault.
-enum AtriaOnboardingBluetoothRecovery: Equatable {
-    case none
-    case radioPoweredOff
-    case permissionDenied
-
-    init(status: AtriaBLEManager.Status, permissionDenied: Bool) {
-        if permissionDenied {
-            self = .permissionDenied
-        } else if status == .poweredOff {
-            self = .radioPoweredOff
-        } else {
-            self = .none
-        }
-    }
-
-    var primaryActionTitle: String? {
-        switch self {
-        case .none: return nil
-        case .radioPoweredOff: return "Turn on Bluetooth"
-        case .permissionDenied: return "Open Settings"
-        }
-    }
-
-    /// A radio-off state resolves when Bluetooth is turned back on. Permission
-    /// denial cannot resolve inside CoreBluetooth, so its primary action must stay
-    /// enabled and route to the app's system settings instead of becoming a dead end.
-    var disablesPrimaryAction: Bool {
-        self == .radioPoweredOff
-    }
-}
-
-/// Live, observed connection state for the onboarding "Connect your strap" step.
-/// A dedicated `@ObservedObject` subview so heart-rate ticks only re-render this
-/// card, not the whole onboarding screen.
-struct OnboardingConnectionStatusView: View {
-    @ObservedObject var ble: AtriaBLEManager
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
-
-    private var bluetoothRecovery: AtriaOnboardingBluetoothRecovery {
-        AtriaOnboardingBluetoothRecovery(status: ble.status,
-                                          permissionDenied: ble.bluetoothPermissionDenied)
-    }
-
-    var body: some View {
-        Group {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top, spacing: 14) {
-                        statusIcon
-                        statusCopy
-                    }
-                    if ble.heartRate > 0 {
-                        heartRateReading
-                    }
-                }
-            } else {
-                HStack(spacing: 14) {
-                    statusIcon
-                    statusCopy
-                    Spacer(minLength: 8)
-                    if ble.heartRate > 0 {
-                        heartRateReading
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .atriaCard(emphasis: .soft)
-        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.status)
-        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.hasContact)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title). \(subtitle)")
-    }
-
-    private var statusIcon: some View {
-        ZStack {
-            Circle()
-                .fill(tint.opacity(0.16))
-                .frame(width: 46, height: 46)
-            if isSearching {
-                ProgressView().tint(tint)
-            } else {
-                Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .symbolRenderingMode(.hierarchical)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var statusCopy: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.headline)
-            Text(subtitle)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .lineLimit(3)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var heartRateReading: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 3) {
-            Text("\(ble.heartRate)")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .monospacedDigit()
-            Text("bpm")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-        }
-        .transition(.opacity)
-        .accessibilityHidden(true)
-    }
-
-    private var isSearching: Bool {
-        ble.status == .scanning || ble.status == .connecting || ble.status == .disconnected
-    }
-
-    private var title: String {
-        if bluetoothRecovery == .permissionDenied {
-            return "Bluetooth access needed"
-        }
-        if !ble.isBluetoothReady, ble.status != .poweredOff {
-            return ble.status == .connecting
-                ? "Bluetooth is recovering"
-                : "Bluetooth is unavailable"
-        }
-        switch ble.status {
-        case .poweredOff: return "Bluetooth is off"
-        case .scanning, .disconnected: return "Searching for your strap…"
-        case .connecting: return "Connecting…"
-        case .connected:
-            if ble.heartRate > 0 { return "Live" }
-            return isHealthyContact ? "Waiting for heart rate" : "Put the strap on"
-        }
-    }
-
-    private var subtitle: String {
-        if bluetoothRecovery == .permissionDenied {
-            return "Allow Atria to use Bluetooth in Settings, then return to connect your strap."
-        }
-        if !ble.isBluetoothReady, ble.status != .poweredOff {
-            return "Atria will retry automatically when Bluetooth becomes available."
-        }
-        switch ble.status {
-        case .poweredOff: return "Turn on Bluetooth in Control Center or Settings to connect."
-        case .scanning, .disconnected: return "Make sure the strap is on your wrist."
-        case .connecting: return "Linking to your strap."
-        case .connected:
-            if ble.heartRate > 0 { return "Heart rate is coming through." }
-            return isHealthyContact
-                ? "Wear it snugly. A beat should show up in a few seconds."
-                : "Pairing can take a couple of minutes. Wear it snugly when the blue light stops."
-        }
-    }
-
-    private var symbol: String {
-        if bluetoothRecovery == .permissionDenied {
-            return "hand.raised.fill"
-        }
-        switch ble.status {
-        case .poweredOff: return "bolt.slash.fill"
-        case .scanning, .disconnected, .connecting: return "dot.radiowaves.left.and.right"
-        case .connected: return ble.heartRate > 0 ? "checkmark.circle.fill" : "waveform.path.ecg"
-        }
-    }
-
-    private var tint: Color {
-        switch ble.status {
-        case .poweredOff: return .red
-        case .scanning, .disconnected: return .blue
-        case .connecting: return .yellow
-        case .connected: return ble.heartRate > 0 ? .green : .orange
-        }
     }
 }
 

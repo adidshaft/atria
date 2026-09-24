@@ -21,14 +21,18 @@ final class AtriaPageTitleTokenTests: XCTestCase {
 
     func testEveryOnboardingPageTitleUsesTheToken() throws {
         let flow = try source("AtriaOnboardingFlow.swift")
-        XCTAssertEqual(flow.components(separatedBy: ".font(AtriaDesignTokens.Typography.pageTitle)").count - 1, 5)
+        // 2026-09-24: four pages — welcome, strap and the shared header helper
+        // (About you, Wear it tonight) each use the token once.
+        XCTAssertEqual(flow.components(separatedBy: ".font(AtriaDesignTokens.Typography.pageTitle)").count - 1, 3)
         XCTAssertFalse(flow.contains("size: 28, weight: .bold, design: .rounded"))
         XCTAssertFalse(flow.contains("size: 30, weight: .bold, design: .rounded"))
 
         let content = try source("ContentView.swift")
         XCTAssertEqual(content.components(separatedBy: ".font(AtriaDesignTokens.Typography.pageTitle)").count - 1, 1,
                        "the sharing page title joins the flow")
-        XCTAssertEqual(content.components(separatedBy: "size: 30, weight: .bold, design: .rounded").count - 1, 1,
-                       "the live heart-rate number is a metric hero, not a page title, and keeps its size")
+        // 2026-09-24: the onboarding connection card that held the live
+        // heart-rate hero was replaced by the setup checklist (its bpm reads
+        // as a row value there), so ContentView no longer draws that number.
+        XCTAssertEqual(content.components(separatedBy: "size: 30, weight: .bold, design: .rounded").count - 1, 0)
     }
 }

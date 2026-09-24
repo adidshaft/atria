@@ -156,6 +156,21 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
             snapshot = .initial()
             persist()
         }
+        // Completion needs the protected channel proven (2026-09-24 setup
+        // rework): a declined or failed secure check must surface as a coded
+        // setup problem on the strap page, never as a silent "Ready".
+        if ble.status == .connected,
+           !AtriaIMUDiagnosticTransport.isQuietLeaseActive(),
+           !AtriaStrapSetup.Tracker.verifies(ble.strapSetupSignals.secureCheck) {
+            if snapshot.phase != .complete && snapshot.phase != .failed {
+                transition(
+                    to: .waitingForStrap,
+                    peripheralIdentifier: peripheralIdentifier,
+                    detail: "Confirming strap access"
+                )
+            }
+            return
+        }
 
         let nextAttempt = snapshot.attempt + 1
         // First use is complete once this exact strap has passed the read-only
@@ -287,6 +302,50 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
                           self.snapshot.importedRows,
                           self.snapshot.attempt)
         }
+    }
+
+    /// Setup finished for the strap this phone is bonded to. Unlike
+    /// `isCompleteForCurrentStrap` it survives link blips and range loss: the
+    /// old current-peripheral-only check bounced a finished user back into
+    /// setup whenever the strap dropped between pages (2026-09-24 rework).
+    var isSetupComplete: Bool {
+        guard snapshot.phase == .complete,
+              let done = snapshot.peripheralIdentifier else { return false }
+        return done == (ble.currentPeripheralIdentifier ?? ble.savedPeripheralIdentifier)
+    }
+
+    /// The setup screen proved this exact strap's protected channel (the
+    /// read-only secure check confirmed on a live link). Record completion for
+    /// it directly and queue the history import; the import is never a
+    /// prerequisite (a physical Build 5 soak proved that making it one
+    /// disconnected the just-established link).
+    @discardableResult
+    func completeVerifiedSetup(peripheralIdentifier: String) -> Bool {
+        if snapshot.phase == .complete, snapshot.peripheralIdentifier == peripheralIdentifier {
+            return true
+        }
+        bootstrapTask?.cancel()
+        bootstrapTask = nil
+        if ble.status == .connected {
+            _ = ble.requestOfflineHistoricalSyncIfNeeded(
+                reason: "onboarding_initial_import",
+                force: false
+            )
+        }
+        guard transition(
+            to: .complete,
+            peripheralIdentifier: peripheralIdentifier,
+            importedRows: 0,
+            attempt: snapshot.attempt + 1,
+            detail: AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.liveReadyDetail
+        ) else {
+            snapshot.phase = .failed
+            snapshot.detail = "Your strap is connected, but Atria couldn't save setup. Free up iPhone storage, then tap Continue."
+            return false
+        }
+        AtriaDebugLog("ATRIADBG onboarding_history status=verified_setup_complete peripheral=%@",
+                      peripheralIdentifier)
+        return true
     }
 
     func retry() {
