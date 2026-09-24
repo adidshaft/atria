@@ -361,9 +361,14 @@ struct AtriaPhysiologicalCycle: Equatable {
             )
             return daysWithChosenPrimary.contains(day) ? sleep.id : nil
         })
-        let candidates = canonicalMainSleeps(from: confirmedSleeps)
-            .filter { $0.end <= now && !nonPrimaryMainIDs.contains($0.id) }
-            .sorted { $0.end < $1.end }
+        // Only completed sleeps are bridged: the second half of a split night
+        // is confirmed after its own wake, and from then on the first half's
+        // wake is no longer a boundary.
+        let candidates = bridgingBriefAwakenings(
+            canonicalMainSleeps(from: confirmedSleeps)
+                .filter { $0.end <= now && !nonPrimaryMainIDs.contains($0.id) }
+                .sorted { $0.end < $1.end }
+        )
         guard let first = candidates.first else { return [] }
 
         var accepted = [first]
@@ -381,6 +386,30 @@ struct AtriaPhysiologicalCycle: Equatable {
             accepted.append(candidate)
         }
         return accepted
+    }
+
+    /// Split night (2026-09-24, physiological-day audit): a main sleep whose
+    /// wake is followed by another main sleep starting less than
+    /// `resumedSleepMinimumSeparation` (90 min) later was a brief awakening
+    /// (up at 2 am), not the end of a day. Its wake must not open a cycle:
+    /// before this, 23:00–02:00 + 02:30–07:30 stored as two mains opened a
+    /// 02:00→07:30 "day" of pure night that no display day owned (the
+    /// historical resolver takes the LAST wake of a civil day), and when the
+    /// halves straddled midnight the evening half's 23:50 wake became that
+    /// civil day's anchor, so the whole waking day was attributed to the
+    /// night. The later wake starts the day. 90 min is the app's own bound
+    /// for a separate sleep episode (resumed sleep needs a larger gap), not a
+    /// per-person tuning. Sleep records are untouched; only the boundary.
+    static func bridgingBriefAwakenings(
+        _ sortedByEnd: [UserConfirmedSleep]
+    ) -> [UserConfirmedSleep] {
+        sortedByEnd.enumerated().compactMap { index, sleep in
+            guard sortedByEnd.indices.contains(index + 1) else { return sleep }
+            let gap = sortedByEnd[index + 1].start.timeIntervalSince(sleep.end)
+            let briefAwakening = gap >= 0
+                && gap < AggregateSleepCandidate.resumedSleepMinimumSeparation
+            return briefAwakening ? nil : sleep
+        }
     }
 
     /// A fallback protects the live cycle from a late automatic inference, but
