@@ -18,7 +18,10 @@ struct AtriaNightTimelineSection: View {
     }
 
     var body: some View {
-        Group {
+        // A real container so `.task` always runs (a Group whose content is
+        // empty, e.g. `.unavailable`, never reloads on a new night). Spacing
+        // matches the detail template's own stack.
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
             if let request {
                 switch store.state(for: request) {
                 case .loaded(let loaded):
@@ -71,7 +74,9 @@ struct AtriaNightMorningPromptHost: View {
     }
 
     var body: some View {
-        Group {
+        // A VStack, not a Group: `.task` on a Group with no children never
+        // runs, so the prompt could never load itself.
+        VStack(spacing: 0) {
             if let loaded = store.loaded(for: request) {
                 AtriaNightInterruptionPromptCard(
                     episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(loaded.model.result),
