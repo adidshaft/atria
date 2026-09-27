@@ -480,7 +480,7 @@ private struct AtriaStrapStatusRow: View, Equatable {
                 Text(detail)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.8)
             }
         }

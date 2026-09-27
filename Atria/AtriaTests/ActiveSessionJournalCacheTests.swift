@@ -709,7 +709,8 @@ final class ActiveSessionJournalCacheTests: XCTestCase {
         XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: zeroTimestamp)?.strapDeviceTimestamp)
 
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        // 2026-09-27: the WHOOP 4 relative skin-temperature decoder is installed.
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testRestorePreparationBuildsBoundedLiveArraysAndCachesOffActor() throws {

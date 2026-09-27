@@ -248,7 +248,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Strain target",
                                    current: String(format: "Strain %.1f vs target %.1f.", strain, target),
-                                   targetSummary: String(format: "Recovery-scaled target · Green within +/-%.1f, yellow within +/-%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
+                                   targetSummary: String(format: "Recovery-scaled target · Green within +/-%.1f, yellow within ±%.1f, red farther from %.1f.", safeGreenBand, safeYellowBand, target),
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -603,8 +603,8 @@ enum AtriaAnalytics {
             }
             return AtriaMetricZone(level: level,
                                    title: "Skin temperature baseline",
-                                   current: String(format: "%+.1f delta C vs sleep baseline.", delta),
-                                   targetSummary: String(format: "Early baseline · Green within +/-%.1f delta C, yellow within +/-%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
+                                   current: String(format: "%+.1f °C vs sleep baseline.", delta),
+                                   targetSummary: String(format: "Early baseline · Green within ±%.1f °C, yellow within ±%.1f, red farther from baseline.", safeGreenDelta, safeYellowDelta),
                                    recommendation: recommendation,
                                    disclaimer: "Early relative sleep-only signal; not an absolute temperature. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
@@ -1637,7 +1637,9 @@ enum AtriaAnalytics {
                 // Plain-language pass (2026-07-31 device review): keep the
                 // load-bearing "HRV unavailable" phrase (overview sniffs it),
                 // but state the evidence and the next step in plain words.
-                detail: "Limited confidence · sleep and HRV unavailable · from resting HR only — confirm a sleep to add HRV",
+                // 2026-09-27 (owner: "Limited confidence … is bogus, just show
+                // whatever is observed"): the line says what it is built from.
+                detail: "From resting HR only · sleep and HRV unavailable",
                 contributors: [
                     Estimate.Contributor(kind: .hrv,
                                          zScore: 0,
@@ -1740,7 +1742,7 @@ enum AtriaAnalytics {
                 percent: logisticRecoveryPercent(z: blendedZ),
                 confidence: .unverified,
                 usesHRV: false,
-                detail: "Limited confidence · HRV unavailable · sleep-led estimate",
+                detail: "Sleep-led estimate · HRV unavailable",
                 contributors: contributors
             )
         }

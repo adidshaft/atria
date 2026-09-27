@@ -10,7 +10,8 @@ enum AtriaResearchProbe {
     /// from the single production decoder identity below — flipping this flag
     /// requires actually installing a reviewed decoder identity, so a raw
     /// field hypothesis can never become a displayed vital via a lone
-    /// boolean edit. Today that identity is nil, so this is false.
+    /// boolean edit. Since 2026-09-27 that identity is the WHOOP 4 relative
+    /// decoder, so this is true.
     static var validatedSkinTemperatureDecoderAvailable: Bool {
         productionSkinTemperatureDecoder != nil
     }
@@ -112,11 +113,20 @@ enum AtriaResearchProbe {
         }
     }
 
-    /// There is deliberately no production decoder at present. Offset 68 is a
-    /// research candidate retained for externally paired capture only; a
-    /// same-device anchor can make a stable-looking relative series, but it
-    /// cannot establish units, placement behavior, or held-out validity.
-    static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = nil
+    /// WHOOP 4 relative skin temperature (enabled 2026-09-27, owner: "show
+    /// whatever is observed"). Offset 68 of the 0x2f v12/v24 record was
+    /// validated 2026-08-20 on 37,086 archive records
+    /// (docs/DECODER_VALIDATION_2026-08-20_V24.md): a real thermal signal
+    /// that tracks wear, but the absolute scale reads 3–5 °C hot. So this
+    /// identity is same-device RELATIVE only: every surface shows the change
+    /// from the strap's own learned sleep baseline, never an absolute
+    /// temperature, and other generations stay off.
+    static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = SkinTemperatureDecoderIdentity(
+        modelGeneration: .strap4,
+        version: "whoop4-offset68-relative-v1",
+        source: .historical,
+        calibrationProvenance: .sameDeviceRelativeValidated
+    )
 
     static let whoop4SkinTemperatureRawOffset = 68
     static let whoop4SkinTemperatureWornRawRange = 550...2040

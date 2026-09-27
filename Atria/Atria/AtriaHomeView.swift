@@ -5707,7 +5707,12 @@ struct AtriaHomeView: View {
                 let offWrist = summary.offWristExcludedText
                 var title = backlog.map { "Synced · filling \($0)" }
                     ?? (summary.provenUnrecoverableSeconds >= 60
-                        ? "Synced · earlier gap can't be refilled"
+                        // 2026-09-27 (owner: lagging data should "recover or
+                        // completely missed out"): name it missed, and how much.
+                        ? "Synced · "
+                            + (AtriaHomeRecoverySyncPresentation.shortDuration(
+                                seconds: summary.provenUnrecoverableSeconds
+                            ).map { "\($0) missed" } ?? "earlier gap missed")
                         : "Synced · filling earlier gaps")
                 if let offWrist { title += " · \(offWrist)" }
                 return Status(
@@ -7703,8 +7708,8 @@ enum AtriaMissedDataBannerPresentation {
            let recoverable = ledgerRecoverableSeconds, recoverable < 60,
            (ledgerProvenUnrecoverableSeconds ?? 0) >= 60 {
             return Copy(
-                title: "Earlier gap can't be refilled",
-                subtitle: "That time is no longer available from the strap. New data is unaffected.",
+                title: "Earlier data missed",
+                subtitle: "The strap no longer holds it (off wrist, battery out, or overwritten). New data is unaffected.",
                 offersRecovery: false
             )
         }
@@ -8705,7 +8710,7 @@ private struct AtriaWorkoutReviewFlow: View {
             Text(detail)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.68)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -9663,7 +9668,7 @@ private struct AtriaWorkoutReviewFlow: View {
             Text(detail)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -10389,7 +10394,7 @@ private struct AtriaStandByMetric: View {
             Text(detail)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

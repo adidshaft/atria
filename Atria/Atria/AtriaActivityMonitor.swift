@@ -3257,7 +3257,7 @@ struct AtriaActivityMonitorTab: View {
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.8)
                 if let context {
                     Text(context)

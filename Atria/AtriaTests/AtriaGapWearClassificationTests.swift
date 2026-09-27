@@ -377,7 +377,7 @@ final class AtriaGapWearClassificationTests: XCTestCase {
             ledgerProvenUnrecoverableSeconds: 3_600
         )
         XCTAssertFalse(copy.offersRecovery)
-        XCTAssertEqual(copy.title, "Earlier gap can't be refilled")
+        XCTAssertEqual(copy.title, "Earlier data missed")
     }
 
     func testBannerKeepsSyncWhileAnyRecoverableTimeRemains() {
