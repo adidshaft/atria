@@ -56829,9 +56829,14 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     ),
                     receivedAt: receivedAt
                 )
-            } else if AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame(
+            } else if let captureUntil, receivedAt <= captureUntil,
+                      AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame(
                 from: completeFrame
             ) != nil {
+                // Only inside an attended calibration capture (the archive's
+                // stated purpose). Unconditional archiving wrote every R10
+                // frame to disk all day once R10 became the live source
+                // (device 2026-09-25/26: diskwrites_resource + CPU kills).
                 AtriaStrapCalibrationArchive.shared.recordNativeR10MotionFrame(
                     completeFrame,
                     source: frameSource,

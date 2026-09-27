@@ -46,25 +46,47 @@ struct AtriaFrame: Identifiable {
 /// zlib.crc32 AND the real strap device frame trailer (the previous reflected
 /// `>>` variant did NOT — it produced an invalid checksum the strap rejected,
 /// which is why realtime never started on iOS).
-func crc32<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
-    func reflect8(_ x: UInt8) -> UInt32 {
-        var v = x, r: UInt8 = 0
-        for _ in 0..<8 { r = (r << 1) | (v & 1); v >>= 1 }
-        return UInt32(r)
+/// Standard reflected CRC-32 (IEEE 802.3 / zlib, poly 0xEDB88320) — the
+/// WHOOP frame trailer. Table-driven since 2026-09-24: the former bit-by-bit
+/// version (reflect every byte, 8 shift steps, generic `Sequence`) ran about
+/// five times per ~2 KB R10 frame on the BLE queue; with R10 streaming all
+/// day it saturated that queue, the MainActor's `retire(afterDraining:)`
+/// barrier waited behind the backlog, and iOS killed the app (0x8BADF00D),
+/// plus nine `cpu_resource_fatal` kills in two days. Output is bit-identical
+/// (see `AtriaFrameCRCTests`).
+enum AtriaCRC32 {
+    static let table: [UInt32] = (0..<256).map { index -> UInt32 in
+        var c = UInt32(index)
+        for _ in 0..<8 { c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB8_8320 : c >> 1 }
+        return c
     }
-    func reflect32(_ x: UInt32) -> UInt32 {
-        var v = x, r: UInt32 = 0
-        for _ in 0..<32 { r = (r << 1) | (v & 1); v >>= 1 }
-        return r
-    }
-    var crc: UInt32 = 0xFFFFFFFF
-    for b in bytes {
-        crc ^= reflect8(b) << 24
-        for _ in 0..<8 {
-            crc = (crc & 0x8000_0000) != 0 ? (crc << 1) ^ 0x04C1_1DB7 : (crc << 1)
+
+    @inline(__always)
+    static func checksum(_ buffer: UnsafeRawBufferPointer) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        table.withUnsafeBufferPointer { t in
+            for byte in buffer {
+                crc = t[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+            }
         }
+        return crc ^ 0xFFFF_FFFF
     }
-    return reflect32(crc) ^ 0xFFFFFFFF
+}
+
+func crc32(_ bytes: [UInt8]) -> UInt32 {
+    bytes.withUnsafeBytes(AtriaCRC32.checksum)
+}
+
+func crc32(_ bytes: ArraySlice<UInt8>) -> UInt32 {
+    bytes.withUnsafeBytes(AtriaCRC32.checksum)
+}
+
+func crc32(_ data: Data) -> UInt32 {
+    data.withUnsafeBytes(AtriaCRC32.checksum)
+}
+
+func crc32<S: Sequence>(_ bytes: S) -> UInt32 where S.Element == UInt8 {
+    crc32(Array(bytes))
 }
 
 /// CRC-8 (poly 0x07, init 0x00) — used over the 2 length bytes.
