@@ -3130,9 +3130,11 @@ struct AtriaTodayScreen: View {
             let lead = learned.first?.headline
                 ?? insights.first?.headline
                 ?? (insights.isEmpty && learned.isEmpty ? "Keep tagging" : "Patterns")
+            // The lead finding IS the tile; a bare count meant nothing.
+            let count = learned.count + insights.count
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\(learned.count + insights.count)",
+                                        value: count == 0 ? "--" : "\(count)",
                                         detail: legendDetail(lead),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
@@ -3724,6 +3726,34 @@ struct AtriaTodayCompactRingPreferenceKey: PreferenceKey {
     }
 }
 
+/// The collapsed Today rings, handed from the scroll surface (which reads the
+/// preference) to the pinned top bar (which draws them). A tiny store so only
+/// the top bar's host re-renders when the rings change.
+@MainActor
+final class AtriaTodayCompactRingStore: ObservableObject {
+    @Published var presentation: AtriaTodayCompactRingPresentation?
+    @Published var isCollapsed = false
+}
+
+/// Top-bar host: the rings live IN the bar (owner 2026-09-27: "shrink it to
+/// top bar") instead of floating over the cards they used to cover.
+struct AtriaTodayCompactRingChromeHost: View {
+    @ObservedObject var store: AtriaTodayCompactRingStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if store.isCollapsed, let presentation = store.presentation {
+                AtriaTodayCompactRingRail(slots: presentation.slots,
+                                          accessibilitySummary: presentation.accessibilitySummary)
+                    .transition(reduceMotion ? .identity : .scale(scale: 0.85).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                   value: store.isCollapsed)
+    }
+}
+
 /// The collapsed hero deliberately carries no labels or explanatory copy:
 /// icon + value are enough beside the miniature rings, while VoiceOver gets
 /// the complete configured-ring summary.
@@ -3732,29 +3762,31 @@ struct AtriaTodayCompactRingRail: View {
     let accessibilitySummary: String
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .trailing, spacing: 5) {
+        // Bar-height (44 pt): three value rows beside a 34 pt ring.
+        HStack(spacing: 6) {
+            VStack(alignment: .trailing, spacing: 0) {
                 ForEach(slots, id: \.metric.title) { slot in
-                    HStack(spacing: 5) {
+                    HStack(spacing: 3) {
                         Text(slot.slot.compactEmoji)
+                            .font(.system(size: 9))
                             .accessibilityHidden(true)
                         Text(slot.metric.value)
                             .foregroundStyle(.primary)
                             .monospacedDigit()
                     }
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
                 }
             }
 
             AtriaTodayCompactTriRing(slots: slots)
-                .frame(width: 64, height: 64)
+                .frame(width: 34, height: 34)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
-        .padding(.vertical, 7)
-        .glassEffect(.regular, in: .rect(cornerRadius: AtriaDesignTokens.Radius.tile))
+        .padding(.leading, 10)
+        .padding(.trailing, 5)
+        .frame(height: 44)
+        .glassEffect(.regular, in: .capsule)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Collapsed Today rings. \(accessibilitySummary)")
     }

@@ -1015,6 +1015,7 @@ struct AtriaHomeView: View {
     }
     @State private var livePresenceStartedAt: Date?
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
+    @StateObject private var compactRingStore = AtriaTodayCompactRingStore()
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
@@ -1042,7 +1043,7 @@ struct AtriaHomeView: View {
     // as persistentHeartRateBroadcastEnabled below — after that key was fixed,
     // this one became the next storm driver (validated with _printChanges).
     // This view is the only writer; saveHomeLayoutConfig persists explicitly.
-    @State private var homeLayoutConfigStorage = UserDefaults.standard.string(forKey: AtriaHomeLayoutConfig.storageKey) ?? ""
+    @State private var homeLayoutConfigStorage = AtriaHomeLayoutConfig.migratedStoredJSON()
     // Deliberately NOT @AppStorage: the key contains dots, and UserDefaults KVO
     // treats dotted keys as key paths, so the observation fires for writes to
     // ANY `atria.*` key. This app writes diagnostics keys constantly (including
@@ -5147,6 +5148,7 @@ struct AtriaHomeView: View {
                                               @ViewBuilder content: @escaping () -> Content) -> some View {
         NavigationStack {
             AtriaDashboardScrollSurface(showsCompactTodayHeader: title == "Today",
+                                        compactRingStore: title == "Today" ? compactRingStore : nil,
                                         prefersLiveActivityStatus: workoutSession != nil,
                                         bottomContentMargin: scrollBottomClearance,
                                         refresh: handleConnectivityRefresh,
@@ -5208,7 +5210,7 @@ struct AtriaHomeView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    topChrome
+                    topChrome(compactRingStore: title == "Today" ? compactRingStore : nil)
                     // Full-bleed: the notice spans the width flush against the
                     // chrome above it, so it takes no inset or gap of its own.
                     //
@@ -5345,8 +5347,9 @@ struct AtriaHomeView: View {
     }
 
 
-    private var topChrome: some View {
+    private func topChrome(compactRingStore: AtriaTodayCompactRingStore?) -> some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
+                           compactRingStore: compactRingStore,
                            coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            prefersLiveActivityStatus: workoutSession != nil,
@@ -9991,6 +9994,8 @@ private struct AtriaWorkoutSummarySparkline: View {
 /// pinned overlays to respond directly to the real ScrollView offset.
 private struct AtriaDashboardScrollSurface<Content: View>: View {
     let showsCompactTodayHeader: Bool
+    /// Where the collapsed Today rings go (drawn by the top bar).
+    let compactRingStore: AtriaTodayCompactRingStore?
     let prefersLiveActivityStatus: Bool
     let bottomContentMargin: CGFloat
     let refresh: @MainActor () async -> Void
@@ -10002,6 +10007,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
     @State private var showsCompactHeader = false
 
     init(showsCompactTodayHeader: Bool,
+         compactRingStore: AtriaTodayCompactRingStore? = nil,
          prefersLiveActivityStatus: Bool,
          bottomContentMargin: CGFloat,
          refresh: @escaping @MainActor () async -> Void,
@@ -10009,6 +10015,7 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
          autoScroll: @escaping @MainActor (ScrollViewProxy) async -> Void,
          @ViewBuilder content: @escaping () -> Content) {
         self.showsCompactTodayHeader = showsCompactTodayHeader
+        self.compactRingStore = compactRingStore
         self.prefersLiveActivityStatus = prefersLiveActivityStatus
         self.bottomContentMargin = bottomContentMargin
         self.refresh = refresh
@@ -10039,24 +10046,18 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             } action: { _, newValue in
                 if newValue != showsCompactHeader { showsCompactHeader = newValue }
             }
-            .overlayPreferenceValue(AtriaTodayCompactRingPreferenceKey.self) { presentation in
-                ZStack(alignment: .topTrailing) {
-                    if showsCompactTodayHeader,
-                       !prefersLiveActivityStatus,
-                       showsCompactHeader,
-                       let presentation {
-                        AtriaTodayCompactRingRail(slots: presentation.slots,
-                                                  accessibilitySummary: presentation.accessibilitySummary)
-                            .transition(reduceMotion ? .identity : .move(edge: .top).combined(with: .opacity))
-                    }
+            // The collapsed rings are drawn by the pinned top bar (owner
+            // 2026-09-27); this surface only reports them and the threshold.
+            .onPreferenceChange(AtriaTodayCompactRingPreferenceKey.self) { presentation in
+                guard showsCompactTodayHeader, let compactRingStore else { return }
+                if compactRingStore.presentation != presentation {
+                    compactRingStore.presentation = presentation
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                // The overlay consumes the scene's live safe-area geometry;
-                // it cannot drift beside or underneath the Dynamic Island.
-                .safeAreaPadding(.top, 8)
-                .padding(.trailing, 12)
-                .allowsHitTesting(false)
-                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: showsCompactHeader)
+            }
+            .onChange(of: showsCompactHeader, initial: true) { _, collapsed in
+                guard showsCompactTodayHeader, let compactRingStore else { return }
+                let show = collapsed && !prefersLiveActivityStatus
+                if compactRingStore.isCollapsed != show { compactRingStore.isCollapsed = show }
             }
             .task(id: taskID) {
                 await autoScroll(scrollProxy)
@@ -15404,6 +15405,7 @@ enum AtriaHomeChromeLayout {
 
 private struct AtriaHomeTopChrome: View {
     let statusStore: AtriaHomeModel.StatusStore
+    let compactRingStore: AtriaTodayCompactRingStore?
     let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let prefersLiveActivityStatus: Bool
@@ -15435,6 +15437,10 @@ private struct AtriaHomeTopChrome: View {
                         statusChip
                     }
                     Spacer(minLength: 8)
+                    if let compactRingStore {
+                        AtriaTodayCompactRingChromeHost(store: compactRingStore)
+                            .layoutPriority(1)
+                    }
                     actionButtons
                 }
             }
