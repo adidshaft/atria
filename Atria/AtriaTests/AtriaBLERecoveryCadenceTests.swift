@@ -6942,6 +6942,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "the exact sequence-confirmation replay must retain explicit authority")
     }
 
+    func testLiveR10IsStoppedBeforeTheHistoryServeCommand() {
+        XCTAssertEqual(AtriaBLEManager.productionHistoricalRecoveryInitCommands(stopLiveR10: true), [
+            [AtriaBLEManager.Cmd.sendR10R11Realtime, 0x00],
+            [AtriaBLEManager.Cmd.sendHistoricalData, 0x00],
+        ], "live 3F freezes the history read cursor; stop it first")
+        XCTAssertEqual(AtriaBLEManager.productionHistoricalRecoveryInitCommands(stopLiveR10: false),
+                       AtriaBLEManager.productionHistoricalRecoveryInitCommands())
+    }
+
     func testProductionHistoricalRecoverySendsOnlyServedHistoryCommand() {
         let commands = AtriaBLEManager.productionHistoricalRecoveryInitCommands()
 

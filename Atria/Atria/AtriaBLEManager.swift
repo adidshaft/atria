@@ -17437,7 +17437,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // request. Standard 2A37 HR/RR remains live. Abort and
             // high-frequency-sync are research controls: inserting them here
             // can leave an otherwise connected strap returning zero rows.
-            historyInitSweepCommands = Self.productionHistoricalRecoveryInitCommands()
+            let liveR10Streaming = r10LiveLastOnAt != nil
+                || lastR10MotionFrameAt.map { Date().timeIntervalSince($0) <= 15 } == true
+            historyInitSweepCommands = Self.productionHistoricalRecoveryInitCommands(
+                stopLiveR10: liveR10Streaming
+            )
             historySkipDataRangeRequest = true
         }
         if !preserveDebugHistoryRangeProbe {
@@ -18330,6 +18334,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         metadataOnlyWorkoutEnds: [Date] = [],
         now: Date = Date()
     ) {
+        // Never retire a drain that is running: its own start snapshot is
+        // not a leftover (device 2026-09-27 self-abort).
+        guard !offlineHistoricalSyncInProgress else { return }
         let pending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
         guard Self.shouldRetireStuckIdleWindowLeftover(
             pendingRecords: pending,
@@ -40709,6 +40716,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                   index,
                                   cmd,
                                   syncGeneration)
+                    if cmd == Cmd.sendR10R11Realtime, data == [0x00] {
+                        // Let the strap stop streaming before 16/00 (the Mac
+                        // capture used the same 1 s settle between the two).
+                        r10LiveOffSent = true
+                        try? await Task.sleep(for: .seconds(1))
+                    }
                     if cmd == Cmd.sendHistoricalData,
                        data == [0x00],
                        let cursorRange = acceptedHistoryDataRange,
