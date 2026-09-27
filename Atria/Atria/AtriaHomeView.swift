@@ -211,7 +211,7 @@ struct AtriaHomeContainer: View, Equatable {
     }
 }
 
-    fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
+struct AtriaWorkoutDetectionPrompt: Equatable {
     let heartRate: Int
     let strain: Double
     let samples: Int
@@ -335,7 +335,7 @@ struct AtriaHomeContainer: View, Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
+struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
     let id = UUID()
     let prompt: AtriaWorkoutDetectionPrompt
     let suggestedStart: Date
@@ -353,29 +353,13 @@ fileprivate struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutReviewResult: Equatable {
+struct AtriaWorkoutReviewResult: Equatable {
     let start: Date
     let end: Date
     let activityType: String
     let activitySubtype: String?
     let exerciseNames: [String]
     let strengthSets: [LoggedSet]
-}
-
-fileprivate enum AtriaWorkoutReviewStep: Int, CaseIterable {
-    case time
-    case type
-    case exercises
-    case summary
-
-    var title: String {
-        switch self {
-        case .time: return "Time"
-        case .type: return "Type"
-        case .exercises: return "Exercises"
-        case .summary: return "Save"
-        }
-    }
 }
 
 fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
@@ -847,19 +831,17 @@ struct AtriaHomeView: View {
 
         var title: String {
             switch self {
-            case .waitingForSettle:
-                return "Still watching effort"
-            case .possibleSignal:
-                return "Possible effort saved"
+            case .waitingForSettle, .possibleSignal:
+                return "Possible workout"
             }
         }
 
         var detail: String {
             switch self {
-            case .waitingForSettle(let bpmOverRest):
-                return "HR is still +\(bpmOverRest) over rest. Atria waits before asking."
+            case .waitingForSettle:
+                return "Still going. Atria will ask once your heart rate settles."
             case .possibleSignal:
-                return "Saved as possible effort. Atria will ask when the strap signal is stronger."
+                return "Kept for later. Atria will ask when there's enough heart rate to judge."
             }
         }
 
@@ -1656,9 +1638,11 @@ struct AtriaHomeView: View {
         }
         .interactiveDismissDisabled(isSecuringWorkoutStart)
         .sheet(item: $workoutReviewDraft) { draft in
-            AtriaWorkoutReviewFlow(draft: draft) {
-                workoutReviewDraft = nil
-            } onSave: { @MainActor result in
+            AtriaWorkoutReviewSheet(draft: draft,
+                                    loadHeartRate: { interval in
+                                        await loadWorkoutReviewHeartRate(interval)
+                                    },
+                                    onCancel: { workoutReviewDraft = nil }) { @MainActor result in
                 await saveWorkoutReview(
                     result,
                     settlingCandidateWindow: (draft.suggestedStart, draft.suggestedEnd)
@@ -5776,6 +5760,29 @@ struct AtriaHomeView: View {
                            pulseStore: model.heroPulseStore)
     }
 
+    /// Heart rate for the review chart: saved-session points plus the
+    /// durable archive, read off the main actor, one union (nothing invented).
+    private func loadWorkoutReviewHeartRate(_ interval: DateInterval) async -> [HistoricalArchive.HeartRatePoint] {
+        let canonical = store.sessions
+            .filter { $0.end > interval.start && $0.start < interval.end }
+            .flatMap { session in
+                session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
+                    let date = session.start.addingTimeInterval(point.t)
+                    guard date >= interval.start, date < interval.end else { return nil }
+                    return HistoricalArchive.HeartRatePoint(t: date, bpm: point.bpm)
+                }
+            }
+        let archive = await Task.detached(priority: .userInitiated) {
+            HistoricalArchive.metricHeartRatePoints(start: interval.start,
+                                                    end: interval.end,
+                                                    maximumPoints: 20_000)?.points ?? []
+        }.value
+        return AtriaExactWindowHeartRate.union(canonical: canonical,
+                                               archive: archive,
+                                               observed: [],
+                                               interval: interval)
+    }
+
     private var currentHomeLayoutConfig: AtriaHomeLayoutConfig {
         guard let data = homeLayoutConfigStorage.data(using: .utf8),
               !data.isEmpty,
@@ -7970,6 +7977,75 @@ private struct AtriaMissedDataBanner: View, Equatable {
     #endif
 }
 
+/// One card for every "possible workout" state on Today (rework
+/// 2026-09-27): the same name, the same measured line, the same two actions.
+/// Replaces three differently worded cards ("Review this workout", "Effort
+/// ready to review" with a strap-signal strip, "Possible effort saved" with an
+/// Observe/Settle/Ask stepper).
+private struct AtriaPossibleWorkoutCard: View {
+    let subtitle: String
+    let metrics: String?
+    let note: String?
+    let primaryEnabled: Bool
+    let onAdd: (() -> Void)?
+    let onDismiss: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: "figure.mixed.cardio")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 44, height: 44)
+                    .background(.orange.opacity(0.14), in: Circle())
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Possible workout")
+                        .font(.headline)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if let metrics {
+                Text(metrics)
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+            }
+
+            if let note {
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if onAdd != nil || onDismiss != nil {
+                HStack(spacing: 10) {
+                    if let onAdd {
+                        Button(action: onAdd) {
+                            Text("Add workout").frame(maxWidth: .infinity)
+                        }
+                        .disabled(!primaryEnabled)
+                        .atriaCardAction(tint: .orange)
+                    }
+                    if let onDismiss {
+                        Button(action: onDismiss) {
+                            Text("Not a workout").frame(maxWidth: .infinity)
+                        }
+                        .atriaCardAction(prominent: false, tint: .secondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .atriaCard(emphasis: .soft)
+        .accessibilityElement(children: .contain)
+    }
+}
+
 private struct AtriaWorkoutDetectionBanner: View, Equatable {
     let prompt: AtriaWorkoutDetectionPrompt
     let onDismiss: () -> Void
@@ -7981,116 +8057,17 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(.orange.opacity(0.16), lineWidth: 8)
-                    Circle()
-                        .trim(from: 0, to: prompt.progressFraction)
-                        .stroke(.orange, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: "figure.mixed.cardio")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(prompt.headline)
-                        .font(.headline.weight(.semibold))
-                    Text(prompt.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
-                }
-
-                Spacer(minLength: 0)
-
-                Text("Strap HR")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.orange.opacity(0.13), in: Capsule(style: .continuous))
-            }
-
-            workoutEvidenceRail
-
-            HStack(spacing: 10) {
-                Button(action: onStart) {
-                    Text(prompt.primaryTitle)
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!prompt.isReviewReady)
-                .atriaCardAction(tint: .orange)
-
-                Button(action: onDismiss) {
-                    Text("Not now")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(prompt.headline). Heart rate \(prompt.heartRate) beats per minute, \(prompt.bpmOverRest) above rest, strain \(String(format: "%.1f", prompt.strain)), \(prompt.confidenceLabel).")
+        AtriaPossibleWorkoutCard(
+            subtitle: prompt.subtitle,
+            metrics: "\(prompt.heartRate) bpm now · strain \(String(format: "%.1f", prompt.strain))",
+            note: nil,
+            primaryEnabled: prompt.isReviewReady,
+            onAdd: onStart,
+            onDismiss: onDismiss
+        )
+        .accessibilityLabel("Possible workout. \(prompt.subtitle). Heart rate \(prompt.heartRate) beats per minute, strain \(String(format: "%.1f", prompt.strain)).")
     }
 
-    private var workoutEvidenceRail: some View {
-        // Two calm, clearly SEPARATED bars (user feedback 2026-07-30). The old
-        // rail stacked an HR bar and a thin strain bar in ONE ZStack — the strain
-        // capsule was offset just 7pt down INTO the HR capsule — so they overlapped
-        // and read as one muddy bar. Each metric now owns a labeled row and its
-        // own full-height track. The redundant "Strap HR / Strain" footer row and
-        // the three Signal/Time/Next decision chips were dropped: the header, these
-        // two bars, and the buttons already carry everything this prompt needs.
-        VStack(alignment: .leading, spacing: 12) {
-            evidenceBar(title: "Effort",
-                        valueText: "\(prompt.heartRate) bpm · +\(prompt.bpmOverRest)",
-                        fraction: min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1),
-                        tint: .orange,
-                        rollValue: prompt.heartRate)
-            evidenceBar(title: "Strain",
-                        valueText: String(format: "%.1f", prompt.strain),
-                        fraction: min(max(prompt.strain / 12.0, 0), 1),
-                        tint: Metrics.electricStrain,
-                        rollValue: prompt.strain)
-        }
-        .padding(12)
-        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
-        // this panel's corners parallel to the card's (28 − 14 = 14).
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-    }
-
-    private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color, rollValue: some Equatable) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(valueText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
-                               value: rollValue)
-            }
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.7))
-                        .frame(width: max(6, width * fraction))
-                }
-            }
-            .frame(height: 7)
-        }
-    }
 }
 
 private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
@@ -8107,183 +8084,17 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(.orange.opacity(0.16), lineWidth: 8)
-                    Circle()
-                        .trim(from: 0, to: candidate.kind == .workout ? 1 : 0.72)
-                        .stroke(.orange, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: candidate.kind == .workout ? "checkmark.seal.fill" : "figure.strengthtraining.traditional")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(candidate.title)
-                        .font(.headline.weight(.semibold))
-                    Text("\(timeRangeText) · \(durationText) from strap HR")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
-                }
-
-                Spacer(minLength: 0)
-
-                Text("Review")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.orange.opacity(0.13), in: Capsule(style: .continuous))
-            }
-
-            savedWorkoutEvidenceRail
-            savedWorkoutDecisionStrip
-
-            HStack(spacing: 10) {
-                Button(action: onReview) {
-                    Text("Confirm type")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(tint: .orange)
-
-                Button(action: onDismiss) {
-                    Text("Dismiss")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(candidate.title). \(durationText) from strap heart rate, \(timeRangeText), peak \(candidate.peakHR) beats per minute. Strap window \(signalReviewTitle). Confirm type before saving.")
-    }
-
-    private var savedWorkoutEvidenceRail: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Workout window")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(timeRangeText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .layoutPriority(1)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let peakProgress = heartRateProgress(candidate.peakHR)
-                let averageProgress = heartRateProgress(candidate.avgHR)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Capsule(style: .continuous)
-                        .fill(.orange.opacity(0.68))
-                        .frame(width: max(10, width * peakProgress))
-                    Capsule(style: .continuous)
-                        .fill(Color.cyan.opacity(0.56))
-                        .frame(width: max(8, width * averageProgress), height: 6)
-                        .offset(y: 7)
-                }
-            }
-            .frame(height: 17)
-
-            // Colour the labels to match the two bars above (orange = peak HR,
-            // cyan = average HR) so the bars are self-explanatory instead of two
-            // unlabelled lines.
-            HStack(spacing: 8) {
-                Label("Peak \(candidate.peakHR)", systemImage: "waveform.path.ecg")
-                    .foregroundStyle(.orange)
-                Label("Avg \(candidate.avgHR)", systemImage: "smallcircle.filled.circle")
-                    .foregroundStyle(.cyan)
-                    .monospacedDigit()
-                Spacer(minLength: 8)
-                Text(durationText)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption2.weight(.semibold))
-        }
-        .padding(12)
-        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
-        // this panel's corners parallel to the card's (28 − 14 = 14).
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout window \(timeRangeText). Peak \(candidate.peakHR), average \(candidate.avgHR), duration \(durationText).")
-    }
-
-    private func heartRateProgress(_ bpm: Int) -> Double {
-        guard maxHeartRate > restingHeartRate else { return 0 }
-        let value = Double(bpm - restingHeartRate) / Double(maxHeartRate - restingHeartRate)
-        return min(max(value, 0), 1)
-    }
-
-    // Was three button-looking tiles ("Review Window", "Strap <signal>", "Save
-    // After type") that weren't tappable — a false affordance that just narrated
-    // the flow the Confirm/Dismiss buttons already drive. Replaced with one clear
-    // non-button row that keeps the genuinely useful bit — the strap signal
-    // quality — and states the next action plainly.
-    private var savedWorkoutDecisionStrip: some View {
-        HStack(spacing: 8) {
-            Image(systemName: signalReviewIcon)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(signalReviewTint)
-            Text("Strap signal: \(signalReviewTitle)")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(signalReviewTint)
-            Spacer(minLength: 8)
-            Text("Confirm the type to save")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(signalReviewTint.opacity(0.10), in: Capsule(style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strap signal \(signalReviewTitle). Confirm the activity type to save.")
-    }
-
-    // Uncalled in code but pinned by test_handoff_static_checks
-    // (test_live_workout_auto_detect_prompt_is_inline_and_conservative) as
-    // required structure — retained as intentional scaffolding, not deleted.
-    private var reviewPathStrip: some View {
-        HStack(spacing: 7) {
-            pathStep("1", "Window", tint: .cyan)
-            pathStep("2", "Type", tint: .orange)
-            pathStep("3", "Exercises", tint: .mint)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review path: adjust window, choose type, add exercises.")
-    }
-
-    private func pathStep(_ number: String, _ title: String, tint: Color) -> some View {
-        HStack(spacing: 5) {
-            Text(number)
-                .font(.caption2.weight(.black).monospacedDigit())
-                .foregroundStyle(tint)
-                .frame(width: 18, height: 18)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        AtriaPossibleWorkoutCard(
+            subtitle: "\(timeRangeText) · \(durationText)",
+            metrics: "Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm",
+            note: candidate.missingMinutes >= 5
+                ? "Heart rate is missing for \(candidate.missingMinutes) min of this — check the times."
+                : nil,
+            primaryEnabled: true,
+            onAdd: onReview,
+            onDismiss: onDismiss
+        )
+        .accessibilityLabel("Possible workout, \(timeRangeText), \(durationText). Average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute.")
     }
 
     private var durationText: String {
@@ -8297,29 +8108,7 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
     private var timeRangeText: String {
         let startText = candidate.start.formatted(date: .omitted, time: .shortened)
         let endText = candidate.end.formatted(date: .omitted, time: .shortened)
-        return "\(startText)-\(endText)"
-    }
-
-    private var signalReviewTitle: String {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 {
-            return "Ready"
-        }
-        if candidate.streamCoveragePercent >= 60 {
-            return "Review"
-        }
-        return "Check time"
-    }
-
-    private var signalReviewTint: Color {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 { return .mint }
-        if candidate.streamCoveragePercent >= 60 { return .cyan }
-        return .orange
-    }
-
-    private var signalReviewIcon: String {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 { return "checkmark.seal.fill" }
-        if candidate.streamCoveragePercent >= 60 { return "waveform.path.badge.plus" }
-        return "exclamationmark.triangle.fill"
+        return "\(startText)–\(endText)"
     }
 
 }
@@ -8332,98 +8121,15 @@ private struct AtriaWorkoutReviewHoldBanner: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            holdMark
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text(state.title)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                    Text("Strap HR")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.orange.opacity(0.12), in: Capsule(style: .continuous))
-                }
-
-                Text(state.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-
-                holdPathStrip
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .combine)
+        AtriaPossibleWorkoutCard(
+            subtitle: state.detail,
+            metrics: nil,
+            note: nil,
+            primaryEnabled: false,
+            onAdd: nil,
+            onDismiss: nil
+        )
         .accessibilityLabel(state.accessibilityText)
-    }
-
-    private var holdMark: some View {
-        ZStack {
-            Circle()
-                .stroke(.orange.opacity(0.16), lineWidth: 7)
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(.orange, style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            Image(systemName: symbolName)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.orange)
-        }
-        .frame(width: 54, height: 54)
-        .accessibilityHidden(true)
-    }
-
-    private var progress: Double {
-        switch state {
-        case .waitingForSettle(let bpmOverRest):
-            return min(max(Double(bpmOverRest) / 70.0, 0.22), 0.88)
-        case .possibleSignal:
-            return 0.42
-        }
-    }
-
-    private var symbolName: String {
-        switch state {
-        case .waitingForSettle:
-            return "heart.fill"
-        case .possibleSignal:
-            return "waveform.path.ecg"
-        }
-    }
-
-    private var holdPathStrip: some View {
-        HStack(spacing: 7) {
-            holdStep("1", "Observe", tint: .orange)
-            holdStep("2", "Settle", tint: .cyan)
-            holdStep("3", "Ask", tint: .secondary)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private func holdStep(_ number: String, _ title: String, tint: Color) -> some View {
-        HStack(spacing: 5) {
-            Text(number)
-                .font(.caption2.weight(.black).monospacedDigit())
-                .foregroundStyle(tint)
-                .frame(width: 18, height: 18)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -8465,1533 +8171,6 @@ private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable {
     }
 }
 
-private struct AtriaWorkoutReviewFlow: View {
-    let draft: AtriaWorkoutReviewDraft
-    let onCancel: () -> Void
-    let onSave: @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?
-
-    @State private var step: AtriaWorkoutReviewStep = .time
-    @State private var start: Date
-    @State private var end: Date
-    @State private var selectedType: AtriaWorkoutActivityType = .strength
-    @State private var selectedSubtype: String?
-    @State private var selectedExercises = Set<String>()
-    @State private var exerciseSearch = ""
-    @State private var exerciseGroups: [AtriaWorkoutExerciseGroup]
-    @State private var exerciseNameKeys: Set<String>
-    @State private var filteredExerciseGroups: [AtriaWorkoutExerciseGroup]
-    @State private var showsAllWorkoutTypes = false
-    @State private var typeSearch = ""
-    @State private var summaryExerciseHistoryMemo = AtriaWorkoutSummaryExerciseHistoryMemo()
-    @State private var isSaving = false
-
-    init(draft: AtriaWorkoutReviewDraft,
-         onCancel: @escaping () -> Void,
-         onSave: @escaping @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?) {
-        self.draft = draft
-        self.onCancel = onCancel
-        self.onSave = onSave
-        _start = State(initialValue: draft.suggestedStart)
-        _end = State(initialValue: draft.suggestedEnd)
-        _selectedType = State(initialValue: draft.prompt.suggestedActivityType)
-        // Detection may suggest only a broad activity type. Preserve subtype
-        // abstention until the user explicitly chooses a style in review.
-        _selectedSubtype = State(initialValue: nil)
-        _step = State(initialValue: Self.debugInitialStep(arguments: ProcessInfo.processInfo.arguments))
-        let initialExerciseGroups = AtriaWorkoutExerciseCatalog.allGroups()
-        _exerciseGroups = State(initialValue: initialExerciseGroups)
-        _exerciseNameKeys = State(initialValue: Self.exerciseNameKeys(in: initialExerciseGroups))
-        _filteredExerciseGroups = State(initialValue: AtriaWorkoutExerciseCatalog.filteredGroups(search: "", groups: initialExerciseGroups))
-    }
-
-    private var visibleSteps: [AtriaWorkoutReviewStep] {
-        selectedType.supportsExerciseSelection ? AtriaWorkoutReviewStep.allCases : [.time, .type, .summary]
-    }
-
-    private var visibleWorkoutTypes: [AtriaWorkoutActivityType] {
-        // 2026-08-01 (gym-session review): the full catalog is long enough to
-        // need a plain text filter. Filtering only applies to the revealed
-        // full list; the compact suggested list stays untouched.
-        if showsAllWorkoutTypes, !trimmedTypeSearch.isEmpty {
-            return AtriaWorkoutActivityType.allCases.filter {
-                $0.rawValue.localizedCaseInsensitiveContains(trimmedTypeSearch)
-            }
-        }
-        guard !showsAllWorkoutTypes else { return AtriaWorkoutActivityType.allCases }
-        var types = draft.prompt.suggestedActivityTypes
-        if !types.contains(selectedType) {
-            types.append(selectedType)
-        }
-        return types
-    }
-
-    private var trimmedTypeSearch: String {
-        typeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var hiddenWorkoutTypeCount: Int {
-        max(AtriaWorkoutActivityType.allCases.count - visibleWorkoutTypes.count, 0)
-    }
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                AtriaDashboardBackdrop()
-                    .ignoresSafeArea()
-
-                VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            header
-                            currentStep
-                        }
-                        .padding(16)
-                        .padding(.bottom, 16)
-                    }
-                    footer
-                }
-            }
-            .navigationTitle("Review workout")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                reloadExerciseGroups()
-            }
-            .onChange(of: exerciseSearch) { _, _ in
-                refreshFilteredExerciseGroups()
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Label("Review effort", systemImage: "waveform.path.ecg")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.primary)
-
-            Spacer(minLength: 4)
-
-            headerChip("Peak \(draft.prompt.heartRate)", tint: .orange)
-
-            if let zone = draft.prompt.heartRateZone {
-                headerChip(zone.shortLabel, tint: zone.tint)
-            }
-
-            Button(action: onCancel) {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 22, height: 22)
-            }
-            .atriaGlassIconAction(tint: .secondary, size: 38)
-            .accessibilityLabel("Cancel workout review")
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private var workoutReceiptBoard: some View {
-        HStack(spacing: 8) {
-            workoutReceiptTile(title: "Time",
-                               value: durationText,
-                               detail: "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))",
-                               systemImage: "clock.fill",
-                               tint: .cyan)
-            workoutReceiptTile(title: "Peak",
-                               value: "\(draft.prompt.heartRate)",
-                               detail: draft.prompt.heartRateZone?.shortLabel ?? "bpm",
-                               systemImage: "waveform.path.ecg",
-                               tint: draft.prompt.heartRateZone?.tint ?? .orange)
-            workoutReceiptTile(title: "Type",
-                               value: selectedType.rawValue,
-                               detail: selectedSubtype ?? "Tap type",
-                               systemImage: selectedType.icon,
-                               tint: .orange)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout receipt. Time \(durationText). Peak \(draft.prompt.heartRate). Type \(selectedType.rawValue).")
-    }
-
-    private func workoutReceiptTile(title: String,
-                                    value: String,
-                                    detail: String,
-                                    systemImage: String,
-                                    tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .background(tint.opacity(0.12), in: Circle())
-
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.black).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-            Text(detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.68)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private var captureEvidenceStrip: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label("What Atria saw", systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.orange)
-                Spacer(minLength: 8)
-                Text(draft.prompt.isReviewReady ? "Ready for you" : "Check timing")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(draft.prompt.isReviewReady ? .mint : .orange)
-            }
-
-            HStack(spacing: 8) {
-                captureTile(title: "Time seen",
-                            value: "\(draft.prompt.evidenceMinutes)m",
-                            progress: min(max(Double(draft.prompt.evidenceMinutes) / 45.0, 0.08), 1),
-                            tint: .cyan)
-                captureTile(title: "Signal",
-                            value: draft.prompt.confidenceLabel,
-                            progress: draft.prompt.progressFraction,
-                            tint: .orange)
-                captureTile(title: "Next",
-                            value: draft.prompt.isReviewReady ? "Confirm" : "Wait",
-                            progress: draft.prompt.isReviewReady ? 1 : 0.58,
-                            tint: draft.prompt.isReviewReady ? .mint : .secondary)
-            }
-        }
-        .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("What Atria saw. \(draft.prompt.evidenceMinutes == 1 ? "1 minute" : "\(draft.prompt.evidenceMinutes) minutes") of strap heart rate. Signal \(draft.prompt.confidenceLabel). Next \(draft.prompt.isReviewReady ? "confirm workout" : "wait or adjust timing").")
-    }
-
-    private func captureTile(title: String, value: String, progress: Double, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Text(value)
-                    .font(.caption2.monospacedDigit().weight(.black))
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.66)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.72))
-                        .frame(width: max(7, width * min(max(progress, 0), 1)))
-                }
-            }
-            .frame(height: 7)
-            .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
-        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    private var reviewDecisionLens: some View {
-        HStack(spacing: 8) {
-            reviewDecisionMetric(title: "Confirm",
-                                 value: "Looks right",
-                                 systemImage: "checkmark.seal.fill",
-                                 tint: .mint)
-            reviewDecisionMetric(title: "Adjust",
-                                 value: "Move time",
-                                 systemImage: "slider.horizontal.3",
-                                 tint: .cyan)
-            reviewDecisionMetric(title: "Dismiss",
-                                 value: "Not workout",
-                                 systemImage: "xmark.circle.fill",
-                                 tint: .secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review choices. Confirm type, adjust time, or dismiss.")
-    }
-
-    private func reviewDecisionMetric(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 22)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .atriaInsetCard(tint: tint)
-    }
-
-    private var stepIndicator: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ForEach(visibleSteps, id: \.self) { candidate in
-                    VStack(spacing: 7) {
-                        ZStack {
-                            Capsule(style: .continuous)
-                                .fill(candidate.rawValue <= step.rawValue ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.07))
-                            Text(candidate.title)
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(candidate == step ? .orange : .secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.78)
-                        }
-                        .frame(height: 30)
-
-                        Capsule(style: .continuous)
-                            .fill(candidate.rawValue <= step.rawValue ? Color.orange : Color.secondary.opacity(0.18))
-                            .frame(height: candidate == step ? 4 : 2)
-                    }
-                }
-            }
-
-            Text(stepSubtitle)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 2)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review step \(step.title). \(stepContextAccessibilityText)")
-    }
-
-    private var stepSubtitle: String {
-        switch step {
-        case .time:
-            return "Confirm time."
-        case .type:
-            return "Choose type."
-        case .exercises:
-            return "Add remembered moves."
-        case .summary:
-            return "Save workout."
-        }
-    }
-
-    private var currentStepIndex: Int {
-        visibleSteps.firstIndex(of: step).map { $0 + 1 } ?? 1
-    }
-
-    private var nextStepTitle: String {
-        guard let index = visibleSteps.firstIndex(of: step) else { return "Save" }
-        let nextIndex = visibleSteps.index(after: index)
-        guard visibleSteps.indices.contains(nextIndex) else { return "Save" }
-        return visibleSteps[nextIndex].title
-    }
-
-    private var stepContextAccessibilityText: String {
-        "Now \(step.title), step \(currentStepIndex) of \(visibleSteps.count). Next \(nextStepTitle)."
-    }
-
-    private var stepContextRail: some View {
-        HStack(spacing: 8) {
-            stepContextChip(title: "Now",
-                            value: step.title,
-                            detail: "\(currentStepIndex)/\(visibleSteps.count)",
-                            systemImage: "location.fill",
-                            tint: .orange)
-            stepContextChip(title: "Next",
-                            value: nextStepTitle,
-                            detail: selectedType.supportsExerciseSelection ? "Moves next" : "Type only",
-                            systemImage: "arrow.forward.circle.fill",
-                            tint: step == visibleSteps.last ? .mint : .cyan)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(stepContextAccessibilityText)
-    }
-
-    private func stepContextChip(title: String,
-                                 value: String,
-                                 detail: String,
-                                 systemImage: String,
-                                 tint: Color) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 26, height: 26)
-                .background(tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-
-            Text(detail)
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private func headerChip(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(tint.opacity(0.10), in: Capsule(style: .continuous))
-    }
-
-    @ViewBuilder
-    private var currentStep: some View {
-        switch step {
-        case .time:
-            timeStep
-        case .type:
-            typeStep
-        case .exercises:
-            exerciseStep
-        case .summary:
-            summaryStep
-        }
-    }
-
-    private var timeStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            stepTitle("Time", subtitle: "Adjust only if needed.")
-            DatePicker("Start", selection: $start, displayedComponents: [.hourAndMinute, .date])
-            DatePicker("End", selection: $end, displayedComponents: [.hourAndMinute, .date])
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var typeStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            stepTitle("Activity", subtitle: "Choose the closest match.")
-            typeRevealHeader
-
-            if showsAllWorkoutTypes {
-                TextField("Search activity types", text: $typeSearch)
-                    .textInputAutocapitalization(.words)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    // Direct child of the step's .padding(14).atriaCard — concentric
-                    // keeps the field's corners parallel to the card's (28 − 14 = 14).
-                    .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-            }
-
-            // Plain one-per-row selection list (2026-08-01 gym-session review):
-            // the adaptive chip grid cropped names like "Football / soccer" and
-            // relaid every chip on reveal, which made opening the full catalog
-            // slow. Full-width rows never truncate and stay cheap to build.
-            // With the 77-activity WHOOP-parity catalog (2026-08-05) the
-            // revealed list groups by category; search stays a flat filter.
-            if showsAllWorkoutTypes, trimmedTypeSearch.isEmpty {
-                ForEach(AtriaWorkoutActivityType.Category.allCases) { category in
-                    let types = AtriaWorkoutActivityType.allCases.filter {
-                        $0.category == category
-                    }
-                    if !types.isEmpty {
-                        Text(category.rawValue.uppercased())
-                            .font(.caption2.weight(.bold))
-                            .tracking(0.6)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 6)
-                        VStack(spacing: 2) {
-                            ForEach(types) { type in
-                                workoutTypeRow(type)
-                            }
-                        }
-                    }
-                }
-            } else {
-                VStack(spacing: 2) {
-                    ForEach(visibleWorkoutTypes) { type in
-                        workoutTypeRow(type)
-                    }
-                }
-            }
-
-            if visibleWorkoutTypes.isEmpty {
-                Text("No activity types match \"\(trimmedTypeSearch)\".")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !selectedType.subtypeOptions.isEmpty {
-                chipSection(title: "Style", values: selectedType.subtypeOptions, selected: selectedSubtype) { value in
-                    selectedSubtype = value
-                }
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var typeRevealHeader: some View {
-        HStack(spacing: 10) {
-            Label(showsAllWorkoutTypes ? "All activity types" : "Best matches first",
-                  systemImage: showsAllWorkoutTypes ? "square.grid.3x3.fill" : "scope")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 8)
-
-            Button {
-                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                    showsAllWorkoutTypes.toggle()
-                }
-                if !showsAllWorkoutTypes {
-                    typeSearch = ""
-                }
-            } label: {
-                Text(showsAllWorkoutTypes ? "Less" : "+\(hiddenWorkoutTypeCount)")
-                    .font(.caption.weight(.black).monospacedDigit())
-                    .foregroundStyle(.orange)
-                    .frame(minWidth: 40)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 7)
-            }
-            .atriaCardAction(prominent: false, tint: .orange)
-            .accessibilityLabel(showsAllWorkoutTypes ? "Show fewer workout types" : "Show \(hiddenWorkoutTypeCount) more workout types")
-        }
-        .padding(.horizontal, 2)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// One plain full-width row per activity type. Selection is marked in
-    /// place — the list order never changes on tap, and long names get the
-    /// whole row width instead of a cropped chip.
-    private func workoutTypeRow(_ type: AtriaWorkoutActivityType) -> some View {
-        let selected = selectedType == type
-        return Button {
-            applyWorkoutType(type)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: type.icon)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(selected ? Color.orange : .secondary)
-                    .frame(width: 26)
-                Text(type.rawValue)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(selected ? Color.orange : Color.secondary.opacity(0.4))
-            }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 10)
-            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .background(selected ? Color.orange.opacity(0.10) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .accessibilityLabel(type.rawValue)
-        .accessibilityValue(selected ? "Selected" : "Not selected")
-    }
-
-    private var suggestedTypeRunway: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Activity type", systemImage: "figure.strengthtraining.traditional")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                ForEach(draft.prompt.suggestedActivityTypes) { type in
-                    Button {
-                        applyWorkoutType(type)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Image(systemName: type.icon)
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(selectedType == type ? .orange : .secondary)
-                                .frame(width: 30, height: 30)
-                                .background((selectedType == type ? Color.orange : Color.secondary).opacity(0.12),
-                                            in: Circle())
-                            Text(type.rawValue)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(selectedType == type ? .orange : .primary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
-                            Text(type.supportsExerciseSelection ? "Exercises next" : "Type only")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.70)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.12 : 0.055),
-                                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                                .stroke((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.20 : 0.10), lineWidth: 1)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Suggested activity \(type.rawValue). \(type.supportsExerciseSelection ? "Exercises next" : "Type only").")
-                }
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var selectedTypeLens: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.orange.opacity(0.14))
-                Image(systemName: selectedType.icon)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.orange)
-            }
-            .frame(width: 46, height: 46)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Selected type", systemImage: selectedType.icon)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(selectedType.rawValue)
-                    .font(.headline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Text(selectedSubtype ?? (selectedType.supportsExerciseSelection ? "Exercises next" : "No exercise step"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 5) {
-                Text(selectedType.supportsExerciseSelection ? "3 steps" : "2 steps")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(selectedType.supportsExerciseSelection ? .mint : .secondary)
-                Text(selectedType.supportsExerciseSelection ? "Exercises" : "Type only")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Selected type \(selectedType.rawValue). \(selectedSubtype ?? (selectedType.supportsExerciseSelection ? "Exercises next" : "No exercise step")).")
-    }
-
-    private var exerciseStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            stepTitle("Exercises", subtitle: "Optional")
-            if exerciseQuery.isEmpty, !promptExerciseSuggestions.isEmpty {
-                exerciseQuickAddStrip
-            }
-
-            TextField("Search exercises", text: $exerciseSearch)
-                .textInputAutocapitalization(.words)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 11)
-                // Direct child of the step's .padding(14).atriaCard — concentric
-                // keeps the field's corners parallel to the card's (28 − 14 = 14).
-                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-
-            if !selectedExercises.isEmpty {
-                chipSection(title: "Selected", values: selectedExerciseNames, selected: nil) { value in
-                    selectedExercises.remove(value)
-                }
-            }
-
-            if !exerciseQuery.isEmpty {
-                ForEach(filteredExerciseGroups) { group in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(group.title)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                            ForEach(group.exercises, id: \.self) { exercise in
-                                exerciseChip(exercise)
-                            }
-                        }
-                    }
-                }
-                if shouldOfferCustomExercise {
-                    addCustomExerciseButton(exerciseQuery)
-                }
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var exerciseQuickAddStrip: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label("Likely moves", systemImage: "plus.circle.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Text("\(selectedSuggestedExerciseCount)/\(promptExerciseSuggestions.count)")
-                    .font(.caption2.monospacedDigit().weight(.bold))
-                    .foregroundStyle(.orange)
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                ForEach(promptExerciseSuggestions, id: \.self) { exercise in
-                    quickExerciseButton(exercise)
-                }
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var exerciseSearchPrompt: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.cyan)
-                .frame(width: 28, height: 28)
-                .background(Color.cyan.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Search only if needed")
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                Text("Skip exercises if you are unsure.")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search only if needed. Skip exercises if you are unsure.")
-    }
-
-    private var exerciseCatalogPreview: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "books.vertical.fill")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.cyan)
-                .frame(width: 28, height: 28)
-                .background(Color.cyan.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Search full catalog")
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Text("\(AtriaWorkoutExerciseCatalog.groups.count) groups ready when needed")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search full exercise catalog. \(AtriaWorkoutExerciseCatalog.groups.count) groups ready when needed.")
-    }
-
-    private func quickExerciseButton(_ exercise: String) -> some View {
-        let selected = selectedExercises.contains(exercise)
-        return Button {
-            toggleExercise(exercise)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "plus.circle")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(selected ? .mint : .orange)
-                Text(exercise)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(selected ? .mint : .primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            // Intentionally .chip (was 15): this is a grid cell in the same
-            // adaptive(132) LazyVGrid family as exerciseChip, and the review
-            // flow's selection surfaces (workoutTypeRow, exerciseChip) all sit
-            // at .chip. H4's numeric 14–17→inset rule yields to that convention.
-            .background((selected ? Color.mint : Color.orange).opacity(selected ? 0.12 : 0.08),
-                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke((selected ? Color.mint : Color.orange).opacity(selected ? 0.18 : 0.12), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(selected ? "Remove" : "Add") \(exercise)")
-    }
-
-    private var summaryStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            stepTitle("Ready to save", subtitle: "Time, activity, and exercises save together.")
-
-            Label(selectedType.rawValue, systemImage: selectedType.icon)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.orange)
-
-            Text("\(summaryTimeRangeText) · \(durationText)")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if !selectedExercises.isEmpty {
-                Text(selectedExerciseNames.joined(separator: " · "))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Ready to save. \(selectedType.rawValue), \(durationText), \(selectedExercises.count) exercises. Time, activity, and exercises save together.")
-    }
-
-    private var summaryReceiptLens: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.orange.opacity(0.14), lineWidth: 7)
-                    Circle()
-                        .trim(from: 0, to: min(max(draft.prompt.progressFraction, 0.12), 1))
-                        .stroke(Color.orange.opacity(0.88),
-                                style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: selectedType.icon)
-                        .font(.headline.weight(.black))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(selectedType.rawValue)
-                        .font(.title3.weight(.black))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                    Text(selectedSubtype ?? "Reviewed workout")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(durationText)
-                        .font(.title2.weight(.black).monospacedDigit())
-                        .foregroundStyle(.orange)
-                        .contentTransition(.numericText())
-                    Text("Strap HR")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.orange.opacity(0.12), in: Capsule(style: .continuous))
-                }
-            }
-
-            HStack(spacing: 8) {
-                summaryReceiptMetric(title: "Time",
-                                     value: durationText,
-                                     detail: summaryTimeRangeText,
-                                     tint: .cyan)
-                summaryReceiptMetric(title: "Type",
-                                     value: selectedType.rawValue,
-                                     detail: selectedSubtype ?? "Activity",
-                                     tint: .orange)
-                summaryReceiptMetric(title: "Moves",
-                                     value: selectedExercises.isEmpty ? "0" : "\(selectedExercises.count)",
-                                     detail: selectedExercises.isEmpty ? "Optional" : "Selected",
-                                     tint: .mint)
-            }
-
-            summaryMemoryRail
-            summaryExerciseHistorySection
-
-            if let zone = draft.prompt.heartRateZone {
-                AtriaWorkoutZoneEvidenceStrip(zone: zone)
-            }
-
-            if !selectedExercises.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Movements saved locally", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(selectedExerciseNames.joined(separator: " · "))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(10)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout save receipt. Window \(summaryTimeRangeText), \(durationText). Type \(selectedType.rawValue). Exercises \(selectedExercises.count). Save to history and learn from this label. Source strap heart rate.")
-    }
-
-    @ViewBuilder
-    private var summaryExerciseHistorySection: some View {
-        let rows = summaryExerciseHistoryRows
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Exercise history", systemImage: "chart.xyaxis.line")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Text("\(rows.count)")
-                        .font(.caption2.monospacedDigit().weight(.black))
-                        .foregroundStyle(.orange)
-                }
-
-                ForEach(rows) { row in
-                    summaryExerciseHistoryRow(row)
-                }
-            }
-            .padding(10)
-            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                    .stroke(Color.orange.opacity(0.10), lineWidth: 1)
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Exercise history from saved sessions. \(rows.count) movements.")
-        }
-    }
-
-    private var summaryExerciseHistoryRows: [AtriaWorkoutSummaryExerciseHistory] {
-        let exercises = summaryExerciseHistoryNames
-        let key = AtriaWorkoutSummaryExerciseHistoryMemo.Key(
-            exercises: exercises.map(normalizedExercise),
-            currentSets: draft.strengthSets,
-            history: draft.strengthHistory)
-        return summaryExerciseHistoryMemo.rows(key: key) {
-            makeSummaryExerciseHistoryRows(exercises: exercises)
-        }
-    }
-
-    private func makeSummaryExerciseHistoryRows(exercises: [String]) -> [AtriaWorkoutSummaryExerciseHistory] {
-        exercises.map { exercise in
-            let history = draft.strengthHistory.history(for: exercise)
-            let records = draft.strengthHistory.records(for: exercise)
-            let currentBest = draft.strengthSets
-                .filter { normalizedExercise($0.exercise) == normalizedExercise(exercise) }
-                .max(by: { strengthShareScore($0) < strengthShareScore($1) })
-            let isPR = currentBest.map { AtriaStrengthLog.isPR($0, against: records) } ?? false
-            let sparkline = history.map { strengthShareScore($0.best) }
-            return AtriaWorkoutSummaryExerciseHistory(id: normalizedExercise(exercise),
-                                                      exercise: exercise,
-                                                      days: history.count,
-                                                      bestSet: history.last?.best,
-                                                      maxE1RM: records.maxE1RM,
-                                                      maxWeightKg: records.maxWeightKg,
-                                                      sparklineValues: sparkline,
-                                                      currentPRSet: isPR ? currentBest : nil)
-        }
-    }
-
-    private var summaryExerciseHistoryNames: [String] {
-        var names: [String] = []
-        for name in selectedExerciseNames + draft.strengthSets.map(\.exercise) {
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  !names.contains(where: { normalizedExercise($0) == normalizedExercise(trimmed) }) else {
-                continue
-            }
-            names.append(trimmed)
-        }
-        return Array(names.prefix(4))
-    }
-
-    private func summaryExerciseHistoryRow(_ row: AtriaWorkoutSummaryExerciseHistory) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(row.exercise)
-                    .font(.caption.weight(.black))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.74)
-
-                Spacer(minLength: 8)
-
-                Text(row.days == 0 ? "New" : "\(row.days)d")
-                    .font(.caption2.monospacedDigit().weight(.black))
-                    .foregroundStyle(row.days == 0 ? .mint : .orange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background((row.days == 0 ? Color.mint : Color.orange).opacity(0.12),
-                                in: Capsule(style: .continuous))
-
-                if row.currentPRSet != nil {
-                    Label("PR", systemImage: "trophy.fill")
-                        .font(.caption2.weight(.black))
-                        .foregroundStyle(Metrics.electricYellow)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Metrics.electricYellow.opacity(0.12), in: Capsule(style: .continuous))
-                }
-            }
-
-            AtriaWorkoutSummarySparkline(values: row.sparklineValues, tint: .orange)
-                .frame(height: 32)
-
-            HStack(spacing: 8) {
-                summaryExerciseMetric("Best", row.bestSet.map(strengthSetShareText) ?? "--")
-                summaryExerciseMetric("e1RM", row.maxE1RM.map { Self.formatShareWeightKg($0) } ?? "--")
-                summaryExerciseMetric("Max", row.maxWeightKg.map { Self.formatShareWeightKg($0) } ?? "--")
-            }
-        }
-        .padding(10)
-        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Exercise history \(row.exercise). \(row.days) saved days. Best \(row.bestSet.map(strengthSetShareText) ?? "none"). \(row.currentPRSet == nil ? "" : "New PR.")")
-    }
-
-    private func summaryExerciseMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption2.monospacedDigit().weight(.black))
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var summaryMemoryRail: some View {
-        HStack(spacing: 8) {
-            summaryMemoryNode(title: "Save",
-                              value: "Workout",
-                              systemImage: "checkmark.seal.fill",
-                              tint: .mint)
-            summaryMemoryNode(title: "History",
-                              value: selectedType.rawValue,
-                              systemImage: "clock.arrow.circlepath",
-                              tint: .orange)
-            summaryMemoryNode(title: "Remember",
-                              value: selectedExercises.isEmpty ? "Label" : "\(selectedExercises.count) moves",
-                              systemImage: "arrow.triangle.2.circlepath",
-                              tint: .cyan)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("After save, Atria adds the workout to history and remembers the selected label.")
-    }
-
-    private func summaryMemoryNode(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .background(tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption2.weight(.black))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.11), lineWidth: 1)
-        }
-    }
-
-    private func summaryReceiptMetric(title: String, value: String, detail: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-            Text(detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    private var footer: some View {
-        VStack(spacing: 8) {
-            if let reason = saveDisabledReason {
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Can't save yet. \(reason)")
-            }
-
-            HStack(spacing: 10) {
-                if step != visibleSteps.first {
-                    Button("Back") {
-                        moveBack()
-                    }
-                    .atriaCardAction(prominent: false, tint: .secondary)
-                    .disabled(isSaving)
-                }
-
-                // Always-visible commit (2026-08-01 gym-session review): the
-                // user edited the detected window on the Time step and found no
-                // Save control — only "Continue". Save is now reachable from
-                // every step and commits the complete current draft.
-                if step != .summary {
-                    Button(isSaving ? "Saving…" : "Save") {
-                        commitSave()
-                    }
-                    .disabled(saveDisabledReason != nil || isSaving)
-                    .atriaCardAction(prominent: false, tint: .orange)
-                    .accessibilityLabel("Save workout now")
-                    .accessibilityHint("Saves the workout with the current time, activity, and exercises without visiting the remaining steps.")
-                }
-
-                Button(isSaving ? "Saving…" : primaryActionTitle) {
-                    primaryAction()
-                }
-                .disabled(saveDisabledReason != nil || isSaving)
-                .atriaCardAction(tint: .orange)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.card, tint: .orange)
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-    }
-
-    /// Non-nil while the edited window cannot be saved, with the exact reason
-    /// shown next to the disabled Save/Continue buttons instead of a silently
-    /// dead control.
-    private var saveDisabledReason: String? {
-        end > start ? nil : "End must be after start"
-    }
-
-    private var primaryActionTitle: String {
-        step == .summary ? "Save" : "Continue"
-    }
-
-    private var durationText: String {
-        let minutes = max(1, Int(end.timeIntervalSince(start) / 60))
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
-    }
-
-    private var summaryTimeRangeText: String {
-        "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))"
-    }
-
-    private func strengthShareScore(_ set: LoggedSet) -> Double {
-        AtriaStrengthLog.estimatedOneRepMax(weightKg: set.weightKg, reps: set.reps)
-            ?? set.weightKg
-            ?? Double(set.reps ?? 0)
-    }
-
-    private func normalizedExercise(_ exercise: String) -> String {
-        exercise.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func strengthSetShareText(_ set: LoggedSet) -> String {
-        let weightText = set.weightKg.map { Self.formatShareWeightKg($0) }
-        let repsText = set.reps.map { "\($0)" }
-        switch (weightText, repsText) {
-        case let (weight?, reps?):
-            return "\(weight) x \(reps)"
-        case let (weight?, nil):
-            return weight
-        case let (nil, reps?):
-            return "\(reps) reps"
-        default:
-            return "New best"
-        }
-    }
-
-    private static func formatShareWeightKg(_ weightKg: Double) -> String {
-        let rounded = weightKg.rounded()
-        if abs(weightKg - rounded) < 0.01 {
-            return "\(Int(rounded)) kg"
-        }
-        return String(format: "%.1f kg", weightKg)
-    }
-
-    private var selectedExerciseNames: [String] {
-        Array(selectedExercises).sorted()
-    }
-
-    private var exerciseQuery: String {
-        exerciseSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var shouldOfferCustomExercise: Bool {
-        guard !exerciseQuery.isEmpty else { return false }
-        return !exerciseNameKeys.contains(Self.exerciseNameKey(exerciseQuery))
-    }
-
-    private var promptExerciseSuggestions: [String] {
-        draft.prompt.exerciseSuggestions.flatMap { suggestion in
-            AtriaWorkoutExerciseCatalog.suggestedExercises(for: suggestion)
-        }
-    }
-
-    private var selectedSuggestedExerciseCount: Int {
-        promptExerciseSuggestions.filter { selectedExercises.contains($0) }.count
-    }
-
-    private func stepTitle(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.headline.weight(.bold))
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func chipSection(title: String,
-                             values: [String],
-                             selected: String?,
-                             onTap: @escaping (String) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
-                ForEach(values, id: \.self) { value in
-                    Button(value) { onTap(value) }
-                        .buttonStyle(.plain)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .frame(maxWidth: .infinity)
-                        .background((selected == value ? Color.orange : Color.secondary).opacity(0.12),
-                                    in: Capsule(style: .continuous))
-                        .foregroundStyle(selected == value ? Color.orange : Color.secondary)
-                }
-            }
-        }
-    }
-
-    private func exerciseChip(_ exercise: String) -> some View {
-        let selected = selectedExercises.contains(exercise)
-        return Button {
-            toggleExercise(exercise)
-        } label: {
-            Text(exercise)
-                .font(.caption.weight(.semibold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.76)
-                .frame(maxWidth: .infinity, minHeight: 42)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        // Genuine grid chip — .chip (was 14) despite H4's numeric 14–17→inset
-        // rule; 14 is nearer the chip rung and this IS a chip semantically.
-        .background((selected ? Color.orange : Color.secondary).opacity(selected ? 0.14 : 0.08),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .foregroundStyle(selected ? Color.orange : Color.primary)
-    }
-
-    private func addCustomExerciseButton(_ exercise: String) -> some View {
-        Button {
-            AtriaWorkoutExerciseCatalog.addCustomExercise(exercise)
-            selectedExercises.insert(exercise)
-            reloadExerciseGroups(search: "")
-            exerciseSearch = ""
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.callout.weight(.bold))
-                    .foregroundStyle(.mint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Add \"\(exercise)\"")
-                        .font(.caption.weight(.bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    Text("Save as a custom exercise")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            // Intentionally .chip (was 15): renders directly below the 12-radius
-            // exerciseChip grid as "one more item" in the exercise selection
-            // area — matching the chips beats H4's numeric 14–17→inset rule,
-            // which would put an 18 corner flush under a field of 12s.
-            .background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke(Color.mint.opacity(0.18), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Add custom exercise \(exercise)")
-    }
-
-    private func toggleExercise(_ exercise: String) {
-        if selectedExercises.contains(exercise) {
-            selectedExercises.remove(exercise)
-        } else {
-            selectedExercises.insert(exercise)
-        }
-    }
-
-    private func reloadExerciseGroups(search: String? = nil) {
-        let groups = AtriaWorkoutExerciseCatalog.allGroups()
-        exerciseGroups = groups
-        exerciseNameKeys = Self.exerciseNameKeys(in: groups)
-        filteredExerciseGroups = AtriaWorkoutExerciseCatalog.filteredGroups(search: search ?? exerciseSearch, groups: groups)
-    }
-
-    private func refreshFilteredExerciseGroups() {
-        filteredExerciseGroups = AtriaWorkoutExerciseCatalog.filteredGroups(search: exerciseSearch, groups: exerciseGroups)
-    }
-
-    private static func exerciseNameKeys(in groups: [AtriaWorkoutExerciseGroup]) -> Set<String> {
-        Set(groups.flatMap(\.exercises).map(exerciseNameKey))
-    }
-
-    private static func exerciseNameKey(_ exercise: String) -> String {
-        exercise
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-    }
-
-    private func primaryAction() {
-        if step == .summary {
-            commitSave()
-            return
-        }
-        if step == .type, !selectedType.supportsExerciseSelection {
-            step = .summary
-            return
-        }
-        if let index = visibleSteps.firstIndex(of: step),
-           visibleSteps.indices.contains(visibleSteps.index(after: index)) {
-            step = visibleSteps[visibleSteps.index(after: index)]
-        }
-    }
-
-    /// The single commit path shared by the summary primary action and the
-    /// always-visible footer Save (2026-08-01): every save routes the complete
-    /// current draft through the same canonical onSave call.
-    private func commitSave() {
-        guard !isSaving, end > start else { return }
-        isSaving = true
-        Task { @MainActor in
-            _ = await onSave(AtriaWorkoutReviewResult(
-                start: start,
-                end: end,
-                activityType: selectedType.rawValue,
-                activitySubtype: selectedSubtype,
-                exerciseNames: selectedExerciseNames,
-                strengthSets: draft.strengthSets
-            ))
-            isSaving = false
-        }
-    }
-
-    private func applyWorkoutType(_ type: AtriaWorkoutActivityType) {
-        selectedType = type
-        selectedSubtype = nil
-        if !selectedType.supportsExerciseSelection {
-            selectedExercises.removeAll()
-        }
-    }
-
-    private func moveBack() {
-        guard let index = visibleSteps.firstIndex(of: step), index > 0 else { return }
-        step = visibleSteps[index - 1]
-    }
-
-    #if DEBUG
-    private static func debugInitialStep(arguments: [String]) -> AtriaWorkoutReviewStep {
-        if arguments.contains("--atria-workout-review-type-step") { return .type }
-        if arguments.contains("--atria-workout-review-exercises-step") { return .exercises }
-        if arguments.contains("--atria-workout-review-summary-step") { return .summary }
-        return .time
-    }
-    #else
-    private static func debugInitialStep(arguments: [String]) -> AtriaWorkoutReviewStep { .time }
-    #endif
-}
-
-private final class AtriaWorkoutSummaryExerciseHistoryMemo {
-    struct Key: Equatable {
-        let exercises: [String]
-        let currentSets: [LoggedSet]
-        let history: StrengthHistoryProjection
-    }
-
-    private var key: Key?
-    private var value: [AtriaWorkoutSummaryExerciseHistory] = []
-
-    func rows(key: Key, build: () -> [AtriaWorkoutSummaryExerciseHistory]) -> [AtriaWorkoutSummaryExerciseHistory] {
-        if self.key == key { return value }
-        let next = build()
-        self.key = key
-        value = next
-        return next
-    }
-}
-
-private struct AtriaWorkoutSummaryExerciseHistory: Identifiable, Equatable {
-    let id: String
-    let exercise: String
-    let days: Int
-    let bestSet: LoggedSet?
-    let maxE1RM: Double?
-    let maxWeightKg: Double?
-    let sparklineValues: [Double]
-    let currentPRSet: LoggedSet?
-}
-
-private struct AtriaWorkoutSummarySparkline: View {
-    let values: [Double]
-    let tint: Color
-
-    var body: some View {
-        GeometryReader { proxy in
-            let normalized = normalizedValues
-            let width = max(proxy.size.width, 1)
-            let height = max(proxy.size.height, 1)
-            let step = normalized.count > 1 ? width / CGFloat(normalized.count - 1) : width
-            Path { path in
-                guard let first = normalized.first else { return }
-                path.move(to: CGPoint(x: 0, y: height - (height * first)))
-                for index in normalized.indices.dropFirst() {
-                    path.addLine(to: CGPoint(x: CGFloat(index) * step,
-                                             y: height - (height * normalized[index])))
-                }
-            }
-            .stroke(tint.opacity(normalized.count > 1 ? 0.90 : 0.28),
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-
-            if normalized.isEmpty {
-                Capsule(style: .continuous)
-                    .fill(Color.secondary.opacity(0.16))
-                    .frame(height: 3)
-                    .position(x: width / 2, y: height / 2)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var normalizedValues: [CGFloat] {
-        guard let minValue = values.min(),
-              let maxValue = values.max(),
-              maxValue > 0 else {
-            return []
-        }
-        let spread = max(maxValue - minValue, 1)
-        return values.map { value in
-            CGFloat(0.16 + (0.78 * ((value - minValue) / spread)))
-        }
-    }
-}
-
-/// Owns dashboard scroll state outside `AtriaHomeView`, preventing every
-/// scroll quantum from invalidating the app shell while allowing viewport-
-/// pinned overlays to respond directly to the real ScrollView offset.
 private struct AtriaDashboardScrollSurface<Content: View>: View {
     let showsCompactTodayHeader: Bool
     /// Where the collapsed Today rings go (drawn by the top bar).

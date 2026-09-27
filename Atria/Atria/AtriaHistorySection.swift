@@ -325,7 +325,10 @@ struct AtriaHistorySection: View, Equatable {
     var body: some View {
         VStack(spacing: 16) {
             historyHeroCard
-            if !model.detections.isEmpty {
+            // The detector's own event log ("Nap-shaped window 15h–16h, 60 min
+            // captured; stillness unvalidated…") is diagnostics, not product
+            // copy: Developer mode only (2026-09-27 workout-review rework).
+            if AtriaDeveloperMode.isEnabled, !model.detections.isEmpty {
                 detectionsCard
             }
             if model.days.isEmpty {
@@ -359,13 +362,17 @@ struct AtriaHistorySection: View, Equatable {
             AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
-                Button {
-                    showAllDetections = true
-                } label: {
-                    AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                // The detector's event count is diagnostics (it read "20"
+                // beside 2 possible workouts): Developer mode only.
+                if AtriaDeveloperMode.isEnabled {
+                    Button {
+                        showAllDetections = true
+                    } label: {
+                        AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                    }
+                    .buttonStyle(AtriaPressableCardStyle())
+                    .accessibilityHint("Opens the full detections list")
                 }
-                .buttonStyle(AtriaPressableCardStyle())
-                .accessibilityHint("Opens the full detections list")
                 // Green is the achievement hue; "0/14" in green read as done
                 // (2026-09-02 Trends screenshot). The chip earns green only
                 // once the baseline is trusted, and stays neutral while it builds.
@@ -1010,10 +1017,10 @@ struct AtriaDetectedActivitiesSection: View {
     var body: some View {
         if !state.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Detected activities",
-                                        subtitle: "Heart-rate windows Atria noticed but has not counted.")
+                AtriaPanelSectionHeader(title: "Possible workouts",
+                                        subtitle: "Raised heart rate Atria noticed. Nothing counts until you add it.")
                 if state.candidates.isEmpty {
-                    Text("No unconfirmed detections right now")
+                    Text("Nothing waiting right now")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -1032,65 +1039,73 @@ struct AtriaDetectedActivitiesSection: View {
         }
     }
 
+    /// Same words and actions as the Today card (rework 2026-09-27): what
+    /// was measured, a gap note only when heart rate is missing, and two
+    /// actions. An HR-only window stays a POSSIBLE workout until added.
     private func candidateRow(_ candidate: WorkoutReviewCandidate) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.cyan)
-                    .frame(width: 30, height: 30)
-                    .background(Color.cyan.opacity(0.12), in: Circle())
+                Image(systemName: "figure.mixed.cardio")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 32, height: 32)
+                    .background(Color.orange.opacity(0.14), in: Circle())
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Activity candidate")
+                    Text("Possible workout")
                         .font(.subheadline.weight(.semibold))
-                    Text("\(Self.timeRangeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap HR")
+                    Text("\(Self.dayAndTimeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
             }
 
-            Text("Coverage \(candidate.streamCoveragePercent)% · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
+            Text("Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
+                .font(.caption.weight(.semibold).monospacedDigit())
 
-            // The detector's own reason, whole (2026-09-27, owner: tier
-            // labels are "bogus, just show whatever is observed"). The tier
-            // chip is gone; the evidence line above and this reason say what
-            // was seen.
-            Text(Self.reasonText(candidate.reason))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if candidate.missingMinutes >= 5 {
+                Label("Heart rate is missing for \(candidate.missingMinutes) min of this.",
+                      systemImage: "exclamationmark.circle")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack(spacing: 10) {
                 Button {
                     requestReview(candidate)
                 } label: {
-                    Text("Confirm type")
+                    Text("Add workout")
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 32)
                 }
-                .atriaCardAction(prominent: false, tint: .cyan)
+                .atriaCardAction(prominent: false, tint: .orange)
 
                 Button {
                     _ = store?.dismissWorkoutCandidate(start: candidate.start,
                                                        end: candidate.end)
                 } label: {
-                    Text("Dismiss")
+                    Text("Not a workout")
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 32)
                 }
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
         }
-        .accessibilityElement(children: .combine)
         .padding(12)
-        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.cyan.opacity(0.4))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.orange.opacity(0.4))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Activity candidate, \(Self.timeRangeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap heart rate. Coverage \(candidate.streamCoveragePercent) percent, average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. Confirm the type before it counts.")
+        .accessibilityLabel("Possible workout, \(Self.dayAndTimeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)). Average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. It counts only after you add it.")
+    }
+
+    /// "Today 3:10–4:02 PM" / "Sep 26 7:04–7:42 AM".
+    static func dayAndTimeText(start: Date, end: Date) -> String {
+        let day = Calendar.current.isDateInToday(start)
+            ? "Today"
+            : start.formatted(.dateTime.month(.abbreviated).day())
+        return "\(day) \(start.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))"
     }
 
     /// Visible, reversible dismissal (2026-07-17): an accidental dismiss no
@@ -1102,7 +1117,7 @@ struct AtriaDetectedActivitiesSection: View {
                 showDismissed.toggle()
             } label: {
                 HStack {
-                    Text("Dismissed detections (\(state.dismissedWindows.count))")
+                    Text("Not workouts (\(state.dismissedWindows.count))")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 0)
                     Image(systemName: showDismissed ? "chevron.down" : "chevron.right")

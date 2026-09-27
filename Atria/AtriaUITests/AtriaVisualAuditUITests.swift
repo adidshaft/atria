@@ -53,6 +53,38 @@ final class AtriaVisualAuditUITests: XCTestCase {
         }
     }
 
+    /// Every detected-workout surface from its DEBUG fixture, then the review
+    /// flow stepped through with its own Next button.
+    func testDetectedWorkoutSurfaces() {
+        for fixture in ["workout-detection-ready", "saved-workout-review",
+                        "workout-review-hold-possible", "detected-activities"] {
+            let app = XCUIApplication()
+            app.launchArguments += ["--atria-ui-fixture", fixture]
+            app.launch()
+            sleep(6)
+            captureScrolling(app, name: "fx-\(fixture)", maxPages: 3)
+            app.terminate()
+        }
+    }
+
+    /// The one-screen review sheet from its fixture.
+    func testWorkoutReviewSheet() {
+        let app = XCUIApplication()
+        app.launchArguments += ["--atria-ui-fixture", "workout-review-flow"]
+        app.launch()
+        sleep(7)
+        capture(app, "sheet-0")
+        let strength = app.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'Strength'")).firstMatch
+        if strength.waitForExistence(timeout: 4) {
+            strength.tap()
+            sleep(1)
+        }
+        app.swipeUp()
+        sleep(1)
+        capture(app, "sheet-1")
+        app.terminate()
+    }
+
     /// Today scrolled: the collapsed rings sit in the top bar.
     func testTodayCollapsedRingsInTopBar() {
         let app = XCUIApplication()
