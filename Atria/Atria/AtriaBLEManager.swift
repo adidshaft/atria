@@ -12491,7 +12491,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ),
             consumeToNow: idleWindowConsumeToNowConsent,
             lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
-            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+            queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+            largeBacklogSliceDue: Self.largeBacklogSliceIsDue(
+                pendingRecords: leftoverPending,
+                lastSliceFinishedAt: idleWindowDrainLastFinishedAt,
+                lastSliceYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
+                now: nowTs
+            )
         )
         if idleFlag { return window }
         return window == .naturalGapPreHR ? window : .none
@@ -22113,7 +22119,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            pending >= Int(Self.backlogSlicePendingThreshold),
            let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
            now.timeIntervalSince1970 - observedAt <= 30 * 60 {
-            return Self.backlogSliceRetryDelay
+            return batteryIsCharging || !hasContact
+                ? Self.backlogSliceRetryDelay
+                : Self.backlogHealthyEpochSliceInterval
         }
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
               let requestedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double else {

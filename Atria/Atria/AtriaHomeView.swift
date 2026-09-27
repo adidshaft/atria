@@ -5579,7 +5579,10 @@ struct AtriaHomeView: View {
                     ) as? Double,
                     drainCursorUnix: defaults.object(
                         forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
-                    ) as? Double
+                    ) as? Double,
+                    strapPendingRecords: AtriaHomeRecoverySyncPresentation.freshStrapPendingRecords(
+                        defaults: defaults, now: now
+                    )
                 )
                 return Status(title: copy.title,
                               symbol: "arrow.triangle.2.circlepath",
@@ -6919,7 +6922,8 @@ enum AtriaHomeRecoverySyncPresentation {
                      calendar: Calendar = .current,
                      locale: Locale = .current,
                      abandonedThroughUnix: Double? = nil,
-                     drainCursorUnix: Double? = nil) -> Copy {
+                     drainCursorUnix: Double? = nil,
+                     strapPendingRecords: Int? = nil) -> Copy {
         let savedRecords = max(0, savedRecords)
         let newestUnix = newestSavedRecordUnix(
             drainedThroughUnix: drainedThroughUnix,
@@ -6946,6 +6950,18 @@ enum AtriaHomeRecoverySyncPresentation {
         // history still is. Only when that cursor is known and sane.
         // The cursor only: "newest record" can sit ahead of what is filled,
         // so using it would understate how far behind history is.
+        //
+        // What is LEFT is the strap's own count, not the clock: WHOOP 4
+        // writes ~1 record per worn second, so 26.5k pending records are
+        // ~7 h of data even when the cursor is 68 h old (device 2026-09-27:
+        // the strap was off or dead for the rest). A fresh count wins.
+        if let pending = strapPendingRecords,
+           let left = durationText(seconds: Double(pending)) {
+            return Copy(title: "Catching up strap history · \(left) left",
+                        compactTitle: "Catching up · \(left) left",
+                        accessibilityLabel: "Catching up strap history. About \(left) of recorded data "
+                            + "is still on the strap; live heart rate is current.")
+        }
         if let behind = behindText(fillThroughUnix: drainCursorUnix, now: now) {
             return Copy(title: "Catching up strap history · \(behind) behind",
                         compactTitle: "Catching up · \(behind) behind",
@@ -7013,11 +7029,26 @@ enum AtriaHomeRecoverySyncPresentation {
                     accessibilityLabel: accessibilityParts.joined(separator: " "))
     }
 
+    /// The strap's last pending-record count, only while it is recent
+    /// enough (30 min) to describe what is left.
+    static func freshStrapPendingRecords(defaults: UserDefaults, now: Date) -> Int? {
+        guard let pending = defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords) as? Int,
+              let observedAt = defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt) as? Double,
+              now.timeIntervalSince1970 - observedAt <= 30 * 60 else { return nil }
+        return pending
+    }
+
     /// "40 min", "31 h", "3 days". Nil for missing, future or under 2 min.
     static func behindText(fillThroughUnix: Double?, now: Date) -> String? {
         guard let fillThroughUnix, fillThroughUnix.isFinite, fillThroughUnix > 0 else { return nil }
-        let behind = now.timeIntervalSince1970 - fillThroughUnix
-        guard behind >= 120 else { return nil }
+        return durationText(seconds: now.timeIntervalSince1970 - fillThroughUnix)
+    }
+
+    /// "40 min", "31 h", "3 days". Nil under 2 min.
+    static func durationText(seconds behind: TimeInterval) -> String? {
+        guard behind.isFinite, behind >= 120 else { return nil }
         let minutes = Int(behind / 60)
         if minutes < 60 { return "\(minutes) min" }
         let hours = Int((behind / 3_600).rounded())

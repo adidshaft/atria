@@ -342,6 +342,26 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
         XCTAssertNil(AtriaHomeRecoverySyncPresentation.behindText(fillThroughUnix: nil, now: now))
     }
 
+    /// Device 2026-09-27: cursor 68 h old, strap holding 26,529 records
+    /// (~1 per worn second). What is left is ~7 h, not 68 h.
+    func testCatchUpSaysHowMuchDataIsLeftFromTheStrapCount() {
+        let now = date(day: 9, hour: 19, minute: 0)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 950,
+            drainedThroughUnix: nil,
+            now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: now.addingTimeInterval(-68 * 3_600).timeIntervalSince1970,
+            strapPendingRecords: 26_529)
+        XCTAssertEqual(copy.compactTitle, "Catching up · 7 h left")
+        XCTAssertEqual(copy.title, "Catching up strap history · 7 h left")
+        let tiny = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 0, drainedThroughUnix: nil, now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: now.addingTimeInterval(-31 * 3_600).timeIntervalSince1970,
+            strapPendingRecords: 30)
+        XCTAssertEqual(tiny.compactTitle, "Catching up · 31 h behind",
+                       "under 2 min left falls back to the cursor")
+    }
+
     func testStrapCaughtUpReportAcceptsOnlyFreshCaughtUpLevel() {
         let now = date(day: 20, hour: 9, minute: 0).timeIntervalSince1970
         XCTAssertTrue(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(

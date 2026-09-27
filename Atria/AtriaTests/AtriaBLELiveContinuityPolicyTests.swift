@@ -4907,6 +4907,34 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
 
     /// Device 2026-09-27: one 50-row ACK per 10 min could never shrink a
     /// 26,867-record backlog. Large backlogs drain in timed slices.
+    /// Device 2026-09-27: with 26.5k records pending and healthy live HR the
+    /// 30 s retry was refused (never pause a healthy epoch), so catch-up
+    /// waited for reconnects. A large backlog now gets one slice per 240 s.
+    func testHealthyWornEpochYieldsToRateLimitedLargeBacklogSlice() {
+        typealias B = AtriaBLEManager
+        let now = Date(timeIntervalSince1970: 1_790_500_000)
+        XCTAssertTrue(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-241), lastSliceYieldedRows: true, now: now))
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-30), lastSliceYieldedRows: true, now: now),
+            "30 s after a slice, live HR keeps the link")
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-600), lastSliceYieldedRows: false, now: now),
+            "a dry strap never earns an HR pause")
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 120,
+            lastSliceFinishedAt: nil, lastSliceYieldedRows: true, now: now))
+        func window(due: Bool) -> AtriaBLEManager.IdleWindowHistoryDrainWindow {
+            B.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true, strapBacklogPending: true, strapIsCharging: false,
+                strapOffWrist: false, appBackgrounded: false, priorEpochEndedNaturally: false,
+                healthyLiveEpochActive: true, attendedForeground: true,
+                explicitMotionOwnershipActive: false, thermalParked: false,
+                lastPendingRecords: 26_529, largeBacklogSliceDue: due)
+        }
+        XCTAssertEqual(window(due: false), .none)
+        XCTAssertEqual(window(due: true), .appBackgroundIdle)
+    }
+
     func testLargeBacklogDrainsInTimedSlicesNotSingleAcks() {
         typealias B = AtriaBLEManager
         XCTAssertFalse(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(

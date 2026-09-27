@@ -796,7 +796,8 @@ extension AtriaBLEManager {
         thermalParked: Bool,
         consumeToNow: Bool = false,
         lastPendingRecords: UInt32? = nil,
-        queuedPullIntent: Bool = false
+        queuedPullIntent: Bool = false,
+        largeBacklogSliceDue: Bool = false
     ) -> IdleWindowHistoryDrainWindow {
         let consumeLiveTail = shouldTreatConsumeLiveTailAsBacklog(
             consumeToNow: consumeToNow,
@@ -825,6 +826,10 @@ extension AtriaBLEManager {
         // off-wrist, pre-HR reconnect, or an explicit queued gym fill.
         _ = attendedForeground
         _ = appBackgrounded
+        // Exception, rate-limited by `largeBacklogSliceIsDue`: a large
+        // backlog takes one bounded slice per interval so catch-up keeps
+        // moving while worn (history rows still carry the HR).
+        if healthyLiveEpochActive, largeBacklogSliceDue { return .appBackgroundIdle }
         if healthyLiveEpochActive { return .none }
         // Pre-HR (didConnect, first-HR race, natural gap): no live pulse yet.
         // 2026-08-23 04:27 recapture never armed because didConnect health is
@@ -934,8 +939,29 @@ extension AtriaBLEManager {
     /// it. Shorter while the user is looking at the app.
     nonisolated static let backlogSliceForegroundLimit: TimeInterval = 45
     nonisolated static let backlogSliceBackgroundLimit: TimeInterval = 120
-    /// Next slice while a fresh strap report shows a large backlog.
+    /// Next slice while a fresh strap report shows a large backlog and no
+    /// live pulse needs protecting (charger / off wrist).
     nonisolated static let backlogSliceRetryDelay: TimeInterval = 30
+    /// While worn with healthy live HR, a large backlog still gets one slice
+    /// per this interval (device 2026-09-27: the never-pause-a-healthy-epoch
+    /// rule left 26.5k records waiting 20+ min between reconnect-driven
+    /// slices). 45 s per ~5 min keeps live HR up ~84% in the foreground.
+    nonisolated static let backlogHealthyEpochSliceInterval: TimeInterval = 240
+
+    /// A healthy worn epoch may yield to one large-backlog slice once the
+    /// previous slice finished at least `backlogHealthyEpochSliceInterval`
+    /// ago and made progress (a dry strap never earns an HR pause).
+    nonisolated static func largeBacklogSliceIsDue(
+        pendingRecords: UInt32?,
+        lastSliceFinishedAt: Date?,
+        lastSliceYieldedRows: Bool,
+        now: Date
+    ) -> Bool {
+        guard let pendingRecords, pendingRecords >= backlogSlicePendingThreshold,
+              lastSliceYieldedRows else { return false }
+        guard let lastSliceFinishedAt else { return true }
+        return now.timeIntervalSince(lastSliceFinishedAt) >= backlogHealthyEpochSliceInterval
+    }
 
     nonisolated static func shouldFinishIdleWindowHistoryDrainAtACKBoundary(
         idleWindowDrainOwnsLink: Bool,
