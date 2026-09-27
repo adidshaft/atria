@@ -439,3 +439,15 @@ struct AtriaStrengthLoggingHeader: View {
         }
     }
 }
+
+/// Section-7 hues from the design file: strength amber #FF9F0A with the PR
+/// gold #FFD60A. On dark this is the same amber the stress metric already
+/// uses, so the strength identity stays inside the app's hue system.
+/// (Moved here 2026-09-27 when the unmounted progress/catalog screens that
+/// used to define it were deleted; the live workout set table uses it.)
+enum AtriaStrengthPalette {
+    static let amber = Color(red: 1.0, green: 0.624, blue: 0.039)        // #FF9F0A
+    static let amberTint = Color(red: 1.0, green: 0.776, blue: 0.439)    // #FFC670
+    static let recordGold = Color(red: 1.0, green: 0.839, blue: 0.039)   // #FFD60A
+    static let done = Color(red: 0.494, green: 0.886, blue: 0.604)       // #7EE29A
+}
