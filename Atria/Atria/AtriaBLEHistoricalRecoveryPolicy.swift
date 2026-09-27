@@ -925,6 +925,18 @@ extension AtriaBLEManager {
         consumeToNow && (lastPendingRecords ?? 0) > 0
     }
 
+    /// A strap backlog at least this large (~10 min of 1 Hz rows) is drained
+    /// in longer slices: one 50-row ACK per 10 minutes is ~5 rows/min while
+    /// the strap writes ~60/min, so the backlog could never shrink (device
+    /// 2026-09-27: 26,867 pending, history 69 h behind).
+    nonisolated static let backlogSlicePendingThreshold: UInt32 = 600
+    /// Live 2A37 pause per backlog slice. HR is not lost: history rows carry
+    /// it. Shorter while the user is looking at the app.
+    nonisolated static let backlogSliceForegroundLimit: TimeInterval = 45
+    nonisolated static let backlogSliceBackgroundLimit: TimeInterval = 120
+    /// Next slice while a fresh strap report shows a large backlog.
+    nonisolated static let backlogSliceRetryDelay: TimeInterval = 30
+
     nonisolated static func shouldFinishIdleWindowHistoryDrainAtACKBoundary(
         idleWindowDrainOwnsLink: Bool,
         acknowledgedPages: Int,
@@ -952,6 +964,10 @@ extension AtriaBLEManager {
             }
             if chargingOrOffWrist { return false }
             return heartRatePauseElapsed >= idleWindowConsumeHeartRatePauseLimit
+        }
+        if let pending = sliceStartPendingRecords, pending >= backlogSlicePendingThreshold {
+            let limit = attendedForeground ? backlogSliceForegroundLimit : backlogSliceBackgroundLimit
+            return heartRatePauseElapsed >= limit
         }
         if attendedForeground { return true }
         if chargingOrOffWrist { return false }

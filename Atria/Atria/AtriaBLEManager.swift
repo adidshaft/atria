@@ -22089,6 +22089,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func rangeLossBackfillRetryDelay(now: Date = Date()) -> TimeInterval {
         let defaults = UserDefaults.standard
+        // A fresh strap report of a large backlog chains slices quickly
+        // instead of waiting 10 minutes per 50-row chunk.
+        if let pending = defaults.object(forKey: OfflineSyncDefaults.flushDebtPendingRecords) as? Int,
+           pending >= Int(Self.backlogSlicePendingThreshold),
+           let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
+           now.timeIntervalSince1970 - observedAt <= 30 * 60 {
+            return Self.backlogSliceRetryDelay
+        }
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
               let requestedAt = defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double else {
             return rangeLossBackfillRetryInterval
