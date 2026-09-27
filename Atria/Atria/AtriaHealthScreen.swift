@@ -1375,6 +1375,11 @@ struct AtriaHealthScreen: View {
             AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights,
                                        targetSleepHours: sleepGoalHours)
 
+            // Slept vs needed, night by night (2026-09-27): built and tested
+            // but mounted nowhere; it is the sleep-debt picture behind the
+            // Insights "sleep debt" finding.
+            AtriaSleepDebtChartCard(nights: vitalsStore.state.sleepHistorySnapshot.nights)
+
             // Assessment P0.2 (2026-08-14): the provisional composite trails
             // the measured components it is built from — Sufficiency,
             // Efficiency, the night's evidence, and Consistency lead; an
