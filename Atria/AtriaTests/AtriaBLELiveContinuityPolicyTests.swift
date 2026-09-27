@@ -4905,6 +4905,26 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    /// Device 2026-09-27: one 50-row ACK per 10 min could never shrink a
+    /// 26,867-record backlog. Large backlogs drain in timed slices.
+    func testLargeBacklogDrainsInTimedSlicesNotSingleAcks() {
+        typealias B = AtriaBLEManager
+        XCTAssertFalse(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 3,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: 30))
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 40,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: B.backlogSliceBackgroundLimit))
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 10, attendedForeground: true,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: B.backlogSliceForegroundLimit),
+            "foreground slices give live HR back sooner")
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 1,
+            sliceStartPendingRecords: 40, heartRatePauseElapsed: 2),
+            "a small backlog keeps the one-ACK behaviour")
+    }
+
     func testIdleWindowDrainStopsAtOneAckThenRestoresHeartRate() {
         XCTAssertTrue(
             AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
