@@ -1051,8 +1051,15 @@ extension AtriaBLEManager {
     /// charging burst: write is still and there is no live pulse to seize.
     nonisolated static func idleWindowHistoryDrainAbsoluteBudgetLimit(
         chargingOrOffWrist: Bool,
-        consumeToNow: Bool = false
+        consumeToNow: Bool = false,
+        largeBacklog: Bool = false,
+        attendedForeground: Bool = false
     ) -> TimeInterval {
+        // A large strap backlog gets the timed backlog slice (device
+        // 2026-09-27: 320 rows in 21.7 s, then this 20 s budget stopped it).
+        if largeBacklog, !chargingOrOffWrist {
+            return attendedForeground ? backlogSliceForegroundLimit : backlogSliceBackgroundLimit
+        }
         if consumeToNow && !chargingOrOffWrist { return 20 }
         return chargingOrOffWrist ? 180 : 20
     }

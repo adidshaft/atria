@@ -18642,7 +18642,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 now: now,
                 absoluteLimit: Self.idleWindowHistoryDrainAbsoluteBudgetLimit(
                     chargingOrOffWrist: batteryIsCharging || !hasContact,
-                    consumeToNow: idleWindowConsumeToNowConsent
+                    consumeToNow: idleWindowConsumeToNowConsent,
+                    largeBacklog: (idleWindowRangeBeforeACK?.pendingRecords ?? 0)
+                        >= Self.backlogSlicePendingThreshold,
+                    attendedForeground: foregroundInteractiveMode
                 ),
                 rangeRequestedAt: idleWindowDrainRangeRequestedAt
             )
@@ -43559,6 +43562,22 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
               ready ? 1 : 0)
     }
 
+    nonisolated static let standardBatteryAuthorityWindow: TimeInterval = 60 * 60
+
+    nonisolated static func batteryEventDefersToStandardService(
+        lastSource: String?,
+        lastAcceptedAtUnix: Double?,
+        eventReportsCharging: Bool,
+        currentlyCharging: Bool,
+        nowUnix: Double
+    ) -> Bool {
+        guard eventReportsCharging == currentlyCharging,
+              let lastSource, lastSource.contains("2A19"),
+              let lastAcceptedAtUnix else { return false }
+        let age = nowUnix - lastAcceptedAtUnix
+        return age >= 0 && age <= standardBatteryAuthorityWindow
+    }
+
     private func handleUnknownProtocolPayload(_ payload: [UInt8],
                                               fullFrame: [UInt8],
                                               sourceUUID: CBUUID? = nil,
@@ -43579,6 +43598,24 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                     historyTransportActive: historyTransportActive
                 ) else {
                     AtriaDebugLog("ATRIADBG battery source=event_30 status=ignored reason=history_transport_not_battery_authority level=%d",
+                                  reading.level)
+                    return
+                }
+                // One battery authority (owner 2026-09-27: "showed 33% for a
+                // good amount of time … then fixed"). The strap's 0x30 event
+                // reads ~7 points below standard 2A19 on this strap, so letting
+                // whichever arrived last win made the % jump between sources
+                // while 2A19 was paused for history. 2A19 wins while it is
+                // recent; the event may still report a charger change.
+                if Self.batteryEventDefersToStandardService(
+                    lastSource: UserDefaults.standard.string(forKey: BatteryDefaults.source),
+                    lastAcceptedAtUnix: [BatteryDefaults.at, BatteryDefaults.notificationLeaseAt]
+                        .compactMap { UserDefaults.standard.object(forKey: $0) as? Double }.max(),
+                    eventReportsCharging: reading.isCharging,
+                    currentlyCharging: batteryIsCharging,
+                    nowUnix: Date().timeIntervalSince1970
+                ) {
+                    AtriaDebugLog("ATRIADBG battery source=event_30 status=ignored reason=standard_2a19_authority level=%d",
                                   reading.level)
                     return
                 }
