@@ -257,12 +257,39 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// keeps older callers on compact-shaped "live" wording only when the
     /// count is independently validated.
     var productRoute: AtriaStrapMotionProductRoute = .unspecified
+    /// Why live motion is deliberately off right now (power policy: strap or
+    /// phone battery, Low Power Mode, heat). While paused, steps can only come
+    /// from the strap's history bank, so the count is partial and grows as
+    /// history syncs: it is never a zero and never a finished day
+    /// (2026-09-24: live R10 is off below the strap-battery floor).
+    var livePauseNote: AtriaLiveDataNote? = nil
+
+    /// A power-policy pause (not the history catch-up note).
+    var liveIsPausedByPower: Bool {
+        guard let livePauseNote else { return false }
+        return livePauseNote != .catchingUpHistory
+    }
+
+    /// "Live steps paused · strap 12%" becomes the tile's reason line.
+    private var pausedFromHistoryText: String {
+        let reason = livePauseNote.map(\.text) ?? "Live steps paused"
+        if let capturedAt, count != nil {
+            return "History through "
+                + capturedAt.formatted(date: .omitted, time: .shortened)
+                + " · " + reason.replacingOccurrences(of: "Live steps paused", with: "live paused")
+        }
+        return reason + " · from strap history"
+    }
 
     /// Overrides the forward-looking "fills in as your strap syncs" line when the
     /// exact motion authority proves it will not. The verified count/coverage are
     /// untouched — only the progress promise changes. Returns nil to keep the
     /// existing copy for live/catchingUp/qualifying/stale and unclassified.
     var motionAvailabilityFootnote: String? {
+        if liveIsPausedByPower, completeness != .complete {
+            return "Live steps are paused to save battery. This count comes from "
+                + "strap history and grows as it syncs."
+        }
         switch motionAvailability {
         case .unavailableInCurrentTransport:
             return "Motion is unavailable in the current connection mode. "
@@ -313,6 +340,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     }
 
     var detailText: String {
+        if liveIsPausedByPower, completeness != .complete,
+           unavailabilityReason != .priorCycleReceiptOnly,
+           unavailabilityReason != .conflictingExactReceipts {
+            return pausedFromHistoryText
+        }
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
             if isOpenCycle {
