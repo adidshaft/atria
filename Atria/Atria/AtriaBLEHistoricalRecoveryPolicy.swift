@@ -1902,6 +1902,10 @@ extension AtriaBLEManager {
     /// the 6h gym-pull lifetime. Dry `no_rows` tails must not keep a 0x22
     /// snapshot that can re-pause 2A37. Keep the pointer only while a queued
     /// metadata-only gym is still inside the durable flash window.
+    /// Largest pending count that can be a dry live-tail leftover (~2 min of
+    /// 1 Hz rows). Anything larger is a real backlog to drain, never "stuck".
+    nonisolated static let dryLeftoverMaximumPendingRecords: UInt32 = 120
+
     nonisolated static func shouldRetireStuckIdleWindowLeftover(
         pendingRecords: UInt32?,
         queuedPullIntent: Bool,
@@ -1910,6 +1914,11 @@ extension AtriaBLEManager {
         durableLifetime: TimeInterval = 6 * 60 * 60
     ) -> Bool {
         guard let pending = pendingRecords, pending > 0 else { return false }
+        // Device 2026-09-27: every drain persisted the strap's real pending
+        // count (26,705) at start, and the next periodic check read it back
+        // as a "stuck leftover" and aborted that same drain 1 s in, before a
+        // single row arrived. History sat 69 h behind for three days.
+        guard pending <= dryLeftoverMaximumPendingRecords else { return false }
         if queuedPullIntent,
            shouldQueuePostWorkoutHistoryBackfill(
                endedWorkoutSampleCount: nil,
@@ -2977,6 +2986,16 @@ extension AtriaBLEManager {
         [
             [Cmd.sendHistoricalData, 0x00],
         ]
+    }
+
+    /// Live R10 (3F/01, which latches on the strap) freezes the history read
+    /// cursor (Mac R10/R11 pass 2026-09-23): the strap serves no rows while it
+    /// streams. When R10 is live, stop it first; the R10 live controller turns
+    /// it back on after the transfer (it never sends 3F/01 during history).
+    nonisolated static func productionHistoricalRecoveryInitCommands(stopLiveR10: Bool) -> [[UInt8]] {
+        stopLiveR10
+            ? [[Cmd.sendR10R11Realtime, 0x00]] + productionHistoricalRecoveryInitCommands()
+            : productionHistoricalRecoveryInitCommands()
     }
 
     /// A WHOOP historical row's inner UInt16 is a stored-record counter, not
