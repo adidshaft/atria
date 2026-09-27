@@ -53,6 +53,19 @@ final class AtriaVisualAuditUITests: XCTestCase {
         }
     }
 
+    /// Today scrolled: the collapsed rings sit in the top bar.
+    func testTodayCollapsedRingsInTopBar() {
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.tabBars.firstMatch.waitForExistence(timeout: 30))
+        sleep(4)
+        _ = tapTab(app, "Today")
+        edgeDrag(app, up: true)
+        capture(app, "today-collapsed-0")
+        edgeDrag(app, up: true)
+        capture(app, "today-collapsed-1")
+    }
+
     /// The Assistant with Apple's on-device model: one typed question.
     func testAssistantOnDeviceAnswer() {
         let app = XCUIApplication()

@@ -347,7 +347,11 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
 
         let home = try source("AtriaHomeView.swift")
         XCTAssertTrue(todaySource.contains(".preference(key: AtriaTodayCompactRingPreferenceKey.self"))
-        XCTAssertTrue(home.contains(".overlayPreferenceValue(AtriaTodayCompactRingPreferenceKey.self)"))
+        // 2026-09-27 (owner: "shrink it to top bar"): the surface reports the
+        // rings and the pinned bar draws them, instead of a floating overlay
+        // that covered the cards.
+        XCTAssertTrue(home.contains(".onPreferenceChange(AtriaTodayCompactRingPreferenceKey.self)"))
+        XCTAssertTrue(home.contains("AtriaTodayCompactRingChromeHost(store: compactRingStore)"))
         XCTAssertTrue(collapse.contains("AtriaTodayCompactRingRail"))
         XCTAssertTrue(home.contains("private struct AtriaDashboardScrollSurface"))
         XCTAssertTrue(home.contains("onScrollGeometryChange(for: Bool.self)"),
