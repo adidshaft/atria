@@ -352,6 +352,15 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 26_705,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            ),
+            "device 2026-09-27: a real 26,705-record backlog is a drain, never a stuck leftover"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
                 pendingRecords: 0,
                 queuedPullIntent: false,
                 metadataOnlyWorkoutEnds: [],
@@ -2416,7 +2425,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         let reassembly = try XCTUnwrap(source.range(
             of: "let completeFrames = AtriaWhoop4CompactIMUDecoder.completeFrames("
         ))
-        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(2_800))
+        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(3_600))
         XCTAssertTrue(reassemblyTail.contains("isolatedNotify: data"))
         XCTAssertTrue(reassemblyTail.contains("proprietaryFrameReassembler.feed("))
         XCTAssertTrue(reassemblyTail.contains(
@@ -2432,9 +2441,17 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             reassemblyTail.contains("recordNativeCompactIMUFrame("),
             "isolated 0x33 must persist independently of the attended R10 window"
         )
+        // 2026-09-27: native R10 is archived only inside an attended
+        // calibration capture. Once R10 became the all-day live source, the
+        // unconditional archive wrote every frame to disk (device
+        // diskwrites_resource + cpu_resource_fatal reports).
         XCTAssertTrue(
             reassemblyTail.contains("recordNativeR10MotionFrame("),
-            "CRC-valid native R10 must persist outside the calibration window"
+            "CRC-valid native R10 is still archived for calibration captures"
+        )
+        XCTAssertTrue(
+            reassemblyTail.contains("} else if let captureUntil, receivedAt <= captureUntil,\n                      AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame("),
+            "native R10 archiving is gated on the attended calibration window"
         )
     }
 
