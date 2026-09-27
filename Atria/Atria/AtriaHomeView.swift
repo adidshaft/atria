@@ -5215,13 +5215,15 @@ struct AtriaHomeView: View {
                     // tile already discloses the same maturity — HRV/RHR
                     // "Calibrating · night N of 14" and VO₂ "Improving · day
                     // N of M" — so the band carries sync-truth states only.
-                    AtriaHomeRecoveryStatusHost(coreLiveStore: model.coreLiveStore)
-                    if showConnectivityPill {
-                        connectivityPill
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
+                    // ONE status bar (owner 2026-09-27: "just keep one liquid UI
+                    // bar for all the statuses"): pull-to-refresh, history
+                    // catch-up and live-data pauses page inside this band
+                    // instead of stacking a caption, a banner and a pill.
+                    AtriaHomeRecoveryStatusHost(
+                        coreLiveStore: model.coreLiveStore,
+                        liveDataNoteStore: model.liveDataNoteStore,
+                        refreshingText: showConnectivityPill ? connectivityPillText : nil
+                    )
                 }
                 .background {
                     // Occluding scrim (2026-07-08, device-reported): the chrome
@@ -5339,7 +5341,6 @@ struct AtriaHomeView: View {
 
     private var topChrome: some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
-                           liveDataNoteStore: model.liveDataNoteStore,
                            coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            prefersLiveActivityStatus: workoutSession != nil,
@@ -5427,6 +5428,9 @@ struct AtriaHomeView: View {
     /// a pending gap cannot launch another competing recovery attempt.
     private struct AtriaHomeRecoveryStatusHost: View {
         @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+        @ObservedObject var liveDataNoteStore: AtriaHomeModel.LiveDataNoteStore
+        /// Pull-to-refresh feedback, shown first while it lasts.
+        var refreshingText: String?
         /// Read inside the timeline tick rather than captured as a value, so a
         /// maturing baseline reaches the banner without depending on a
         /// publisher hop from the session store.
@@ -5524,8 +5528,22 @@ struct AtriaHomeView: View {
         /// full row on.
         private func notices(now: Date) -> [Status] {
             var result: [Status] = []
-            if let status = status(now: now) {
-                result.append(status)
+            if let refreshingText {
+                result.append(Status(title: refreshingText,
+                                     symbol: "arrow.clockwise",
+                                     accessibilityLabel: refreshingText))
+            }
+            let sync = status(now: now)
+            if let sync {
+                result.append(sync)
+            }
+            // A catch-up note is redundant next to the sync notice above; a
+            // pause reason is not (it says why live data stopped).
+            if let note = liveDataNoteStore.note,
+               !(note == .catchingUpHistory && sync != nil) {
+                result.append(Status(title: note.text,
+                                     symbol: note.systemImage,
+                                     accessibilityLabel: note.text))
             }
             if let maturity = maturityText() {
                 result.append(Status(title: maturity,
@@ -6917,6 +6935,18 @@ enum AtriaHomeRecoverySyncPresentation {
             locale: locale
         )
 
+        // Where catch-up actually is (owner 2026-09-27: "user should be
+        // always aware where the catching up is"): the fill cursor is the
+        // last page the strap confirmed, so now minus it is how far behind
+        // history still is. Only when that cursor is known and sane.
+        // The cursor only: "newest record" can sit ahead of what is filled,
+        // so using it would understate how far behind history is.
+        if let behind = behindText(fillThroughUnix: drainCursorUnix, now: now) {
+            return Copy(title: "Catching up strap history · \(behind) behind",
+                        compactTitle: "Catching up · \(behind) behind",
+                        accessibilityLabel: "Catching up strap history. It is \(behind) behind; "
+                            + "live heart rate is current.")
+        }
         var titleParts = ["Syncing strap history"]
         // Keep the channel word in the compact fallback (shown when the full
         // title does not fit, e.g. narrow widths): "Syncing history · …" so the
@@ -6976,6 +7006,18 @@ enum AtriaHomeRecoverySyncPresentation {
         return Copy(title: titleParts.joined(separator: " · "),
                     compactTitle: compactParts.joined(separator: " · "),
                     accessibilityLabel: accessibilityParts.joined(separator: " "))
+    }
+
+    /// "40 min", "31 h", "3 days". Nil for missing, future or under 2 min.
+    static func behindText(fillThroughUnix: Double?, now: Date) -> String? {
+        guard let fillThroughUnix, fillThroughUnix.isFinite, fillThroughUnix > 0 else { return nil }
+        let behind = now.timeIntervalSince1970 - fillThroughUnix
+        guard behind >= 120 else { return nil }
+        let minutes = Int(behind / 60)
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = Int((behind / 3_600).rounded())
+        if hours < 48 { return "\(hours) h" }
+        return "\(Int((behind / 86_400).rounded())) days"
     }
 
     private static func syncedThroughText(drainedThroughUnix: Double?,
@@ -15410,7 +15452,6 @@ enum AtriaHomeChromeLayout {
 
 private struct AtriaHomeTopChrome: View {
     let statusStore: AtriaHomeModel.StatusStore
-    let liveDataNoteStore: AtriaHomeModel.LiveDataNoteStore
     let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let prefersLiveActivityStatus: Bool
@@ -15435,9 +15476,7 @@ private struct AtriaHomeTopChrome: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             } else {
-                // Top-aligned: the optional live-data note under the pill
-                // must not push the action buttons down.
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .center, spacing: 10) {
                     if AtriaHomeChromeLayout.showsHomeStatusChip(
                         workoutIsActive: prefersLiveActivityStatus
                     ) {
@@ -15460,14 +15499,11 @@ private struct AtriaHomeTopChrome: View {
     }
 
     private var statusChip: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            AtriaTopStatusChipHost(statusStore: statusStore,
-                                   coreLiveStore: coreLiveStore,
-                                   pulseLiveStore: pulseLiveStore,
-                                   onTapWhenConnected: onShowStrap,
-                                   onTapWhenNotConnected: onTapStatusWhenNotConnected)
-            AtriaLiveDataNoteCaption(store: liveDataNoteStore)
-        }
+        AtriaTopStatusChipHost(statusStore: statusStore,
+                               coreLiveStore: coreLiveStore,
+                               pulseLiveStore: pulseLiveStore,
+                               onTapWhenConnected: onShowStrap,
+                               onTapWhenNotConnected: onTapStatusWhenNotConnected)
     }
 
     private var actionButtons: some View {
@@ -15500,25 +15536,6 @@ private struct AtriaHomeTopChrome: View {
             }
             .buttonStyle(AtriaHeaderActionButtonStyle())
             .accessibilityLabel("Settings")
-        }
-    }
-}
-
-/// One quiet line under the status pill: why live data is paused or what is
-/// catching up. Nothing renders when everything is live.
-private struct AtriaLiveDataNoteCaption: View {
-    @ObservedObject var store: AtriaHomeModel.LiveDataNoteStore
-
-    var body: some View {
-        if let note = store.note {
-            Label(note.text, systemImage: note.systemImage)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .padding(.leading, 12)
-                .transition(.opacity)
-                .accessibilityLabel(note.text)
         }
     }
 }
