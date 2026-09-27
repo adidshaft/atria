@@ -2819,7 +2819,9 @@ struct AtriaStrapStepsDetailSheet: View {
                                     : "Motion not live"
                             )
                                 .font(.headline)
-                            Text(status.lastMotionText.capitalized)
+                            // Sentence case: .capitalized made "1m ago" read "1M Ago".
+                            Text(status.lastMotionText.prefix(1).uppercased()
+                                 + status.lastMotionText.dropFirst())
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -7545,7 +7547,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
+        formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
         return formatter
     }()
 

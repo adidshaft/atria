@@ -236,7 +236,8 @@ struct AtriaStrapScreen: View {
         case .strapMG: return "WHOOP MG · \(identity)"
         case .strap5: return "WHOOP 5.0 · \(identity)"
         case .strap4: return "WHOOP 4.0 · \(identity)"
-        case .strap4Class: return "WHOOP-class strap · \(identity)"
+        // The generic "Strap" identity adds nothing ("WHOOP-class strap · Strap").
+        case .strap4Class: return identity == "Strap" ? "WHOOP-class strap" : "WHOOP-class strap · \(identity)"
         case .strap3: return "WHOOP 3.0 · \(identity)"
         case .unknown: return identity
         }

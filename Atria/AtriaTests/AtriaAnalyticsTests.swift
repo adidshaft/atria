@@ -1528,7 +1528,14 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(earlier, 7)
         XCTAssertEqual(later, 7)
         XCTAssertLessThan(adjusted, 0.001)
-        XCTAssertTrue(insight?.valueText.contains("2:30 PM") == true)
+        // The time follows the device's 12/24-hour setting (2026-09-27).
+        let expectedTime: String = {
+            let formatter = DateFormatter()
+            formatter.setLocalizedDateFormatFromTemplate("jmm")
+            let date = Calendar(identifier: .gregorian).date(from: DateComponents(hour: 14, minute: 30))!
+            return formatter.string(from: date)
+        }()
+        XCTAssertTrue(insight?.valueText.contains(expectedTime) == true)
         XCTAssertTrue(insight?.valueText.contains("7 vs 7 days") == true)
     }
 

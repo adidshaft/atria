@@ -2381,7 +2381,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "compact ingest must stamp liveness on the BLE queue before the MainActor hop"
         )
         XCTAssertTrue(
-            r10Ingress.contains("noteLiveIMULiveness(receivedAt: stampAt)"),
+            r10Ingress.contains("noteLiveIMULiveness(receivedAt: stampAt, notifyTypeHex: notifyTypeHex)"),
             "compact ingest must stamp lastR10MotionFrameAt even when sit-gate skips gyro"
         )
         XCTAssertFalse(value.contains("r10CallbackIngressQueue.async"),
@@ -13477,7 +13477,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "compact 0x33 must refresh lastR10MotionFrameAt or 6A/51 fires on a live stream")
         XCTAssertFalse(body.contains("Cmd.sendR10R11Realtime"))
 
-        let liveStart = try XCTUnwrap(source.range(of: "private func noteLiveIMULiveness(receivedAt: Date)"))
+        let liveStart = try XCTUnwrap(source.range(of: "private func noteLiveIMULiveness(receivedAt: Date, notifyTypeHex: String)"))
         let liveBody = String(source[liveStart.lowerBound...].prefix(1100))
         XCTAssertTrue(liveBody.contains("strapStream5NotifyConfirmed = true"),
                       "a live 0x33 frame is stream-5 proof even when isNotifying is false")
