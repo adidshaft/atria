@@ -137,7 +137,8 @@ enum AtriaLiveDataNote: Equatable, Sendable {
     var text: String {
         switch self {
         case .catchingUpHistory: return "Catching up strap history"
-        case .liveMotionPausedStrapBattery(let level): return "Live steps paused · strap \(level)%"
+        // The status pill already shows the strap %, so the reason is enough.
+        case .liveMotionPausedStrapBattery: return "Live steps paused to save strap battery"
         case .liveMotionPausedPhoneBattery: return "Live steps paused · phone battery low"
         case .liveMotionPausedLowPowerMode: return "Live steps paused · Low Power Mode"
         case .liveMotionPausedPhoneHot: return "Live steps paused · phone is hot"

@@ -83,7 +83,8 @@ final class AtriaWhoop4PowerPolicyTests: XCTestCase {
         let lowStrap = P.Inputs(strapBattery: 12, phoneBattery: 80)
         XCTAssertEqual(AtriaLiveDataNote.from(decision: P.evaluate(lowStrap, previous: nil), inputs: lowStrap,
                                               catchingUpHistory: false), .liveMotionPausedStrapBattery(12))
-        XCTAssertEqual(AtriaLiveDataNote.liveMotionPausedStrapBattery(12).text, "Live steps paused · strap 12%")
+        // 2026-09-27: the status pill already shows the %; the note gives the reason.
+        XCTAssertEqual(AtriaLiveDataNote.liveMotionPausedStrapBattery(12).text, "Live steps paused to save strap battery")
         let lpm = P.Inputs(strapBattery: 60, phoneBattery: 80, phoneLowPowerMode: true)
         XCTAssertEqual(AtriaLiveDataNote.from(decision: P.evaluate(lpm, previous: nil), inputs: lpm,
                                               catchingUpHistory: false), .liveMotionPausedLowPowerMode)

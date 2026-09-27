@@ -321,6 +321,27 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
         XCTAssertFalse(yesterday.title.contains("saved"))
     }
 
+    /// 2026-09-27 owner: "user should be always aware where the catching up
+    /// is". With a strap-confirmed fill cursor the notice says how far behind.
+    func testCatchUpSaysHowFarBehindFromTheFillCursor() {
+        let now = date(day: 9, hour: 19, minute: 0)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 271,
+            drainedThroughUnix: date(day: 9, hour: 18, minute: 0).timeIntervalSince1970,
+            now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: date(day: 8, hour: 12, minute: 0).timeIntervalSince1970)
+        XCTAssertEqual(copy.title, "Catching up strap history · 31 h behind")
+        XCTAssertEqual(copy.compactTitle, "Catching up · 31 h behind")
+        XCTAssertTrue(copy.accessibilityLabel.contains("live heart rate is current"))
+        XCTAssertEqual(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(-40 * 60).timeIntervalSince1970, now: now), "40 min")
+        XCTAssertEqual(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(-3 * 86_400).timeIntervalSince1970, now: now), "3 days")
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(60).timeIntervalSince1970, now: now), "future cursor")
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.behindText(fillThroughUnix: nil, now: now))
+    }
+
     func testStrapCaughtUpReportAcceptsOnlyFreshCaughtUpLevel() {
         let now = date(day: 20, hour: 9, minute: 0).timeIntervalSince1970
         XCTAssertTrue(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
