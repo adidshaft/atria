@@ -90,13 +90,14 @@ final class AtriaLayoutModelTests: XCTestCase {
         var config = AtriaHomeLayoutConfig.default
         let original = config.glanceMetrics
 
-        config.moveGlanceMetric("workouts", before: "hrv")
+        let first = original[0]
+        config.moveGlanceMetric("workouts", before: first)
 
         XCTAssertEqual(config.glanceMetrics.first, "workouts")
         XCTAssertEqual(Set(config.glanceMetrics), Set(original))
         XCTAssertEqual(config.glanceMetrics.count, original.count)
 
-        config.moveGlanceMetric("unknown", before: "hrv")
+        config.moveGlanceMetric("unknown", before: first)
         XCTAssertEqual(config.glanceMetrics.first, "workouts", "Unknown payloads must be ignored")
     }
 
@@ -138,7 +139,10 @@ final class AtriaLayoutModelTests: XCTestCase {
     func testDefaultHomeLayoutConfigLeadsWithMeasuredMetricsOnly() {
         let config = AtriaHomeLayoutConfig.default.validated()
 
-        XCTAssertEqual(config.glanceMetrics.count, 7)
+        // 2026-09-27: Insights (learned findings from measured rollups) leads
+        // the default deck; the rest are measured metrics.
+        XCTAssertEqual(config.glanceMetrics.count, 8)
+        XCTAssertEqual(config.glanceMetrics.first, "insights")
         XCTAssertTrue(config.glanceMetrics.contains("sleepEfficiency"))
         XCTAssertFalse(config.glanceMetrics.contains("bioAge"),
                        "the default morning deck must not lead with an invented age")
@@ -182,5 +186,32 @@ final class AtriaLayoutModelTests: XCTestCase {
         for raw in routedRawValues {
             XCTAssertNotNil(AtriaTodayMetric(rawValue: raw), "\(raw) should still be a valid AtriaTodayMetric case")
         }
+    }
+
+    /// 2026-09-27: saved layouts get Insights once (first, wide); removing it
+    /// afterwards sticks.
+    func testInsightsIsIntroducedOnceIntoSavedLayouts() throws {
+        let suite = "atria.layout.insights.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var saved = AtriaHomeLayoutConfig.default
+        saved.glanceMetrics = ["hrv", "steps"]
+        saved.sizeOverrides = [:]
+        let json = String(decoding: try saved.encodedData(), as: UTF8.self)
+        defaults.set(json, forKey: AtriaHomeLayoutConfig.storageKey)
+
+        let migrated = AtriaHomeLayoutConfig.migratedStoredJSON(defaults: defaults)
+        let config = try AtriaHomeLayoutConfig.decoded(from: Data(migrated.utf8))
+        XCTAssertEqual(config.glanceMetrics, ["insights", "hrv", "steps"])
+        XCTAssertEqual(config.sizeOverrides["insights"], "wide")
+
+        var removed = config
+        removed.glanceMetrics.removeFirst()
+        defaults.set(String(decoding: try removed.encodedData(), as: UTF8.self),
+                     forKey: AtriaHomeLayoutConfig.storageKey)
+        let again = try AtriaHomeLayoutConfig.decoded(
+            from: Data(AtriaHomeLayoutConfig.migratedStoredJSON(defaults: defaults).utf8))
+        XCTAssertEqual(again.glanceMetrics, ["hrv", "steps"], "a removed Insights tile stays removed")
+        XCTAssertEqual(AtriaHomeLayoutConfig.default.glanceMetrics.first, "insights")
     }
 }

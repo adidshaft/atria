@@ -136,8 +136,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                 encoding: .utf8)
 
         XCTAssertTrue(source.contains(".safeAreaInset(edge: .top, spacing: 0)"))
-        XCTAssertTrue(source.contains(".safeAreaPadding(.top, 8)"),
-                      "Pinned metrics must consume scene safe-area geometry instead of using a cutout-blind offset")
+        // 2026-09-27: the collapsed rings moved INTO the pinned top bar
+        // (which sits in the safe-area inset), so no floating overlay needs
+        // its own safe-area padding.
+        XCTAssertTrue(source.contains("AtriaTodayCompactRingChromeHost(store: compactRingStore)"),
+                      "Pinned metrics live in the safe-area top bar, not a cutout-blind overlay")
         XCTAssertTrue(source.contains("!prefersLiveActivityStatus"))
         XCTAssertTrue(source.contains("prefersLiveActivityStatus: workoutSession != nil"))
         XCTAssertTrue(source.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
