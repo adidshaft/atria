@@ -53,6 +53,29 @@ final class AtriaVisualAuditUITests: XCTestCase {
         }
     }
 
+    /// The Assistant with Apple's on-device model: one typed question.
+    func testAssistantOnDeviceAnswer() {
+        let app = XCUIApplication()
+        app.launchArguments += ["--atria-ui-screen", "chat"]
+        app.launch()
+        sleep(6)
+        capture(app, "assistant-0")
+        let field = app.textFields["Ask about your data"].exists
+            ? app.textFields["Ask about your data"]
+            : app.textViews["Ask about your data"]
+        guard field.waitForExistence(timeout: 8) else {
+            capture(app, "assistant-no-ask-field")
+            return
+        }
+        field.tap()
+        field.typeText("How did I sleep this week compared with usual?")
+        app.buttons["Ask"].tap()
+        sleep(20)
+        capture(app, "assistant-1")
+        edgeDrag(app, up: true)
+        capture(app, "assistant-2")
+    }
+
     /// Scrolled tabs collapse the tab bar to one button; scroll back to the
     /// top (edge drags, so no chart catches them) until the tab is hittable.
     private func tapTab(_ app: XCUIApplication, _ name: String) -> Bool {
