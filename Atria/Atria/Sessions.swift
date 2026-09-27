@@ -10200,6 +10200,13 @@ final class SessionStore: ObservableObject {
     /// assignment remains independently tracked by `dailyMetricHistoryGeneration`.
     private(set) var dailyMetricHistoryRevision = 0
     @Published private(set) var cachedMaxHRSuggestion: AtriaMaxHRSuggestion?
+    /// True once the suggestion has been computed, whether or not it found
+    /// one. `cachedMaxHRSuggestion == nil` also means "no suggestion", so the
+    /// monthly guard used to recompute it on EVERY rollup save for anyone
+    /// without a pending suggestion — 0.5–1.2 s main-thread hangs on device
+    /// (HangTracer 2026-09-27, AtriaMaxHRSuggestionEngine.sustainedPeak).
+    private var maxHRSuggestionComputed = false
+    private var maxHRSuggestionTask: Task<Void, Never>?
     @Published private(set) var dailyMetricSparklines = DailyMetricSparklineCache.empty
     /// Restore builds this projection on the backup worker. The one-shot slot
     /// lets `dailyMetricHistory` publish its matching cache without rebuilding
@@ -17207,6 +17214,7 @@ final class SessionStore: ObservableObject {
         recoveryProjectionCache.invalidate()
         cachedTodayTRIMP = nil
         cachedMaxHRSuggestion = snapshot.maxHRSuggestion
+        maxHRSuggestionComputed = true
         cachedBiologicalAge = snapshot.biologicalAge
         cachedBiologicalAgeWeeklySummary = snapshot.biologicalAgeWeeklySummary
         cachedBiologicalAgeSignatureMemo = snapshot.biologicalAgeSignatureMemo
@@ -24679,6 +24687,7 @@ final class SessionStore: ObservableObject {
         self.cachedHomeSavedAggregate = nil
         self.cachedCurrentCollectionStatus = nil
         self.cachedMaxHRSuggestion = nil
+        self.maxHRSuggestionComputed = false
         self.cachedBiologicalAge = nil
         self.cachedBiologicalAgeWeeklySummary = nil
         self.cachedBiologicalAgeSignatureMemo = nil
@@ -29526,7 +29535,14 @@ final class SessionStore: ObservableObject {
             return true
         }
         if mode == "replace" {
-            rebuildBaselineFromEligibleSessions(reason: "session-add-replace")
+            // Off the main thread (HangTracer 2026-09-27: 1.5–2.4 s launch
+            // hangs — every relaunch ends the restored session, a "replace",
+            // and the full baseline rebuild ran here on MainActor). The same
+            // generation-fenced detached rebuild the background path uses
+            // publishes the baseline and its dependent caches when done.
+            deferredSessionBoundaryDerivedPublicationGeneration &+= 1
+            deferredSessionBoundaryDerivedPublicationPending = true
+            resumeDeferredSessionBoundaryDerivedPublicationIfNeeded(reason: "foreground_replace")
         } else {
             learnBaselineIfEligible(from: s, reason: "session-add")
         }
@@ -30009,10 +30025,28 @@ final class SessionStore: ObservableObject {
         if !force {
             let monthKey = Self.monthKey(for: now, calendar: calendar)
             let prior = UserDefaults.standard.string(forKey: Self.maxHRSuggestionLastRollupMonthKey)
-            guard prior != monthKey || cachedMaxHRSuggestion == nil else { return }
+            guard prior != monthKey || !maxHRSuggestionComputed else { return }
             UserDefaults.standard.set(monthKey, forKey: Self.maxHRSuggestionLastRollupMonthKey)
+            // The rollup path is background work: scan off the main thread and
+            // publish when done (explicit reads/dismiss/accept stay synchronous).
+            let inputs = maxHRSuggestionInputs(now: now, calendar: calendar)
+            maxHRSuggestionTask?.cancel()
+            maxHRSuggestionTask = Task { @MainActor [weak self] in
+                let suggestion = await Task.detached(priority: .utility) {
+                    Self.computeMaxHRSuggestion(inputs)
+                }.value
+                guard let self, !Task.isCancelled else { return }
+                self.cachedMaxHRSuggestion = suggestion
+                self.maxHRSuggestionComputed = true
+                AtriaDebugLog("ATRIADBG max_hr_suggestion_rollup status=%@ reason=%@ observed_peak=%d mode=background",
+                              suggestion == nil ? "none" : "ready",
+                              reason,
+                              suggestion?.observedPeak ?? 0)
+            }
+            return
         }
         cachedMaxHRSuggestion = makeMaxHRSuggestion(now: now, calendar: calendar)
+        maxHRSuggestionComputed = true
         AtriaDebugLog("ATRIADBG max_hr_suggestion_rollup status=%@ reason=%@ observed_peak=%d current_max_hr=%d",
                       cachedMaxHRSuggestion == nil ? "none" : "ready",
                       reason,
@@ -30023,6 +30057,40 @@ final class SessionStore: ObservableObject {
     private static func monthKey(for date: Date, calendar: Calendar) -> String {
         let components = calendar.dateComponents([.year, .month], from: date)
         return String(format: "%04d-%02d", components.year ?? 0, components.month ?? 0)
+    }
+
+    private struct MaxHRSuggestionInputs: Sendable {
+        let sessionPoints: [[(t: Double, bpm: Int)]]
+        let currentMaxHR: Int
+        let dismissal: AtriaMaxHRSuggestionEngine.Dismissal?
+        let now: Date
+        let calendar: Calendar
+    }
+
+    private func maxHRSuggestionInputs(now: Date, calendar: Calendar) -> MaxHRSuggestionInputs {
+        let windowStart = calendar.date(byAdding: .day,
+                                        value: -AtriaMaxHRSuggestionEngine.lookbackDays,
+                                        to: calendar.startOfDay(for: now))
+            ?? now.addingTimeInterval(TimeInterval(-AtriaMaxHRSuggestionEngine.lookbackDays * 24 * 60 * 60))
+        let points = canonicalSessions()
+            .filter { $0.start >= windowStart && $0.start <= now }
+            .map { session in session.points.map { (t: $0.t, bpm: $0.bpm) } }
+        return MaxHRSuggestionInputs(sessionPoints: points,
+                                     currentMaxHR: profile.maxHR,
+                                     dismissal: AtriaMaxHRSuggestionEngine.loadDismissal(),
+                                     now: now,
+                                     calendar: calendar)
+    }
+
+    private nonisolated static func computeMaxHRSuggestion(_ inputs: MaxHRSuggestionInputs) -> AtriaMaxHRSuggestion? {
+        let peaks = inputs.sessionPoints.compactMap {
+            AtriaMaxHRSuggestionEngine.sustainedPeak(points: $0)
+        }
+        return AtriaMaxHRSuggestionEngine.suggestion(sessionPeaks: peaks,
+                                                     currentMaxHR: inputs.currentMaxHR,
+                                                     dismissed: inputs.dismissal,
+                                                     now: inputs.now,
+                                                     calendar: inputs.calendar)
     }
 
     private func makeMaxHRSuggestion(now: Date = Date(), calendar: Calendar = .current) -> AtriaMaxHRSuggestion? {
@@ -30047,7 +30115,7 @@ final class SessionStore: ObservableObject {
     }
 
     func maxHRSuggestion(now: Date = Date(), calendar: Calendar = .current) -> AtriaMaxHRSuggestion? {
-        if cachedMaxHRSuggestion == nil {
+        if !maxHRSuggestionComputed {
             refreshMaxHRSuggestion(reason: "read", now: now, calendar: calendar, force: true)
         }
         return cachedMaxHRSuggestion
