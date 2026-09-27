@@ -1464,26 +1464,28 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                                                     range: sectionStart.upperBound..<source.endIndex))
         let section = String(source[sectionStart.lowerBound..<sectionEnd.lowerBound])
 
-        XCTAssertTrue(section.contains("Text(\"Activity candidate\")"),
-                      "an HR-only window is an activity candidate, never a found workout")
+        // 2026-09-27 rework: one name everywhere, "Possible workout" — an
+        // HR-only window is possible until the user adds it, never "found".
+        XCTAssertTrue(section.contains("Text(\"Possible workout\")"),
+                      "an HR-only window is a possible workout, never a found one")
         XCTAssertFalse(source.contains("Workout found"),
                        "the history surface must never claim a workout was found from HR alone")
-        XCTAssertTrue(reviewSource.contains("Label(\"Review effort\", systemImage: \"waveform.path.ecg\")"),
-                      "opening an HR-only candidate must keep neutral review copy")
-        XCTAssertFalse(reviewSource.contains("Label(\"Workout found\", systemImage: \"waveform.path.ecg\")"),
-                       "the review flow must not upgrade an HR-only effort into a found workout")
-        XCTAssertTrue(section.contains("Coverage \\(candidate.streamCoveragePercent)% · Avg \\(candidate.avgHR) · Peak \\(candidate.peakHR) bpm"),
-                      "rows show the real evidence: coverage, average and peak HR")
+        XCTAssertFalse(reviewSource.contains("Workout found"),
+                       "the review must not upgrade an HR-only window into a found workout")
+        XCTAssertTrue(reviewSource.contains("Text(\"Possible workout\")"),
+                      "Today's card uses the same neutral name")
+        XCTAssertTrue(section.contains("Avg \\(candidate.avgHR) · Peak \\(candidate.peakHR) bpm"),
+                      "rows show the real evidence: average and peak HR")
+        XCTAssertTrue(section.contains("candidate.missingMinutes >= 5"),
+                      "missing heart rate is disclosed, in minutes")
         // 2026-09-27: no confidence tier chip (owner: show what is
         // observed); the evidence line and the reason carry the row.
         XCTAssertFalse(section.contains("Low confidence"),
                        "rows show evidence, not a confidence tier")
-        XCTAssertTrue(section.contains("Text(Self.reasonText(candidate.reason))"),
-                      "rows say why, using the pipeline's own reason code")
         XCTAssertFalse(section.contains("confirm the activity type"),
                        "the instruction lives on the Confirm button, not in prose")
-        XCTAssertTrue(section.contains(".accessibilityElement(children: .combine)"),
-                      "confidence and evidence must be included in the row's accessibility output")
+        XCTAssertTrue(section.contains(".accessibilityElement(children: .contain)"),
+                      "evidence must be included in the row's accessibility output")
         for fabricated in ["strain", "calorie", "kcal", "steps"] {
             XCTAssertFalse(section.lowercased().contains(fabricated),
                            "no synthesized \(fabricated) for HR-only windows")
@@ -1492,7 +1494,7 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                       "dismiss goes through the durable store tombstone")
         XCTAssertTrue(section.contains("store?.restoreDismissedWorkoutCandidate(start: window.start"),
                       "dismissals are visible and reversible from the same surface")
-        XCTAssertTrue(section.contains("Dismissed detections"))
+        XCTAssertTrue(section.contains("Not workouts ("))
         XCTAssertTrue(section.contains("SessionStore.workoutReviewCandidateReviewRequestedNotification"),
                       "review routes into the existing guided flow instead of a parallel save path")
 

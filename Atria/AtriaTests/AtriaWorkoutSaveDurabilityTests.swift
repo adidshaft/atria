@@ -2120,10 +2120,13 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                 .appendingPathComponent("Atria/AtriaHomeView.swift"),
             encoding: .utf8
         )
-        let start = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutReviewFlow: View"))
-        let end = try XCTUnwrap(source.range(of: "private struct AtriaWorkoutSummaryExerciseHistory:",
-                                             range: start.upperBound..<source.endIndex))
-        let reviewFlow = String(source[start.lowerBound..<end.lowerBound])
+        // 2026-09-27: the review is its own file (one-screen sheet).
+        _ = source
+        let reviewFlow = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaWorkoutReviewSheet.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertFalse(reviewFlow.contains("AtriaWorkoutShareSheet"),
                        "The detector review must not own or present a share composer before save")
