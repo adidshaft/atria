@@ -46,59 +46,23 @@ struct AtriaWorkoutReviewSheet: View {
     }
 
     var body: some View {
+        // Same shape as the Sleep review (owner 2026-09-27: "similar to Sleep
+        // one … easily tappable"): stacked cards on a scroll, big tap targets,
+        // compact time pickers with a window timeline, Save in the toolbar.
         NavigationStack {
-            Form {
-                Section {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
                     heartRateCard
-                        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-                }
-
-                Section("Time") {
-                    DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
-                    DatePicker("End", selection: $end, displayedComponents: [.date, .hourAndMinute])
-                    if end <= start {
-                        Label("End must be after start", systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
+                        .workoutReviewCard(tint: .orange)
+                    detailsCard
+                    if selectedType.supportsExerciseSelection {
+                        exercisesCard
                     }
                 }
-
-                Section("Activity") {
-                    ForEach(suggestedTypes) { type in
-                        typeRow(type)
-                    }
-                    NavigationLink {
-                        AtriaWorkoutTypePicker(selection: typeBinding)
-                    } label: {
-                        LabeledContent("All activities",
-                                       value: suggestedTypes.contains(selectedType) ? "" : selectedType.rawValue)
-                    }
-                    if !selectedType.subtypeOptions.isEmpty {
-                        Picker("Style", selection: $selectedSubtype) {
-                            Text("Not set").tag(String?.none)
-                            ForEach(selectedType.subtypeOptions, id: \.self) { option in
-                                Text(option).tag(Optional(option))
-                            }
-                        }
-                    }
-                }
-
-                if selectedType.supportsExerciseSelection {
-                    Section("Exercises") {
-                        NavigationLink {
-                            AtriaWorkoutExercisePicker(selection: $selectedExercises)
-                        } label: {
-                            LabeledContent("Exercises",
-                                           value: selectedExercises.isEmpty ? "Optional" : "\(selectedExercises.count)")
-                        }
-                        ForEach(selectedExercises, id: \.self) { exercise in
-                            Text(exercise)
-                        }
-                        .onDelete { selectedExercises.remove(atOffsets: $0) }
-                    }
-                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
             }
-            .navigationTitle("Add workout")
+            .navigationTitle("Review workout")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -121,18 +85,166 @@ struct AtriaWorkoutReviewSheet: View {
         }
     }
 
+    // MARK: Details
+
+    private var detailsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: selectedType.icon)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 30, height: 30)
+                    .background(AtriaIconTileBackground(cornerRadius: 10, tint: .orange))
+                Text("Workout details")
+                    .font(.headline.weight(.semibold))
+                Spacer(minLength: 8)
+                Text(durationText)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .foregroundStyle(end > start ? Color.primary : Color.orange)
+                    .contentTransition(.numericText())
+            }
+            .accessibilityElement(children: .combine)
+
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                      spacing: 8) {
+                ForEach(suggestedTypes) { type in
+                    typeChip(type)
+                }
+                NavigationLink {
+                    AtriaWorkoutTypePicker(selection: typeBinding)
+                } label: {
+                    Label(suggestedTypes.contains(selectedType) ? "More" : selectedType.rawValue,
+                          systemImage: suggestedTypes.contains(selectedType) ? "ellipsis.circle" : selectedType.icon)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .padding(.vertical, 8)
+                }
+                .atriaGlassSelectable(selected: !suggestedTypes.contains(selectedType), tint: .orange)
+                .accessibilityLabel("More activities")
+            }
+
+            if !selectedType.subtypeOptions.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        styleChip(nil)
+                        ForEach(selectedType.subtypeOptions, id: \.self) { option in
+                            styleChip(option)
+                        }
+                    }
+                }
+            }
+
+            DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+            DatePicker("End", selection: $end, displayedComponents: [.date, .hourAndMinute])
+                .datePickerStyle(.compact)
+
+            if end > start {
+                AtriaEventWindowTimeline(title: "Workout window", start: start, end: end, tint: .orange)
+                    .padding(.top, 2)
+            } else {
+                Label("End must be after start", systemImage: "exclamationmark.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.orange)
+            }
+        }
+        .workoutReviewCard(tint: end > start ? .orange : .red)
+    }
+
+    private func typeChip(_ type: AtriaWorkoutActivityType) -> some View {
+        Button {
+            applyWorkoutType(type)
+        } label: {
+            Label(type.rawValue, systemImage: type.icon)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .padding(.vertical, 8)
+        }
+        .atriaGlassSelectable(selected: type == selectedType, tint: .orange)
+        .accessibilityLabel(type.rawValue)
+        .accessibilityValue(type == selectedType ? "Selected" : "Not selected")
+    }
+
+    private func styleChip(_ option: String?) -> some View {
+        Button {
+            selectedSubtype = option
+        } label: {
+            Text(option ?? "Any style")
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+        }
+        .atriaGlassSelectable(selected: selectedSubtype == option, tint: .orange)
+    }
+
+    // MARK: Exercises
+
+    private var exercisesCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Exercises")
+                    .font(.headline.weight(.semibold))
+                Spacer()
+                Text(selectedExercises.isEmpty ? "Optional" : "\(selectedExercises.count)")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            if !selectedExercises.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 8)], spacing: 8) {
+                    ForEach(selectedExercises, id: \.self) { exercise in
+                        Button {
+                            selectedExercises.removeAll { $0 == exercise }
+                        } label: {
+                            Label(exercise, systemImage: "xmark.circle.fill")
+                                .labelStyle(AtriaTrailingIconLabelStyle())
+                                .font(.caption.weight(.semibold))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                                .frame(maxWidth: .infinity, minHeight: 24)
+                                .padding(.vertical, 6)
+                        }
+                        .atriaGlassSelectable(selected: true, tint: .orange)
+                        .accessibilityLabel("Remove \(exercise)")
+                    }
+                }
+            }
+            NavigationLink {
+                AtriaWorkoutExercisePicker(selection: $selectedExercises)
+            } label: {
+                Label(selectedExercises.isEmpty ? "Add exercises" : "Edit exercises",
+                      systemImage: "plus.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .padding(.vertical, 8)
+            }
+            .atriaGlassSelectable(selected: false, tint: .orange)
+        }
+        .workoutReviewCard(tint: .orange)
+    }
+
     // MARK: Heart rate
 
     private var heartRateCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(durationText)
-                    .font(.system(.title, design: .rounded).weight(.bold))
-                    .monospacedDigit()
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 30, height: 30)
+                    .background(AtriaIconTileBackground(cornerRadius: 10, tint: .orange))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Heart rate")
+                        .font(.headline.weight(.semibold))
+                    Text(timeRangeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Text(timeRangeText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
 
             if !heartRateLoaded {
@@ -258,27 +370,6 @@ struct AtriaWorkoutReviewSheet: View {
 
     private var typeBinding: Binding<AtriaWorkoutActivityType> {
         Binding(get: { selectedType }, set: { applyWorkoutType($0) })
-    }
-
-    private func typeRow(_ type: AtriaWorkoutActivityType) -> some View {
-        Button {
-            applyWorkoutType(type)
-        } label: {
-            HStack {
-                Label {
-                    Text(type.rawValue).foregroundStyle(Color.primary)
-                } icon: {
-                    Image(systemName: type.icon).foregroundStyle(Color.accentColor)
-                }
-                Spacer()
-                if type == selectedType {
-                    Image(systemName: "checkmark")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(.tint)
-                }
-            }
-        }
-        .accessibilityAddTraits(type == selectedType ? .isSelected : [])
     }
 
     private func applyWorkoutType(_ type: AtriaWorkoutActivityType) {
@@ -441,6 +532,25 @@ struct AtriaWorkoutExercisePicker: View {
             selection.remove(at: index)
         } else {
             selection.append(exercise)
+        }
+    }
+}
+
+private extension View {
+    func workoutReviewCard(tint: Color) -> some View {
+        self
+            .padding(14)
+            .atriaInsetCard(tint: tint)
+    }
+}
+
+/// Title first, icon after (removable exercise chips).
+struct AtriaTrailingIconLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.title
+            configuration.icon
+                .foregroundStyle(.secondary)
         }
     }
 }

@@ -7977,72 +7977,164 @@ private struct AtriaMissedDataBanner: View, Equatable {
     #endif
 }
 
-/// One card for every "possible workout" state on Today (rework
-/// 2026-09-27): the same name, the same measured line, the same two actions.
-/// Replaces three differently worded cards ("Review this workout", "Effort
-/// ready to review" with a strap-signal strip, "Possible effort saved" with an
-/// Observe/Settle/Ask stepper).
+/// One card for every "possible workout" state on Today, laid out like the
+/// Sleep review card (owner 2026-09-27: "similar to Sleep one"): icon, title
+/// and window, the duration as the hero, Review / Dismiss, and a
+/// Start → Window → End arc. Orange instead of the sleep hue.
 private struct AtriaPossibleWorkoutCard: View {
-    let subtitle: String
-    let metrics: String?
+    let rangeText: String
+    let detail: String?
+    let durationText: String
+    let startText: String
+    let endText: String
     let note: String?
     let primaryEnabled: Bool
-    let onAdd: (() -> Void)?
+    let onReview: (() -> Void)?
     let onDismiss: (() -> Void)?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: "figure.mixed.cardio")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(width: 44, height: 44)
-                    .background(.orange.opacity(0.14), in: Circle())
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Possible workout")
-                        .font(.headline)
-                    Text(subtitle)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                ZStack {
+                    Circle().fill(Color.orange.opacity(0.14))
+                    Image(systemName: "figure.mixed.cardio")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.orange)
                 }
+                .frame(width: 50, height: 50)
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Possible workout")
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(rangeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize >= .xxLarge ? 2 : 1)
+                        .minimumScaleFactor(0.85)
+                    if let detail {
+                        Text(detail)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+
                 Spacer(minLength: 0)
+
+                if hasWindow {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(durationText)
+                            .font(AtriaDesignTokens.Typography.cardHeroValue)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Text("Workout")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
-            if let metrics {
-                Text(metrics)
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
+            if onReview != nil || onDismiss != nil {
+                HStack(spacing: 10) {
+                    if let onReview {
+                        Button(action: onReview) {
+                            Group {
+                                if dynamicTypeSize >= .xxLarge {
+                                    Text("Review")
+                                } else {
+                                    Label("Review", systemImage: "checkmark.circle")
+                                }
+                            }
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .atriaCardAction(tint: .orange)
+                        .disabled(!primaryEnabled)
+                        .accessibilityLabel("Review workout")
+                        .accessibilityHint("Opens the workout to check the time and pick the activity before saving.")
+                    }
+                    if let onDismiss {
+                        Button(action: onDismiss) {
+                            Text("Dismiss")
+                                .font(.caption.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .atriaCardAction(prominent: false, tint: .secondary)
+                        .accessibilityLabel("Not a workout")
+                        .accessibilityHint("Dismisses this without saving it.")
+                    }
+                }
             }
 
             if let note {
                 Label(note, systemImage: "exclamationmark.circle")
-                    .font(.footnote)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if onAdd != nil || onDismiss != nil {
-                HStack(spacing: 10) {
-                    if let onAdd {
-                        Button(action: onAdd) {
-                            Text("Add workout").frame(maxWidth: .infinity)
-                        }
-                        .disabled(!primaryEnabled)
-                        .atriaCardAction(tint: .orange)
-                    }
-                    if let onDismiss {
-                        Button(action: onDismiss) {
-                            Text("Not a workout").frame(maxWidth: .infinity)
-                        }
-                        .atriaCardAction(prominent: false, tint: .secondary)
-                    }
-                }
+            if hasWindow {
+                workoutArc
             }
         }
-        .padding(14)
+        .padding(16)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .contain)
+    }
+
+    /// The waiting state has no window yet: no hero, no arc, no dashes.
+    private var hasWindow: Bool { startText != "--" }
+
+    private var workoutArc: some View {
+        HStack(spacing: 8) {
+            arcNode(title: "Start", value: startText, systemImage: "figure.walk")
+            arcConnector
+            arcNode(title: "Window", value: durationText, systemImage: "clock.fill")
+            arcConnector
+            arcNode(title: "End", value: endText, systemImage: "flag.checkered")
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Start \(startText), window \(durationText), end \(endText).")
+    }
+
+    private func arcNode(title: String, value: String, systemImage: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.orange)
+                .frame(width: 26, height: 26)
+                .background(Color.orange.opacity(0.13), in: Circle())
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.caption2.weight(.black).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var arcConnector: some View {
+        Capsule(style: .continuous)
+            .fill(Color.orange.opacity(0.58))
+            .frame(width: 14, height: 3)
+            .accessibilityHidden(true)
     }
 }
 
@@ -8058,14 +8150,22 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
 
     var body: some View {
         AtriaPossibleWorkoutCard(
-            subtitle: prompt.subtitle,
-            metrics: "\(prompt.heartRate) bpm now · strain \(String(format: "%.1f", prompt.strain))",
+            rangeText: prompt.isReviewReady ? "Since ≈\(startText) · still going" : "Watching a heart-rate rise",
+            detail: "Heart rate \(prompt.heartRate) bpm now · strain \(String(format: "%.1f", prompt.strain))",
+            durationText: "\(prompt.evidenceMinutes)m",
+            startText: startText,
+            endText: "Now",
             note: nil,
             primaryEnabled: prompt.isReviewReady,
-            onAdd: onStart,
+            onReview: onStart,
             onDismiss: onDismiss
         )
         .accessibilityLabel("Possible workout. \(prompt.subtitle). Heart rate \(prompt.heartRate) beats per minute, strain \(String(format: "%.1f", prompt.strain)).")
+    }
+
+    private var startText: String {
+        let start = prompt.episodeStart ?? Date().addingTimeInterval(-Double(prompt.samples))
+        return start.formatted(date: .omitted, time: .shortened)
     }
 
 }
@@ -8085,13 +8185,16 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
 
     var body: some View {
         AtriaPossibleWorkoutCard(
-            subtitle: "\(timeRangeText) · \(durationText)",
-            metrics: "Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm",
+            rangeText: timeRangeText,
+            detail: "Heart-rate estimate · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm",
+            durationText: durationText,
+            startText: candidate.start.formatted(date: .omitted, time: .shortened),
+            endText: candidate.end.formatted(date: .omitted, time: .shortened),
             note: candidate.missingMinutes >= 5
                 ? "Heart rate is missing for \(candidate.missingMinutes) min of this — check the times."
                 : nil,
             primaryEnabled: true,
-            onAdd: onReview,
+            onReview: onReview,
             onDismiss: onDismiss
         )
         .accessibilityLabel("Possible workout, \(timeRangeText), \(durationText). Average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute.")
@@ -8122,11 +8225,14 @@ private struct AtriaWorkoutReviewHoldBanner: View, Equatable {
 
     var body: some View {
         AtriaPossibleWorkoutCard(
-            subtitle: state.detail,
-            metrics: nil,
+            rangeText: state.detail,
+            detail: nil,
+            durationText: "--",
+            startText: "--",
+            endText: "--",
             note: nil,
             primaryEnabled: false,
-            onAdd: nil,
+            onReview: nil,
             onDismiss: nil
         )
         .accessibilityLabel(state.accessibilityText)
