@@ -3729,10 +3729,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         AtriaActivityWorkoutStressProjection.evidence(readings: stressReadings)
     }
 
-    private var hasWorkoutStressEvidence: Bool {
-        workoutStressProjection.presentation != .empty
-    }
-
     private var workoutStressAccessibilityLabel: String {
         switch workoutStressProjection.presentation {
         case .physiologicalStress:

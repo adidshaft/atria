@@ -8039,33 +8039,6 @@ private struct AtriaMissedDataBanner: View, Equatable {
                             : "Start fresh; clear this unrecoverable gap")
     }
 
-    private var missedDataDurationText: String {
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return "3.2 h"
-        }
-        let defaults = UserDefaults.standard
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let reference = requestedAt ?? startedAt
-        guard let reference else { return "0.0 h" }
-        let hours = max(0, Date().timeIntervalSince1970 - reference) / 3600
-        return String(format: "%.1f h", hours)
-    }
-
-    private var catchUpProgress: Double {
-        // Retained for older handoff fixture compatibility; the current UI is a calm
-        // status row and no longer renders a progress bar.
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return 0.42
-        }
-        let defaults = UserDefaults.standard
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let reference = startedAt ?? requestedAt
-        guard let reference else { return 0.08 }
-        return min(0.96, max(0.08, Date().timeIntervalSince1970 - reference) / (30 * 60))
-    }
-
     #if DEBUG
     private static func debugShowsCatchUpPill(arguments: [String]) -> Bool {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
@@ -10552,6 +10525,14 @@ final class AtriaHomeModel {
     let liveActivityCoordinator = AtriaLiveActivityCoordinator()
     private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
     private var lastActivityKitCount: Int?
+    /// Overnight windows depend only on the rollups and the civil day, but the
+    /// diagnosis report is rebuilt on the ~1 Hz CoreLive lane, foreground and
+    /// background. Reuse them until either changes (2026-09-24 code review:
+    /// eight rollup scans and eight DateFormatters per tick before this).
+    private var diagnosisMetricWindowsMemo: (rollupsRevision: Int,
+                                             day: Date,
+                                             timeZone: TimeZone,
+                                             windows: AtriaDiagnosisReport.MetricWindows)?
     private var lastFrozenSceneWidgetPatchAt: Date?
     private var lastFrozenSceneWidgetHeartRate: Int?
     private var frozenSceneIdlePresenceStartedAt: Date?
@@ -12694,10 +12675,7 @@ final class AtriaHomeModel {
                     ).start,
                     now: now
                 )?.value,
-                metricWindows: AtriaDiagnosisReport.overnightMetricWindows(
-                    rollups: rollups,
-                    now: now
-                ),
+                metricWindows: diagnosisMetricWindows(rollups: rollups, now: now),
                 liveActivityName: liveActivitySnapshot?.activityName,
                 liveActivityAvailability: liveActivitySnapshot?
                     .heartRateAvailability.rawValue,
@@ -12751,6 +12729,28 @@ final class AtriaHomeModel {
             ),
             reason: reason
         )
+    }
+
+    private func diagnosisMetricWindows(
+        rollups: [DailyRollupStoreEntry],
+        now: Date
+    ) -> AtriaDiagnosisReport.MetricWindows {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: now)
+        let revision = store.dailyRollupHistoryRevision
+        if let memo = diagnosisMetricWindowsMemo,
+           memo.rollupsRevision == revision,
+           memo.day == day,
+           memo.timeZone == calendar.timeZone {
+            return memo.windows
+        }
+        let windows = AtriaDiagnosisReport.overnightMetricWindows(
+            rollups: rollups,
+            now: now,
+            calendar: calendar
+        )
+        diagnosisMetricWindowsMemo = (revision, day, calendar.timeZone, windows)
+        return windows
     }
 
     /// Carry-over for the recovery-banner anti-flicker debounce above.

@@ -215,49 +215,6 @@ struct MonthlyReport: Codable, Equatable {
 
 }
 
-final class MonthlyReportStore {
-    private let directory: URL
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
-
-    init(directory: URL? = nil, fileManager: FileManager = .default) {
-        if let directory {
-            self.directory = directory
-        } else {
-            let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
-                ?? fileManager.temporaryDirectory
-            self.directory = documents
-        }
-        encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        decoder = JSONDecoder()
-    }
-
-    func report(year: Int, month: Int) -> MonthlyReport? {
-        let url = urlForReport(year: year, month: month)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? decoder.decode(MonthlyReport.self, from: data)
-    }
-
-    func save(_ report: MonthlyReport) {
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let data = try encoder.encode(report)
-            try data.write(to: urlForReport(year: report.year, month: report.month), options: .atomic)
-            AtriaDebugLog("ATRIADBG monthly_report_store_save status=ok year=%d month=%d",
-                          report.year,
-                          report.month)
-        } catch {
-            AtriaDebugLog("ATRIADBG monthly_report_store_save status=failed error=%@",
-                          error.localizedDescription)
-        }
-    }
-
-    private func urlForReport(year: Int, month: Int) -> URL {
-        directory.appendingPathComponent("monthly-report-\(year)-M\(month).json")
-    }
-}
-
 private enum MonthlyReportCalendar {
     static let gregorian: Calendar = {
         var calendar = Calendar(identifier: .gregorian)

@@ -331,7 +331,7 @@ struct AtriaTrendChartCard: View {
         let windowEnd = calendar.date(byAdding: .day, value: 1,
                                       to: calendar.startOfDay(for: now)) ?? now
         let previousCutoff = range.hasPriorPeriod
-            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            ? range.priorPeriodCutoff(before: cutoff)
             : .distantFuture
         var samples: [AtriaTrendPoint.Sample] = []
         samples.reserveCapacity(points.count)
@@ -409,7 +409,7 @@ struct AtriaTrendChartCard: View {
                                              now: Date) -> AtriaTrendPeriodReadout {
         let cutoff = range.cutoffDate(now: now)
         let previousCutoff = range.hasPriorPeriod
-            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            ? range.priorPeriodCutoff(before: cutoff)
             : .distantFuture
         var currentHRV: [Double] = []
         var priorHRV: [Double] = []
@@ -942,26 +942,6 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         }
     }
 
-    private func reportBar(label: String, value: Double, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.76))
-                        .frame(width: max(8, width * min(max(value, 0), 1)))
-                }
-            }
-            .frame(height: 7)
-        }
-        .frame(maxWidth: .infinity)
-    }
 }
 
 
@@ -1829,12 +1809,24 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Start of the equally long period before `cutoff`, in calendar days so
+    /// a clock change inside it cannot shift the boundary by an hour.
+    func priorPeriodCutoff(before cutoff: Date, calendar: Calendar = .current) -> Date {
+        calendar.date(byAdding: .day, value: -days, to: cutoff)
+            ?? cutoff.addingTimeInterval(-Double(days) * 86_400)
+    }
+
     func cutoffDate(now: Date = Date(), calendar: Calendar = .current) -> Date {
         switch self {
         case .day:
             return calendar.startOfDay(for: now)
         case .week, .month, .quarter, .sixMonths, .year:
-            return calendar.startOfDay(for: now.addingTimeInterval(-Double(days) * 86_400))
+            // Calendar days, not 86,400 s multiples (2026-09-24 code review):
+            // across a clock change `now - days * 86,400` lands an hour off,
+            // and just after midnight that picks the wrong start day.
+            let today = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: .day, value: -days, to: today)
+                ?? calendar.startOfDay(for: now.addingTimeInterval(-Double(days) * 86_400))
         case .all:
             return .distantPast
         }
