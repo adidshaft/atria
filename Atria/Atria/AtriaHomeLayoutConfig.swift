@@ -40,8 +40,11 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
         // approximation and must not ship in the DEFAULT glance deck —
         // measured metrics lead the morning. Users can still add the tile
         // from Customize; existing saved layouts are untouched.
-        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency"],
-                              sizeOverrides: [:],
+        // Insights leads, wide (2026-09-27): the learned findings (sleep
+        // debt, HRV/RHR drift, load vs recovery, bedtime spread …) were built
+        // but reachable only from a tile no default layout included.
+        AtriaHomeLayoutConfig(glanceMetrics: ["insights", "hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency"],
+                              sizeOverrides: ["insights": "wide"],
                               showLiveStrip: true,
                               showHighlights: false,
                               showPlan: true,
@@ -49,6 +52,25 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
                               ringCenterMetric: .recovery,
                               legendStatStyle: .valueAndState,
                               accent: .atria)
+    }
+
+    /// One-time: saved layouts from before Insights was a default get it
+    /// once, first and wide. Removing it afterwards sticks.
+    static let insightsIntroducedKey = "atria.home.layout.insightsIntroduced.v1"
+
+    static func migratedStoredJSON(defaults: UserDefaults = .standard) -> String {
+        let stored = defaults.string(forKey: storageKey) ?? ""
+        guard !defaults.bool(forKey: insightsIntroducedKey) else { return stored }
+        defaults.set(true, forKey: insightsIntroducedKey)
+        guard let data = stored.data(using: .utf8), !data.isEmpty,
+              var config = try? decoded(from: data),
+              !config.glanceMetrics.contains("insights") else { return stored }
+        config.glanceMetrics.insert("insights", at: 0)
+        config.sizeOverrides["insights"] = "wide"
+        guard let encoded = try? config.encodedData(),
+              let json = String(data: encoded, encoding: .utf8) else { return stored }
+        defaults.set(json, forKey: storageKey)
+        return json
     }
 
     func validated(allowedMetricKeys: [String] = AtriaHomeLayoutCatalog.metricKeys,
