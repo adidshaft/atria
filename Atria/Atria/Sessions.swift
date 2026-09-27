@@ -5380,7 +5380,7 @@ struct WorkoutReviewCandidate: Equatable {
     }
 
     var title: String {
-        kind == .workout ? "Workout ready to review" : "Effort ready to review"
+        "Possible workout"
     }
 
     var isReviewPromptWorthy: Bool {

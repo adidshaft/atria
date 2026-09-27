@@ -1857,27 +1857,17 @@ enum LocalNotificationScheduler {
     }
 
     private static func workoutReviewNotificationTitle(for candidate: WorkoutReviewCandidate) -> String {
-        candidate.kind == .workout ? "Workout found" : "Effort found"
+        // One name everywhere (2026-09-27 rework); HR alone never "finds" one.
+        "Possible workout"
     }
 
     private static func workoutReviewNotificationBody(for candidate: WorkoutReviewCandidate) -> String {
         let startText = candidate.start.formatted(date: .omitted, time: .shortened)
         let endText = candidate.end.formatted(date: .omitted, time: .shortened)
-        let reviewHint = workoutReviewReviewHint(for: candidate)
-        let action = candidate.kind == .workout
-            ? "Confirm type or dismiss."
-            : "Label it if it was training."
-        return "Strap heart-rate window \(candidate.durationMinutes)m, \(startText)-\(endText). \(reviewHint) \(action)"
-    }
-
-    private static func workoutReviewReviewHint(for candidate: WorkoutReviewCandidate) -> String {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 {
-            return "Looks complete."
-        }
-        if candidate.streamCoveragePercent >= 60 {
-            return "Adjust if the timing is off."
-        }
-        return "Review the window before saving."
+        let duration = candidate.durationMinutes >= 60
+            ? "\(candidate.durationMinutes / 60)h \(candidate.durationMinutes % 60)m"
+            : "\(candidate.durationMinutes) min"
+        return "\(startText)–\(endText) · \(duration), avg \(candidate.avgHR) bpm. Add it, or mark it as not a workout."
     }
 
     private static func workoutReviewCandidateIsPushWorthy(_ candidate: WorkoutReviewCandidate) -> Bool {

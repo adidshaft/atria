@@ -3535,7 +3535,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
         XCTAssertEqual(reviewCandidate?.kind, .activityCandidate,
                        "saved HR-only evidence must remain an effort candidate until its activity type is confirmed")
-        XCTAssertEqual(reviewCandidate?.title, "Effort ready to review")
+        XCTAssertEqual(reviewCandidate?.title, "Possible workout")
 
         let deletedWindow = AtriaDismissedWorkoutCandidate(start: start,
                                                             end: start.addingTimeInterval(cursor))
