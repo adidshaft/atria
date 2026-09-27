@@ -2786,6 +2786,9 @@ struct AtriaStrapStepsDetailSheet: View {
     /// loaded once from the durable motion-tick day store. Days without a
     /// verified receipt simply have no entry (and no bar).
     @State private var weekSteps: [Date: Int] = [:]
+    /// Days on the week chart whose count is partial (today so far, thin
+    /// strap coverage, or receipt fallback only).
+    @State private var weekPartialDays: Set<Date> = []
 
     var body: some View {
         NavigationStack {
@@ -3010,7 +3013,7 @@ struct AtriaStrapStepsDetailSheet: View {
 
     private var stepsWeekChartCard: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal, partialDays: weekPartialDays)
             // The bars are CALENDAR days computed exactly from the strap's
             // recorded rows; the count at the top of this sheet is since your
             // wake. Saying so stops the two honest numbers reading as a bug
@@ -3034,6 +3037,8 @@ struct AtriaStrapStepsDetailSheet: View {
         // the fallback for days whose shards have rotated out.
         let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
         weekSteps = fallback
+        // Until the exact read lands every bar is a receipt fold: partial.
+        weekPartialDays = Set(fallback.keys)
         // Then the exact per-calendar-day totals from the shards themselves.
         // Receipts are cycle-scoped, frozen at publication, and can be missing
         // for whole days — the 2026-08-27 audit measured a day showing 505
@@ -3044,7 +3049,7 @@ struct AtriaStrapStepsDetailSheet: View {
         let days = (0..<7).compactMap {
             calendar.date(byAdding: .day, value: -$0, to: today)
         }
-        weekSteps = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+        let week = await AtriaCivilDayStepAuthority.shared.dailyTotalsAndPartialDays(
             days: days,
             strapIdentifier: identifier,
             // The wearer's "Not walking" answers join the labelled non-gait
@@ -3054,6 +3059,8 @@ struct AtriaStrapStepsDetailSheet: View {
             fallback: fallback,
             now: now
         )
+        weekSteps = week.totals
+        weekPartialDays = week.partial
         await refreshUnverifiedClusters(identifier: identifier, now: now)
     }
 
@@ -4396,6 +4403,9 @@ struct AtriaMetricDetailSheet: View {
     var onAcceptMaxHRSuggestion: ((Int) -> Void)? = nil
     var onDismissMaxHRSuggestion: ((Int) -> Void)? = nil
     @State private var maxHRSuggestionHandled = false
+    /// Saved sessions overlapping a window: live HR fallback and RR for the
+    /// Sleep night timeline. nil = timeline built from the archives alone.
+    var nightSessions: ((DateInterval) -> [SavedSession])? = nil
 
     #if DEBUG
     /// `--atria-ui-range week` (or day/month/quarter/six-months/year/all).
@@ -4485,6 +4495,7 @@ struct AtriaMetricDetailSheet: View {
          // Cycle-truth strain series (2026-08-30). Default [:] keeps every
          // caller without it byte-identical: absent days chart civil values.
          cycleStrainByDisplayDay: [Date: Double] = [:],
+         nightSessions: ((DateInterval) -> [SavedSession])? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
@@ -4511,6 +4522,7 @@ struct AtriaMetricDetailSheet: View {
         _bucketOverride = State(initialValue: initialBucketOverride)
         _showMinMaxBand = State(initialValue: initialShowMinMaxBand)
         self.provenance = provenance
+        self.nightSessions = nightSessions
         self.maxHRSuggestion = maxHRSuggestion
         self.onAcceptMaxHRSuggestion = onAcceptMaxHRSuggestion
         self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
@@ -4926,15 +4938,13 @@ struct AtriaMetricDetailSheet: View {
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
                                       tint: Metrics.electricSleep) {
-                // Night timeline (visual pass 2026-09-24): episode lane + HR
-                // line + 1–3 insight lines from AtriaNightTimelineAnalyzer,
-                // then the optional "what was it?" prompt. No stages claimed.
-                if let nightTimeline = AtriaNightTimelineSource.latest() {
-                    AtriaNightTimelineCard(model: nightTimeline)
-                    AtriaNightInterruptionPromptCard(
-                        episodes: AtriaNightTimelineAnalyzer.interruptionsToAsk(nightTimeline.result),
-                        timeZone: nightTimeline.timeZone)
-                }
+                // Night timeline (visual pass 2026-09-24; real data
+                // 2026-09-24): episode lane + HR line + 1–3 insight lines from
+                // AtriaNightTimelineAnalyzer over the latest confirmed main
+                // sleep, the personal "your usual" comparison, then the
+                // optional "what was it?" prompt. No stages claimed.
+                AtriaNightTimelineSection(sleepHistory: sleepHistory,
+                                          sessions: nightSessions)
                 if let latest = sleepHistory.latestMainSleep {
                     // Shared stage-timeline hypnogram (design "STAGES ·
                     // HYPNOGRAM" card); renders the honest needs-motion /
