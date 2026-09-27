@@ -7590,18 +7590,6 @@ enum HistoricalArchive {
         return String(format: "historical-archive-%04d-%02d-%02d.jsonl", year, month, day)
     }
 
-    private static func writeRotationManifest(activeSegmentURL: URL, createdAt: Date) throws {
-        let manifest = RotationManifest(version: 1,
-                                        baseRelativePath: relativePath,
-                                        activeSegmentRelativePath: documentsRelativePath(for: activeSegmentURL),
-                                        createdAt: createdAt,
-                                        rotationThresholdBytes: rotationThresholdBytes)
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(manifest).write(to: rotationManifestURL, options: .atomic)
-    }
-
     private static func activeSegmentReadableURL() -> URL? {
         if let data = try? Data(contentsOf: rotationManifestURL) {
             let decoder = JSONDecoder()
@@ -8309,13 +8297,6 @@ enum HistoricalArchive {
             return false
         }
         return true
-    }
-
-    private static func documentsRelativePath(for url: URL) -> String {
-        let documentsPath = documentsDirectory.path
-        guard url.path.hasPrefix(documentsPath) else { return url.path }
-        let suffix = url.path.dropFirst(documentsPath.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        return "Documents/\(suffix)"
     }
 
     private static func archiveAttributes(for url: URL) -> (byteCount: Int, modificationTime: TimeInterval) {
@@ -9241,25 +9222,6 @@ enum HistoricalArchive {
     private static func coverageSeconds(for timestamps: [TimeInterval]) -> Int {
         guard let first = timestamps.min(), let last = timestamps.max(), last >= first else { return 0 }
         return Int((last - first).rounded())
-    }
-
-    private static func mean(_ values: [Double]) -> Double? {
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    private static func stddev(_ values: [Double], mean: Double?) -> Double? {
-        guard values.count >= 2, let mean else { return nil }
-        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
-        return sqrt(variance)
-    }
-
-    private static func percentile(_ values: [Double], _ fraction: Double) -> Double? {
-        guard !values.isEmpty else { return nil }
-        let sorted = values.sorted()
-        let clamped = min(max(fraction, 0), 1)
-        let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * clamped).rounded(.down))))
-        return sorted[index]
     }
 
     static func hex(_ bytes: [UInt8]) -> String {
@@ -10553,12 +10515,6 @@ enum HistoricalArchive {
         return count
     }
 
-}
-
-enum AtriaHistoricalGravity {
-    static func decode(payload: [UInt8], version: Int? = nil) -> (x: Double, y: Double, z: Double, magnitude: Double, validated: Bool)? {
-        HistoricalArchive.historicalGravity(payload)
-    }
 }
 
 // MARK: - Scan-path Record parser (allocation-frugal, 2026-08-04)

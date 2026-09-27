@@ -284,17 +284,6 @@ enum AtriaWhoop4HistoryArchivePipeline {
         bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func u32le(_ bytes: [UInt8], _ offset: Int) -> UInt32 {
-        UInt32(bytes[offset])
-            | (UInt32(bytes[offset + 1]) << 8)
-            | (UInt32(bytes[offset + 2]) << 16)
-            | (UInt32(bytes[offset + 3]) << 24)
-    }
-
-    private static func u16le(_ bytes: [UInt8], _ offset: Int) -> UInt16 {
-        UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-    }
-
     private static func documentsRelativePath(for url: URL) -> String {
         let documents = FileManager.default.urls(for: .documentDirectory,
                                                   in: .userDomainMask)[0]

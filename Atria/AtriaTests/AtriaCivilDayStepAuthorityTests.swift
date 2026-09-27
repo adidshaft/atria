@@ -112,6 +112,34 @@ final class AtriaCivilDayStepAuthorityTests: XCTestCase {
                        "the fully-outside window must not appear")
     }
 
+    // MARK: - Civil day length (2026-09-24 code review)
+
+    /// Days are civil, so their end is the next local midnight — 23 h on the
+    /// spring-forward day and 25 h on the fall-back day where clocks change.
+    /// A fixed 86,400 s end read an hour of the next day into the short day
+    /// and dropped the last hour of the long one.
+    func testCivilDayEndFollowsLocalMidnightAcrossClockChanges() {
+        var newYork = Calendar(identifier: .gregorian)
+        newYork.timeZone = TimeZone(identifier: "America/New_York")!
+        func start(_ month: Int, _ day: Int) -> Date {
+            newYork.date(from: DateComponents(year: 2026, month: month, day: day))!
+        }
+        let spring = AtriaCivilDayStepAuthority.civilDayEnd(after: start(3, 8),
+                                                           calendar: newYork)
+        XCTAssertEqual(spring, start(3, 9))
+        XCTAssertEqual(spring.timeIntervalSince(start(3, 8)), 23 * 3_600)
+
+        let fall = AtriaCivilDayStepAuthority.civilDayEnd(after: start(11, 1),
+                                                         calendar: newYork)
+        XCTAssertEqual(fall, start(11, 2))
+        XCTAssertEqual(fall.timeIntervalSince(start(11, 1)), 25 * 3_600)
+
+        // No clock change (the owner's zone): identical to the old fixed end.
+        let ist = istDay(24)
+        XCTAssertEqual(AtriaCivilDayStepAuthority.civilDayEnd(after: ist, calendar: calendar),
+                       ist.addingTimeInterval(86_400))
+    }
+
     // MARK: - Overlay policy
 
     func testExactValuesOverrideTheFallbackAndGapsKeepIt() {

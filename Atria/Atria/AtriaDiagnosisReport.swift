@@ -481,27 +481,32 @@ enum AtriaDiagnosisReport {
         now: Date,
         calendar: Calendar = .current
     ) -> MetricWindows {
-        MetricWindows(
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return MetricWindows(
             hrvDay: AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
-            hrvWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { entry in
+            hrvWeek: windowPoints(from: rollups, formatter: formatter, range: .week, now: now, calendar: calendar) { entry in
                 guard let lnRMSSD = entry.lnRMSSD else { return nil }
                 return Int(exp(lnRMSSD).rounded())
             },
-            hrvMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { entry in
+            hrvMonth: windowPoints(from: rollups, formatter: formatter, range: .month, now: now, calendar: calendar) { entry in
                 guard let lnRMSSD = entry.lnRMSSD else { return nil }
                 return Int(exp(lnRMSSD).rounded())
             },
             recoveryDay: AtriaHealthMetricEvidencePresentation.newestSettledRecovery(from: rollups),
-            recoveryWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { $0.recovery },
-            recoveryMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.recovery },
+            recoveryWeek: windowPoints(from: rollups, formatter: formatter, range: .week, now: now, calendar: calendar) { $0.recovery },
+            recoveryMonth: windowPoints(from: rollups, formatter: formatter, range: .month, now: now, calendar: calendar) { $0.recovery },
             rhrDay: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
-            rhrWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) { $0.rhr },
-            rhrMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) { $0.rhr },
+            rhrWeek: windowPoints(from: rollups, formatter: formatter, range: .week, now: now, calendar: calendar) { $0.rhr },
+            rhrMonth: windowPoints(from: rollups, formatter: formatter, range: .month, now: now, calendar: calendar) { $0.rhr },
             sleepDay: sleepMinutes(AtriaHealthMetricEvidencePresentation.newestSettledSleepSeconds(from: rollups)),
-            sleepWeek: windowPoints(from: rollups, range: .week, now: now, calendar: calendar) {
+            sleepWeek: windowPoints(from: rollups, formatter: formatter, range: .week, now: now, calendar: calendar) {
                 sleepMinutes($0.sleepSeconds)
             },
-            sleepMonth: windowPoints(from: rollups, range: .month, now: now, calendar: calendar) {
+            sleepMonth: windowPoints(from: rollups, formatter: formatter, range: .month, now: now, calendar: calendar) {
                 sleepMinutes($0.sleepSeconds)
             }
         )
@@ -514,17 +519,13 @@ enum AtriaDiagnosisReport {
 
     private static func windowPoints(
         from rollups: [DailyRollupStoreEntry],
+        formatter: DateFormatter,
         range: AtriaTrendRange,
         now: Date,
         calendar: Calendar,
         value: (DailyRollupStoreEntry) -> Int?
     ) -> [WindowPoint] {
         let interval = range.periodInterval(containing: now, calendar: calendar)
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
         return AtriaOvernightMetricChartSeries.nights(
             from: rollups,
             interval: interval,
