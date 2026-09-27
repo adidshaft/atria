@@ -268,6 +268,21 @@ final class AtriaR10LiveControlTests: XCTestCase {
                        "after a history transfer quiets R10, live comes back")
     }
 
+    /// Review 2026-09-24: a strap that never answers 3F/01 got a write every
+    /// 120 s all day. Unanswered resends now double up to 30 min.
+    func testUnansweredOnBacksOffToACeiling() {
+        typealias B = AtriaBLEManager
+        XCTAssertEqual(B.r10LiveResendInterval(unansweredOnAttempts: 0), 120)
+        XCTAssertEqual(B.r10LiveResendInterval(unansweredOnAttempts: 1), 120)
+        XCTAssertEqual(B.r10LiveResendInterval(unansweredOnAttempts: 2), 240)
+        XCTAssertEqual(B.r10LiveResendInterval(unansweredOnAttempts: 4), 960)
+        XCTAssertEqual(B.r10LiveResendInterval(unansweredOnAttempts: 40), B.r10LiveResendCeiling)
+        XCTAssertNil(B.r10LiveCommand(enabled: true, linkConnected: true, heartRateFresh: true,
+            appOwnsHistoryTransfer: false, pairingCheckInFlight: false, liveAllowedByPower: true,
+            r10FramesFresh: false, secondsSinceLastOn: 200, offAlreadySent: false,
+            unansweredOnAttempts: 2), "second unanswered resend waits 240 s")
+    }
+
     func testNeverDuringHistoryOrPairingOrWhenDisconnected() {
         XCTAssertNil(cmd(history: true), "live 3F freezes the history read cursor")
         XCTAssertNil(cmd(pairing: true))

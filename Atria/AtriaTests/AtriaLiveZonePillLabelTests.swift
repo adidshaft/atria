@@ -27,11 +27,11 @@ final class AtriaLiveZonePillLabelTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaTodayScreen.swift"), encoding: .utf8)
         XCTAssertTrue(source.contains("motionStatus.liveStripTitle(zoneLabel: pulse.heartRateZone?.compactLabel"))
         XCTAssertTrue(source.contains("pulse.heartRateZone.map { \" \\($0.spokenLabel).\" } ?? \"\""))
-        XCTAssertTrue(source.contains("live.dailyStepPresentation"))
-        XCTAssertTrue(source.contains("steps.valueText"),
-                      "the live pill must show today's strap step count next to HR")
-        XCTAssertTrue(source.contains("liveStripStepSuffix"),
-                      "stale IMU must qualify the held step count instead of implying it is live")
+        // 2026-09-27 (owner: no duplicated info on one screen): the Steps
+        // tile owns the step count and its stale/held qualifier; the live
+        // pill is the pulse only and hides without one.
+        XCTAssertFalse(source.contains("\\(pulse.heartRate) bpm\\(liveStepSuffix)"))
+        XCTAssertTrue(source.contains("if pulseStore.state.heartRate > 0 {"))
         XCTAssertFalse(source.contains("Live · Zone"))
     }
 }

@@ -101,7 +101,7 @@ struct JournalInsight: Identifiable, Equatable {
         let calendar = Calendar(identifier: .gregorian)
         guard let date = calendar.date(from: components) else { return "\(minutes)m" }
         let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
+        formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
         return formatter.string(from: date)
     }
 }

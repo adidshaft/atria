@@ -3299,7 +3299,7 @@ struct AtriaActivityMonitorTab: View {
 
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
+        formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
         formatter.amSymbol = "am"
         formatter.pmSymbol = "pm"
         return formatter

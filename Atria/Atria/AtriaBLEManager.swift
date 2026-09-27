@@ -5708,6 +5708,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var r10LivePowerPolicy = AtriaWhoop4PowerPolicy()
     private var r10LiveLastOnAt: Date?
     private var r10LiveOffSent = false
+    /// 3F/01 writes this connection that were not followed by R10 frames.
+    private var r10LiveUnansweredOnCount = 0
+    private var r10LiveOffSentAt: Date?
+    /// Longest gap between unanswered 3F/01 resends (review 2026-09-24: a
+    /// strap that never produces R10 got a write every 120 s all day).
+    static let r10LiveResendCeiling: TimeInterval = 30 * 60
+    /// A 3F/00 that the strap did not act on is retried after this long.
+    static let r10LiveOffRetryAfter: TimeInterval = 60
+
+    /// 120 s, 240 s, 480 s … up to 30 min while 3F/01 goes unanswered.
+    nonisolated static func r10LiveResendInterval(unansweredOnAttempts: Int) -> TimeInterval {
+        let doublings = min(max(0, unansweredOnAttempts - 1), 8)
+        return min(r10LiveResendAfter * pow(2, Double(doublings)), r10LiveResendCeiling)
+    }
     /// Why live data is deliberately not streaming right now (top-bar note).
     @Published private(set) var liveDataNote: AtriaLiveDataNote?
 
@@ -5728,12 +5742,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         liveAllowedByPower: Bool,
         r10FramesFresh: Bool,
         secondsSinceLastOn: TimeInterval?,
-        offAlreadySent: Bool
+        offAlreadySent: Bool,
+        unansweredOnAttempts: Int = 0
     ) -> R10LiveCommand? {
         guard linkConnected, !appOwnsHistoryTransfer, !pairingCheckInFlight else { return nil }
         if enabled && liveAllowedByPower {
             guard heartRateFresh, !r10FramesFresh else { return nil }
-            if let since = secondsSinceLastOn, since < r10LiveResendAfter { return nil }
+            if let since = secondsSinceLastOn,
+               since < r10LiveResendInterval(unansweredOnAttempts: unansweredOnAttempts) { return nil }
             return .on
         }
         return r10FramesFresh && !offAlreadySent ? .off : nil
@@ -5743,6 +5759,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         r10LiveTask?.cancel()
         r10LiveLastOnAt = nil
         r10LiveOffSent = false
+        r10LiveOffSentAt = nil
+        r10LiveUnansweredOnCount = 0
         guard !appReviewDemoMode else { return }
         r10LiveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(Self.r10LiveFirstCheckDelay))
@@ -5790,6 +5808,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ? AtriaLiveDataNote.from(decision: decision, inputs: inputs, catchingUpHistory: appOwnsHistory)
             : nil)
         let framesFresh = lastR10MotionFrameAt.map { now.timeIntervalSince($0) <= Self.r10FramesFreshWithin } ?? false
+        if framesFresh { r10LiveUnansweredOnCount = 0 }
+        // Off is "sent" only until the strap has had time to act on it; frames
+        // still flowing after that mean the write did not land.
+        let offStillSettling = r10LiveOffSent
+            && (r10LiveOffSentAt.map { now.timeIntervalSince($0) < Self.r10LiveOffRetryAfter } ?? true)
         guard let command = Self.r10LiveCommand(
             enabled: Self.r10LiveStepsEnabled,
             linkConnected: status == .connected,
@@ -5799,7 +5822,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             liveAllowedByPower: decision.liveMotionAllowed,
             r10FramesFresh: framesFresh,
             secondsSinceLastOn: r10LiveLastOnAt.map { now.timeIntervalSince($0) },
-            offAlreadySent: r10LiveOffSent
+            offAlreadySent: offStillSettling,
+            unansweredOnAttempts: r10LiveUnansweredOnCount
         ) else { return }
         let sequence = cmdSeq
         cmdSeq &+= 1
@@ -5807,7 +5831,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                  command == .on ? 0x01 : 0x00])
         let sent = writeProprietaryWithoutResponse(frame, reason: "r10_live_\(command)")
         if sent {
-            if command == .on { r10LiveLastOnAt = now; r10LiveOffSent = false } else { r10LiveOffSent = true }
+            if command == .on {
+                r10LiveLastOnAt = now
+                r10LiveOffSent = false
+                r10LiveUnansweredOnCount += 1
+            } else {
+                r10LiveOffSent = true
+                r10LiveOffSentAt = now
+            }
         }
         AtriaDebugLog("ATRIADBG r10_live status=%@ command=%@ power=%@ seq=%d",
                       sent ? "sent" : "unsent",
@@ -40754,6 +40785,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                         // Let the strap stop streaming before 16/00 (the Mac
                         // capture used the same 1 s settle between the two).
                         r10LiveOffSent = true
+                        r10LiveOffSentAt = Date()
                         try? await Task.sleep(for: .seconds(1))
                     }
                     if cmd == Cmd.sendHistoricalData,
@@ -43857,14 +43889,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     /// Compact 0x33 is ingested on the BLE queue, not only through the
     /// MainActor protocol decoder. Keep published motion freshness in sync
     /// after the BLE-queue stamp.
-    private func noteLiveIMULiveness(receivedAt: Date) {
+    private func noteLiveIMULiveness(receivedAt: Date, notifyTypeHex: String) {
         stampLiveIMULiveness(receivedAt: receivedAt)
         // Compact 0x33 arrives while CoreBluetooth still reports
         // stream-5 `isNotifying=false`. That used to leave
         // `strapStream5NotifyConfirmed` false, so 6A/51 never armed.
         strapStream5NotifyConfirmed = true
+        // The real frame type (review 2026-09-24): native R10 frames reach
+        // this path too since 37c88354 and must not read as compact 0x33.
         if Self.shouldClearAllDayCompactIMURecoveryLeaseAfterLiveCompact(
-            lastNotifyTypeHex: "33"
+            lastNotifyTypeHex: notifyTypeHex
         ) {
             clearAllDayCompactIMURecoveryLease()
         }
@@ -51981,7 +52015,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
     private nonisolated func ingestLiveMotionFrame(
         _ r10Frame: AtriaR10MotionFrame,
         receivedAt: Date,
-        callbackSource: AtriaBLECallbackEpochFence.Source
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        notifyTypeHex: String
     ) {
         AtriaStrengthSetWindow.ingestLiveR10(frame: r10Frame, receivedAt: receivedAt)
         // CoreBluetooth already invokes this delegate on one serial
@@ -51994,7 +52029,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         stampLiveIMULiveness(receivedAt: receivedAt)
         let stampAt = receivedAt
         Task { @MainActor [weak self] in
-            self?.noteLiveIMULiveness(receivedAt: stampAt)
+            self?.noteLiveIMULiveness(receivedAt: stampAt, notifyTypeHex: notifyTypeHex)
         }
         r10MotionPipeline.ingest(
             r10Frame,
@@ -56968,7 +57003,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     ingestLiveMotionFrame(
                         nativeR10,
                         receivedAt: receivedAt,
-                        callbackSource: callbackSource
+                        callbackSource: callbackSource,
+                        notifyTypeHex: "10"
                     )
                 }
                 if !storesProprietaryFrames {
@@ -56993,7 +57029,8 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     ingestLiveMotionFrame(
                         compactSecond,
                         receivedAt: receivedAt,
-                        callbackSource: callbackSource
+                        callbackSource: callbackSource,
+                        notifyTypeHex: "33"
                     )
                 }
             }

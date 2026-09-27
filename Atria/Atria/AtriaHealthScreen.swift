@@ -1723,7 +1723,9 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })
-                AtriaHealthMetricRow(title: AtriaIrregularRhythmCopy.title,
+                // "Rhythm" fits a third-width tile; "Irregular rhythm" was cut
+                // to "Irregular rhy…" on device. The sheet keeps the full name.
+                AtriaHealthMetricRow(title: "Rhythm",
                                      value: irregularRhythmAssessment.headline,
                                      detail: irregularRhythmAssessment.detail,
                                      systemImage: AtriaAboutMetric.irregularRhythm.glyph,
@@ -1735,20 +1737,10 @@ struct AtriaHealthScreen: View {
             // read (paired with the last-known row above).
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
 
-            // Handoff-9 CP4: the experimental relative skin signal, kept
-            // visually separate from the validated Skin temp tile above. It
-            // renders a truthful named blocker/progress state or the fully
-            // qualified raw-unit delta — never a temperature, never a number
-            // while blocked.
-            AtriaRelativeSkinSignalRowView()
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.quaternary.opacity(0.2),
-                            in: RoundedRectangle(
-                                cornerRadius: AtriaDesignTokens.Radius.chip,
-                                style: .continuous
-                            ))
-                .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
+            // No separate "Relative skin signal" card (2026-09-27): with the
+            // relative decoder on, the Skin temp tile above is that signal; the
+            // card repeated it with a second, conflicting reason and an
+            // "Experimental" label.
         }
         // Handoff-12 CP3: zero-layout coordinator — hosts the stress detail
         // cover (opened from the Live monitor owner) and the breathwork feed
