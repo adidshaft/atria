@@ -4130,10 +4130,15 @@ private struct AtriaTodayLiveStatusHost: View {
 
     var body: some View {
         let _ = AtriaBodyEvalProbe.tick("AtriaTodayLiveStatusHost")
-        TimelineView(.periodic(from: .now, by: AtriaStrapStepLiveStatus.liveWindow)) { context in
-            AtriaTodayLiveStatusStrip(live: liveStore.state,
-                                      pulse: pulseStore.state,
-                                      now: context.date)
+        // Only while there is a pulse to show (device 2026-09-27: without
+        // one the strip read "Waiting · 702", repeating the header pill's
+        // "Waiting" and the Steps tile's count on the same screen).
+        if pulseStore.state.heartRate > 0 {
+            TimelineView(.periodic(from: .now, by: AtriaStrapStepLiveStatus.liveWindow)) { context in
+                AtriaTodayLiveStatusStrip(live: liveStore.state,
+                                          pulse: pulseStore.state,
+                                          now: context.date)
+            }
         }
     }
 }
@@ -4255,28 +4260,21 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
                                     hasPulse: pulse.heartRate > 0)
     }
 
-    private var liveStepSuffix: String {
-        let steps = live.dailyStepPresentation
-        return motionStatus.liveStripStepSuffix(
-            valueText: steps.valueText,
-            hasCount: (steps.count ?? 0) > 0
-        )
-    }
-
     private var liveStepAccessibility: String {
         let steps = live.dailyStepPresentation
         return motionStatus.liveStripStepAccessibility(count: steps.count ?? 0)
     }
 
     private var liveStatusText: String {
-        if pulse.heartRate > 0 { return "\(pulse.heartRate) bpm\(liveStepSuffix)" }
+        // Steps live on the Steps tile; the strip is the pulse only.
+        if pulse.heartRate > 0 { return "\(pulse.heartRate) bpm" }
         let signal = AtriaLiveSignalTruth.valueText(
             status: live.status,
             streamState: live.strapStreamState,
             hasRecentHeartRate: live.hasRecentHeartRateSample,
             attribution: live.strapWearAttribution
         )
-        return "\(signal)\(liveStepSuffix)"
+        return signal
     }
 }
 

@@ -294,7 +294,7 @@ struct AtriaHomeContainer: View, Equatable {
             return "Atria is waiting for a steadier strap rise."
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
+        formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
         let startDate = episodeStart ?? Date().addingTimeInterval(-Double(samples))
         let approximateStart = formatter.string(from: startDate)
         var parts = ["Since ≈\(approximateStart)", "\(evidenceMinutes) min elevated"]
@@ -5184,7 +5184,10 @@ struct AtriaHomeView: View {
                 // void that a floating inset card opened above the greeting.
                 // Edge-to-edge chrome ends flush, so content spaces normally.
                 .padding(.top, 4)
-                .padding(.bottom, scrollBottomClearance)
+                // No second bottom padding here (device 2026-09-27): the
+                // same clearance was applied twice (safeAreaPadding on the
+                // scroll surface AND content padding), leaving 640-800 pt
+                // of empty scroll under every tab.
                 .frame(maxWidth: .infinity)
             }
             .navigationTitle(title)
@@ -5270,7 +5273,10 @@ struct AtriaHomeView: View {
         // under the glass tab at 228/300. The Start workout shortcut is
         // in-content, not the live accessory, so the idle path needs the
         // larger inset too.
-        shouldShowLiveAccessory ? 400 : 320
+        // Measured on device 2026-09-27: the glass tab bar is ~81 pt tall
+        // and the live accessory adds ~60 pt. 400/320 left 40% of a screen
+        // of empty scroll under the last card (it was also applied twice).
+        shouldShowLiveAccessory ? 180 : 120
     }
 
     private static let debugDashboardScrollTopID = "atria-dashboard-scroll-top"
@@ -6072,17 +6078,10 @@ struct AtriaHomeView: View {
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
-            // Live strap catch-up progress, the last row of Overview — but
-            // only when no system banner is up: a banner plus this footer told
-            // the same sync story twice (owner stack audit 2026-08-28). The
-            // footer returns once the banner resolves or is dismissed.
-            if !debugShowsNorthStarTodayFixture,
-               connectionDiagnosis == nil, !shouldShowMissedDataBanner {
-                AtriaSyncProgressFooter(
-                    liveHeartRateIsCurrent:
-                        model.coreLiveStore.state.hasRecentHeartRateSample
-                )
-            }
+            // No sync footer here (2026-09-27, owner: "just keep one liquid
+            // glass bar for all the statuses"): the pinned status band owns
+            // catch-up; a "Last fill · 67h old" row under Today contradicted
+            // its "7 h left".
         }
     }
 
@@ -7260,89 +7259,6 @@ enum AtriaSyncProgressFooterPresentation {
             detail: "\(behindText(behind)) old",
             accessibilityDetail: "History fill last reached \(throughText). \(behindText(behind)) old · \(liveText)\(stateText)",
             active: active
-        )
-    }
-}
-
-private struct AtriaSyncProgressFooter: View {
-    let liveHeartRateIsCurrent: Bool
-    @State private var now = Date()
-    private let refresh = Timer.publish(every: 5, on: .main, in: .common)
-        .autoconnect()
-
-    var body: some View {
-        Group {
-            if let footer {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: footer.active
-                          ? "arrow.triangle.2.circlepath"
-                          : "pause.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(footer.active ? Color.cyan : Color.secondary)
-                        .frame(width: 36, height: 36)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(footer.headline)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                            .layoutPriority(2)
-                        Text(footer.detail)
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(minHeight: 44)
-                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 16))
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(footer.headline). \(footer.accessibilityDetail).")
-            }
-        }
-        .onReceive(refresh) { now = $0 }
-    }
-
-    private var footer: AtriaSyncProgressFooterPresentation.Footer? {
-        let defaults = UserDefaults.standard
-        let flushAt = defaults.object(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
-        ) as? Double
-        let debtObservedAt = defaults.object(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
-        ) as? Double
-        return AtriaSyncProgressFooterPresentation.footer(
-            drainedThroughUnix: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
-            ) as? Double,
-            backlogPending: defaults.bool(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
-            ),
-            debtRecords: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
-            ) as? Int,
-            debtObservedAgeSeconds: debtObservedAt.map {
-                now.timeIntervalSince1970 - $0
-            },
-            secondsSinceLastFlush: flushAt.map {
-                max(0, now.timeIntervalSince1970 - $0)
-            },
-            backgroundLeaseActive: defaults.string(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
-            ) == "active",
-            liveHeartRateIsCurrent: liveHeartRateIsCurrent,
-            now: now,
-            abandonedThroughUnix: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
-            ) as? Double,
-            drainCursorUnix: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
-            ) as? Double,
-            lastDrainYieldedRows: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows
-            ) as? Bool
         )
     }
 }
