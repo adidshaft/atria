@@ -174,7 +174,9 @@ enum AtriaNightBaseline {
             let m = Int(abs(minutes).rounded())
             return m >= 60 ? "\(m / 60)h \(m % 60)m" : "\(m) min"
         }
-        let qualifier = severity == .unusual ? "unusually " : ""
+        // 2026-09-24: no "unusually" mid-sentence ("6 unusually lower than
+        // usual" read badly); severity still orders the lines on screen.
+        let qualifier = ""
         switch m {
         case .bedtime:
             return severity == .typical ? "Fell asleep \(clock(value)), around your usual time."

@@ -8,13 +8,39 @@ struct AtriaNightTimelineModel: Equatable {
     let minutes: [AtriaNightTimelineAnalyzer.Minute]
     let result: AtriaNightTimelineAnalyzer.Result
     var timeZone: TimeZone = .current
+    /// How much of the window had data (nil for synthetic fixtures).
+    var coverage: AtriaNightMinuteBuilder.Coverage?
+    /// The stored sleep this was built for; drawn when sleep can't be placed.
+    var sleepWindow: DateInterval?
 
     init(minutes: [AtriaNightTimelineAnalyzer.Minute],
          lightsOff: Date? = nil,
-         timeZone: TimeZone = .current) {
+         timeZone: TimeZone = .current,
+         coverage: AtriaNightMinuteBuilder.Coverage? = nil,
+         sleepWindow: DateInterval? = nil) {
         self.minutes = minutes
         self.result = AtriaNightTimelineAnalyzer.analyze(minutes, lightsOff: lightsOff)
         self.timeZone = timeZone
+        self.coverage = coverage
+        self.sleepWindow = sleepWindow
+    }
+
+    /// Why no timeline can be drawn, in one short line. nil when it can.
+    var unavailableReason: String? {
+        guard AtriaNightTimelinePresentation(self) == nil else { return nil }
+        if let coverage {
+            if coverage.heartRateMinutes == 0 && coverage.motionMinutes == 0 {
+                return "No strap data for this night yet."
+            }
+            if coverage.hasNoMotion { return "No motion data for this night." }
+        }
+        return "Not enough still time to place sleep."
+    }
+
+    /// Motion covers under half the window: the timeline is drawn, flagged.
+    var motionNote: String? {
+        guard let coverage, coverage.motionIsPartial else { return nil }
+        return "Motion missing for part of the night."
     }
 
     /// Stable identity for the night (used to key morning answers).
@@ -183,7 +209,14 @@ struct AtriaNightTimelineCard: View {
         } else {
             VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
                 Text("Night timeline").atriaEyebrow()
-                Text("Not enough still time to place sleep for this night.")
+                // Keep the heart-rate chart whenever there is heart rate:
+                // an honest night without motion still has a shape.
+                if let window = model.sleepWindow,
+                   !hrPoints(in: window.start...window.end).isEmpty {
+                    heartRateChart(domain: window.start...window.end, offWrist: [])
+                    timeAxis(domain: window.start...window.end)
+                }
+                Text(model.unavailableReason ?? "")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -205,9 +238,16 @@ struct AtriaNightTimelineCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            heartRateChart(p)
+            heartRateChart(domain: p.domain, offWrist: model.result.episodes
+                .filter { $0.kind == .notWorn }
+                .map { DateInterval(start: $0.start, end: $0.end) })
             episodeLane(p, axisDigits: heartRateAxisDigits(p))
             legend(p)
+            if let note = model.motionNote {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(p.insights.enumerated()), id: \.offset) { index, line in
                     Text(line)
@@ -251,21 +291,19 @@ struct AtriaNightTimelineCard: View {
         String(Int(heartRateDomain(hrPoints(in: p.domain)).upperBound)).count
     }
 
-    private func heartRateChart(_ p: AtriaNightTimelinePresentation) -> some View {
-        let points = hrPoints(in: p.domain)
+    /// Not-worn episodes are proven off-wrist evidence for the HR gaps.
+    private func heartRateChart(domain xDomain: ClosedRange<Date>,
+                                offWrist: [DateInterval]) -> some View {
+        let points = hrPoints(in: xDomain)
         let domain = heartRateDomain(points)
         let low = domain.lowerBound
         let high = domain.upperBound
-        // Not-worn episodes are proven off-wrist evidence for the HR gaps.
-        let offWrist = model.result.episodes
-            .filter { $0.kind == .notWorn }
-            .map { DateInterval(start: $0.start, end: $0.end) }
         let gapBands = AtriaChartNoDataBands.bands(
             sampleDates: points.map(\.date),
-            domain: p.domain,
+            domain: xDomain,
             evidence: AtriaChartGapEvidence(offWristSpans: offWrist))
         return Chart {
-            AtriaNoDataBandMarks(bands: gapBands, domain: p.domain)
+            AtriaNoDataBandMarks(bands: gapBands, domain: xDomain)
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.date),
                          y: .value("Heart rate", point.bpm),
@@ -275,7 +313,7 @@ struct AtriaNightTimelineCard: View {
                     .foregroundStyle(Metrics.heartRateIntensityGradient)
             }
         }
-        .chartXScale(domain: p.domain)
+        .chartXScale(domain: xDomain)
         .chartYScale(domain: low...high)
         .chartXAxis(.hidden)
         .chartYAxis {
@@ -327,6 +365,33 @@ struct AtriaNightTimelineCard: View {
         .accessibilityHidden(true)
     }
 
+    /// Bare time axis under the HR chart when there is no episode lane.
+    private func timeAxis(domain: ClosedRange<Date>) -> some View {
+        let digits = String(Int(heartRateDomain(hrPoints(in: domain)).upperBound)).count
+        return Chart { RuleMark(y: .value("Base", 0)).foregroundStyle(.clear) }
+            .chartXScale(domain: domain)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0]) { _ in
+                    AxisValueLabel {
+                        Text(String(repeating: "0", count: max(2, digits)))
+                            .font(AtriaChartVisualGrammar.axisLabelFont)
+                            .hidden()
+                    }
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: AtriaChartVisualGrammar.intradayTimeTickCount)) { _ in
+                    AxisTick().foregroundStyle(.clear)
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                        .font(AtriaChartVisualGrammar.axisLabelFont)
+                        .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
+                }
+            }
+            .frame(height: 20)
+            .environment(\.timeZone, model.timeZone)
+            .accessibilityHidden(true)
+    }
+
     private func legend(_ p: AtriaNightTimelinePresentation) -> some View {
         // Wrapping legend: only the lanes this night actually has.
         ViewThatFits(in: .horizontal) {
@@ -358,38 +423,28 @@ struct AtriaNightTimelineCard: View {
 
 // MARK: - Source
 
-/// Where the Sleep detail and Today get the latest analyzed night.
+/// Where the Sleep detail and Today get an analysed night.
 ///
-/// Production plumbing is not wired yet: the app does not assemble
-/// per-minute HR + R10 motion + firmware steps + contact into
-/// `AtriaNightTimelineAnalyzer.Minute`s (the analyzer's inputs come from the
-/// Mac capture tooling today). Until a minute builder exists this returns
-/// nil in production, so no surface shows a timeline it cannot back. DEBUG
-/// builds render a synthetic night with `--atria-ui-fixture night-timeline`.
+/// Production: `AtriaNightTimelineStore` builds minutes for the latest
+/// confirmed main sleep from the phone's own stores (HR archive, v24 motion
+/// history, session RR; see `AtriaNightMinuteBuilder`). DEBUG builds render a
+/// synthetic night with `--atria-ui-fixture night-timeline`.
 enum AtriaNightTimelineSource {
-    static func latest(now: Date = Date()) -> AtriaNightTimelineModel? {
-        #if DEBUG
-        if debugFixtureRequested() { return debugSyntheticNight(now: now) }
-        #endif
-        return nil
-    }
+    /// The morning question is asked in the first hours of the person's own
+    /// day, i.e. after THEIR wake, not between fixed clock hours. A shifted
+    /// sleeper who wakes at 19:15 gets it that evening (the old 04:00-13:00
+    /// clock gate never showed it to them).
+    static let morningPromptWindow: TimeInterval = 12 * 3_600
 
-    /// The morning prompt shows only between 04:00 and 13:00 local — the
-    /// question is about last night, asked while it is still fresh.
-    static func latestForMorningPrompt(now: Date = Date(),
-                                       calendar: Calendar = .current) -> AtriaNightTimelineModel? {
-        #if DEBUG
-        if debugFixtureRequested() { return debugSyntheticNight(now: now) }
-        #endif
-        guard (4..<13).contains(calendar.component(.hour, from: now)) else { return nil }
-        return latest(now: now)
+    static func morningPromptIsDue(wake: Date, now: Date) -> Bool {
+        now >= wake && now.timeIntervalSince(wake) < morningPromptWindow
     }
 
     #if DEBUG
     static func debugFixtureRequested(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
         guard let index = arguments.firstIndex(of: "--atria-ui-fixture"),
               arguments.indices.contains(index + 1) else { return false }
-        return ["night-timeline", "night-interruptions"].contains(arguments[index + 1])
+        return ["night-timeline", "night-interruptions", "night-timeline-no-motion"].contains(arguments[index + 1])
     }
 
     /// Synthetic night (no user data): lights off 22:50, settles ~23:40, a

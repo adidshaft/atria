@@ -3082,7 +3082,7 @@ struct AtriaHomeView: View {
         let shouldOpenHeartRateTimeline = Self.debugLaunchFixtureValue(arguments: arguments) == "heart-rate-timeline"
         let shouldShowConnectivityPillFixture = Self.debugLaunchFixtureValue(arguments: arguments) == "refresh-connectivity-pill"
         // Night timeline + morning prompt fixtures (visual pass 2026-09-24).
-        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions"]
+        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions", "night-timeline-no-motion"]
             .contains(Self.debugLaunchFixtureValue(arguments: arguments) ?? "")
         guard requestedScreen != "overview"
                 || requestedOverviewSegment != nil
@@ -13861,6 +13861,9 @@ final class AtriaHomeModel {
         // keeping the verified count/coverage). Computed once per Core-Live
         // rebuild, not per HR sample.
         dailyStepPresentation.motionAvailability = ble.strapMotionAvailability
+        // Live R10 off under the power policy: the count is history-only and
+        // partial until the bank syncs (never zero, never a finished day).
+        dailyStepPresentation.livePauseNote = ble.status == .connected ? ble.liveDataNote : nil
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
             savedActiveSession: savedAggregate.savedActiveSessionActiveCalories,
