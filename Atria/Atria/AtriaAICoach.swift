@@ -28,7 +28,9 @@ struct AtriaAICoachSettings: Codable, Equatable {
         }
     }
 
-    var mode: Mode = .off
+    /// On-device by default (2026-09-27): Apple's model runs on the iPhone,
+    /// sends nothing anywhere, and falls back to Atria's own template.
+    var mode: Mode = .local
     var cloudProvider: CloudProvider = .openAI
 
     private static let key = "atria.aiCoach.settings.v1"
@@ -230,11 +232,27 @@ struct AtriaCoachPayload: Codable, Equatable {
            let text = String(data: data, encoding: .utf8) {
             numbers.append(contentsOf: Self.numberTokens(in: text).map(\.value))
         }
+        // Every day sent, not only today: a reply may cite any of them
+        // (2026-09-27, on-device coach answers week questions).
+        for day in last7 where day != today {
+            if let recovery = day.recovery { numbers.append(Double(recovery)) }
+            if let rhr = day.rhr { numbers.append(Double(rhr)) }
+            if let lnRMSSD = day.lnRMSSD { numbers.append(exp(lnRMSSD)) }
+            if let strain = day.strain { numbers.append(strain) }
+            if let performance = day.sleepPerformance { numbers.append(Double(performance)) }
+            if let respiratory = day.respiratoryRate { numbers.append(respiratory) }
+            if let sleepSeconds = day.sleepSeconds {
+                numbers.append(sleepSeconds / 3600)
+                numbers.append(sleepSeconds / 60)
+            }
+        }
         if let today {
             if let recovery = today.recovery { numbers.append(Double(recovery)) }
             if let rhr = today.rhr { numbers.append(Double(rhr)) }
             if let lnRMSSD = today.lnRMSSD { numbers.append(exp(lnRMSSD)) }
             if let strain = today.strain { numbers.append(strain) }
+            if let performance = today.sleepPerformance { numbers.append(Double(performance)) }
+            if let respiratory = today.respiratoryRate { numbers.append(respiratory) }
             if let sleepSeconds = today.sleepSeconds {
                 numbers.append(sleepSeconds / 3600)
                 numbers.append(sleepSeconds / 60)
@@ -570,7 +588,7 @@ enum AtriaCoachProviderFactory {
         case .off:
             return nil
         case .local:
-            return AtriaLocalCoachProvider()
+            return AtriaOnDeviceCoachProvider()
         case .cloud:
             return AtriaCloudCoachProvider(provider: settings.cloudProvider, hasAPIKey: hasAPIKey)
         }

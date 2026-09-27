@@ -46,6 +46,8 @@ struct AtriaAssistantScreen: View {
     }
 
     @State private var exchanges: [Exchange] = []
+    @State private var askDraft = ""
+    @State private var isAsking = false
 
     private static let prompts: [Prompt] = [
         Prompt(id: "recovery", question: "Why is my recovery where it is?", compactTitle: "My recovery"),
@@ -64,6 +66,10 @@ struct AtriaAssistantScreen: View {
             }
 
             promptChips
+
+            if aiCoachSettings.mode == .local, AtriaOnDeviceModel.isAvailable {
+                askField
+            }
 
             if aiCoachSettings.mode != .off {
                 AtriaAICoachCard(context: context,
@@ -98,7 +104,9 @@ struct AtriaAssistantScreen: View {
             // The on-device promise was a VoiceOver-only hint (2026-09-02);
             // sighted readers saw a shield with no words behind it. One
             // caption says it for everyone.
-            Text("Quick answers come from your data on this phone, not generated text.")
+            Text(aiCoachSettings.mode == .local && AtriaOnDeviceModel.isAvailable
+                 ? "Answers come only from your data, on this phone."
+                 : "Quick answers come from your data on this phone, not generated text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -128,6 +136,54 @@ struct AtriaAssistantScreen: View {
             .background(Color(uiColor: .secondarySystemGroupedBackground),
                         in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
+    }
+
+    /// Free-form questions, answered by Apple's on-device model from the
+    /// same data the coach sees. A reply that invents a figure is not shown.
+    private var askField: some View {
+        HStack(spacing: 8) {
+            // Single-line so Return sends (a vertical field inserts a newline).
+            TextField("Ask about your data", text: $askDraft)
+                .submitLabel(.send)
+                .onSubmit { Task { await ask() } }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            Button {
+                Task { await ask() }
+            } label: {
+                if isAsking {
+                    ProgressView()
+                        .frame(width: 32, height: 32)
+                } else {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.tint)
+            .disabled(isAsking || askDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .accessibilityLabel("Ask")
+        }
+    }
+
+    @MainActor
+    private func ask() async {
+        let question = askDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty, !isAsking else { return }
+        isAsking = true
+        askDraft = ""
+        let payload = coachPayload ?? AtriaCoachPayload.legacy(context: context)
+        let reply = await AtriaOnDeviceModel.answer(question: question, payload: payload)
+        exchanges.append(Exchange(
+            question: question,
+            answer: reply ?? "I can't answer that from your recorded data without guessing.",
+            provenance: reply == nil
+                ? "Apple Intelligence on this iPhone · no answer that matched your data"
+                : "Apple Intelligence on this iPhone · \(payload.receiptSummary)"
+        ))
+        isAsking = false
     }
 
     private var promptChips: some View {

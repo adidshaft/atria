@@ -780,7 +780,10 @@ struct AtriaSettingsView: View {
     private var coachModeFooter: String {
         switch coachSettings.mode {
         case .off: return "Quick Assistant questions still use Atria's own calculations."
-        case .local: return "Coach summaries run on this iPhone."
+        case .local:
+            return AtriaOnDeviceModel.isAvailable
+                ? "Written by Apple Intelligence on this iPhone. Nothing is sent anywhere."
+                : "\(AtriaOnDeviceModel.status.detail). Until then, summaries use Atria's own wording."
         case .cloud: return "Cloud setup is managed here, away from your daily health view."
         }
     }
