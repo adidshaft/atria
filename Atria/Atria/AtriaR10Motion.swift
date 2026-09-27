@@ -555,6 +555,12 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         private(set) var closedSpanSteps = 0.0
         private(set) var closedSpans = 0
         private(set) var observedTotalSteps = 0.0
+        /// Bumped on every change to `spanMagnitudes`; the open-span score
+        /// below is reused while it is unchanged (2026-09-24 hang: the
+        /// journal re-scored the full 10-minute span per HR sample).
+        private var spanRevision: UInt64 = 0
+        private var openSpanScoreRevision: UInt64?
+        private var openSpanScore = 0.0
 
         private var scoringRotationLevelGate = AtriaGyroCadenceResearchPedometer.rotationLevelGate
         private var scoringStepBandLoHz = AtriaGyroCadenceResearchPedometer.stepBandLoHz
@@ -580,6 +586,7 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
             }
             lastDeviceTimestamp = deviceTimestamp
             spanMagnitudes.append(contentsOf: rotationMagnitudes)
+            spanRevision &+= 1
             if let prefix = AtriaGyroCadenceResearchShadow.sizeBoundScoredPrefix(
                 spanSampleCount: spanMagnitudes.count
             ) {
@@ -589,6 +596,7 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                     stepBandLoHz: scoringStepBandLoHz
                 )
                 spanMagnitudes.removeFirst(prefix)
+                spanRevision &+= 1
                 closedSpans += 1
                 scored = true
             }
@@ -608,12 +616,20 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         /// only at durable journal/session markers; normal 100 Hz ingestion
         /// remains O(samples) and does not repeatedly run the batch DFT.
         mutating func boundaryTotalSteps() -> Double {
-            let open = spanMagnitudes.isEmpty ? 0
-                : AtriaGyroCadenceResearchPedometer.steps(
+            let open: Double
+            if spanMagnitudes.isEmpty {
+                open = 0
+            } else if openSpanScoreRevision == spanRevision {
+                open = openSpanScore
+            } else {
+                open = AtriaGyroCadenceResearchPedometer.steps(
                     contiguousRotationMagnitudes: spanMagnitudes,
                     rotationLevelGate: scoringRotationLevelGate,
                     stepBandLoHz: scoringStepBandLoHz
                 )
+                openSpanScore = open
+                openSpanScoreRevision = spanRevision
+            }
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps + open)
             return observedTotalSteps
         }
@@ -626,6 +642,7 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                 stepBandLoHz: scoringStepBandLoHz
             )
             spanMagnitudes.removeAll(keepingCapacity: false)
+            spanRevision &+= 1
             closedSpans += 1
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps)
         }

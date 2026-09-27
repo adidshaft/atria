@@ -50,3 +50,28 @@ final class AtriaFrameCRCTests: XCTestCase {
         measure { for _ in 0..<500 { _ = crc32(frame) } }
     }
 }
+
+/// 2026-09-27 main-thread hang: the open-span gyro score is memoised; it must
+/// always equal a fresh recompute of the same state.
+final class AtriaGyroOpenSpanMemoTests: XCTestCase {
+    func testMemoisedBoundaryTotalMatchesFreshRecompute() {
+        var state = AtriaGyroCadenceResearchShadow.State()
+        var reference = AtriaGyroCadenceResearchShadow.State()
+        var ts: UInt32 = 1_790_000_000
+        for second in 0..<120 {
+            let walking = (30..<90).contains(second)
+            let magnitudes = (0..<100).map { i -> Double in
+                walking ? 60 + 55 * sin(Double(second * 100 + i) * 2 * .pi / 55.0) : 1.5
+            }
+            _ = state.ingest(deviceTimestamp: ts, rotationMagnitudes: magnitudes)
+            _ = reference.ingest(deviceTimestamp: ts, rotationMagnitudes: magnitudes)
+            ts += 1
+            let memoFirst = state.boundaryTotalSteps()
+            let memoSecond = state.boundaryTotalSteps()   // served from the memo
+            var fresh = reference
+            XCTAssertEqual(memoFirst, memoSecond)
+            XCTAssertEqual(memoFirst, fresh.boundaryTotalSteps(), accuracy: 1e-9)
+        }
+        XCTAssertGreaterThan(state.boundaryTotalSteps(), 0, "the synthetic walk registers steps")
+    }
+}
