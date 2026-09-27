@@ -92,4 +92,25 @@ final class AtriaWhoop4PowerPolicyTests: XCTestCase {
         XCTAssertEqual(AtriaLiveDataNote.from(decision: P.evaluate(hot, previous: nil), inputs: hot,
                                               catchingUpHistory: false), .liveMotionPausedPhoneHot)
     }
+
+    /// Device 2026-09-27: 2A19 read 40–41 % while the 0x30 event read 33 %;
+    /// the display jumped between them. 2A19 stays the authority while recent.
+    func testBatteryEventDefersToRecentStandardService() {
+        typealias B = AtriaBLEManager
+        let now = 1_790_500_000.0
+        XCTAssertTrue(B.batteryEventDefersToStandardService(
+            lastSource: "live_2A19", lastAcceptedAtUnix: now - 600,
+            eventReportsCharging: false, currentlyCharging: false, nowUnix: now))
+        XCTAssertFalse(B.batteryEventDefersToStandardService(
+            lastSource: "live_2A19", lastAcceptedAtUnix: now - 600,
+            eventReportsCharging: true, currentlyCharging: false, nowUnix: now),
+            "a charger change still comes through")
+        XCTAssertFalse(B.batteryEventDefersToStandardService(
+            lastSource: "live_2A19", lastAcceptedAtUnix: now - 2 * 3_600,
+            eventReportsCharging: false, currentlyCharging: false, nowUnix: now),
+            "a stale 2A19 reading does not block the event")
+        XCTAssertFalse(B.batteryEventDefersToStandardService(
+            lastSource: "live_battery_event", lastAcceptedAtUnix: now - 60,
+            eventReportsCharging: false, currentlyCharging: false, nowUnix: now))
+    }
 }
