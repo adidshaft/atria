@@ -22927,6 +22927,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastAcceptedDeviceTimestamp: researchAggregates.strapDeviceTimestamp,
             committedGyroCadenceResearchSteps: researchAggregates.gyroCadenceResearchSteps
         )
+        gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
         // The FIFO seed deliberately yields MainActor. If real live input won
         // that race, the prepared restore is obsolete and must not overwrite
         // the newer session's HR/RR/motion state.
@@ -49791,6 +49792,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         }
         guard r10SessionBoundaryID == id else {
             _ = await r10MotionPipeline.abortBoundary(token)
+            self.gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
             return nil
         }
         while acceptedHeartRateBatchDepth > 0 || realtimePacketBatchDepth > 0 {
@@ -49883,6 +49885,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let token = await preparation.value()
         guard r10SessionBoundaryID == id else {
             _ = await r10MotionPipeline.abortBoundary(token)
+            gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
             return false
         }
         // A terminal workout intent is already durable before this checkpoint
@@ -50109,6 +50112,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let token = await motionPreparation.value()
         guard r10SessionBoundaryID == id else {
             _ = await r10MotionPipeline.abortBoundary(token)
+            gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
             return SessionBoundaryOutcome(saved: nil, persisted: false)
         }
         await waitForSessionInputBatchesToDrain()
@@ -50153,6 +50157,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let nextLiveSessionID = UUID()
         r10MotionPipelineGeneration = transition.generation
         if rawStepsToHandOff == token.markerRawSteps {
+        gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
             rotateStrapStepLedgerAfterExactBoundary(
                 from: previousStepLedgerSegmentID,
                 finalizedSnapshot: token.finalSnapshot,
@@ -50302,6 +50307,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         token: AtriaR10MotionPipeline.BoundaryToken
     ) async {
         let aborted = await r10MotionPipeline.abortBoundary(token)
+        gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
         guard r10SessionBoundaryID == id else { return }
         if aborted, let snapshot = token.finalSnapshot {
             applyR10MotionSnapshot(snapshot, schedulesCheckpoint: false)
@@ -51341,6 +51347,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 lastAcceptedDeviceTimestamp: record.deviceTimestamp,
                 committedGyroCadenceResearchSteps: gyroFloor
             )
+            self.gyroSessionStepsCache = nil  // count may drop across seed/commit/abort
             // A normal launch can receive fresh R10/HR while the tiny file is
             // decoded. Adopt the durable segment identity only if no other
             // restore or boundary has already installed a different identity.
@@ -52302,8 +52309,25 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         assignIfChanged(\.liveStrapStepResearchTodayCount, 0)
     }
 
-    private func currentGyroCadenceResearchSessionSteps() -> Int {
-        r10MotionPipeline.gyroCadenceResearchStepsSynchronously()
+    /// Journal, ledger and workout readers call this on the MainActor, often
+    /// once per HR sample. Each fresh read `queue.sync`s onto the R10 queue
+    /// and scores the open span (up to 10 min of 100 Hz), so it is refreshed
+    /// at most every `gyroSessionStepsRefreshInterval` and reused in between
+    /// (device hang 2026-09-27 10:54: 339 of 603 main-thread samples here).
+    /// Keyed by pipeline generation, so a session reset never reuses a count.
+    static let gyroSessionStepsRefreshInterval: TimeInterval = 10
+    private var gyroSessionStepsCache: (generation: UInt64, value: Int, at: Date)?
+
+    private func currentGyroCadenceResearchSessionSteps(now: Date = Date()) -> Int {
+        if let cache = gyroSessionStepsCache,
+           cache.generation == r10MotionPipelineGeneration,
+           now.timeIntervalSince(cache.at) >= 0,
+           now.timeIntervalSince(cache.at) < Self.gyroSessionStepsRefreshInterval {
+            return cache.value
+        }
+        let value = r10MotionPipeline.gyroCadenceResearchStepsSynchronously()
+        gyroSessionStepsCache = (r10MotionPipelineGeneration, value, now)
+        return value
     }
 
     /// Freshness-qualified cumulative coordinate available only to a workout
