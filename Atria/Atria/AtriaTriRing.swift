@@ -415,7 +415,7 @@ struct AtriaTriRing: View, Equatable {
     static func confidenceMarker(for metric: AtriaTriRingMetric) -> String? {
         let detail = metric.detail.lowercased()
         guard !detail.isEmpty else { return nil }
-        if detail.contains("limited confidence") || detail.contains("resting hr only") {
+        if detail.contains("resting hr only") || detail.contains("estimate") {
             return "estimate"
         }
         if detail.contains("learning") || detail.contains("building") {

@@ -2740,7 +2740,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
                 Text(detail)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.78)
             }
 

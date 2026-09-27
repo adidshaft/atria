@@ -4545,19 +4545,19 @@ struct IMUAuditSummary: Equatable {
         }
 
         var footnoteText: String {
+            // Short and whole (2026-09-27): these sit under a compact tile
+            // and were cut mid-sentence. "vs your sleep" already says it is
+            // relative; the detail sheet explains it is not core temperature.
             guard latestDeltaCelsius != nil else {
                 if baselineSessions > 0 {
-                    return "Relative sleep baseline building from \(baselineSessions) qualified night\(baselineSessions == 1 ? "" : "s"); no absolute temperature."
+                    return "Baseline: \(baselineSessions) of 3 nights"
                 }
-                if candidateFrames > 0 {
-                    return "\(candidateFrames) candidate frames; relative baseline building, no absolute temperature."
-                }
-                return "Sleep-only signal; no absolute temperature."
+                return "Learns from your sleep"
             }
             if baselineSessions > 0 {
-                return "Relative sleep-only deviation from \(baselineSessions) prior local sessions; no absolute temperature."
+                return "vs your sleep · \(baselineSessions) nights"
             }
-            return "Relative sleep-only deviation from a persisted qualified sleep baseline; no absolute temperature."
+            return "vs your sleep baseline"
         }
 
         var isReady: Bool {
@@ -25539,7 +25539,7 @@ final class SessionStore: ObservableObject {
             percent: estimate.percent,
             confidence: .unverified,
             usesHRV: estimate.usesHRV,
-            detail: "Today · pending sleep review · limited confidence · \(estimate.detail)",
+            detail: "Today · pending sleep review · \(estimate.detail)",
             contributors: estimate.contributors
         )
     }

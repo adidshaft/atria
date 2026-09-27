@@ -21041,6 +21041,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           rangeLossBackfillReadyForceInterval)
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
+            // Device 2026-09-27: after an idle-window slice the 30 s retry
+            // landed here with no range-loss ticket, so the range-loss lane
+            // returned silently and the next slice waited 6–15 min for an
+            // unrelated trigger (12:18 → 12:24 → 12:40). A large strap backlog
+            // is the idle-window lane's job: re-enter it (every gate there
+            // still applies).
+            if !UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending),
+               let pending = loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+               pending >= Self.backlogSlicePendingThreshold,
+               !offlineHistoricalSyncInProgress {
+                let started = evaluateIdleWindowHistoryDrainIfNeeded(reason: "idle_window_drain")
+                AtriaDebugLog("ATRIADBG offline_sync status=backlog_slice_retry pending=%u started=%d",
+                              pending, started ? 1 : 0)
+                return
+            }
             scheduleRangeLossBackfillIfNeeded(
                 reason: Self.stableRangeLossBackfillRetryReason(reason)
             )

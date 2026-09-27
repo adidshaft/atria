@@ -4569,7 +4569,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     Text(item.detail)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
                         .minimumScaleFactor(0.72)
                 }
             }

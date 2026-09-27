@@ -137,7 +137,7 @@ final class AtriaStrainProvisionalMintTests: XCTestCase {
             contentsOf: sourceRoot.appendingPathComponent("Atria/Sessions.swift"),
             encoding: .utf8
         )
-        let stamp = "Today · pending sleep review · limited confidence ·"
+        let stamp = "Today · pending sleep review ·"
         XCTAssertTrue(sessionsSource.contains(stamp),
                       "the presentation authority must keep stamping the preview detail")
         XCTAssertTrue(stamp.contains(AtriaHomeModel.pendingSleepReviewPreviewDetailMarker),

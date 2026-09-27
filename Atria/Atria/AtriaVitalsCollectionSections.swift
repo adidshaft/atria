@@ -2150,7 +2150,7 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureFootnote(candidateValues: Int,
                                         decoderAvailable: Bool) -> String {
-        guard !decoderAvailable else { return "Sleep-only relative deviation; no absolute temperature." }
+        guard !decoderAvailable else { return "vs your sleep baseline" }
         return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
     }
 
@@ -2160,8 +2160,8 @@ enum AtriaExperimentalSensorCopy {
             return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
         }
         return summary.isReady
-            ? "\(summary.valueText) delta C versus your local sleep baseline. This is a relative wrist-skin signal, not core temperature."
-            : "Atria is building a sleep baseline. It will only show relative wrist-skin deviation, never core temperature."
+            ? "\(summary.valueText) °C versus your usual sleep. Wrist skin, relative to your own baseline — not core temperature."
+            : "Learning your usual sleep temperature. Readings start after 3 nights."
     }
 
     static func skinTemperatureAccessibilityDetail(
@@ -2174,7 +2174,7 @@ enum AtriaExperimentalSensorCopy {
                 ? "Skin temperature deviation is \(summary.detailText.lowercased())."
                 : "Wrist-temperature decoder not verified."
         }
-        return "Skin temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
+        return "Skin temperature relative sleep signal \(summary.valueText) degrees Celsius from baseline, \(summary.footnoteText)."
     }
 }
 
@@ -2314,7 +2314,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                     ? summary.skinTemperatureDeviation.valueText
                                     : "--",
                                 unit: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
-                                    && summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
+                                    && summary.skinTemperatureDeviation.isReady ? "°C" : nil,
                                 state: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                     && summary.skinTemperatureDeviation.isReady ? .research : .learning,
                                 tint: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
@@ -2544,7 +2544,7 @@ private struct AtriaBioAgeFactorRow: View, Equatable {
                 Text(factor.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.78)
             }
 
@@ -5005,17 +5005,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 // bars below are the labeled HR-only estimate.
                 Text(night.stageDisplayLabel)
                     .font(.caption.weight(.semibold))
-                if night.isEstimatedStageDisplay {
-                    // Theme unification (2026-08-29): a provenance note, not a
-                    // warning — neutral capsule, .secondary text.
-                    Text("Low confidence")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.06),
-                                    in: Capsule(style: .continuous))
-                }
+                // 2026-09-27: no "Low confidence" chip; the label already
+                // says "Estimated stages · HR-only", which is what was seen.
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
                     .font(.caption2.weight(.semibold))
@@ -5045,8 +5036,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 .atriaInspectableGraph(sleepStageGraph)
             }
 
-            // Estimate provenance on-card = the title label + "Low confidence"
-            // chip above (declutter 2026-08-20, R8). The full caption stays in
+            // Estimate provenance on-card = the title label above
+            // (declutter 2026-08-20, R8; chip removed 2026-09-27). The full caption stays in
             // this card's accessibilityLabel and renders with the bars on the
             // sleep detail sheet (AtriaSleepHypnogram).
 

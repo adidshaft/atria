@@ -932,7 +932,8 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertNil(currentMetric.respiratoryRate)
         XCTAssertNil(currentMetric.skinTemperatureDeviationCelsius)
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(
+        // 2026-09-27: relative skin-temperature decoder installed.
+        XCTAssertTrue(
             AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
         )
 

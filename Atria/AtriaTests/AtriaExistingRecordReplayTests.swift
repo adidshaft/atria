@@ -279,7 +279,7 @@ final class AtriaExistingRecordReplayTests: XCTestCase {
                            "RR outside a confirmed main sleep cannot influence Recovery",
                            file: file,
                            line: line)
-            XCTAssertTrue(summary.detail.contains("Limited confidence"), file: file, line: line)
+            XCTAssertTrue(summary.detail.contains("From resting HR only"), file: file, line: line)
             XCTAssertTrue(summary.detail.contains("sleep and HRV unavailable"), file: file, line: line)
             XCTAssertEqual(summary.contributors.first(where: { $0.kind == "restingHeartRate" })?.weight,
                            0.20,

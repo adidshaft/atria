@@ -824,7 +824,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                 tint: .green,
                 fill: 0.41))
         }
-        XCTAssertEqual(marker("Limited confidence · sleep and HRV unavailable · from resting HR only"),
+        XCTAssertEqual(marker("From resting HR only · sleep and HRV unavailable"),
                        "estimate")
         XCTAssertEqual(marker("Still learning your typical day"), "learning")
         XCTAssertEqual(marker("≥ 9.1 lower bound"), "partial")
