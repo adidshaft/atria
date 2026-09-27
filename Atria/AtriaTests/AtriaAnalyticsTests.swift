@@ -1684,7 +1684,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(estimate.percent)
         XCTAssertEqual(estimate.confidence, .unverified)
         XCTAssertFalse(estimate.usesHRV)
-        XCTAssertTrue(estimate.detail.contains("Limited confidence"))
+        XCTAssertTrue(estimate.detail.contains("HRV unavailable"))
         XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .sleep })?.weight,
                        0.75)
     }

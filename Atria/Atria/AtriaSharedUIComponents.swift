@@ -252,7 +252,7 @@ struct AtriaQuickTile: View, Equatable {
             Text(detail)
                 .font(.caption2)
                 .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.66) : .secondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
@@ -631,7 +631,7 @@ struct AtriaInlineQuickStat: View, Equatable {
                 Text(detail)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.72)
             }
         }

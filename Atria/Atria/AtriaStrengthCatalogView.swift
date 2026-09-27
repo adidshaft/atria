@@ -261,7 +261,7 @@ struct AtriaStrengthCatalogRow: View {
                 Text(subtitle)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                 if let trailingNote {
                     Text(trailingNote)
                         .font(.caption2)

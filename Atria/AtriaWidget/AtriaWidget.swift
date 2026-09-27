@@ -1845,7 +1845,7 @@ private enum AtriaDailyOverviewPreviewFixture {
             createdAt: now,
             recoveryPercent: 53,
             recoveryConfidence: "unverified",
-            recoveryDetail: "Limited confidence · HRV unavailable",
+            recoveryDetail: "Sleep-led estimate · HRV unavailable",
             strain: 4.2,
             strainDetail: "Partial · 52% tracked",
             strainCapturedAt: now.addingTimeInterval(-60),

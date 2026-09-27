@@ -22,15 +22,19 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(summary.temperatureWordCandidates,
                        [.init(offset: 68, value: 826)])
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
-        let decoded = AtriaResearchProbe.decodeSkinTemperatureCelsius(
+        // 2026-09-27: WHOOP 4 offset 68 is installed as a same-device
+        // RELATIVE decoder: a reading at its own anchor sits on the 33 °C
+        // reference, and the identity says it is relative, not absolute.
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        let decoded = try XCTUnwrap(AtriaResearchProbe.decodeSkinTemperatureCelsius(
             payload: payload,
             source: .historical,
             modelGeneration: .strap4,
             sameDeviceAnchorRaw: 826
-        )
-        XCTAssertNil(decoded,
-                     "a raw offset hypothesis must not produce Celsius before external-reference validation")
+        ))
+        XCTAssertEqual(decoded.celsius, 33.0, accuracy: 1e-9)
+        XCTAssertEqual(decoded.decoder.calibrationProvenance, .sameDeviceRelativeValidated)
+        XCTAssertTrue(decoded.isAggregationEligible)
     }
 
     func testOxygenCandidateValueCaptureAccumulatesPerOffsetMeanWithoutDisplayGating() throws {
@@ -109,7 +113,9 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(decoded.decoder.source, .historical)
         XCTAssertEqual(decoded.decoder.calibrationProvenance, .calibratedFixture)
         XCTAssertTrue(decoded.isAggregationEligible)
-        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        let production = try XCTUnwrap(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        XCTAssertEqual(production.modelGeneration, .strap4)
+        XCTAssertEqual(production.calibrationProvenance, .sameDeviceRelativeValidated)
     }
 
     func testUnknownHistoricalVersionDoesNotUseWhoop4FixedOffsets() {
@@ -207,7 +213,6 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         )
         XCTAssertFalse(gate.acceptsForCandidateCounting(emptyBinary))
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testWhoop4RelativeTemperatureRequiresSameDeviceAnchor() {

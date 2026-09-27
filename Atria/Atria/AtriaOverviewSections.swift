@@ -1645,7 +1645,7 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
                 Text(target.detail)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.76)
             }
         }

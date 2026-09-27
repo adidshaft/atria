@@ -1056,28 +1056,14 @@ struct AtriaDetectedActivitiesSection: View {
                 .font(.caption2.weight(.semibold).monospacedDigit())
                 .foregroundStyle(.secondary)
 
-            // Confidence reads as a tier and the detector's own reason
-            // (2026-09-02): the medium sentence restated the Confirm button
-            // beneath it, and the tier now carries the card's hue.
-            // One line where it fits; at large type (XXXL screenshot) the
-            // tier wrapped mid-phrase and the reason truncated, so the
-            // reason stacks under the tier instead.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) {
-                    confidenceTier(candidate)
-                    Text(Self.reasonText(candidate.reason))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    confidenceTier(candidate)
-                    Text(Self.reasonText(candidate.reason))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-            }
+            // The detector's own reason, whole (2026-09-27, owner: tier
+            // labels are "bogus, just show whatever is observed"). The tier
+            // chip is gone; the evidence line above and this reason say what
+            // was seen.
+            Text(Self.reasonText(candidate.reason))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 10) {
                 Button {
@@ -1157,13 +1143,6 @@ struct AtriaDetectedActivitiesSection: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private func confidenceTier(_ candidate: WorkoutReviewCandidate) -> some View {
-        Text(candidate.confidence == .medium ? "Medium confidence" : "Low confidence")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(candidate.confidence == .medium ? Color.cyan : Color.secondary)
-            .fixedSize()
     }
 
     private func requestReview(_ candidate: WorkoutReviewCandidate) {
