@@ -17,6 +17,8 @@ Physical-device pairing video: <ADD AN UNLISTED, REVIEWER-ACCESSIBLE VIDEO LINK 
 - **Manufacturer / seller:** WHOOP, Inc. (Boston, MA, USA).
 - **Affiliation:** none. Atria is independent and open source, and is not
   endorsed by WHOOP.
+- **Source:** the complete project and public development history are available
+  at https://github.com/adidshaft/atria.
 - **Connection:** Bluetooth Low Energy, with the phone as central. The user
   pairs a strap they own. No WHOOP account or cloud service is used.
 
