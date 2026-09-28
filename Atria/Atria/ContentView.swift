@@ -55,7 +55,10 @@ struct ContentView: View {
                            store: store,
                            workoutRouteRecorder: workoutRouteRecorder)
             .equatable()
-            .overlay(alignment: .top) {
+            // Floats above the tab bar. At the top it covered the full-bleed
+            // header and hid the Settings gear, so a reviewer could not open
+            // Settings with sample data (2026-09-28).
+            .overlay(alignment: .bottom) {
                 if appReviewDemoActive {
                     AtriaDemoDataBanner {
                         Task { @MainActor in
