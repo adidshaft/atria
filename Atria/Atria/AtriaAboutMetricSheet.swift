@@ -136,7 +136,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max:
             return "An estimate of your cardiorespiratory fitness (VO₂max) and how old your heart data reads versus your calendar age. It is a fitness signal from everyday wear, not a lab test."
         case .skinTemperature:
-            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria has not yet verified the Bluetooth decoder, so it does not currently publish a temperature value."
+            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria shows how tonight compares with your own recent nights, not an absolute temperature."
         case .bloodOxygen:
             return "Blood-oxygen saturation is the percentage of your hemoglobin carrying oxygen. It normally sits in the high 90s at rest."
         case .irregularRhythm:
@@ -148,7 +148,8 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     /// WHOOP 4 hardware carries an optical sensor; the blocker is the decoder,
     /// not the absence of hardware, so keep that distinction in the API name.
     var showsWhyBlank: Bool {
-        self == .bloodOxygen || self == .skinTemperature
+        self == .bloodOxygen
+            || (self == .skinTemperature && !AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     /// Section label above the middle card.
@@ -199,7 +200,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // slope of the weekly offset.
             return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Fitness age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
         case .skinTemperature:
-            return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
+            return "Atria averages the strap's skin-temperature field over the night and compares it with at least 3 of your prior nights on the same strap, giving a change in °C. The field's absolute scale is not verified against a thermometer, so Atria never shows a raw temperature, only the change against your own baseline."
         case .bloodOxygen:
             return AtriaSpO2Copy.whyBlank
         case .irregularRhythm:
@@ -230,7 +231,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // states the real early/confident day thresholds instead.
             return "An estimate from heart data — not a medical measurement. It needs about 14 days before an early read appears and 28 for a confident baseline, and VO₂max stays \u{201c}preliminary\u{201d} until you've recorded a hard effort that measures your maximum heart rate."
         case .skinTemperature:
-            return "Decoder not verified. If enabled after validation, this remains a sleep-only relative signal — not core temperature or a fever check — kept on your device and never written to Health."
+            return "A sleep-only relative signal from the same strap: not core temperature, not a fever check, and not validated against a reference thermometer. Kept on your device and never written to Health."
         case .bloodOxygen:
             return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
         case .irregularRhythm:

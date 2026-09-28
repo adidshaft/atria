@@ -387,10 +387,10 @@ struct AtriaSettingsView: View {
     #endif
     @State private var profilePersistence: AtriaProfileDraftPersistenceCoordinator
 
-    /// Support destinations are shown as text only. Atria's core stays local-first
-    /// with no in-app network/browser clients, so contact details are surfaced for
-    /// the user to open themselves rather than launched in-app.
-    private let supportHandle = "@adidshaft on X"
+    /// Public policy and support pages (#72). They open in the browser;
+    /// Atria itself has no network client.
+    static let privacyPolicyURL = URL(string: "https://github.com/adidshaft/atria/blob/main/PRIVACY.md")!
+    static let supportURL = URL(string: "https://github.com/adidshaft/atria/issues")!
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
@@ -1662,16 +1662,16 @@ struct AtriaSettingsView: View {
             LabeledContent("Version") {
                 Text(appVersion).foregroundStyle(.secondary).monospacedDigit()
             }
-            LabeledContent("Privacy") {
-                Text("Local-first; no account or cloud sync").foregroundStyle(.secondary)
+            Link(destination: Self.privacyPolicyURL) {
+                Label("Privacy policy", systemImage: "hand.raised")
             }
-            LabeledContent("Support & contact") {
-                Text(supportHandle).foregroundStyle(.secondary)
+            Link(destination: Self.supportURL) {
+                Label("Support", systemImage: "questionmark.bubble")
             }
         } header: {
             Text("About")
         } footer: {
-            Text("Independent; not affiliated with or endorsed by WHOOP. Not medical software.")
+            Text("Everything stays on this iPhone: no account, no server. Independent; not affiliated with or endorsed by WHOOP. Wellness estimates, not medical software.")
         }
     }
 

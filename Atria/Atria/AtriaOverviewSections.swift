@@ -8302,7 +8302,7 @@ enum AtriaMetricMeaningCopy {
         case .hrv:
             return "HRV is most useful as a trend. Compare today with your baseline band instead of chasing someone else’s number."
         case .restingHeartRate:
-            return "Resting HR is a context metric. A sudden rise versus your normal can line up with stress, illness, poor sleep, or hard training."
+            return "Resting HR is a context metric. A sudden rise versus your normal can line up with stress, poor sleep, alcohol, or hard training."
         case .respiratoryRate:
             return "Respiratory rate is compared with your own sleep baseline. Sustained shifts can line up with stress, travel, environment, or feeling off."
         case .sleep:
@@ -8661,7 +8661,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .hrv:
             return "HRV shows how much recovery capacity your system is carrying."
         case .restingHeartRate:
-            return "Resting HR helps flag strain, illness, or under-recovery."
+            return "Resting HR helps show strain or under-recovery."
         case .respiratoryRate:
             return "Respiratory rate shows how your sleeping breathing compares with your usual range."
         case .sleep:

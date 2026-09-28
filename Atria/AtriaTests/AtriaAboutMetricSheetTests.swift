@@ -91,9 +91,12 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
 
     func testOnlyUnverifiedExperimentalSignalsUseWhyBlankEducation() {
         XCTAssertTrue(AtriaAboutMetric.bloodOxygen.showsWhyBlank)
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.showsWhyBlank)
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.computeCardBody.contains("has not verified"))
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("Decoder not verified"))
+        // Relative skin temperature ships (2026-09-27), so it is computed,
+        // not blank; its copy must say relative-only and never degrees.
+        XCTAssertEqual(AtriaAboutMetric.skinTemperature.showsWhyBlank,
+                       !AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.computeCardBody.contains("never shows a raw temperature"))
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("not a fever check"))
 
         for metric in AtriaAboutMetric.allCases
             where metric != .bloodOxygen && metric != .skinTemperature && metric != .irregularRhythm {

@@ -146,14 +146,14 @@ enum AtriaEvidenceCatalog {
         ),
         AtriaEvidenceSource(
             id: "atria-unverified-optical-signals-2026",
-            title: "Unverified WHOOP 4 accessory optical signals in this Atria build",
+            title: "WHOOP 4 skin-temperature and blood-oxygen signals in this Atria build",
             authorsPublisher: "Atria",
             year: 2026,
             locator: "https://www.whoop.com",
             lastReviewed: lastReviewed,
             supports: [
                 "WHOOP 4 hardware includes skin-temperature and blood-oxygen sensors.",
-                "Atria has not verified those Bluetooth decoders, so it does not publish a temperature deviation or an SpO₂ percentage."
+                "Skin temperature is published only as a relative overnight change against your own prior nights, checked for consistency on the same strap, never as degrees of body temperature. The blood-oxygen decoder is not verified, so no SpO₂ percentage is published."
             ],
             metricIDs: ["skinTemperature", "bloodOxygen"]
         ),

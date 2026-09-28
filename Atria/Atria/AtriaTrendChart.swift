@@ -2054,7 +2054,7 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     var trendExplainer: String {
         switch self {
         case .restingHR:
-            return "A lower resting heart rate over weeks usually means better cardiovascular fitness or good recovery. A sustained rise can flag fatigue, illness, or poor sleep. Read the trend against your own baseline — not any single day."
+            return "A lower resting heart rate over weeks usually means better cardiovascular fitness or good recovery. A sustained rise often goes with fatigue, stress, or poor sleep. Read the trend against your own baseline — not any single day."
         case .strain:
             return "Strain is your daily cardiovascular load on a 0–21 scale, built from time spent in each heart-rate zone. Rising strain means harder days; healthy progress balances it with recovery rather than climbing every day."
         case .hrv:
