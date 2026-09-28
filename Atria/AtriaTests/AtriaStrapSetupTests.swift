@@ -283,6 +283,27 @@ final class AtriaR10LiveControlTests: XCTestCase {
             unansweredOnAttempts: 2), "second unanswered resend waits 240 s")
     }
 
+    /// 2026-09-28: R10 streamed all night and the strap ran flat; steps are
+    /// the only thing it serves. Pause it when nothing needs it.
+    func testIdlePausePausesStillnessAndChargingButNeverTheForegroundOrARise() {
+        typealias B = AtriaBLEManager
+        let quiet = B.r10IdleQuietAfter
+        XCTAssertTrue(B.r10IdlePause(appForeground: false, strapCharging: false,
+                                     stepsQuietFor: quiet, heartRate: 58, restingHeartRate: 55),
+                      "asleep: no steps for 20 min, HR near resting")
+        XCTAssertFalse(B.r10IdlePause(appForeground: false, strapCharging: false,
+                                      stepsQuietFor: quiet - 60, heartRate: 58, restingHeartRate: 55))
+        XCTAssertFalse(B.r10IdlePause(appForeground: false, strapCharging: false,
+                                      stepsQuietFor: quiet * 3, heartRate: 80, restingHeartRate: 55),
+                       "a heart-rate rise means something is happening")
+        XCTAssertTrue(B.r10IdlePause(appForeground: false, strapCharging: true,
+                                     stepsQuietFor: 0, heartRate: 0, restingHeartRate: 55),
+                      "no steps on a charger")
+        XCTAssertFalse(B.r10IdlePause(appForeground: true, strapCharging: true,
+                                      stepsQuietFor: quiet * 3, heartRate: 58, restingHeartRate: 55),
+                       "the app on screen always streams")
+    }
+
     func testNeverDuringHistoryOrPairingOrWhenDisconnected() {
         XCTAssertNil(cmd(history: true), "live 3F freezes the history read cursor")
         XCTAssertNil(cmd(pairing: true))

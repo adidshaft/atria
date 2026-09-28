@@ -5717,6 +5717,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// A 3F/00 that the strap did not act on is retried after this long.
     static let r10LiveOffRetryAfter: TimeInterval = 60
 
+    // Idle pause (2026-09-28: the owner's strap ran flat halfway through the
+    // night with R10 streaming the whole time; steps are the only thing R10
+    // is for and a sleeper takes none). Pure rule below; state here.
+    static let r10IdleQuietAfter: TimeInterval = 20 * 60
+    static let r10IdleProbeEvery: TimeInterval = 30 * 60
+    static let r10IdleProbeLength: TimeInterval = 60
+    private var r10IdleLastSteps: Int?
+    private var r10IdleLastStepChangeAt = Date()
+    private var r10IdlePausedAt: Date?
+    private var r10IdleProbeUntil: Date?
+    private var lastBatterySampleAt: Date?
+    private var lastBatterySampleLevel: Int?
+    static let batterySamplesKey = "atria.battery.samples.v1"
+
+    /// Whether live R10 should be paused because nothing needs it: the app is
+    /// not on screen and either the strap is charging, or no step has been
+    /// counted for `r10IdleQuietAfter` while heart rate sits near resting.
+    /// Heart rate rising 20 bpm over resting always wins (a walk starts it).
+    nonisolated static func r10IdlePause(appForeground: Bool,
+                                        strapCharging: Bool,
+                                        stepsQuietFor: TimeInterval,
+                                        heartRate: Int,
+                                        restingHeartRate: Int) -> Bool {
+        guard !appForeground else { return false }
+        if heartRate > 0, heartRate >= restingHeartRate + 20 { return false }
+        if strapCharging { return true }
+        return stepsQuietFor >= r10IdleQuietAfter
+            && heartRate > 0
+            && heartRate <= restingHeartRate + 15
+    }
+
     /// 120 s, 240 s, 480 s … up to 30 min while 3F/01 goes unanswered.
     nonisolated static func r10LiveResendInterval(unansweredOnAttempts: Int) -> TimeInterval {
         let doublings = min(max(0, unansweredOnAttempts - 1), 8)
@@ -5809,6 +5840,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             : nil)
         let framesFresh = lastR10MotionFrameAt.map { now.timeIntervalSince($0) <= Self.r10FramesFreshWithin } ?? false
         if framesFresh { r10LiveUnansweredOnCount = 0 }
+        recordBatterySampleIfNeeded(now: now, r10Streaming: framesFresh)
+        let idlePaused = r10IdlePausedNow(now: now)
         // Off is "sent" only until the strap has had time to act on it; frames
         // still flowing after that mean the write did not land.
         let offStillSettling = r10LiveOffSent
@@ -5819,7 +5852,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             heartRateFresh: currentConnectionHasFreshHeartRate,
             appOwnsHistoryTransfer: appOwnsHistory,
             pairingCheckInFlight: onboardingPairingPreflightInFlight,
-            liveAllowedByPower: decision.liveMotionAllowed,
+            liveAllowedByPower: decision.liveMotionAllowed && !idlePaused,
             r10FramesFresh: framesFresh,
             secondsSinceLastOn: r10LiveLastOnAt.map { now.timeIntervalSince($0) },
             offAlreadySent: offStillSettling,
@@ -5845,6 +5878,66 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       command == .on ? "3f01" : "3f00",
                       decision.reason,
                       Int(sequence))
+    }
+
+    /// Tracks step progress and decides the idle pause, with a short probe
+    /// every `r10IdleProbeEvery` so a walk that does not raise heart rate much
+    /// still turns R10 back on within the probe window.
+    private func r10IdlePausedNow(now: Date) -> Bool {
+        let steps = currentGyroCadenceResearchSessionSteps(now: now)
+        if steps != r10IdleLastSteps {
+            r10IdleLastSteps = steps
+            r10IdleLastStepChangeAt = now
+        }
+        if let until = r10IdleProbeUntil {
+            if now < until { return false }
+            r10IdleProbeUntil = nil
+        }
+        let pause = Self.r10IdlePause(
+            appForeground: foregroundInteractiveMode,
+            strapCharging: batteryIsCharging,
+            stepsQuietFor: now.timeIntervalSince(r10IdleLastStepChangeAt),
+            heartRate: heartRate,
+            restingHeartRate: dutyCycleRestHR
+        )
+        if pause {
+            if let pausedAt = r10IdlePausedAt,
+               now.timeIntervalSince(pausedAt) >= Self.r10IdleProbeEvery {
+                r10IdlePausedAt = now
+                r10IdleProbeUntil = now.addingTimeInterval(Self.r10IdleProbeLength)
+                AtriaDebugLog("ATRIADBG r10_idle status=probe length_s=%.0f", Self.r10IdleProbeLength)
+                return false
+            }
+            if r10IdlePausedAt == nil {
+                r10IdlePausedAt = now
+                AtriaDebugLog("ATRIADBG r10_idle status=paused hr=%d rest=%d quiet_s=%.0f charging=%d",
+                              heartRate, dutyCycleRestHR,
+                              now.timeIntervalSince(r10IdleLastStepChangeAt), batteryIsCharging ? 1 : 0)
+            }
+        } else if r10IdlePausedAt != nil {
+            r10IdlePausedAt = nil
+            AtriaDebugLog("ATRIADBG r10_idle status=resumed hr=%d foreground=%d",
+                          heartRate, foregroundInteractiveMode ? 1 : 0)
+        }
+        return pause
+    }
+
+    /// A small battery curve (level, time, whether R10 was streaming) so a
+    /// night's drain can be measured instead of guessed. Sample on change or
+    /// every 10 min; keep the newest 600.
+    private func recordBatterySampleIfNeeded(now: Date, r10Streaming: Bool) {
+        guard batteryLevel >= 0 else { return }
+        let changed = lastBatterySampleLevel != batteryLevel
+        let due = lastBatterySampleAt.map { now.timeIntervalSince($0) >= 600 } ?? true
+        guard changed || due else { return }
+        lastBatterySampleAt = now
+        lastBatterySampleLevel = batteryLevel
+        let defaults = UserDefaults.standard
+        var samples = defaults.array(forKey: Self.batterySamplesKey) as? [[Double]] ?? []
+        samples.append([now.timeIntervalSince1970, Double(batteryLevel),
+                        r10Streaming ? 1 : 0, batteryIsCharging ? 1 : 0])
+        if samples.count > 600 { samples.removeFirst(samples.count - 600) }
+        defaults.set(samples, forKey: Self.batterySamplesKey)
     }
 
     /// A strap left serving history by another client (or a crashed session)
