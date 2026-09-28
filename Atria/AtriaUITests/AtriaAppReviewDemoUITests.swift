@@ -7,11 +7,7 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
 
     func testFreshInstallExploreSampleDataVisitsEveryTabThenReturnsToSetup() {
         let app = XCUIApplication()
-        app.launchArguments.append("--atria-ui-fresh-install")
-        app.launch()
-
-        let explore = app.buttons["atria.onboarding.explore-sample-data"]
-        XCTAssertTrue(explore.waitForExistence(timeout: 20))
+        let explore = launchAtFirstRunSetup(app)
         explore.tap()
 
         let badge = app.descendants(matching: .any)["atria.demo.sample-data-badge"]
@@ -92,6 +88,80 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertTrue(erase.waitForExistence(timeout: 8))
         erase.tap()
         XCTAssertTrue(explore.waitForExistence(timeout: 20), "Exit should return to first-run setup")
+    }
+
+    /// App Review: sample data must never reach HealthKit. From a fresh
+    /// install, enter sample data, confirm the Settings Health controls cannot
+    /// authorize, visit every tab, then exit back to onboarding.
+    func testFreshInstallSampleDataCannotAuthorizeHealthKit() {
+        let app = XCUIApplication()
+        let explore = launchAtFirstRunSetup(app)
+        explore.tap()
+        let badge = app.descendants(matching: .any)["atria.demo.sample-data-badge"]
+        XCTAssertTrue(badge.waitForExistence(timeout: 15), "Sample data banner should appear")
+
+        let settings = app.buttons["Settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 8), "Missing Settings button")
+        settings.tap()
+        let data = app.buttons["Data"].firstMatch
+        XCTAssertTrue(data.waitForExistence(timeout: 8), "Missing Settings > Data")
+        data.tap()
+
+        let nutrition = app.switches["atria.settings.health-nutrition"]
+        var swipes = 0
+        while !nutrition.waitForExistence(timeout: swipes == 0 ? 4 : 1), swipes < 4 {
+            app.swipeUp()
+            swipes += 1
+        }
+        XCTAssertTrue(nutrition.exists, "Missing Apple Health nutrition toggle")
+        XCTAssertFalse(nutrition.isEnabled, "Health toggle must be disabled with sample data")
+        XCTAssertEqual(nutrition.value as? String, "0")
+        XCTAssertTrue(app.staticTexts["atria.settings.health-demo-note"].exists
+                      || app.descendants(matching: .any)["atria.settings.health-demo-note"].exists,
+                      "Sample data should explain why Apple Health is off")
+        let export = app.buttons["atria.settings.health-export"]
+        if export.exists {
+            XCTAssertFalse(export.isEnabled, "Apple Health export must be disabled with sample data")
+        }
+        // A tap on the disabled control must not raise the Health access sheet.
+        nutrition.tap()
+        XCTAssertFalse(app.navigationBars["Health Access"].waitForExistence(timeout: 3),
+                       "HealthKit authorization must never appear with sample data")
+        XCTAssertFalse(app.staticTexts["Turn On All"].exists)
+        XCTAssertEqual(nutrition.value as? String, "0")
+
+        let close = app.buttons["Close"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 4), "Missing Settings Close")
+        close.tap()
+
+        for tab in ["Today", "Vitals", "Journal", "Activity"] {
+            let button = app.tabBars.buttons[tab]
+            XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(tab)")
+            button.tap()
+            assertDemoSurfaceAlive(in: app, badge: badge, name: tab)
+        }
+
+        app.tabBars.buttons["Today"].tap()
+        let erase = app.buttons["atria.demo.erase-and-return"]
+        XCTAssertTrue(erase.waitForExistence(timeout: 8))
+        erase.tap()
+        XCTAssertTrue(explore.waitForExistence(timeout: 20), "Exit should return to first-run setup")
+    }
+
+    /// Launches at the welcome page. The runner kills the previous test's app
+    /// the moment it returns to setup, which can leave sample data active on
+    /// the next launch; a reviewer who force-quits after erasing lands on
+    /// setup, so undo that runner artifact here rather than in the app.
+    private func launchAtFirstRunSetup(_ app: XCUIApplication) -> XCUIElement {
+        app.launchArguments.append("--atria-ui-fresh-install")
+        app.launch()
+        let explore = app.buttons["atria.onboarding.explore-sample-data"]
+        if !explore.waitForExistence(timeout: 12) {
+            let erase = app.buttons["atria.demo.erase-and-return"]
+            if erase.waitForExistence(timeout: 5) { erase.tap() }
+        }
+        XCTAssertTrue(explore.waitForExistence(timeout: 20), "First-run setup should offer Explore sample data")
+        return explore
     }
 
     private func assertDemoSurfaceAlive(in app: XCUIApplication, badge: XCUIElement, name: String) {
