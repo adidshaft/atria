@@ -11,10 +11,11 @@ import UniformTypeIdentifiers
 /// doesn't animate.
 private struct OnboardingEntrance<Content: View>: View {
     private let content: Content
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let reduceMotion: Bool
     @State private var appeared = false
 
-    init(@ViewBuilder content: () -> Content) {
+    init(reduceMotion: Bool, @ViewBuilder content: () -> Content) {
+        self.reduceMotion = reduceMotion
         self.content = content()
     }
 
@@ -552,7 +553,7 @@ struct AtriaOnboardingFlow: View {
     private func page<Content: View>(@ViewBuilder content: @escaping (CGFloat) -> Content) -> some View {
         GeometryReader { proxy in
             ScrollView(showsIndicators: false) {
-                OnboardingEntrance {
+                OnboardingEntrance(reduceMotion: reduceMotion) {
                     VStack(alignment: .leading, spacing: 24) {
                         content(proxy.size.height)
                     }

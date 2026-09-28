@@ -389,7 +389,7 @@ struct AtriaSettingsView: View {
 
     /// Public policy and support pages (#72). They open in the browser;
     /// Atria itself has no network client.
-    static let privacyPolicyURL = URL(string: "https://github.com/adidshaft/atria/blob/main/PRIVACY.md")!
+    static let privacyPolicyURL = URL(string: "https://atria.zookfit.in/privacy/")!
     static let supportURL = URL(string: "https://github.com/adidshaft/atria/issues")!
 
     init(profile: AthleteProfile,
