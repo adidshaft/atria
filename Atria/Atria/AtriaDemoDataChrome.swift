@@ -49,7 +49,8 @@ struct AtriaDemoDataBanner: View {
         .padding(.vertical, 10)
         .background(.ultraThinMaterial, in: Capsule())
         .padding(.horizontal, 16)
-        .padding(.top, 8)
+        // Clears the floating tab bar (the overlay sits in the safe area).
+        .padding(.bottom, 66)
         .accessibilityElement(children: .contain)
     }
 }

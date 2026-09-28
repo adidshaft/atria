@@ -100,10 +100,10 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         let badge = app.descendants(matching: .any)["atria.demo.sample-data-badge"]
         XCTAssertTrue(badge.waitForExistence(timeout: 15), "Sample data banner should appear")
 
-        let settings = app.buttons["Settings"].firstMatch
+        let settings = app.buttons["atria.home.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8), "Missing Settings button")
         settings.tap()
-        let data = app.buttons["Data"].firstMatch
+        let data = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Data'")).firstMatch
         XCTAssertTrue(data.waitForExistence(timeout: 8), "Missing Settings > Data")
         data.tap()
 
@@ -130,6 +130,9 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Turn On All"].exists)
         XCTAssertEqual(nutrition.value as? String, "0")
 
+        // Back from Data to the Settings hub, where Close lives.
+        let back = app.navigationBars.buttons.element(boundBy: 0)
+        if back.waitForExistence(timeout: 3), !app.buttons["Close"].exists { back.tap() }
         let close = app.buttons["Close"].firstMatch
         XCTAssertTrue(close.waitForExistence(timeout: 4), "Missing Settings Close")
         close.tap()

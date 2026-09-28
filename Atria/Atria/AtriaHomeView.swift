@@ -13807,6 +13807,7 @@ private struct AtriaHomeTopChrome: View {
             }
             .buttonStyle(AtriaHeaderActionButtonStyle())
             .accessibilityLabel("Settings")
+            .accessibilityIdentifier("atria.home.settings")
         }
     }
 }
