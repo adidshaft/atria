@@ -391,6 +391,7 @@ struct AtriaSettingsView: View {
     /// Atria itself has no network client.
     static let privacyPolicyURL = URL(string: "https://atria.zookfit.in/privacy/")!
     static let supportURL = URL(string: "https://github.com/adidshaft/atria/issues")!
+    static let sourceCodeURL = URL(string: "https://github.com/adidshaft/atria")!
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
@@ -1678,6 +1679,9 @@ struct AtriaSettingsView: View {
             }
             Link(destination: Self.supportURL) {
                 Label("Support", systemImage: "questionmark.bubble")
+            }
+            Link(destination: Self.sourceCodeURL) {
+                Label("Source code · built in public", systemImage: "chevron.left.forwardslash.chevron.right")
             }
         } header: {
             Text("About")
