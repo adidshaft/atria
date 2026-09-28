@@ -5383,8 +5383,12 @@ struct WorkoutReviewCandidate: Equatable {
         "Possible workout"
     }
 
+    /// Push/Today-worthy only with real evidence (2026-09-28 tightening): a
+    /// low-confidence HR-only window no longer prompts just for being long —
+    /// long quiet plateaus (desk, travel, heat) were the false prompts. It
+    /// still appears in Vitals > Trends for the user to add by hand.
     var isReviewPromptWorthy: Bool {
-        kind == .workout || confidence != .low || observedDuration >= 15 * 60
+        kind == .workout || confidence != .low
     }
 }
 

@@ -419,4 +419,24 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
                                    startedAt: now.addingTimeInterval(-duration),
                                    observedAt: now.addingTimeInterval(-age))
     }
+
+    /// 2026-09-28: a raised heart rate without stepping is not a workout
+    /// (device: a desk prompt at 90 bpm). Hard efforts and no-motion stay open.
+    func testStrapStepsGateHeartRateOnlyPrompt() {
+        typealias E = AtriaWorkoutPromptEvaluator
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let desk = (0..<40).map { E.StepSample(t: now.addingTimeInterval(TimeInterval(-390 + $0 * 10)), steps: 5_000 + $0 / 8) }
+        let walk = (0..<40).map { E.StepSample(t: now.addingTimeInterval(TimeInterval(-390 + $0 * 10)), steps: 5_000 + $0 * 17) }
+        let start = now.addingTimeInterval(-400)
+        let deskCadence = E.strapStepCadence(samples: desk, since: start, now: now)
+        let walkCadence = E.strapStepCadence(samples: walk, since: start, now: now)
+        XCTAssertLessThan(deskCadence ?? 99, 5)
+        XCTAssertGreaterThan(walkCadence ?? 0, 90)
+        XCTAssertFalse(E.strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: deskCadence))
+        XCTAssertTrue(E.strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: walkCadence))
+        XCTAssertTrue(E.strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: nil),
+                      "no strap motion keeps the heart-rate rule")
+        XCTAssertNil(E.strapStepCadence(samples: Array(desk.suffix(10)), since: start, now: now),
+                     "under 4 min of motion is not a cadence")
+    }
 }

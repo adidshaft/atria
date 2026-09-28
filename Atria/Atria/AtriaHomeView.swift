@@ -998,6 +998,7 @@ struct AtriaHomeView: View {
     @State private var livePresenceStartedAt: Date?
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
     @StateObject private var compactRingStore = AtriaTodayCompactRingStore()
+    @State private var workoutPromptStepSamples: [AtriaWorkoutPromptEvaluator.StepSample] = []
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
@@ -3906,6 +3907,21 @@ struct AtriaHomeView: View {
         )
     }
 
+    /// The strap's live step count while its motion is fresh; motion gaps
+    /// clear it so a cadence is never computed across missing data.
+    private func recordWorkoutPromptStepSample(now: Date) {
+        let fresh = ble.liveStrapMotionCapturedAt.map { now.timeIntervalSince($0) <= 15 } ?? false
+        guard fresh else {
+            if !workoutPromptStepSamples.isEmpty { workoutPromptStepSamples.removeAll() }
+            return
+        }
+        let steps = model.coreLiveStore.state.strapStepResearchCount
+        if let last = workoutPromptStepSamples.last, now.timeIntervalSince(last.t) < 10 { return }
+        workoutPromptStepSamples.append(.init(t: now, steps: steps))
+        let cutoff = now.addingTimeInterval(-15 * 60)
+        workoutPromptStepSamples.removeAll { $0.t < cutoff }
+    }
+
     private func updateWorkoutDetectionPrompt(now: Date = Date()) {
         guard debugWorkoutDetectionPrompt == nil else {
             setWorkoutDetectionPromptIfChanged(nil)
@@ -3975,7 +3991,19 @@ struct AtriaHomeView: View {
                                                              signalQuality: ble.workoutPromptSignalQuality(now: now),
                                                              now: now)
         let detectedSamples = max(evaluation.longestElevatedBout, evaluation.longestZoneBout)
-        if evaluation.shouldPrompt {
+        recordWorkoutPromptStepSample(now: now)
+        let boutStart = now.addingTimeInterval(-TimeInterval(max(evaluation.longestElevatedBout, 1)))
+        let stepCadence = AtriaWorkoutPromptEvaluator.strapStepCadence(samples: workoutPromptStepSamples,
+                                                                       since: boutStart,
+                                                                       now: now)
+        let heartRateOnlyBlocked = evaluation.shouldPrompt
+            && !evaluation.zonePath
+            && !AtriaWorkoutPromptEvaluator.strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: stepCadence)
+        if heartRateOnlyBlocked, workoutDetectionPrompt == nil {
+            AtriaDebugLog("ATRIADBG workout_prompt status=suppressed reason=hr_without_steps steps_per_min=%.1f elevated_s=%d",
+                          stepCadence ?? -1, evaluation.longestElevatedBout)
+        }
+        if evaluation.shouldPrompt, !heartRateOnlyBlocked {
             let episodeEnd = now
             let episodeStart = now.addingTimeInterval(-TimeInterval(detectedSamples))
             let nextPrompt = AtriaWorkoutDetectionPrompt(heartRate: heartRate,
