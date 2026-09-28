@@ -17,6 +17,8 @@
 </p>
 
 <p align="center">
+  <a href="#help-make-atria-accurate">Help validate</a>
+  ·
   <a href="#current-status">Status</a>
   ·
   <a href="#quick-start">Quick Start</a>
@@ -37,6 +39,69 @@
 Atria is an open-source iOS app and BLE research toolkit for using a compatible WHOOP strap locally, without the official WHOOP cloud, account, subscription, or app. It is designed for people who own unused straps and want honest local metrics: live heart rate, saved RR windows, strain, sleep/workout evidence, HealthKit export, and protocol research.
 
 This project is independent and unaffiliated with WHOOP. It does not bypass paid cloud features. It talks to your own hardware over Bluetooth LE and keeps data on device.
+
+## Help make Atria accurate
+
+**Got a WHOOP 4 strap and any other fitness device? You can help calibrate Atria.**
+Every number Atria shows gets checked against a trusted reference the same way
+the step counter was: a known truth, a fixed test, repeats, and a pass bar set
+before any data. Each metric has its own issue with the exact procedure.
+
+**Already validated — steps** (iPhone, sample-exact metronome, one step per click):
+100 → 95, 80 → 80, 120 → 107, phone locked in a pocket 100 → 100, two minutes of desk typing ≈ 0 false steps ([#21](https://github.com/adidshaft/atria/issues/21)).
+
+### How to contribute
+
+1. **Run the app.** Clone the repo, open `Atria/Atria.xcodeproj`, sign with your
+   Apple ID and run on a physical iPhone (iOS 26.1+) with a WHOOP 4 strap. See the
+   [Quick Start](#quick-start) and [setup guide](docs/SETUP.md).
+2. **Pick a metric** from the table below that your device can check.
+3. **Wear both at the same time** and follow the procedure in its issue (full
+   detail in the [validation plan](docs/METRIC_VALIDATION_PLAN.md)).
+4. **Share the summary, not your data.** Post the device model, number of
+   sessions, error per condition (MAE / bias) and pass or fail in the issue.
+   Raw heart-rate, sleep and RR files stay on your own machine.
+5. **Fixing a miss?** Open a PR on `dev`. The fix must hold on every repeat and be
+   per-user or self-calibrating (Atria ships to many people — no constants tuned
+   to one wearer), with a regression test.
+
+### What needs checking
+
+| Metric | Compare against | Issue | Status |
+|---|---|---|---|
+| Heart rate | Chest strap | [#51](https://github.com/adidshaft/atria/issues/51) | ⏳ Needs a reference |
+| RR intervals & HRV | Chest strap with RR (Polar H10 best) | [#52](https://github.com/adidshaft/atria/issues/52) | ⏳ Needs a reference |
+| Resting heart rate | Chest strap overnight; watch or ring | [#53](https://github.com/adidshaft/atria/issues/53) | ⏳ Needs a reference |
+| Respiratory rate | Paced breathing (no device); watch or ring overnight | [#54](https://github.com/adidshaft/atria/issues/54) | ⏳ Anyone can start |
+| Sleep onset, wake & naps | Sleep diary; watch, ring or bed sensor | [#55](https://github.com/adidshaft/atria/issues/55) | ⏳ Anyone can start |
+| Sleep stages | Watch or ring (agreement); EEG headband or PSG (true) | [#56](https://github.com/adidshaft/atria/issues/56) | 🟡 Estimate |
+| Sleep need, performance, consistency | Sleep diary (arithmetic check) | [#57](https://github.com/adidshaft/atria/issues/57) | ⏳ Anyone can start |
+| Recovery | WHOOP app recovery; known hard/easy days | [#58](https://github.com/adidshaft/atria/issues/58) | 🟡 Personal baseline |
+| Strain, HR zones, max HR | Chest strap in workouts; WHOOP app strain | [#59](https://github.com/adidshaft/atria/issues/59) | 🟡 Local estimate |
+| Stress | Labelled test (no device); watch stress score | [#60](https://github.com/adidshaft/atria/issues/60) | ⏳ Anyone can start |
+| Skin temperature (relative) | Watch or ring wrist/finger temperature | [#61](https://github.com/adidshaft/atria/issues/61) | 🟡 Relative only |
+| Blood oxygen | Overnight fingertip oximeter | [#62](https://github.com/adidshaft/atria/issues/62) | 🔬 Hidden until proven |
+| VO2max | Watch VO2max or a lab / Cooper test | [#63](https://github.com/adidshaft/atria/issues/63) | 🟡 Estimate |
+| Active calories | Watch active energy | [#64](https://github.com/adidshaft/atria/issues/64) | 🟡 Estimate |
+| Detected workouts | Workout diary | [#65](https://github.com/adidshaft/atria/issues/65) | ⏳ Anyone can start |
+| Steps (whole day) | Phone pedometer; drained history | [#21](https://github.com/adidshaft/atria/issues/21) | ✅ Walks validated |
+
+### Devices that work as references
+
+Any of these popular devices is useful. Chest straps are the most accurate for
+heart rate and RR; watches and rings are good for sleep, temperature and
+day-level checks.
+
+| Kind | Examples | Best for |
+|---|---|---|
+| **Chest straps (ECG)** | Polar H10, Polar H9, Garmin HRM 600 / HRM-Pro Plus, Wahoo TRACKR / TICKR, Coros Heart Rate Monitor, Suunto Smart Heart Rate Belt | Heart rate, RR intervals, HRV, resting HR, strain and zones |
+| **Optical armbands** | Polar Verity Sense, Scosche Rhythm, Coros HR armband | Heart rate in workouts (not RR/HRV) |
+| **Smartwatches** | Apple Watch (Series 8+ / Ultra for wrist temperature), Garmin Forerunner / Fenix / Venu, Samsung Galaxy Watch, Google Pixel Watch, Fitbit | Sleep timing, respiratory rate, wrist temperature, VO2max, calories, stress |
+| **Smart rings** | Oura Ring, Samsung Galaxy Ring, Ultrahuman Ring, RingConn | Sleep timing and stages, skin temperature, resting HR, respiratory rate |
+| **Pulse oximeters** | Wellue O2Ring, Masimo MightySat, Nonin fingertip oximeters | Blood oxygen (overnight) |
+| **Sleep references** | Withings Sleep Analyzer, EEG headbands (e.g. Muse S), home sleep test / PSG | Sleep timing; true sleep stages (EEG / PSG only) |
+| **WHOOP app** | An active WHOOP membership on the same strap | Recovery and strain (plan for Atria and the app sharing the strap's history) |
+| **No device** | A metronome, a stopwatch and a diary | Steps, respiratory rate, stress protocol, sleep diary, detected workouts |
 
 ## App Tour
 
@@ -67,7 +132,7 @@ This project is independent and unaffiliated with WHOOP. It does not bypass paid
 
 ## Current Status
 
-**Status reviewed 23 September 2026.** The public default branch, published
+**Status reviewed 28 September 2026.** The public default branch, published
 `dev`, and latest local research are at different checkpoints. See
 [Current product status](docs/CURRENT_STATUS.md) for the branch boundaries,
 active issues, and acceptance gates. The new Mac R10/R11 findings are not yet
@@ -90,10 +155,10 @@ apply. Confidence labels are evidence categories, not completion percentages.
 | **Strain** | Personalized HR-reserve TRIMP | 🟡 Local estimate; calibration pending | [Rest/high-effort reference comparison](https://github.com/adidshaft/atria/issues/3) |
 | **Sleep & workouts** | Candidates, saved sessions and daily summaries | 🟡 Coverage-dependent; review flow needs proof | [Physical sleep review](https://github.com/adidshaft/atria/issues/25) · [workout surfaces](https://github.com/adidshaft/atria/issues/45) |
 | **Trends, widgets & insights** | Local history views and shared display data | 🟡 Cross-surface consistency still under review | [Trend confidence](https://github.com/adidshaft/atria/issues/5) · [concise UI](https://github.com/adidshaft/atria/issues/48) |
-| **All-day steps** | Mac fused estimator; development-build count display | 🔬 All-day accuracy unproven | [Held-out walks, controls and gap coverage](https://github.com/adidshaft/atria/issues/21) |
+| **All-day steps** | Live R10 gyro-cadence count on iPhone, foreground and locked | ✅ Metronome walks validated; whole-day totals pending | [Whole-day totals](https://github.com/adidshaft/atria/issues/21) |
 | **R10/R11 motion & optical streams** | Mac decoding and offline Swift port | 🔬 Local research; production iPhone path disabled | [Sustained iPhone integration](https://github.com/adidshaft/atria/issues/46) |
 | **Disconnect recovery** | Short Mac test recovered contiguous 1 Hz history | 🔬 Long-gap/iPhone proof pending; raw high-rate gaps remain lost | [Overnight analysis and lifecycle checks](https://github.com/adidshaft/atria/issues/46) |
-| **Skin temperature** | Thermal candidates; one R10 reference point | 🟡 Preliminary; absolute calibration unproven | [Repeated references and baseline stability](https://github.com/adidshaft/atria/issues/31) |
+| **Skin temperature** | Relative °C vs the wearer's own sleep baseline (shown) | 🟡 Relative only; absolute calibration unproven | [Reference comparison](https://github.com/adidshaft/atria/issues/61) |
 | **SpO₂** | Pulsatile R11 optical data decoded on Mac | ⏳ No defensible percentage yet | [Channel/gain interpretation and reference validation](https://github.com/adidshaft/atria/issues/31) |
 | **HealthKit** | Supported HR/workout/sleep export plumbing | ✅ Implemented for supported data; HRV export gated | [Qualified HRV and device readback](https://github.com/adidshaft/atria/issues/6) |
 | **Integration & release** | Draft integration PR and local device builds | ⛔ Verification and distribution gates open | [Repair checks](https://github.com/adidshaft/atria/issues/44) · [TestFlight receipt](https://github.com/adidshaft/atria/issues/42) |
