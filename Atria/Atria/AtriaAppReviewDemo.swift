@@ -27,14 +27,8 @@ enum AtriaAppReviewDemo {
         UserDefaults.standard.removeObject(forKey: activeKey)
     }
 
-    /// Legacy nickname path is retained only so existing tests can name the
-    /// retired trigger. First-run entry is the explicit Explore button.
-    static let reviewerNickname = "App Review"
-    static func isRequested(nickname: String) -> Bool {
-        nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            == reviewerNickname.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-    }
+    // The reviewer-nickname trigger was retired (2026-09-28, #71): the only
+    // entry is the explicit "Explore sample data" button on the welcome page.
 
     static func stepCount(on day: Date, now: Date = Date(), calendar: Calendar = .current) -> Int? {
         let today = calendar.startOfDay(for: now)

@@ -229,6 +229,7 @@ extension LocalNotificationScheduler {
                                                   now: Date = Date(),
                                                   onScheduled: (() -> Void)? = nil) {
         let kind = category.kind
+        guard !AtriaAppReviewDemo.isActive else { return }
         guard AtriaNotificationSettings.load().allows(kind: kind) else {
             AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled", kind)
             return

@@ -8,13 +8,6 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         super.tearDown()
     }
 
-    func testReservedReviewerNicknameIgnoresCaseAndWhitespace() {
-        XCTAssertTrue(AtriaAppReviewDemo.isRequested(nickname: "App Review"))
-        XCTAssertTrue(AtriaAppReviewDemo.isRequested(nickname: "  app review  "))
-        XCTAssertFalse(AtriaAppReviewDemo.isRequested(nickname: "AppReviewer"))
-        XCTAssertFalse(AtriaAppReviewDemo.isRequested(nickname: "Review"))
-    }
-
     func testFixtureCoversEverySupportedSurfaceWithoutUnsupportedSignals() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
