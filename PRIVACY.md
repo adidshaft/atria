@@ -28,8 +28,11 @@ you delete the app.
   confirm the export. If you turn on nutrition context, it reads nutrition
   samples. Health data is never used for advertising and never leaves the
   device through Atria.
-- **Exports, backups and research bundles.** These are files you create and
-  send yourself through the iOS share sheet. Atria does not upload them.
+- **Exports, backups and research bundles.** If you consent to anonymous
+  research sharing, Atria can prepare a date-shifted bundle locally. This
+  release has no upload transport: it remains on your iPhone until you choose
+  a recipient through the iOS share sheet. Turning sharing off clears the
+  local outbox and destroys its pseudonym.
 - **Links.** "Sources" and help links open in your browser. That website's own
   policy then applies.
 - **Coach.** Questions go to Apple's on-device model. Nothing is sent to a
@@ -50,6 +53,9 @@ diagnose, treat or monitor any condition.
 
 Changes to this policy are published in this file, and its history is public
 in the repository.
+
+The public policy used for App Store distribution is
+<https://atria.zookfit.in/privacy/>.
 
 Questions or requests: open an issue at
 <https://github.com/adidshaft/atria/issues>. For anything private, message

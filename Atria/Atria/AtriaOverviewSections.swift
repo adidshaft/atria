@@ -2863,7 +2863,11 @@ struct AtriaStrapStepsDetailSheet: View {
                             }
                             .font(.caption.weight(.semibold))
 
-                            ProgressView(value: Double(count),
+                            // A saved count can legitimately exceed a user's
+                            // current goal. ProgressView requires its value to
+                            // stay within the declared range, so cap only the
+                            // visual fill; the exact count remains visible above.
+                            ProgressView(value: Double(min(max(count, 0), max(goal, 1))),
                                          total: Double(max(goal, 1)))
                                 .tint(status.tint)
 

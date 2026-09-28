@@ -41,5 +41,5 @@ and say "not a medical reading". The methodology and sources for each metric are
 in Settings → About → Sources and in each metric's (i) sheet. Everything is
 processed on the device. There is no server and no analytics.
 
-- Privacy policy: https://github.com/adidshaft/atria/blob/main/PRIVACY.md
+- Privacy policy: https://atria.zookfit.in/privacy/
 - Support: https://github.com/adidshaft/atria/issues
