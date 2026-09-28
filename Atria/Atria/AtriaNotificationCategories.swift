@@ -68,7 +68,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
         case .workoutReview: return "Workout review"
         case .morningSummary: return "Morning summary"
         case .weeklyReport: return "Weekly report"
-        case .healthDeviation: return "Health monitor"
+        case .healthDeviation: return "Vitals trends"
         case .strapBattery: return "Strap battery"
         case .bluetoothOff: return "Bluetooth help"
         case .fitCheck: return "Fit check reminders"
@@ -100,7 +100,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
         case .weeklyReport:
             return "A short weekly summary of your measured trends."
         case .healthDeviation:
-            return "When a vital runs outside your typical range for 2 days."
+            return "When resting HR, HRV or breathing rate runs outside your own typical range for 2 days. Not a medical alert."
         case .strapBattery:
             return "When the strap battery runs low. Off by default so jumpy 2A19 values do not fire alerts or extra radio work."
         case .bluetoothOff:

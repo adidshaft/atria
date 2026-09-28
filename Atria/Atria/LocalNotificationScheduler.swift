@@ -1451,8 +1451,8 @@ enum LocalNotificationScheduler {
             let direction = first > 0 ? "above" : "below"
             return NotificationDecision(kind: "health_deviation",
                                         identifier: Identifier.healthDeviation,
-                                        title: "Health Monitor",
-                                        body: "Your \(candidate.kind) has been \(direction) your typical range for 2 days. Worth keeping an eye on.",
+                                        title: "Vitals trend",
+                                        body: "Your \(candidate.kind) has been \(direction) your typical range for 2 days. A wellness trend from your strap, not a medical reading.",
                                         reason: "two_day_\(candidate.kind.replacingOccurrences(of: " ", with: "_"))_\(direction)_typical",
                                         shouldSchedule: true,
                                         delay: 1,

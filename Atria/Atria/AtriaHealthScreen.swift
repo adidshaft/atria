@@ -1728,15 +1728,20 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })
-                // "Rhythm" fits a third-width tile; "Irregular rhythm" was cut
-                // to "Irregular rhy…" on device. The sheet keeps the full name.
-                AtriaHealthMetricRow(title: "Rhythm",
-                                     value: irregularRhythmAssessment.headline,
-                                     detail: irregularRhythmAssessment.detail,
-                                     systemImage: AtriaAboutMetric.irregularRhythm.glyph,
-                                     tint: .secondary,
-                                     layout: .compactTile,
-                                     onTap: { educationTopic = .irregularRhythm })
+                // Developer builds only (2026-09-28, #72): an irregular-rhythm
+                // readout is a regulated medical claim (AFib-style) that a
+                // wellness app with unvalidated pulse timing cannot make.
+                if AtriaDeveloperMode.isEnabled {
+                    // "Rhythm" fits a third-width tile; "Irregular rhythm" was cut
+                    // to "Irregular rhy…" on device. The sheet keeps the full name.
+                    AtriaHealthMetricRow(title: "Rhythm",
+                                         value: irregularRhythmAssessment.headline,
+                                         detail: irregularRhythmAssessment.detail,
+                                         systemImage: AtriaAboutMetric.irregularRhythm.glyph,
+                                         tint: .secondary,
+                                         layout: .compactTile,
+                                         onTap: { educationTopic = .irregularRhythm })
+                }
             }
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).
@@ -1858,7 +1863,7 @@ struct AtriaHealthScreen: View {
     private func header(live: AtriaHealthMonitorLiveProjection) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Health Monitor")
+                Text("Vitals")
                     .font(.title2.weight(.bold))
             }
 
@@ -2012,6 +2017,11 @@ struct AtriaHealthScreen: View {
         // rollup only backstops when no live night exists.
         if let performance = sleepPerformancePercentUnified {
             return "\(performance)% of need"
+        }
+        // A night with a duration but no computable need read "7 h 33 m ·
+        // No sleep this cycle" (2026-09-28). Match the Sleep detail sheet.
+        if currentDisplaySleep != nil {
+            return "Need unavailable"
         }
         return "No sleep this cycle"
     }
