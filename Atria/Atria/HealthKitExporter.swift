@@ -183,6 +183,11 @@ final class HealthKitExporter {
     }
 
     func requestNutritionReadAuthorizationIfEnabled(_ enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey)) {
+        // Sample data never asks for Health access (#71).
+        guard !AtriaAppReviewDemo.isActive else {
+            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=suppressed reason=app_review_demo")
+            return
+        }
         guard enabled else {
             AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=disabled")
             return
@@ -1643,6 +1648,7 @@ final class HealthKitExporter {
     }
 
     private func resetAndRebuildAtriaHeartRate(sessions: [SavedSession], rest: Int, maxHR: Int) {
+        guard !AtriaAppReviewDemo.isActive else { return }
         let planned = Self.plannedCounts(for: sessions, rest: rest, maxHR: maxHR)
         guard Self.hasHealthKitEntitlement() else {
             AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=missing_entitlement sessions=%d expected_hr_samples=%d action=enable_healthkit_capability",

@@ -30314,6 +30314,12 @@ final class SessionStore: ObservableObject {
         baseline.save()
         saveBehaviorJournalEntries([])
         markSessionPersistenceDirty()
+        // Clear the on-disk sleep/workout files too; otherwise leftovers from
+        // earlier test runs make demo activation refuse (#71).
+        Task { @MainActor in
+            _ = await saveConfirmedSleeps([], deferDerivedPublication: true)
+            _ = await saveConfirmedWorkouts([], deferDerivedPublication: true)
+        }
         scheduleSessionFilePersist(reason: "ui_test_fresh_install", delay: 0)
         scheduleDailyMetricPersist(reason: "ui_test_fresh_install", delay: 0)
         AtriaDebugLog("ATRIADBG app_review_demo status=ui_test_fresh_install")
@@ -55016,7 +55022,8 @@ final class SessionStore: ObservableObject {
     }
 
     func exportHealthKitFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
-        guard arguments.contains("--atria-healthkit-export") else { return }
+        guard arguments.contains("--atria-healthkit-export"),
+              !AtriaAppReviewDemo.isActive else { return }
         let rest = baseline.restingInt ?? 60
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,

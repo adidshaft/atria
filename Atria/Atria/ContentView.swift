@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var onboardingStage: OnboardingStage = .flow
     @State private var showOnboardingConsentSheet = false
     @State private var appReviewDemoActive = AtriaAppReviewDemo.isActive
+    @State private var appReviewDemoUnavailable = false
     @StateObject private var onboardingHistoryBootstrap: AtriaOnboardingHistoryBootstrap
 
     /// The active flow owns the eight compact setup and personalization pages;
@@ -86,7 +87,12 @@ struct ContentView: View {
                                         },
                                         onAppReviewDemo: {
                                             Task { @MainActor in
-                                                guard await store.activateAppReviewDemo() else { return }
+                                                // Activation refuses when this install already
+                                                // holds real data. Say so instead of a dead tap.
+                                                guard await store.activateAppReviewDemo() else {
+                                                    appReviewDemoUnavailable = true
+                                                    return
+                                                }
                                                 ble.enterAppReviewDemoMode()
                                                 appReviewDemoActive = true
                                                 showOnboarding = false
@@ -97,6 +103,11 @@ struct ContentView: View {
                         )
                     }
                     .interactiveDismissDisabled()
+                    .alert("Sample data unavailable", isPresented: $appReviewDemoUnavailable) {
+                        Button("OK", role: .cancel) {}
+                    } message: {
+                        Text("Sample data only loads on a fresh install, so it can never mix with or replace your own history.")
+                    }
                 case .sharingChoice(let profile):
                     AtriaOnboardingSharingChoiceStep { sharingEnabled in
                         if sharingEnabled {

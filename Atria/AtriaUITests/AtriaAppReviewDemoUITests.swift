@@ -60,7 +60,9 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             dismissOpenSheet(in: app)
         }
 
-        for tab in ["Vitals", "Journal", "Activity", "Assistant", "Strap"] {
+        // The tab bar is Today, Vitals, Journal, Activity (Assistant and Strap
+        // moved into Today's actions menu).
+        for tab in ["Vitals", "Journal", "Activity"] {
             let button = app.tabBars.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(tab)")
             button.tap()
@@ -78,7 +80,14 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Respiratory detail")
         dismissOpenSheet(in: app)
 
-        app.tabBars.buttons["Today"].tap()
+        // The tab bar minimizes after scrolling; scroll back to expand it.
+        let todayTab = app.tabBars.buttons["Today"]
+        for _ in 0..<4 where !todayTab.waitForExistence(timeout: 1) {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                .press(forDuration: 0.05,
+                       thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)))
+        }
+        todayTab.tap()
         let erase = app.buttons["atria.demo.erase-and-return"]
         XCTAssertTrue(erase.waitForExistence(timeout: 8))
         erase.tap()
@@ -107,7 +116,16 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
 
     private func openMetric(in app: XCUIApplication, identifier: String, detail: String) {
         let control = app.descendants(matching: .any)[identifier]
-        XCTAssertTrue(control.waitForExistence(timeout: 8), "Missing control \(identifier)")
+        // Lower tiles live in lazy grids and only exist once scrolled to.
+        var swipes = 0
+        while !control.waitForExistence(timeout: swipes == 0 ? 4 : 1), swipes < 4 {
+            // Scroll from below the charts: a swipe through a chart scrubs it.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
+                .press(forDuration: 0.05,
+                       thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+            swipes += 1
+        }
+        XCTAssertTrue(control.exists, "Missing control \(identifier)")
         control.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)[detail].waitForExistence(timeout: 8),
@@ -124,10 +142,17 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             app.navigationBars.buttons["Close"].tap()
             return
         }
-        app.swipeDown()
-        if app.tabBars.buttons["Today"].waitForExistence(timeout: 2) {
-            return
+        // Detail sheets have no Close button. A swipe in the middle scrolls
+        // the sheet's content instead of dismissing it, so drag from the
+        // grabber the way a person would, and wait for the sheet to go.
+        let tabBar = app.tabBars.firstMatch
+        for _ in 0..<3 {
+            let grabber = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08))
+            grabber.press(forDuration: 0.05,
+                          thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
+            if tabBar.isHittable { return }
+            _ = tabBar.waitForExistence(timeout: 1)
+            if tabBar.isHittable { return }
         }
-        app.swipeDown()
     }
 }
