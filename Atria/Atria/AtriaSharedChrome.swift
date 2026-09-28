@@ -80,22 +80,42 @@ struct AtriaGlassIconButtonStyle: ButtonStyle {
     // `size` is the visual glass diameter. The outer interaction frame remains
     // at least 44pt, so compact 28–38pt chrome does not create undersized taps.
     var size: CGFloat = 44
+
+    // No @Environment here (2026-09-28): AtriaHeaderActionButtonStyle calls
+    // this makeBody directly, so a style-level Environment is never installed
+    // and SwiftUI warned "Accessing Environment<Bool>'s value outside of being
+    // installed on a View" at every launch. The body view reads Reduce Motion.
+    func makeBody(configuration: Configuration) -> some View {
+        AtriaGlassIconButtonBody(label: configuration.label,
+                                 isPressed: configuration.isPressed,
+                                 tint: tint,
+                                 size: size)
+    }
+}
+
+/// The glass icon button's rendering, as a real View so its environment
+/// reads are always installed, however the style is invoked.
+struct AtriaGlassIconButtonBody<Label: View>: View {
+    let label: Label
+    let isPressed: Bool
+    let tint: Color
+    let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    func makeBody(configuration: Configuration) -> some View {
+    var body: some View {
         let hitSize = max(size, 44)
         // Native Liquid Glass: a real translucent glass circle with a clearly
         // legible icon. No opaque white fill underneath — that turned the glass into
         // a flat white disc and hid the icon entirely.
-        configuration.label
+        label
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(foreground)
             .frame(width: size, height: size)
             .glassEffect(.regular.interactive(), in: .circle)
             .frame(width: hitSize, height: hitSize)
             .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: configuration.isPressed)
+            .scaleEffect(isPressed ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: isPressed)
     }
 
     private var foreground: Color {

@@ -1050,16 +1050,27 @@ struct AtriaSettingsView: View {
                           systemImage: exportTapped ? "checkmark.circle.fill" : "square.and.arrow.up")
                 }
                 .disabled(exportTapped || AtriaAppReviewDemo.isActive)
+                .accessibilityIdentifier("atria.settings.health-export")
             } else {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
                                 title: "Apple Health export",
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
             }
 
-            Toggle(isOn: useHealthNutrition) {
+            // Sample data never touches Apple Health (App Review): the toggle
+            // shows off and cannot be flipped, so no permission sheet appears.
+            Toggle(isOn: AtriaAppReviewDemo.isActive ? .constant(false) : useHealthNutrition) {
                 Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
             }
+            .disabled(AtriaAppReviewDemo.isActive)
+            .accessibilityIdentifier("atria.settings.health-nutrition")
             .accessibilityHint("Read-only calories, macros, water, caffeine, and alcohol from Apple Health when you grant permission. Atria never asks you to log meals.")
+            if AtriaAppReviewDemo.isActive {
+                Text("Apple Health is off while you explore sample data.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("atria.settings.health-demo-note")
+            }
 
             if let onSyncMissedData {
                 Button {
@@ -1751,7 +1762,7 @@ private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
     var body: some View {
         content($iCloudBackupEnabled, $useHealthNutrition)
             .onChange(of: useHealthNutrition) { _, enabled in
-                if enabled {
+                if enabled, !AtriaAppReviewDemo.isActive {
                     onNutritionHealthToggle?()
                 }
             }

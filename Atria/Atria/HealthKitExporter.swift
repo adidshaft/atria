@@ -182,12 +182,17 @@ final class HealthKitExporter {
         Set(Self.nutritionReadIdentifiers.compactMap { HKQuantityType.quantityType(forIdentifier: $0) })
     }
 
+    /// App Review sample data must never touch HealthKit: no authorization
+    /// sheet, read, write, sync or audit. Every public entry point checks this
+    /// live, so leaving demo mode restores normal behaviour with no reset.
+    static func appReviewDemoBlocks(_ route: String) -> Bool {
+        guard AtriaAppReviewDemo.isActive else { return false }
+        AtriaDebugLog("ATRIADBG healthkit_%@ status=suppressed reason=app_review_demo", route)
+        return true
+    }
+
     func requestNutritionReadAuthorizationIfEnabled(_ enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey)) {
-        // Sample data never asks for Health access (#71).
-        guard !AtriaAppReviewDemo.isActive else {
-            AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=suppressed reason=app_review_demo")
-            return
-        }
+        guard !Self.appReviewDemoBlocks("nutrition_read") else { return }
         guard enabled else {
             AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=disabled")
             return
@@ -221,6 +226,10 @@ final class HealthKitExporter {
                                calendar: Calendar = .current,
                                enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey),
                                completion: @escaping (AtriaNutritionSummary?, Double?) -> Void) {
+        guard !Self.appReviewDemoBlocks("nutrition_query") else {
+            completion(nil, nil)
+            return
+        }
         guard enabled else {
             AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=disabled")
             completion(nil, nil)
@@ -358,10 +367,7 @@ final class HealthKitExporter {
                 restingBaselineSamples: Int,
                 confirmedWorkouts: [UserConfirmedWorkout] = [],
                 confirmedSleeps: [UserConfirmedSleep] = []) {
-        guard !AtriaAppReviewDemo.isActive else {
-            AtriaDebugLog("ATRIADBG healthkit_export status=suppressed reason=app_review_demo")
-            return
-        }
+        guard !Self.appReviewDemoBlocks("export") else { return }
         let diagnostics = HealthKitExporter.diagnostics(for: sessions,
                                                         rest: rest,
                                                         maxHR: maxHR,
@@ -587,7 +593,8 @@ final class HealthKitExporter {
     }
 
     func auditHeartRateReferenceFromLaunchIfRequested(arguments: [String], sessions: [SavedSession]) {
-        guard arguments.contains("--strap-healthkit-reference-audit") else { return }
+        guard arguments.contains("--strap-healthkit-reference-audit"),
+              !Self.appReviewDemoBlocks("reference_audit") else { return }
         AtriaDebugLog("ATRIADBG healthkit_reference_audit_start sessions=%d source=launch_arg", sessions.count)
         auditHeartRateReferenceAvailability(sessions: sessions)
         auditSleepingWristTemperatureReadAvailability(reason: "launch_arg")
@@ -1648,7 +1655,7 @@ final class HealthKitExporter {
     }
 
     private func resetAndRebuildAtriaHeartRate(sessions: [SavedSession], rest: Int, maxHR: Int) {
-        guard !AtriaAppReviewDemo.isActive else { return }
+        guard !Self.appReviewDemoBlocks("reset_rebuild") else { return }
         let planned = Self.plannedCounts(for: sessions, rest: rest, maxHR: maxHR)
         guard Self.hasHealthKitEntitlement() else {
             AtriaDebugLog("ATRIADBG healthkit_reset_rebuild status=missing_entitlement sessions=%d expected_hr_samples=%d action=enable_healthkit_capability",

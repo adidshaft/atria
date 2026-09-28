@@ -8,6 +8,27 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         super.tearDown()
     }
 
+    func testHealthKitIsBlockedOnlyWhileSampleDataIsActive() {
+        AtriaAppReviewDemo.deactivate()
+        XCTAssertFalse(HealthKitExporter.appReviewDemoBlocks("test"))
+        AtriaAppReviewDemo.activate()
+        XCTAssertTrue(HealthKitExporter.appReviewDemoBlocks("test"))
+        // Leaving sample data restores normal HealthKit behaviour.
+        AtriaAppReviewDemo.deactivate()
+        XCTAssertFalse(HealthKitExporter.appReviewDemoBlocks("test"))
+    }
+
+    func testNutritionQueryReturnsNothingWithSampleData() {
+        AtriaAppReviewDemo.activate()
+        let done = expectation(description: "completion")
+        HealthKitExporter().fetchNutritionSummary(for: Date(), enabled: true) { summary, mass in
+            XCTAssertNil(summary)
+            XCTAssertNil(mass)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 1)
+    }
+
     func testFixtureCoversEverySupportedSurfaceWithoutUnsupportedSignals() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
