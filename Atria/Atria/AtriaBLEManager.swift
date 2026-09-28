@@ -26499,6 +26499,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// How long a connected link may stay silent on live HR because Atria
+    /// itself unsubscribed (history catch-up) before a rebuild is allowed.
+    nonisolated static let acceptedHRSelfInflictedSilenceLimit: TimeInterval = 600
+
     private func recoverAcceptedHRWatchdog(label: String,
                                            status recoveryStatus: String,
                                            acceptedGap: TimeInterval,
@@ -26594,8 +26598,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // an extreme gap.
         let linkConnected = peripheral.state == .connected
         let rawRecent = (rawGap ?? .greatestFiniteMagnitude) < max(timeout * 4, 90)
-        if linkConnected, rawRecent {
-            if let characteristic = heartRateCharacteristic,
+        // 2026-09-28 device loop: catch-up slices (every 240 s on a healthy
+        // link, 7ebcf647) turn live 2A37 off; with no raw packets this branch
+        // was skipped and every slice ended in a fresh-scan rebuild ~77 s after
+        // connect ("waiting / reconnecting", no live HR or steps, 71 rebuilds).
+        // Silence we caused ourselves is not a dead link: keep it, and
+        // re-subscribe when history no longer owns the radio. A rebuild stays
+        // the last resort once the gap passes 10 min.
+        let historyOwnsLink = historicalRadioTransportOwnsLink
+        let liveHRUnsubscribed = heartRateCharacteristic.map {
+            $0.properties.contains(.notify) && !$0.isNotifying
+        } ?? false
+        let selfInflictedSilence = (historyOwnsLink || liveHRUnsubscribed)
+            && acceptedGap < Self.acceptedHRSelfInflictedSilenceLimit
+        if linkConnected, rawRecent || selfInflictedSilence {
+            if !historyOwnsLink,
+               let characteristic = heartRateCharacteristic,
                characteristic.properties.contains(.notify),
                !characteristic.isNotifying {
                 _ = requestHeartRateNotificationEnableIfNeeded(
