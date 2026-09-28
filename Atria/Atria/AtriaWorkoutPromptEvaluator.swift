@@ -113,6 +113,37 @@ enum AtriaWorkoutPromptEvaluator {
         }
     }
 
+    // Strap-motion gate (2026-09-28, owner: "false workout detection can be
+    // tightened"; device: "Possible workout · 90 bpm now · strain 0.2" at a
+    // desk). Raised heart rate WITHOUT stepping — caffeine, stress, heat,
+    // sitting — is not a workout. With the validated strap step count live,
+    // the heart-rate-only path needs real stepping; the hard-effort zone path
+    // (zone 3+, where cycling and strength live) is unchanged, and with no
+    // strap motion the heart-rate rule is unchanged.
+    static let minimumStepsPerMinute: Double = 30
+    static let minimumStepCadenceCoverage: TimeInterval = 4 * 60
+
+    struct StepSample: Equatable {
+        let t: Date
+        let steps: Int
+    }
+
+    /// Steps per minute across `[start, now]` from the strap's live count, or
+    /// nil when motion covers less than `minimumStepCadenceCoverage` of it.
+    static func strapStepCadence(samples: [StepSample], since start: Date, now: Date) -> Double? {
+        let window = samples.filter { $0.t >= start && $0.t <= now }
+        guard let first = window.first, let last = window.last else { return nil }
+        let covered = last.t.timeIntervalSince(first.t)
+        guard covered >= minimumStepCadenceCoverage else { return nil }
+        return Double(max(0, last.steps - first.steps)) / (covered / 60)
+    }
+
+    /// The heart-rate-only path stands only with stepping, or without motion data.
+    static func strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: Double?) -> Bool {
+        guard let stepsPerMinute else { return true }
+        return stepsPerMinute >= minimumStepsPerMinute
+    }
+
     static func evaluate(samples: [HRSample],
                          currentHeartRate: Int,
                          restingHeartRate: Int,
