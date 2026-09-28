@@ -380,6 +380,18 @@ every change that touches it.
 
 ## 5. What the owner needs to provide or decide
 
+**Answered 2026-09-28: the maintainer has none of the reference equipment and
+will not keep the diary.** Each item below is therefore an open call for
+contributors: chest strap [#66](https://github.com/adidshaft/atria/issues/66),
+watch or ring [#67](https://github.com/adidshaft/atria/issues/67), WHOOP
+membership [#68](https://github.com/adidshaft/atria/issues/68), overnight
+oximeter [#69](https://github.com/adidshaft/atria/issues/69), diary
+[#70](https://github.com/adidshaft/atria/issues/70). What the maintainer can
+still run alone: the metronome step walks (done), paced-breathing respiratory
+rate (3.4), the labelled stress session (3.10) and the arithmetic checks (3.7).
+
+Original list:
+
 1. **A chest strap that exposes RR intervals** (Polar H10 is the reference
    standard). It is the single most useful piece of equipment: it unlocks
    3.1, 3.2, 3.3 and 3.9.
