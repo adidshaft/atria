@@ -54,6 +54,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.1 Heart rate (live and history)
 
+Tracking issue: [#51](https://github.com/adidshaft/atria/issues/51) — anyone with the reference device can run it.
+
 - **Method now.** Standard 2A37 heart rate, plus heart rate from history
   records.
 - **Reference.** A chest strap (Polar H10 or similar) worn at the same time.
@@ -76,6 +78,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 - **Closes or advances.** #3 (Gate D, HR part).
 
 ### 3.2 RR intervals and HRV (RMSSD)
+
+Tracking issue: [#52](https://github.com/adidshaft/atria/issues/52) — anyone with the reference device can run it.
 
 - **Method now.** RMSSD over RR intervals inside the confirmed main sleep,
   reported as the morning HRV. #47 is still open on whether WHOOP 4 RR units
@@ -100,6 +104,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.3 Resting heart rate
 
+Tracking issue: [#53](https://github.com/adidshaft/atria/issues/53) — anyone with the reference device can run it.
+
 - **Method now.** Overnight resting value from the confirmed main sleep.
 - **Reference.** The lowest 5-min average of chest-strap HR in the same sleep
   window (the same definition, from better data). An Apple Watch resting HR is a
@@ -110,6 +116,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 - **Closes or advances.** #2, #50 (baselines from per-minute data).
 
 ### 3.4 Respiratory rate
+
+Tracking issue: [#54](https://github.com/adidshaft/atria/issues/54) — anyone with the reference device can run it.
 
 - **Method now.** Breathing rate estimated from how heart rate rises and falls
   with each breath, during sleep.
@@ -127,6 +135,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 - **Closes or advances.** #34 (five-biomarker nightly panel).
 
 ### 3.5 Sleep detection: onset, wake and duration
+
+Tracking issue: [#55](https://github.com/adidshaft/atria/issues/55) — anyone with the reference device can run it.
 
 - **Method now.** HR/RR windows plus the motion tick rate from the strap (asleep
   0.05–0.8 ticks per minute, awake 8–12), and review cards for anything not
@@ -156,6 +166,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.6 Sleep stages
 
+Tracking issue: [#56](https://github.com/adidshaft/atria/issues/56) — anyone with the reference device can run it.
+
 - **Method now.** Stages estimated from heart rate and motion, labelled
   "Estimated" on HR-only nights.
 - **Reality.** Only a sleep lab (polysomnography) gives true stages. An Apple
@@ -175,6 +187,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.7 Sleep need, performance and consistency
 
+Tracking issue: [#57](https://github.com/adidshaft/atria/issues/57) — anyone with the reference device can run it.
+
 - **Method now.** Arithmetic on validated inputs: need from baseline plus
   strain plus debt; performance = slept ÷ need; consistency uses the circular
   centre of bedtimes (#41 fixed).
@@ -184,6 +198,8 @@ metrics sit on heart rate and RR intervals, so those go first.
   Any difference is a code bug, not a tuning question.
 
 ### 3.8 Recovery
+
+Tracking issue: [#58](https://github.com/adidshaft/atria/issues/58) — anyone with the reference device can run it.
 
 - **Method now.** A logistic score from HRV, resting HR and sleep, each compared
   with the person's own baseline. Resting HR is weighted 0.20 when HRV is
@@ -209,6 +225,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.9 Strain, heart-rate zones and max HR
 
+Tracking issue: [#59](https://github.com/adidshaft/atria/issues/59) — anyone with the reference device can run it.
+
 - **Method now.** Banister TRIMP on heart rate reserve, mapped to a 0–21 day
   strain. Zones are % of max HR. Max HR is from age until a sustained peak
   suggests an update.
@@ -231,6 +249,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 - **Closes or advances.** #3 (Gate D).
 
 ### 3.10 Stress
+
+Tracking issue: [#60](https://github.com/adidshaft/atria/issues/60) — anyone with the reference device can run it.
 
 - **Method now.** A versioned physiological scorer from heart rate (and RR when
   present), 0–3, with 5-min estimates.
@@ -257,6 +277,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.11 Skin temperature (relative)
 
+Tracking issue: [#61](https://github.com/adidshaft/atria/issues/61) — anyone with the reference device can run it.
+
 - **Method now.** Offset 68 of the history record, reported as the change from
   the strap's own sleep baseline (turned on 2026-09-27). No absolute values.
 - **Reference.** Direction checks, plus the Apple Watch wrist temperature
@@ -275,6 +297,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.12 Blood oxygen (research only; stays hidden)
 
+Tracking issue: [#62](https://github.com/adidshaft/atria/issues/62) — anyone with the reference device can run it.
+
 - **Status.** The red and IR bytes are DC levels. A ratio built from them is a
   constant, about 80%. SpO2 stays off.
 - **Lead worth testing.** A history stream type `0x19`, about 400 records a day
@@ -290,6 +314,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.13 VO2max
 
+Tracking issue: [#63](https://github.com/adidshaft/atria/issues/63) — anyone with the reference device can run it.
+
 - **Method now.** The heart-rate-ratio method (max HR ÷ resting HR), so it
   inherits every error in those two.
 - **Reference.** The Apple Watch Cardio Fitness value if available, or a lab
@@ -299,6 +325,8 @@ metrics sit on heart rate and RR intervals, so those go first.
 
 ### 3.14 Active calories
 
+Tracking issue: [#64](https://github.com/adidshaft/atria/issues/64) — anyone with the reference device can run it.
+
 - **Method now.** Keytel heart-rate equation from profile weight, age and sex.
 - **Reference.** The Apple Watch active energy. It is itself only about ±20%,
   so this is a sanity band, not accuracy.
@@ -307,6 +335,8 @@ metrics sit on heart rate and RR intervals, so those go first.
   on the tile regardless.
 
 ### 3.15 Detected workouts
+
+Tracking issue: [#65](https://github.com/adidshaft/atria/issues/65) — anyone with the reference device can run it.
 
 - **Method now.** Sustained raised heart rate, with motion hints when present.
   Shown as "Possible workout" until the user adds it.
@@ -323,6 +353,8 @@ metrics sit on heart rate and RR intervals, so those go first.
   - The phone-at-home workout appears after reconnecting.
 
 ### 3.16 Steps (remaining piece)
+
+Tracking issue: [#21](https://github.com/adidshaft/atria/issues/21) — anyone with the reference device can run it.
 
 - **Done.** The walks above, and background counting with the phone locked.
 - **Left.** Whole-day totals against the history drained for the same day, and
