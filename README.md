@@ -50,6 +50,21 @@ before any data. Each metric has its own issue with the exact procedure.
 **Already validated — steps** (iPhone, sample-exact metronome, one step per click):
 100 → 95, 80 → 80, 120 → 107, phone locked in a pocket 100 → 100, two minutes of desk typing ≈ 0 false steps ([#21](https://github.com/adidshaft/atria/issues/21)).
 
+### Contributors wanted — the maintainer has none of these
+
+Atria is maintained by one person with only a WHOOP 4.0 and an iPhone: **no chest
+strap, no watch or ring, no WHOOP membership, no pulse oximeter**. Every accuracy
+check below that needs one of these is waiting for someone who has it. If that's
+you, pick the matching issue — it lists exactly which metrics you unlock.
+
+| If you have… | You can validate | Issue |
+|---|---|---|
+| A **chest strap** (Polar H10, Garmin HRM, Wahoo, Coros, Suunto) | Heart rate, RR/HRV, resting HR, strain & zones, calories | [#66](https://github.com/adidshaft/atria/issues/66) |
+| A **watch or ring** (Apple Watch, Oura, Garmin, Samsung, Pixel/Fitbit, Ultrahuman, RingConn) | Sleep timing & stages, breathing rate, skin temperature, VO2max, calories | [#67](https://github.com/adidshaft/atria/issues/67) |
+| An **active WHOOP membership** | Recovery and strain against WHOOP's own numbers | [#68](https://github.com/adidshaft/atria/issues/68) |
+| An **overnight pulse oximeter** (Wellue O2Ring, Masimo, Nonin) | Blood oxygen (hidden until proven) | [#69](https://github.com/adidshaft/atria/issues/69) |
+| **Nothing but 2–3 weeks of a one-line diary** | Sleep onset/wake, sleep need math, recovery direction, detected workouts, whole-day steps | [#70](https://github.com/adidshaft/atria/issues/70) |
+
 ### How to contribute
 
 1. **Run the app.** Clone the repo, open `Atria/Atria.xcodeproj`, sign with your
