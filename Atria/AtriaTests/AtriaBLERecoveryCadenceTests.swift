@@ -2485,6 +2485,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(disconnect.contains("heartRateNotificationEnableGate.reset"))
     }
 
+    /// 2026-09-28 device loop: catch-up slices turn live 2A37 off, and the
+    /// accepted-HR watchdog rebuilt the connection ~77 s after every connect
+    /// (71 rebuilds; no live HR or steps). Silence Atria caused must keep the
+    /// link (re-subscribing when history is done); rebuild only after 10 min.
+    func testAcceptedHRWatchdogKeepsLinkThroughSelfInflictedSilence() throws {
+        XCTAssertEqual(AtriaBLEManager.acceptedHRSelfInflictedSilenceLimit, 600)
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift"), encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func recoverAcceptedHRWatchdog"))
+        let end = try XCTUnwrap(source.range(of: "private func persistWatchdogRecovery",
+                                             range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let keep = try XCTUnwrap(body.range(of: "if linkConnected, rawRecent || selfInflictedSilence"))
+        let rebuild = try XCTUnwrap(body.range(of: "requestFreshScanReconnect"))
+        XCTAssertLessThan(keep.lowerBound, rebuild.lowerBound)
+        XCTAssertTrue(body.contains("historicalRadioTransportOwnsLink"))
+        XCTAssertTrue(body.contains("if !historyOwnsLink,"),
+                      "Never re-enable live HR while history owns the radio")
+    }
+
     func testSparseAndLowBatterySilenceNeverStartWatchdogRepair() throws {
         XCTAssertFalse(AtriaBLEManager.shouldPerformForegroundKeepaliveHardRebuild(
             isSparseSentinel: true,
