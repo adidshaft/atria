@@ -9,7 +9,7 @@ labelled sample data, entirely on the device, with no account, password,
 Bluetooth or internet. Every screen shows a "Sample data" mark. **Erase sample
 data and return to setup** at the top returns to first-run setup.
 
-Physical-device pairing video: <ADD LINK>
+Physical-device pairing video: https://atria.zookfit.in/review/atria-hardware-pairing-demo.mov
 
 ## Hardware
 
