@@ -57,6 +57,49 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         XCTAssertTrue(AtriaAppReviewDemo.bannerDetail.localizedCaseInsensitiveContains("demo data"))
     }
 
+    func testSampleDataBlocksResearchSharingAndDailyPreparation() {
+        AtriaAppReviewDemo.activate()
+        defer { AtriaAppReviewDemo.deactivate() }
+
+        AtriaResearchSharing.grantConsent(now: Date(timeIntervalSince1970: 1_780_000_000))
+        XCTAssertFalse(AtriaResearchSharing.isAvailable)
+        XCTAssertFalse(AtriaResearchSharing.isOptedIn)
+        XCTAssertNil(AtriaResearchSharing.pseudonym)
+
+        let defaults = UserDefaults.standard
+        let originalOptIn = defaults.object(forKey: AtriaResearchSharing.optInKey)
+        defer {
+            if let originalOptIn {
+                defaults.set(originalOptIn, forKey: AtriaResearchSharing.optInKey)
+            } else {
+                defaults.removeObject(forKey: AtriaResearchSharing.optInKey)
+            }
+        }
+        defaults.set(true, forKey: AtriaResearchSharing.optInKey)
+        XCTAssertFalse(
+            AtriaResearchUploadQueue.isDailyUploadDue(
+                now: Date(timeIntervalSince1970: 1_780_000_000),
+                defaults: defaults
+            ),
+            "Sample data must not prepare a daily research bundle"
+        )
+    }
+
+    func testSampleDataSettingsHideResearchSharingControl() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaSettingsView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private var privacySettingsPage: some View"))
+        let end = try XCTUnwrap(source.range(of: "private var developerSettingsPage", range: start.upperBound..<source.endIndex))
+        let page = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(page.contains("if !AtriaAppReviewDemo.isActive"))
+        XCTAssertTrue(page.contains("Research sharing is unavailable while you explore sample data."))
+    }
+
     func testEvidenceCatalogCitesEachComputedMetric() {
         for metricID in ["hrv", "recovery", "restingHeartRate", "respiration", "sleep", "vo2max", "strain", "stress", "sleepNeed", "fitnessAge", "skinTemperature", "bloodOxygen"] {
             XCTAssertFalse(

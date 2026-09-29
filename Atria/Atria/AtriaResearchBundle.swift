@@ -28,11 +28,22 @@ enum AtriaResearchSharing {
     // study; it never exports a fused strain or a raw exercise log.
     static let schemaVersion = 6
 
+    /// App Review sample data is deliberately sealed inside the app.  Keep
+    /// this gate at the policy boundary as well as in Settings, so a future
+    /// caller cannot prepare, queue, or hand sample records to ShareLink.
+    static var isAvailable: Bool {
+        !AtriaAppReviewDemo.isActive
+    }
+
     static var isOptedIn: Bool {
-        UserDefaults.standard.bool(forKey: optInKey)
+        isAvailable && UserDefaults.standard.bool(forKey: optInKey)
     }
 
     static func grantConsent(now: Date = Date(), previewPseudonym: String? = nil) {
+        guard isAvailable else {
+            AtriaDebugLog("ATRIADBG research_sharing status=suppressed reason=app_review_demo")
+            return
+        }
         let defaults = UserDefaults.standard
         let resolvedPseudonym = previewPseudonym.flatMap(UUID.init(uuidString:))?.uuidString
             ?? UUID().uuidString
@@ -56,10 +67,12 @@ enum AtriaResearchSharing {
     }
 
     static var pseudonym: String? {
-        UserDefaults.standard.string(forKey: pseudonymKey)
+        guard isAvailable else { return nil }
+        return UserDefaults.standard.string(forKey: pseudonymKey)
     }
 
     static func recordReceipt(digest: String, bytes: Int, now: Date = Date()) {
+        guard isAvailable else { return }
         let defaults = UserDefaults.standard
         var receipts = defaults.stringArray(forKey: receiptsKey) ?? []
         receipts.append("\(ISO8601DateFormatter().string(from: now))|\(digest.prefix(12))|\(bytes)")
@@ -68,7 +81,8 @@ enum AtriaResearchSharing {
     }
 
     static var lastReceipt: String? {
-        UserDefaults.standard.stringArray(forKey: receiptsKey)?.last
+        guard isAvailable else { return nil }
+        return UserDefaults.standard.stringArray(forKey: receiptsKey)?.last
     }
 }
 
@@ -240,7 +254,8 @@ enum AtriaResearchBundleBuilder {
     /// consent inspector; it is intentionally a distinct, non-uploading path.
     @MainActor
     static func build(store: SessionStore, now: Date = Date()) async -> Built? {
-        guard AtriaResearchSharing.isOptedIn,
+        guard AtriaResearchSharing.isAvailable,
+              AtriaResearchSharing.isOptedIn,
               let pseudonym = AtriaResearchSharing.pseudonym else { return nil }
         return await makeBuiltBundle(store: store, now: now, pseudonym: pseudonym)
     }
@@ -250,7 +265,8 @@ enum AtriaResearchBundleBuilder {
     /// inspector has been opened and the user explicitly agrees.
     @MainActor
     static func preview(store: SessionStore, now: Date = Date()) async -> Built? {
-        await makeBuiltBundle(store: store, now: now, pseudonym: UUID().uuidString)
+        guard AtriaResearchSharing.isAvailable else { return nil }
+        return await makeBuiltBundle(store: store, now: now, pseudonym: UUID().uuidString)
     }
 
     @MainActor
@@ -673,7 +689,8 @@ enum AtriaResearchUploadQueue {
     static func isDailyUploadDue(now: Date = Date(),
                                  calendar: Calendar = .current,
                                  defaults: UserDefaults = .standard) -> Bool {
-        AtriaAnonymousDailyUploadSchedule.isDue(
+        guard AtriaResearchSharing.isAvailable else { return false }
+        return AtriaAnonymousDailyUploadSchedule.isDue(
             optedIn: defaults.bool(forKey: AtriaResearchSharing.optInKey),
             preferredLocalMinutes: AtriaAnonymousDailyUploadSchedule.preferredLocalMinutes(defaults: defaults),
             now: now,
@@ -712,6 +729,7 @@ enum AtriaResearchUploadQueue {
     /// daily time has passed and nothing ran today, build the day's bundle on
     /// foreground — same due function and once-per-day mark as the nightly path.
     static func runForegroundCatchUpIfMissed(store: SessionStore, now: Date = Date(), calendar: Calendar = .current) async {
+        guard AtriaResearchSharing.isAvailable else { return }
         guard AtriaResearchSharing.isOptedIn else { return }
         guard isDailyUploadDue(now: now, calendar: calendar) else { return }
         markRanToday(now: now, calendar: calendar)
@@ -730,11 +748,13 @@ enum AtriaResearchUploadQueue {
     /// transport picked it up and it is fully handled.
     @MainActor
     static func sendNow(built: AtriaResearchBundleBuilder.Built, now: Date = Date()) async -> URL? {
-        await enqueueAndAttemptTransport(built: built, now: now, reason: "manual_send_now")
+        guard AtriaResearchSharing.isAvailable else { return nil }
+        return await enqueueAndAttemptTransport(built: built, now: now, reason: "manual_send_now")
     }
 
     @MainActor
     private static func enqueueAndAttemptTransport(built: AtriaResearchBundleBuilder.Built, now: Date, reason: String) async -> URL? {
+        guard AtriaResearchSharing.isAvailable else { return nil }
         let outboxURL = await persist(built: built, now: now)
         guard let configuredEndpoint else {
             AtriaDebugLog("ATRIADBG research_upload status=queued reason=%@ why=no_endpoint_configured bytes=%d",
