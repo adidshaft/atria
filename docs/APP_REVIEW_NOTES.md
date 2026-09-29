@@ -9,7 +9,10 @@ labelled sample data, entirely on the device, with no account, password,
 Bluetooth or internet. Every screen shows a "Sample data" mark. **Erase sample
 data and return to setup** at the top returns to first-run setup.
 
-Physical-device pairing video: <ADD AN UNLISTED, REVIEWER-ACCESSIBLE VIDEO LINK BEFORE SUBMISSION>
+Physical-device pairing video: attached directly to this App Review submission as
+**Final video Atria 2.mov**. It is available only to App Review, not published
+on the product page or a public video service. It shows the current app on a
+physical Apple device pairing with and using a WHOOP 4.0 strap.
 
 ## Hardware
 
@@ -21,6 +24,13 @@ Physical-device pairing video: <ADD AN UNLISTED, REVIEWER-ACCESSIBLE VIDEO LINK 
   at https://github.com/adidshaft/atria.
 - **Connection:** Bluetooth Low Energy, with the phone as central. The user
   pairs a strap they own. No WHOOP account or cloud service is used.
+- **Bluetooth privacy:** iOS presents a generic warning when an app can
+  discover nearby Bluetooth devices. Atria requests that permission only to
+  find and communicate with the user's compatible strap during user-initiated
+  setup and normal reconnecting. Discovery data is processed on-device; Atria
+  does not retain or transmit a list of nearby devices, infer location, or
+  create an advertising/profile record. Sample-data mode never initializes
+  Bluetooth.
 
 ## Signals read
 
@@ -40,8 +50,13 @@ body temperature.
 Atria gives wellness estimates and is not a medical device. It makes no
 diagnosis. Trend alerts are optional, compare only with the user's own range,
 and say "not a medical reading". The methodology and sources for each metric are
-in Settings → About → Sources and in each metric's (i) sheet. Everything is
-processed on the device. There is no server and no analytics.
+in Settings → About → Sources and in each metric's (i) sheet.
+
+Everything is processed on-device. There is no Atria account, server-side
+analytics, location profiling, or automatic research upload. The optional
+research feature can only prepare an inspectable, anonymized local bundle; it
+leaves the device only if the user explicitly selects a recipient through the
+iOS share sheet. Sample-data mode disables that feature completely.
 
 - Privacy policy: https://atria.zookfit.in/privacy/
 - Support: https://github.com/adidshaft/atria/issues
