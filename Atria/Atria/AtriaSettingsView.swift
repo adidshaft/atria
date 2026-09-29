@@ -873,8 +873,16 @@ struct AtriaSettingsView: View {
 
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
-            AtriaResearchSharingSection(buildPreview: buildResearchPreview,
-                                        buildBundle: buildResearchBundle)
+            if !AtriaAppReviewDemo.isActive {
+                AtriaResearchSharingSection(buildPreview: buildResearchPreview,
+                                            buildBundle: buildResearchBundle)
+            } else {
+                Section {
+                    Label("Sample data stays on this device", systemImage: "lock.shield")
+                } footer: {
+                    Text("Research sharing is unavailable while you explore sample data.")
+                }
+            }
             aboutSection
         }
     }
