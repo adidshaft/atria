@@ -948,6 +948,12 @@ extension AtriaBLEManager {
     /// slices). 45 s per ~5 min keeps live HR up ~84% in the foreground.
     nonisolated static let backlogHealthyEpochSliceInterval: TimeInterval = 240
 
+    nonisolated static func backlogSliceLimit(attendedForeground: Bool,
+                                              catchUpWindow: Bool) -> TimeInterval {
+        if attendedForeground { return backlogSliceForegroundLimit }
+        return catchUpWindow ? backlogCatchUpSliceLimit : backlogSliceBackgroundLimit
+    }
+
     /// A healthy worn epoch may yield to one large-backlog slice once the
     /// previous slice finished at least `backlogHealthyEpochSliceInterval`
     /// ago and made progress (a dry strap never earns an HR pause).
@@ -955,12 +961,51 @@ extension AtriaBLEManager {
         pendingRecords: UInt32?,
         lastSliceFinishedAt: Date?,
         lastSliceYieldedRows: Bool,
-        now: Date
+        now: Date,
+        catchUpWindowOpen: Bool? = nil
     ) -> Bool {
-        guard let pendingRecords, pendingRecords >= backlogSlicePendingThreshold,
-              lastSliceYieldedRows else { return false }
+        guard let pendingRecords, pendingRecords >= backlogSlicePendingThreshold else { return false }
+        if catchUpWindowOpen == false { return false }
+        guard lastSliceYieldedRows else {
+            // Outside the window a dry strap never earns an HR pause. Inside
+            // it the pause costs nothing, and "yielded rows" is otherwise set
+            // only by the productive slice it blocks — retry now and then.
+            guard catchUpWindowOpen == true else { return false }
+            return lastSliceFinishedAt.map {
+                now.timeIntervalSince($0) >= backlogCatchUpDryRetryInterval
+            } ?? true
+        }
         guard let lastSliceFinishedAt else { return true }
-        return now.timeIntervalSince(lastSliceFinishedAt) >= backlogHealthyEpochSliceInterval
+        let interval = catchUpWindowOpen == true
+            ? backlogCatchUpSliceInterval
+            : backlogHealthyEpochSliceInterval
+        return now.timeIntervalSince(lastSliceFinishedAt) >= interval
+    }
+
+    /// Owner 2026-09-30: backlog catch-up while worn happens "overnight /
+    /// charging". Device the same morning: a 2-min slice every ~10 min all
+    /// day cut ~43% of live stress minutes while fetching two-day-old rows.
+    /// "Overnight" is read from the wearer, not the clock (shifted sleepers
+    /// are first-class): the phone is on its charger, or the app is in the
+    /// background with no steps for 45 min and HR near resting. Inside that
+    /// window slices run long and often; outside it a worn, healthy link is
+    /// never paused for backlog. Strap charging / off-wrist drain as before.
+    nonisolated static let backlogCatchUpQuietAfter: TimeInterval = 45 * 60
+    nonisolated static let backlogCatchUpSliceLimit: TimeInterval = 300
+    nonisolated static let backlogCatchUpSliceInterval: TimeInterval = 60
+    nonisolated static let backlogCatchUpDryRetryInterval: TimeInterval = 10 * 60
+
+    nonisolated static func backlogCatchUpWindowOpen(
+        phoneCharging: Bool,
+        appForeground: Bool,
+        stepsQuietFor: TimeInterval,
+        heartRate: Int,
+        restingHeartRate: Int
+    ) -> Bool {
+        if phoneCharging { return true }
+        guard !appForeground, heartRate > 0, restingHeartRate > 0 else { return false }
+        return stepsQuietFor >= backlogCatchUpQuietAfter
+            && heartRate <= restingHeartRate + 10
     }
 
     nonisolated static func shouldFinishIdleWindowHistoryDrainAtACKBoundary(
@@ -971,7 +1016,8 @@ extension AtriaBLEManager {
         consumeToNow: Bool = false,
         sliceStartPendingRecords: UInt32? = nil,
         heartRatePauseElapsed: TimeInterval = 0,
-        queuedPullIntent: Bool = false
+        queuedPullIntent: Bool = false,
+        catchUpWindow: Bool = false
     ) -> Bool {
         guard idleWindowDrainOwnsLink, acknowledgedPages >= 1 else {
             return false
@@ -992,8 +1038,8 @@ extension AtriaBLEManager {
             return heartRatePauseElapsed >= idleWindowConsumeHeartRatePauseLimit
         }
         if let pending = sliceStartPendingRecords, pending >= backlogSlicePendingThreshold {
-            let limit = attendedForeground ? backlogSliceForegroundLimit : backlogSliceBackgroundLimit
-            return heartRatePauseElapsed >= limit
+            return heartRatePauseElapsed >= backlogSliceLimit(attendedForeground: attendedForeground,
+                                                              catchUpWindow: catchUpWindow)
         }
         if attendedForeground { return true }
         if chargingOrOffWrist { return false }
@@ -1079,12 +1125,14 @@ extension AtriaBLEManager {
         chargingOrOffWrist: Bool,
         consumeToNow: Bool = false,
         largeBacklog: Bool = false,
-        attendedForeground: Bool = false
+        attendedForeground: Bool = false,
+        catchUpWindow: Bool = false
     ) -> TimeInterval {
         // A large strap backlog gets the timed backlog slice (device
         // 2026-09-27: 320 rows in 21.7 s, then this 20 s budget stopped it).
         if largeBacklog, !chargingOrOffWrist {
-            return attendedForeground ? backlogSliceForegroundLimit : backlogSliceBackgroundLimit
+            return backlogSliceLimit(attendedForeground: attendedForeground,
+                                     catchUpWindow: catchUpWindow)
         }
         if consumeToNow && !chargingOrOffWrist { return 20 }
         return chargingOrOffWrist ? 180 : 20

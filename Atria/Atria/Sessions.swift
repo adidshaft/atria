@@ -1128,6 +1128,59 @@ private final class SavedSessionRespiratoryRateCache: @unchecked Sendable {
     }
 }
 
+/// Everything `SavedSession.workoutReadinessCore` reads. Saved sessions are
+/// immutable once sealed, and a live session changes point count/tail, so a
+/// content hit can never serve a stale verdict.
+private struct SavedSessionWorkoutReadinessCacheKey: Hashable {
+    let rr: SavedSessionRespiratoryRateCacheKey
+    let qualifiedRR: Bool
+    let pointCount: Int
+    let firstPointT: Double
+    let firstBPM: Int
+    let lastPointT: Double
+    let lastBPM: Int
+    let hrRaw: Int
+    let hrZero: Int
+    let hrArtifactHeld: Int
+    let hrArtifactDropped: Int
+    let hrAcceptedGaps: Int
+    let hrMaxAcceptedGap: Double
+    let rest: Int
+    let maxHR: Int
+    let thresholdFraction: Double
+    let contactCompromisedOverride: Bool?
+    let rrDisagreementOverride: Bool?
+    let rrSampleCountOverride: Int?
+}
+
+/// HangTracer 2026-09-28..30: HealthKit planning, its diagnostics and the
+/// baseline rebuild each re-ran `workoutReadiness` for every saved session
+/// on the main thread (1.2–2.7 s per workout end / sleep save).
+private final class SavedSessionWorkoutReadinessCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [SavedSessionWorkoutReadinessCacheKey: WorkoutReadiness] = [:]
+    private var order: [SavedSessionWorkoutReadinessCacheKey] = []
+    private let limit = 1_024
+
+    func lookup(_ key: SavedSessionWorkoutReadinessCacheKey) -> WorkoutReadiness? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    func store(_ value: WorkoutReadiness, for key: SavedSessionWorkoutReadinessCacheKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        if values[key] == nil {
+            order.append(key)
+            if order.count > limit {
+                values.removeValue(forKey: order.removeFirst())
+            }
+        }
+        values[key] = value
+    }
+}
+
 private struct SavedSessionLocalHRVCacheKey: Hashable {
     let id: UUID
     let sessionStart: Date
@@ -1377,6 +1430,7 @@ private struct AtriaCompactRespiratoryKernelBank {
 /// A finished heart-rate session, persisted locally (no cloud, no manufacturer account).
 struct SavedSession: Codable, Identifiable {
     private static let respiratoryRateCache = SavedSessionRespiratoryRateCache()
+    private static let workoutReadinessCache = SavedSessionWorkoutReadinessCache()
     // Same content-keyed cache shape, separate instance: RR-implied median
     // BPM for the workout contact-artifact gate (see rrImpliedMedianBPM).
     private static let rrImpliedMedianCache = SavedSessionRespiratoryRateCache()
@@ -2169,6 +2223,35 @@ struct SavedSession: Codable, Identifiable {
         let result = Self.median(estimates)
         Self.respiratoryRateCache.store(result, for: cacheKey)
         return result
+    }
+
+    private func workoutReadinessCacheKey(rest: Int,
+                                          maxHR: Int,
+                                          thresholdFraction: Double,
+                                          contactCompromisedOverride: Bool?,
+                                          rrDisagreementOverride: Bool?,
+                                          rrSampleCountOverride: Int?) -> SavedSessionWorkoutReadinessCacheKey {
+        SavedSessionWorkoutReadinessCacheKey(
+            rr: respiratoryRateCacheKey(rrPoints: rrPoints ?? []),
+            qualifiedRR: hasQualifiedRRProvenance,
+            pointCount: points.count,
+            firstPointT: points.first?.t ?? 0,
+            firstBPM: points.first?.bpm ?? 0,
+            lastPointT: points.last?.t ?? 0,
+            lastBPM: points.last?.bpm ?? 0,
+            hrRaw: hrRaw2A37Value,
+            hrZero: hrZeroValue,
+            hrArtifactHeld: hrArtifactHeldValue,
+            hrArtifactDropped: hrArtifactDroppedValue,
+            hrAcceptedGaps: hrAcceptedGapsValue,
+            hrMaxAcceptedGap: hrMaxAcceptedGapValue,
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: thresholdFraction,
+            contactCompromisedOverride: contactCompromisedOverride,
+            rrDisagreementOverride: rrDisagreementOverride,
+            rrSampleCountOverride: rrSampleCountOverride
+        )
     }
 
     private func respiratoryRateCacheKey(rrPoints: [RRPoint]) -> SavedSessionRespiratoryRateCacheKey {
@@ -7276,8 +7359,15 @@ extension SavedSession {
                           contactCompromisedOverride: Bool? = nil,
                           rrDisagreementOverride: Bool? = nil,
                           rrSampleCountOverride: Int? = nil) -> WorkoutReadiness {
+        let cacheKey = workoutReadinessCacheKey(rest: rest,
+                                                maxHR: maxHR,
+                                                thresholdFraction: thresholdFraction,
+                                                contactCompromisedOverride: contactCompromisedOverride,
+                                                rrDisagreementOverride: rrDisagreementOverride,
+                                                rrSampleCountOverride: rrSampleCountOverride)
+        if let cached = Self.workoutReadinessCache.lookup(cacheKey) { return cached }
         do {
-            return try workoutReadinessCore(
+            let readiness = try workoutReadinessCore(
                 rest: rest,
                 maxHR: maxHR,
                 thresholdFraction: thresholdFraction,
@@ -7287,6 +7377,8 @@ extension SavedSession {
                 preparedBPMStats: nil,
                 cooperativeDeadline: nil
             )
+            Self.workoutReadinessCache.store(readiness, for: cacheKey)
+            return readiness
         } catch {
             AtriaDebugLog("ATRIADBG workout_readiness status=failed error=%@",
                           String(describing: error))
@@ -37426,7 +37518,8 @@ final class SessionStore: ObservableObject {
 
     private func confirmSleepHistoryNight(_ night: SleepHistorySnapshot.Night,
                                           rest: Int,
-                                          source: String) async -> UserConfirmedSleep? {
+                                          source: String,
+                                          retryOnConcurrentChange: Bool = true) async -> UserConfirmedSleep? {
         guard let start = night.start, let end = night.end, end > start else {
             AtriaDebugLog("ATRIADBG sleep_confirm status=learning reason=invalid_review_window source=%@ candidate_source=%@ metric_promotions=0 auto_gate_e_unchanged=1",
                           source,
@@ -37506,7 +37599,21 @@ final class SessionStore: ObservableObject {
         // utility worker. Prefer its exact-window HRV so confirming does not
         // discard that evidence and visibly change recovery color. Finished
         // canonical sessions remain the fallback for older review records.
-        let metrics = confirmedSleepWindowMetrics(start: confirmedStart, end: end, rest: rest)
+        let existingIDs = existing.map(\.id)
+        let windowEvidence = await confirmedSleepWindowEvidenceOffMain(
+            start: confirmedStart,
+            end: end,
+            rest: rest,
+            needsRespiratoryRate: night.respiratoryRate == nil
+        )
+        guard cachedConfirmedSleeps.map(\.id) == existingIDs else {
+            // Another save landed while the window was being scored; the
+            // extension target and insertion base above may be stale.
+            guard retryOnConcurrentChange else { return nil }
+            return await confirmSleepHistoryNight(night, rest: rest, source: source,
+                                                  retryOnConcurrentChange: false)
+        }
+        let metrics = windowEvidence.metrics
         let motionValidated = night.hasValidatedMotionEvidence
         let stageSegments = night.stageSegmentsForStorage.isEmpty ? nil : night.stageSegmentsForStorage
         let creditedDuration = UserConfirmedSleep.effectiveSleepDuration(
@@ -37542,8 +37649,7 @@ final class SessionStore: ObservableObject {
                                            hrvWindowCount: max(night.hrvWindowCount,
                                                                metrics.hrvWindowCount),
                                            respiratoryRate: night.respiratoryRate
-                                            ?? confirmedSleepRespiratoryRate(start: confirmedStart,
-                                                                            end: end),
+                                            ?? windowEvidence.respiratoryRate,
                                            duration: creditedDuration,
                                            span: confirmedSpan,
                                            reason: "\(source); \(night.confirmationText); \(night.confidenceText)",
@@ -41744,6 +41850,9 @@ final class SessionStore: ObservableObject {
                         rest: Int,
                         source: String = "manual_ui") async -> UserConfirmedSleep? {
         guard end > start else { return nil }
+        let windowEvidence = await confirmedSleepWindowEvidenceOffMain(
+            start: start, end: end, rest: rest, needsRespiratoryRate: true
+        )
         let sleepSource = isNap ? "manual_nap" : "manual_sleep"
         let id = confirmedSleepID(start: start, end: end, source: sleepSource)
         let previouslySaved = cachedConfirmedSleeps.first { $0.id == id }
@@ -41757,7 +41866,7 @@ final class SessionStore: ObservableObject {
             return nil
         }
         let duration = end.timeIntervalSince(start)
-        let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
+        let metrics = windowEvidence.metrics
         let confirmed = UserConfirmedSleep(id: id,
                                            createdAt: Date(),
                                            start: start,
@@ -41771,8 +41880,7 @@ final class SessionStore: ObservableObject {
                                            restingHR: metrics.restingHR,
                                            hrv: metrics.hrv,
                                            hrvWindowCount: metrics.hrvWindowCount,
-                                           respiratoryRate: confirmedSleepRespiratoryRate(start: start,
-                                                                                           end: end),
+                                           respiratoryRate: windowEvidence.respiratoryRate,
                                            duration: duration,
                                            span: duration,
                                            reason: source,
@@ -42829,6 +42937,26 @@ final class SessionStore: ObservableObject {
         Self.confirmedSleepRespiratoryRate(from: canonicalSessions(),
                                            start: start,
                                            end: end)
+    }
+
+    /// Window HR metrics and respiratory rate for a sleep being saved, scored
+    /// on a worker (HangTracer 2026-09-28..30: the RSA estimate held the main
+    /// thread 1.3–2.9 s on Confirm / Add sleep).
+    private func confirmedSleepWindowEvidenceOffMain(
+        start: Date,
+        end: Date,
+        rest: Int,
+        needsRespiratoryRate: Bool
+    ) async -> (metrics: (sessions: Int, samples: Int, avgHR: Int, peakHR: Int, restingHR: Int, hrv: Int?, hrvWindowCount: Int),
+                respiratoryRate: Double?) {
+        let sessions = canonicalSessions()
+        return await Task.detached(priority: .userInitiated) {
+            let metrics = Self.confirmedSleepWindowMetrics(from: sessions, start: start, end: end, rest: rest)
+            let respiratoryRate = needsRespiratoryRate
+                ? Self.confirmedSleepRespiratoryRate(from: sessions, start: start, end: end)
+                : nil
+            return (metrics, respiratoryRate)
+        }.value
     }
 
     nonisolated static func confirmedSleepSensorCoverage(from sessions: [SavedSession],
@@ -55036,11 +55164,25 @@ final class SessionStore: ObservableObject {
 
     /// User-triggered Apple Health export (from Settings). The export is
     /// idempotent and incremental, so repeated taps only write new samples.
+    /// Coalesced and deferred past the workout-end / sleep-save transition:
+    /// planning walks every saved session on the main actor (HangTracer
+    /// 2026-09-28/29: 1.8 s and 2.7 s right after "End workout"). Repeated
+    /// triggers inside the delay produce one export of the latest store.
     func exportToHealthKit() {
         guard !AtriaAppReviewDemo.isActive else {
             AtriaDebugLog("ATRIADBG healthkit_export status=suppressed reason=app_review_demo")
             return
         }
+        pendingHealthKitExport?.cancel()
+        pendingHealthKitExport = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.pendingHealthKitExport = nil
+            self.exportToHealthKitNow()
+        }
+    }
+
+    private func exportToHealthKitNow() {
         let rest = baseline.restingInt ?? 60
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,
@@ -55050,6 +55192,8 @@ final class SessionStore: ObservableObject {
                                  confirmedWorkouts: confirmedWorkouts,
                                  confirmedSleeps: confirmedSleeps)
     }
+
+    private var pendingHealthKitExport: Task<Void, Never>?
 
     func requestNutritionReadAuthorizationIfEnabled() {
         healthKitExporter.requestNutritionReadAuthorizationIfEnabled()

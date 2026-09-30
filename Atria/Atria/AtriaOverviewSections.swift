@@ -2839,19 +2839,8 @@ struct AtriaStrapStepsDetailSheet: View {
                     }
                     AtriaSourcesLink(metricID: "steps", compact: true)
 
-                    HStack(spacing: 10) {
-                        statusRow(title: "Measurement",
-                                  value: status.isLive
-                                    ? presentation.detailText
-                                    : status.tileDetail,
-                                  systemImage: presentation.completeness == .complete
-                                    ? "checkmark.seal.fill" : "waveform.path.ecg")
-                        // "Saved today" printed presentation.valueText a third
-                        // time — the 30pt hero above and the goal row below
-                        // already carry it. It also had a nonsense state: a
-                        // partial day with a zero count is non-nil but formats
-                        // as "--", so the pill rendered "-- steps".
-                    }
+                    // 2026-09-30 device audit: a "Measurement" card only repeated
+                    // "Today so far · estimate" under the live header; gone.
 
                     VStack(alignment: .leading, spacing: 7) {
                         if let count = presentation.count {
@@ -2880,12 +2869,14 @@ struct AtriaStrapStepsDetailSheet: View {
                                 // number "grows as you move" — silent seconds are
                                 // not reconstructed. Wearer guidance says what
                                 // actually keeps the live stream healthy.
+                                // Plain words on screen (device audit 2026-09-30 read
+                                // "Not compact 0x33 gait"); the provenance footnote
+                                // stays in the presentation model for diagnostics.
                                 Text(status.wearerGuidance
                                      ?? presentation.motionAvailabilityFootnote
-                                     ?? presentation.productHonestyFootnote
                                      ?? (presentation.source == .live
-                                         ? "Counting so far while compact wrist motion is live."
-                                         : "Counted so far. Gaps are not filled from heart rate or 1 Hz history."))
+                                         ? "Counted from strap motion as you move."
+                                         : "Counted so far. Gaps stay gaps — nothing is guessed."))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
@@ -2922,23 +2913,6 @@ struct AtriaStrapStepsDetailSheet: View {
                 }
             }
         }
-    }
-
-    private func statusRow(title: String, value: String, systemImage: String) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.semibold))
-                .lineLimit(2)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .atriaInsetCard(tint: .secondary)
     }
 
     /// Sustained arm motion the strap counted that nothing explains. The
@@ -4506,8 +4480,12 @@ struct AtriaMetricDetailSheet: View {
          initialScrubbedDay: Date? = nil,
          initialBucketOverride: AtriaChartBucketOverride = .auto,
          initialShowMinMaxBand: Bool = true) {
+        // Once-a-night metrics open on Week: their Day view is always a single
+        // dot captioned "a trend needs multiple days" (device audit
+        // 2026-09-30), so the chart only appeared after a tap.
+        let onceADay: Set<AtriaMetricDetailKind> = [.fitnessAge, .hrv, .restingHeartRate, .respiratoryRate]
         var resolvedInitialRange: AtriaTrendRange =
-            metric == .fitnessAge && initialRange == .day ? .week : initialRange
+            onceADay.contains(metric) && initialRange == .day ? .week : initialRange
         #if DEBUG
         // Screenshot support (2026-09-03): the trailing-window label and the
         // "N of M nights recorded" coverage line only exist once a multi-day

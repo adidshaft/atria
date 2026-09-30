@@ -221,6 +221,8 @@ struct AtriaWorkoutDetectionPrompt: Equatable {
     let motionSuggestedActivityType: AtriaWorkoutActivityType?
     let episodeStart: Date?
     let episodeEnd: Date?
+    /// Set when strap stepping, not heart rate, found the episode.
+    let walkStepsPerMinute: Int?
 
     init(heartRate: Int,
          strain: Double,
@@ -230,7 +232,9 @@ struct AtriaWorkoutDetectionPrompt: Equatable {
          maxHeartRate: Int,
          motionSuggestedActivityType: AtriaWorkoutActivityType? = nil,
          episodeStart: Date? = nil,
-         episodeEnd: Date? = nil) {
+         episodeEnd: Date? = nil,
+         walkStepsPerMinute: Int? = nil) {
+        self.walkStepsPerMinute = walkStepsPerMinute
         self.heartRate = heartRate
         self.strain = strain
         self.samples = samples
@@ -273,8 +277,16 @@ struct AtriaWorkoutDetectionPrompt: Equatable {
     }
 
     var isReviewReady: Bool {
-        samples >= AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples
+        if walkStepsPerMinute != nil {
+            return samples >= AtriaWalkBoutDetector.minimumBoutMinutes * 60
+        }
+        return samples >= AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples
             && bpmOverRest >= AtriaWorkoutPromptEvaluator.minimumBPMOverRest
+    }
+
+    /// A reconstructed or step-found episode that already ended.
+    func isFinished(now: Date = Date()) -> Bool {
+        episodeEnd.map { now.timeIntervalSince($0) > 120 } ?? false
     }
 
     var primaryTitle: String {
@@ -297,7 +309,8 @@ struct AtriaWorkoutDetectionPrompt: Equatable {
         formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
         let startDate = episodeStart ?? Date().addingTimeInterval(-Double(samples))
         let approximateStart = formatter.string(from: startDate)
-        var parts = ["Since ≈\(approximateStart)", "\(evidenceMinutes) min elevated"]
+        var parts = ["Since ≈\(approximateStart)",
+                     walkStepsPerMinute.map { "\($0) steps/min" } ?? "\(evidenceMinutes) min elevated"]
         if let motionSuggestedActivityType {
             parts.append("looks like \(motionSuggestedActivityType.rawValue.lowercased())")
         }
@@ -4022,6 +4035,13 @@ struct AtriaHomeView: View {
             setWorkoutDetectionPromptIfChanged(nextPrompt)
             return
         }
+        if let walkPrompt = walkDetectionPrompt(strain: strain,
+                                                heartRate: heartRate,
+                                                rest: rest,
+                                                now: now) {
+            setWorkoutDetectionPromptIfChanged(walkPrompt)
+            return
+        }
         if AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
             liveShouldPrompt: evaluation.shouldPrompt,
             lastPromptWasSustained: heldSustainedWorkoutPrompt != nil,
@@ -4572,6 +4592,42 @@ struct AtriaHomeView: View {
                                                      suggestedStart: suggestedStart,
                                                      suggestedEnd: suggestedEnd,
                                                      strengthHistory: AtriaStrengthLog.historyProjection(in: store.sessions))
+    }
+
+    /// Sustained stepping is a walk whatever the heart rate did (owner
+    /// 2026-09-30: "activity detection can be improved"; walks at 112–120
+    /// bpm never cleared the heart-rate bar). Ongoing or finished within 3 h,
+    /// never over a saved workout or a walk the user already dismissed.
+    private func walkDetectionPrompt(strain: Double,
+                                     heartRate: Int,
+                                     rest: Int,
+                                     now: Date) -> AtriaWorkoutDetectionPrompt? {
+        guard let walk = AtriaWalkBoutDetector.latestBout(
+            minutes: AtriaStrapStepMinuteLog.shared.snapshot(),
+            now: now
+        ) else { return nil }
+        let end = walk.ongoing ? now : walk.end
+        let overlapsWorkout = store.confirmedWorkouts.contains {
+            max($0.start, walk.start) < min($0.end, end)
+        }
+        let dismissed = AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: walk.start, end: end)
+        }
+        guard !overlapsWorkout, !dismissed else { return nil }
+        let bpms = ble.session.filter { $0.t >= walk.start && $0.t <= end }.map(\.bpm)
+        let walkHeartRate = walk.ongoing || bpms.isEmpty
+            ? heartRate
+            : bpms.reduce(0, +) / bpms.count
+        return AtriaWorkoutDetectionPrompt(heartRate: walkHeartRate,
+                                           strain: strain,
+                                           samples: Int(end.timeIntervalSince(walk.start)),
+                                           bpmOverRest: max(0, walkHeartRate - rest),
+                                           restingHeartRate: rest,
+                                           maxHeartRate: store.profile.maxHR,
+                                           motionSuggestedActivityType: .walking,
+                                           episodeStart: walk.start,
+                                           episodeEnd: end,
+                                           walkStepsPerMinute: Int(walk.stepsPerMinute.rounded()))
     }
 
     private func completedSustainedBoutOverlapsConfirmedWorkout(
@@ -5995,6 +6051,14 @@ struct AtriaHomeView: View {
         let todayNotifications = AnyView(Group {
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
+                    if prompt.motionSuggestedActivityType == .walking,
+                       let start = prompt.episodeStart,
+                       let end = prompt.episodeEnd, end > start {
+                        AtriaDismissedWorkoutCandidateStore.save(
+                            AtriaDismissedWorkoutCandidateStore.load()
+                                + [AtriaDismissedWorkoutCandidate(start: start, end: end)]
+                        )
+                    }
                     workoutDetectionPrompt = nil
                     heldSustainedWorkoutPrompt = nil
                     heldSustainedWorkoutPromptAt = nil
@@ -6994,16 +7058,19 @@ enum AtriaHomeRecoverySyncPresentation {
         // the strap was off or dead for the rest). A fresh count wins.
         if let pending = strapPendingRecords,
            let left = durationText(seconds: Double(pending)) {
-            return Copy(title: "Catching up strap history · \(left) left",
-                        compactTitle: "Catching up · \(left) left",
-                        accessibilityLabel: "Catching up strap history. About \(left) of recorded data "
-                            + "is still on the strap; live heart rate is current.")
+            // Owner 2026-09-30: worn catch-up runs while you sleep or the
+            // phone charges, so "left" read as a countdown that never moved
+            // during the day. Say how much is waiting instead.
+            return Copy(title: "Strap history · \(left) to sync",
+                        compactTitle: "History · \(left) to sync",
+                        accessibilityLabel: "About \(left) of recorded data is still on the strap. "
+                            + "It syncs while you sleep or the phone charges; live heart rate is current.")
         }
         if let behind = behindText(fillThroughUnix: drainCursorUnix, now: now) {
-            return Copy(title: "Catching up strap history · \(behind) behind",
-                        compactTitle: "Catching up · \(behind) behind",
-                        accessibilityLabel: "Catching up strap history. It is \(behind) behind; "
-                            + "live heart rate is current.")
+            return Copy(title: "Strap history · \(behind) behind",
+                        compactTitle: "History · \(behind) behind",
+                        accessibilityLabel: "Strap history is \(behind) behind. "
+                            + "It syncs while you sleep or the phone charges; live heart rate is current.")
         }
         var titleParts = ["Syncing strap history"]
         // Keep the channel word in the compact fallback (shown when the full
@@ -8178,11 +8245,11 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
 
     var body: some View {
         AtriaPossibleWorkoutCard(
-            rangeText: prompt.isReviewReady ? "Since ≈\(startText) · still going" : "Watching a heart-rate rise",
-            detail: "Heart rate \(prompt.heartRate) bpm now · strain \(String(format: "%.1f", prompt.strain))",
+            rangeText: rangeText,
+            detail: detailText,
             durationText: "\(prompt.evidenceMinutes)m",
             startText: startText,
-            endText: "Now",
+            endText: endText,
             note: nil,
             primaryEnabled: prompt.isReviewReady,
             onReview: onStart,
@@ -8194,6 +8261,27 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
     private var startText: String {
         let start = prompt.episodeStart ?? Date().addingTimeInterval(-Double(prompt.samples))
         return start.formatted(date: .omitted, time: .shortened)
+    }
+
+    private var endText: String {
+        guard prompt.isFinished(), let end = prompt.episodeEnd else { return "Now" }
+        return end.formatted(date: .omitted, time: .shortened)
+    }
+
+    private var rangeText: String {
+        guard prompt.isReviewReady else { return "Watching a heart-rate rise" }
+        let kind = prompt.walkStepsPerMinute == nil ? "" : "Walk · "
+        return prompt.isFinished()
+            ? "\(kind)\(startText)–\(endText)"
+            : "\(kind)Since ≈\(startText) · still going"
+    }
+
+    private var detailText: String {
+        if let cadence = prompt.walkStepsPerMinute {
+            return "\(cadence) steps/min · heart rate \(prompt.heartRate) bpm"
+        }
+        let when = prompt.isFinished() ? "avg" : "now"
+        return "Heart rate \(prompt.heartRate) bpm \(when) · strain \(String(format: "%.1f", prompt.strain))"
     }
 
 }
@@ -11622,6 +11710,26 @@ final class AtriaHomeModel {
     /// framing, shared RR qualification, and v3 evaluation run in a cancellable
     /// utility worker. Rapid publications invalidate the older generation before
     /// any result can reach the chronological archive.
+    /// Drained strap HR over the replay source window. Bounds are snapped to
+    /// 15 minutes so repeated replays reuse the archive's window cache.
+    nonisolated private static func historicalStressArchiveHeartRates(
+        now: Date
+    ) -> [AtriaHistoricalStressReplay.HeartRateRow] {
+        let step: TimeInterval = 15 * 60
+        let from = now.addingTimeInterval(
+            -AtriaHistoricalStressReplay.replaySourceWindow
+                - AtriaPhysiologicalStressModel.windowDuration
+        ).timeIntervalSince1970
+        let start = Date(timeIntervalSince1970: floor(from / step) * step)
+        let end = Date(timeIntervalSince1970: ceil(now.timeIntervalSince1970 / step) * step)
+        guard let read = HistoricalArchive.metricHeartRatePoints(
+            start: start, end: end, maximumPoints: 250_000
+        ) else { return [] }
+        return read.points.map {
+            AtriaHistoricalStressReplay.HeartRateRow(date: $0.t, bpm: $0.bpm)
+        }
+    }
+
     private func scheduleHistoricalStressReplay(now: Date) {
         let generation = historicalStressReplayGate.begin()
         historicalStressReplayWorker?.cancel()
@@ -11680,7 +11788,10 @@ final class AtriaHomeModel {
                     now: now
                 )
             }) else { return (.empty, nil, nil) }
-            let result = AtriaHistoricalStressReplay.evaluate(snapshot)
+            let result = AtriaHistoricalStressReplay.evaluate(
+                snapshot,
+                archiveHeartRates: Self.historicalStressArchiveHeartRates(now: now)
+            )
             // W1-B (stress-gaps fix 4): a structurally-rejected non-empty
             // source yields an honest abort marker for the gap receipts —
             // never per-minute `kernel_declined` for a kernel that never ran.

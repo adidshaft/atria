@@ -100,6 +100,11 @@ struct AtriaStrapScreen: View {
     /// how every other empty state on this screen reads.
     private var capturedSamplesText: String {
         let captured = collectionLiveStore.state.capturedRows
+        // Beside a "Live · HR 70 bpm" hero, "No samples yet" read as "no data"
+        // (device audit 2026-09-30); this tile is about workout recording.
+        guard collectionLiveStore.state.isRecording || captured > 0 else {
+            return "No workout recording"
+        }
         guard captured > 0 else { return "No samples yet" }
         return captured == 1 ? "1 sample" : "\(captured) samples"
     }

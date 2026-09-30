@@ -406,6 +406,160 @@ enum AtriaGyroCadenceResearchPedometer {
     /// cadence produced a systematic +7…+14% overshoot on counted truth.
     static let turnWindowDiscount = 0.6
 
+    struct WindowVerdict: Equatable, Sendable {
+        let active: Bool
+        let anchorCadenceHz: Double?
+    }
+
+    static var windowSampleCount: Int { Int(windowSeconds * Double(sampleRateHz)) }
+    static var hopSampleCount: Int { Int(hopSeconds * Double(sampleRateHz)) }
+
+    /// Hann taper and DFT twiddles for the production window. Computed with
+    /// the same expressions the per-window loop used, so verdicts are
+    /// bit-identical; only the repeated trig calls are gone.
+    private struct Kernel {
+        let win: Int
+        let hann: [Double]
+        let floorBin: Int
+        let ceilBin: Int
+        let cosTable: [[Double]]
+        let sinTable: [[Double]]
+
+        init(win: Int, sampleRateHz: Int) {
+            self.win = win
+            hann = (0..<win).map { i in
+                0.5 * (1 - cos(2 * Double.pi * Double(i) / Double(win - 1)))
+            }
+            let binHz = Double(sampleRateHz) / Double(win)
+            floorBin = Int((AtriaGyroCadenceResearchPedometer.spectrumFloorHz / binHz).rounded(.up))
+            ceilBin = Int((AtriaGyroCadenceResearchPedometer.spectrumCeilingHz / binHz).rounded(.down))
+            var cosTable: [[Double]] = []
+            var sinTable: [[Double]] = []
+            for bin in floorBin...ceilBin {
+                let omega = -2 * Double.pi * Double(bin) / Double(win)
+                cosTable.append((0..<win).map { cos(omega * Double($0)) })
+                sinTable.append((0..<win).map { sin(omega * Double($0)) })
+            }
+            self.cosTable = cosTable
+            self.sinTable = sinTable
+        }
+    }
+
+    private static let productionKernel = Kernel(win: windowSampleCount, sampleRateHz: sampleRateHz)
+
+    private static func kernel(win: Int, sampleRateHz: Int) -> Kernel {
+        win == productionKernel.win && sampleRateHz == Self.sampleRateHz
+            ? productionKernel
+            : Kernel(win: win, sampleRateHz: sampleRateHz)
+    }
+
+    /// Verdict for the window starting at `start`. Depends only on that
+    /// window's samples, so a growing span never changes earlier verdicts.
+    static func windowVerdict(samples: [Double],
+                              start: Int,
+                              sampleRateHz: Int = sampleRateHz,
+                              rotationLevelGate: Double = rotationLevelGate,
+                              prominenceGate: Double = prominenceGate,
+                              stepBandLoHz: Double = stepBandLoHz) -> WindowVerdict {
+        windowVerdict(samples: samples,
+                      start: start,
+                      kernel: kernel(win: Int(windowSeconds * Double(sampleRateHz)),
+                                     sampleRateHz: sampleRateHz),
+                      sampleRateHz: sampleRateHz,
+                      rotationLevelGate: rotationLevelGate,
+                      prominenceGate: prominenceGate,
+                      stepBandLoHz: stepBandLoHz)
+    }
+
+    private static func windowVerdict(samples: [Double],
+                                      start: Int,
+                                      kernel: Kernel,
+                                      sampleRateHz: Int,
+                                      rotationLevelGate: Double,
+                                      prominenceGate: Double,
+                                      stepBandLoHz: Double) -> WindowVerdict {
+        let win = kernel.win
+        var sum = 0.0
+        for n in 0..<win { sum += samples[start + n] }
+        let mean = sum / Double(win)
+        guard mean >= rotationLevelGate else {
+            return WindowVerdict(active: false, anchorCadenceHz: nil)
+        }
+        var tapered = [Double](repeating: 0, count: win)
+        for n in 0..<win { tapered[n] = (samples[start + n] - mean) * kernel.hann[n] }
+        let binHz = Double(sampleRateHz) / Double(win)
+        var magnitudes: [Double] = []
+        magnitudes.reserveCapacity(kernel.ceilBin - kernel.floorBin + 1)
+        for row in 0...(kernel.ceilBin - kernel.floorBin) {
+            let cosRow = kernel.cosTable[row]
+            let sinRow = kernel.sinTable[row]
+            var real = 0.0, imag = 0.0
+            for n in 0..<win {
+                real += tapered[n] * cosRow[n]
+                imag += tapered[n] * sinRow[n]
+            }
+            magnitudes.append((real * real + imag * imag).squareRoot())
+        }
+        func magnitude(_ bin: Int) -> Double? {
+            let row = bin - kernel.floorBin
+            return magnitudes.indices.contains(row) ? magnitudes[row] : nil
+        }
+        var peakBin: Int?
+        var peakValue = -Double.infinity
+        var belowBandMax = 0.0
+        for (row, value) in magnitudes.enumerated() {
+            let bin = kernel.floorBin + row
+            let f = Double(bin) * binHz
+            if f >= stepBandLoHz && f <= stepBandHiHz, value > peakValue {
+                peakBin = bin
+                peakValue = value
+            }
+            if f > spectrumFloorHz && f < stepBandLoHz { belowBandMax = max(belowBandMax, value) }
+        }
+        let sortedAll = magnitudes.sorted()
+        let median = sortedAll.isEmpty ? 0 : sortedAll[sortedAll.count / 2]
+        guard let peakBin,
+              median > 0,
+              peakValue / median >= prominenceGate,
+              belowBandMax <= swayRatio * peakValue else {
+            return WindowVerdict(active: true, anchorCadenceHz: nil)
+        }
+        // Parabolic interpolation over adjacent bins: the raw 0.25 Hz bin
+        // width alone is a ±7% cadence quantization error at gait rates.
+        var cadence = Double(peakBin) * binHz
+        if let lower = magnitude(peakBin - 1), let upper = magnitude(peakBin + 1) {
+            let denominator = lower - 2 * peakValue + upper
+            if abs(denominator) > 1e-12 {
+                let delta = min(0.5, max(-0.5, 0.5 * (lower - upper) / denominator))
+                cadence += delta * binHz
+            }
+        }
+        return WindowVerdict(active: true, anchorCadenceHz: cadence)
+    }
+
+    /// Bout aggregation over consecutive window verdicts.
+    static func steps<Verdicts: Collection>(verdicts: Verdicts,
+                                            turnWindowDiscount: Double = turnWindowDiscount) -> Double
+        where Verdicts.Element == WindowVerdict, Verdicts.Index == Int {
+        var total = 0.0
+        var index = verdicts.startIndex
+        while index < verdicts.endIndex {
+            guard verdicts[index].active else { index += 1; continue }
+            var end = index
+            while end < verdicts.endIndex, verdicts[end].active { end += 1 }
+            let anchors = verdicts[index..<end].compactMap(\.anchorCadenceHz).sorted()
+            if anchors.count >= minAnchorWindows {
+                let medianCadence = anchors[anchors.count / 2]
+                let turnWindows = Double(end - index) - Double(anchors.count)
+                let effectiveWindows = Double(anchors.count)
+                    + turnWindowDiscount * turnWindows
+                total += effectiveWindows * hopSeconds * medianCadence
+            }
+            index = end
+        }
+        return total
+    }
+
     /// Steps for ONE physically contiguous rotation-magnitude segment.
     /// Callers must split at device-time discontinuities; concatenating
     /// across a gap would fabricate motion evidence. The gate parameters are
@@ -420,89 +574,20 @@ enum AtriaGyroCadenceResearchPedometer {
         let win = Int(windowSeconds * Double(sampleRateHz))
         let hop = Int(hopSeconds * Double(sampleRateHz))
         guard samples.count >= win, win > 0, hop > 0 else { return 0 }
-
-        struct WindowVerdict {
-            let active: Bool
-            let anchorCadenceHz: Double?
-        }
+        let kernel = kernel(win: win, sampleRateHz: sampleRateHz)
         var verdicts: [WindowVerdict] = []
         var start = 0
-        let hann = (0..<win).map { i in
-            0.5 * (1 - cos(2 * Double.pi * Double(i) / Double(win - 1)))
-        }
         while start + win <= samples.count {
-            let window = Array(samples[start..<(start + win)])
-            let mean = window.reduce(0, +) / Double(win)
-            guard mean >= rotationLevelGate else {
-                verdicts.append(WindowVerdict(active: false, anchorCadenceHz: nil))
-                start += hop
-                continue
-            }
-            let tapered = (0..<win).map { (window[$0] - mean) * hann[$0] }
-            let binHz = Double(sampleRateHz) / Double(win)
-            let floorBin = Int((spectrumFloorHz / binHz).rounded(.up))
-            let ceilBin = Int((spectrumCeilingHz / binHz).rounded(.down))
-            var magnitudesByBin: [Int: Double] = [:]
-            for bin in floorBin...ceilBin {
-                var real = 0.0, imag = 0.0
-                let omega = -2 * Double.pi * Double(bin) / Double(win)
-                for n in 0..<win {
-                    let angle = omega * Double(n)
-                    real += tapered[n] * cos(angle)
-                    imag += tapered[n] * sin(angle)
-                }
-                magnitudesByBin[bin] = (real * real + imag * imag).squareRoot()
-            }
-            let inBand = magnitudesByBin.filter {
-                let f = Double($0.key) * binHz
-                return f >= stepBandLoHz && f <= stepBandHiHz
-            }
-            let belowBand = magnitudesByBin.filter {
-                let f = Double($0.key) * binHz
-                return f > spectrumFloorHz && f < stepBandLoHz
-            }
-            let sortedAll = magnitudesByBin.values.sorted()
-            let median = sortedAll.isEmpty ? 0 : sortedAll[sortedAll.count / 2]
-            guard let peak = inBand.max(by: { $0.value < $1.value }),
-                  median > 0,
-                  peak.value / median >= prominenceGate,
-                  (belowBand.values.max() ?? 0) <= swayRatio * peak.value else {
-                verdicts.append(WindowVerdict(active: true, anchorCadenceHz: nil))
-                start += hop
-                continue
-            }
-            // Parabolic interpolation over adjacent bins: the raw 0.25 Hz bin
-            // width alone is a ±7% cadence quantization error at gait rates.
-            var cadence = Double(peak.key) * binHz
-            if let lower = magnitudesByBin[peak.key - 1],
-               let upper = magnitudesByBin[peak.key + 1] {
-                let denominator = lower - 2 * peak.value + upper
-                if abs(denominator) > 1e-12 {
-                    let delta = min(0.5, max(-0.5, 0.5 * (lower - upper) / denominator))
-                    cadence += delta * binHz
-                }
-            }
-            verdicts.append(WindowVerdict(active: true, anchorCadenceHz: cadence))
+            verdicts.append(windowVerdict(samples: samples,
+                                          start: start,
+                                          kernel: kernel,
+                                          sampleRateHz: sampleRateHz,
+                                          rotationLevelGate: rotationLevelGate,
+                                          prominenceGate: prominenceGate,
+                                          stepBandLoHz: stepBandLoHz))
             start += hop
         }
-
-        var total = 0.0
-        var index = 0
-        while index < verdicts.count {
-            guard verdicts[index].active else { index += 1; continue }
-            var end = index
-            while end < verdicts.count, verdicts[end].active { end += 1 }
-            let anchors = verdicts[index..<end].compactMap(\.anchorCadenceHz).sorted()
-            if anchors.count >= minAnchorWindows {
-                let medianCadence = anchors[anchors.count / 2]
-                let turnWindows = Double(end - index) - Double(anchors.count)
-                let effectiveWindows = Double(anchors.count)
-                    + turnWindowDiscount * turnWindows
-                total += effectiveWindows * hopSeconds * medianCadence
-            }
-            index = end
-        }
-        return total
+        return steps(verdicts: verdicts, turnWindowDiscount: turnWindowDiscount)
     }
 }
 
@@ -555,12 +640,12 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         private(set) var closedSpanSteps = 0.0
         private(set) var closedSpans = 0
         private(set) var observedTotalSteps = 0.0
-        /// Bumped on every change to `spanMagnitudes`; the open-span score
-        /// below is reused while it is unchanged (2026-09-24 hang: the
-        /// journal re-scored the full 10-minute span per HR sample).
-        private var spanRevision: UInt64 = 0
-        private var openSpanScoreRevision: UInt64?
-        private var openSpanScore = 0.0
+        /// Window verdicts already scored for the open span, in window
+        /// order. A window's verdict depends only on its own samples, so
+        /// appends only score the new windows (2026-09-30: every 1 s
+        /// snapshot re-ran the DFT over the whole 10-minute span — four
+        /// background cpu_resource_fatal kills in three days).
+        private var openSpanVerdicts: [AtriaGyroCadenceResearchPedometer.WindowVerdict] = []
 
         private var scoringRotationLevelGate = AtriaGyroCadenceResearchPedometer.rotationLevelGate
         private var scoringStepBandLoHz = AtriaGyroCadenceResearchPedometer.stepBandLoHz
@@ -569,6 +654,8 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                              rotationMagnitudes: [Double],
                              rotationLevelGate: Double = AtriaGyroCadenceResearchPedometer.rotationLevelGate,
                              stepBandLoHz: Double = AtriaGyroCadenceResearchPedometer.stepBandLoHz) -> Snapshot? {
+            let gatesChanged = scoringRotationLevelGate != rotationLevelGate
+                || scoringStepBandLoHz != stepBandLoHz
             scoringRotationLevelGate = rotationLevelGate
             scoringStepBandLoHz = stepBandLoHz
             var scored = false
@@ -585,18 +672,14 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
                 break
             }
             lastDeviceTimestamp = deviceTimestamp
+            if gatesChanged { openSpanVerdicts.removeAll() }
             spanMagnitudes.append(contentsOf: rotationMagnitudes)
-            spanRevision &+= 1
             if let prefix = AtriaGyroCadenceResearchShadow.sizeBoundScoredPrefix(
                 spanSampleCount: spanMagnitudes.count
             ) {
-                closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
-                    contiguousRotationMagnitudes: Array(spanMagnitudes[..<prefix]),
-                    rotationLevelGate: scoringRotationLevelGate,
-                    stepBandLoHz: scoringStepBandLoHz
-                )
+                closedSpanSteps += scoredSteps(throughSample: prefix)
                 spanMagnitudes.removeFirst(prefix)
-                spanRevision &+= 1
+                openSpanVerdicts.removeAll()
                 closedSpans += 1
                 scored = true
             }
@@ -616,35 +699,41 @@ final class AtriaGyroCadenceResearchShadow: @unchecked Sendable {
         /// only at durable journal/session markers; normal 100 Hz ingestion
         /// remains O(samples) and does not repeatedly run the batch DFT.
         mutating func boundaryTotalSteps() -> Double {
-            let open: Double
-            if spanMagnitudes.isEmpty {
-                open = 0
-            } else if openSpanScoreRevision == spanRevision {
-                open = openSpanScore
-            } else {
-                open = AtriaGyroCadenceResearchPedometer.steps(
-                    contiguousRotationMagnitudes: spanMagnitudes,
-                    rotationLevelGate: scoringRotationLevelGate,
-                    stepBandLoHz: scoringStepBandLoHz
-                )
-                openSpanScore = open
-                openSpanScoreRevision = spanRevision
-            }
+            let open = scoredSteps(throughSample: spanMagnitudes.count)
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps + open)
             return observedTotalSteps
         }
 
         mutating func closeOpenSpan() {
             guard !spanMagnitudes.isEmpty else { return }
-            closedSpanSteps += AtriaGyroCadenceResearchPedometer.steps(
-                contiguousRotationMagnitudes: spanMagnitudes,
-                rotationLevelGate: scoringRotationLevelGate,
-                stepBandLoHz: scoringStepBandLoHz
-            )
+            closedSpanSteps += scoredSteps(throughSample: spanMagnitudes.count)
             spanMagnitudes.removeAll(keepingCapacity: false)
-            spanRevision &+= 1
+            openSpanVerdicts.removeAll()
             closedSpans += 1
             observedTotalSteps = max(observedTotalSteps, closedSpanSteps)
+        }
+
+        /// Steps over the windows lying entirely inside
+        /// `spanMagnitudes[..<sampleCount]` — the same result as
+        /// `steps(contiguousRotationMagnitudes:)` on that prefix, scoring
+        /// only windows not already cached.
+        private mutating func scoredSteps(throughSample sampleCount: Int) -> Double {
+            typealias Pedometer = AtriaGyroCadenceResearchPedometer
+            let win = Pedometer.windowSampleCount
+            let hop = Pedometer.hopSampleCount
+            var start = openSpanVerdicts.count * hop
+            while start + win <= spanMagnitudes.count {
+                openSpanVerdicts.append(Pedometer.windowVerdict(
+                    samples: spanMagnitudes,
+                    start: start,
+                    rotationLevelGate: scoringRotationLevelGate,
+                    stepBandLoHz: scoringStepBandLoHz
+                ))
+                start += hop
+            }
+            guard sampleCount >= win else { return 0 }
+            let windows = min(openSpanVerdicts.count, (sampleCount - win) / hop + 1)
+            return Pedometer.steps(verdicts: openSpanVerdicts[..<windows])
         }
 
         mutating func reset() {

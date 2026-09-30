@@ -97,6 +97,19 @@ extension AtriaBLEManager {
                 minimumSpan: .infinity
             )
         }
+        if let span = batteryImplausibleRateCorroborationSpan(
+            previousLevel: previousLevel,
+            previousAcceptedAt: previousAcceptedAt,
+            incomingLevel: incomingLevel,
+            receivedAt: receivedAt
+        ) {
+            return corroboratedBatteryLevelDecision(
+                incomingLevel: incomingLevel,
+                receivedAt: receivedAt,
+                pending: pending,
+                minimumSpan: span
+            )
+        }
         if requiresFreshConfirmation,
            trustedCurrentConnectionNotification,
            !isBatterySentinel(incomingLevel) {
@@ -162,8 +175,12 @@ extension AtriaBLEManager {
         pending: BatteryDropCandidate?,
         minimumSpan: TimeInterval = implausibleBatteryDropMinimumConfirmationSpan
     ) -> BatteryLevelAcceptanceDecision {
+        // Slow corroboration (rate-limit quarantine) spans a source that only
+        // notifies on change: two agreeing readings far enough apart prove it.
+        let slowCorroboration = minimumSpan.isFinite
+            && minimumSpan >= batteryImplausibleDropCorroborationSpan
         let candidateMaxAge = max(
-            implausibleBatteryDropCandidateMaxAge,
+            slowCorroboration ? batterySlowCorroborationMaxAge : implausibleBatteryDropCandidateMaxAge,
             minimumSpan + (2 * batteryConfirmationRetryDelay(incomingLevel: incomingLevel))
         )
         let candidate: BatteryDropCandidate
@@ -186,11 +203,48 @@ extension AtriaBLEManager {
             )
         }
         let span = candidate.lastSeenAt.timeIntervalSince(candidate.firstSeenAt)
-        if candidate.confirmations >= implausibleBatteryDropRequiredConfirmations,
+        let requiredConfirmations = slowCorroboration ? 2 : implausibleBatteryDropRequiredConfirmations
+        if candidate.confirmations >= requiredConfirmations,
            span >= minimumSpan {
             return .accept
         }
         return .quarantine(candidate)
+    }
+
+    /// Physical ceiling on how fast state of charge moves between accepted
+    /// readings (device 2026-09-29/30: 45→19 in 5 min, 39→70 in 6 min with
+    /// no charger seen, then 70 held all night while the real level fell to
+    /// 30). Heavy R10 use drains a few % per hour and a cable charge is about
+    /// 1% per minute, so these allowances are generous; anything faster is a
+    /// packet or source disagreement and needs slow corroboration. Long gaps
+    /// earn proportionally more room, so an unseen charge or a night off the
+    /// phone still lands immediately.
+    nonisolated static let batteryMaximumDischargePerMinute = 0.5
+    nonisolated static let batteryMaximumChargePerMinute = 1.5
+    nonisolated static let batteryImplausibleDropCorroborationSpan: TimeInterval = 10 * 60
+    nonisolated static let batteryImplausibleRiseCorroborationSpan: TimeInterval = 30 * 60
+    nonisolated static let batterySlowCorroborationMaxAge: TimeInterval = 90 * 60
+
+    /// Nil when the change is physically possible in the elapsed time, else
+    /// the corroboration span a reading at this level must survive.
+    nonisolated static func batteryImplausibleRateCorroborationSpan(
+        previousLevel: Int,
+        previousAcceptedAt: Date?,
+        incomingLevel: Int,
+        receivedAt: Date
+    ) -> TimeInterval? {
+        guard (0...100).contains(previousLevel),
+              (0...100).contains(incomingLevel),
+              let previousAcceptedAt,
+              receivedAt >= previousAcceptedAt else { return nil }
+        let minutes = receivedAt.timeIntervalSince(previousAcceptedAt) / 60
+        let delta = Double(incomingLevel - previousLevel)
+        if delta >= 0 {
+            return delta <= 2 + minutes * batteryMaximumChargePerMinute
+                ? nil : batteryImplausibleRiseCorroborationSpan
+        }
+        return -delta <= 3 + minutes * batteryMaximumDischargePerMinute
+            ? nil : batteryImplausibleDropCorroborationSpan
     }
 
     nonisolated static func freshBatteryMinimumConfirmationSpan(
@@ -294,7 +348,23 @@ extension AtriaBLEManager {
         requiresFreshConfirmation: Bool = false,
         previousChargeStatus: BatteryChargeStatus = .levelOnly
     ) -> BatteryLevelAcceptanceDecision {
-        guard isBatterySentinel(reading.level) else { return .accept }
+        guard isBatterySentinel(reading.level) else {
+            // A CRC-backed mid-range event is trusted — at a physically
+            // possible rate. It used to be accepted unconditionally, so one
+            // event could move the display anywhere.
+            guard let span = batteryImplausibleRateCorroborationSpan(
+                previousLevel: previousLevel,
+                previousAcceptedAt: previousAcceptedAt,
+                incomingLevel: reading.level,
+                receivedAt: receivedAt
+            ) else { return .accept }
+            return corroboratedBatteryLevelDecision(
+                incomingLevel: reading.level,
+                receivedAt: receivedAt,
+                pending: pending,
+                minimumSpan: span
+            )
+        }
         if batteryBoundaryEventIsIndependentlyCorroborated(
             previousLevel: previousLevel,
             previousAcceptedAt: previousAcceptedAt,
