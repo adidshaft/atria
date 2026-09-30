@@ -108,6 +108,52 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertLessThan(newBytes, originalBytes)
     }
 
+    /// Device 2026-09-30: the live index holds `IndexEntry` lines
+    /// (archivePath/key/observedAtUnix), not the decorated shape above. None
+    /// ever matched, so streaming compaction dropped nothing and parsed every
+    /// line as JSON under the store lock (a 1.6 s main-thread hang).
+    func testOversizedIndexOfIndexEntryLinesCompactsWithoutMaterialization() throws {
+        let directory = try temporaryDirectory()
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let retention: TimeInterval = 14 * 24 * 60 * 60
+        let nowUnix: TimeInterval = 1_800_000_000
+        let cutoff = nowUnix - retention
+        var contents = Data()
+        var expiredKeys: [String] = []
+        var retainedKeys: [String] = []
+        for index in 0..<20_000 {
+            let expired = index % 3 != 0
+            let key = String(format: "0224%060x", index)
+            let observedAt = expired ? cutoff - 3_600 : cutoff + 3_600
+            if expired { expiredKeys.append(key) } else { retainedKeys.append(key) }
+            let line = "{\"archivePath\":\"/var/mobile/Containers/Data/Application/X/Documents/atria-historical/segments/raw-v2/raw-1.jsonl\",\"key\":\"\(key)\",\"lineCRC32\":3493146689,\"lineLength\":1440,\"lineOffset\":\(index * 1440),\"observedAtUnix\":\(observedAt),\"version\":2}"
+            contents.append(Data(line.utf8))
+            contents.append(0x0a)
+        }
+        try contents.write(to: index)
+        let store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            identityRetention: retention,
+            now: { Date(timeIntervalSince1970: nowUnix) },
+            maximumEagerIdentityIndexBytes: 1
+        )
+        let started = Date()
+        let dropped = try store.pruneExpiredIdentities(now: Date(timeIntervalSince1970: nowUnix))
+        let elapsed = Date().timeIntervalSince(started)
+        XCTAssertEqual(dropped, expiredKeys.count)
+        let survivors = Set(try String(contentsOf: index, encoding: .utf8)
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                guard let start = line.range(of: "\"key\":\"")?.upperBound,
+                      let end = line[start...].firstIndex(of: "\"") else { return nil }
+                return String(line[start..<end])
+            })
+        XCTAssertEqual(survivors, Set(retainedKeys))
+        XCTAssertTrue(survivors.isDisjoint(with: expiredKeys))
+        XCTAssertLessThan(elapsed, 5, "the byte scanner, not JSON parsing, decides each line")
+    }
+
     /// The 6 h maintenance interval was measured from a process-local field
     /// seeded with `now()` at construction, so it only came due after six
     /// unbroken hours of uptime. iOS restarts apps far more often than that, so
@@ -251,6 +297,17 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertTrue(retained("{}"))
         XCTAssertTrue(retained("garbage"))
         XCTAssertTrue(retained(""), "an empty line is not a deletion decision")
+
+        // 2026-09-30: the live index file holds IndexEntry lines. They were
+        // never matched, so every one was parsed and then kept forever.
+        func index(key: String, observedAt: TimeInterval) -> String {
+            "{\"archivePath\":\"/x/raw.jsonl\",\"key\":\"\(key)\",\"lineCRC32\":1,\"lineLength\":10,\"lineOffset\":0,\"observedAtUnix\":\(observedAt),\"version\":2}"
+        }
+        XCTAssertTrue(retained(index(key: "a", observedAt: cutoff)))
+        XCTAssertFalse(retained(index(key: "a", observedAt: cutoff - 1)),
+                       "an index entry outside the horizon is dropped")
+        XCTAssertTrue(retained(index(key: "held", observedAt: cutoff - 99_999), protected: ["held"]))
+        XCTAssertFalse(retained(index(key: "other", observedAt: cutoff - 99_999), protected: ["held"]))
     }
 
     func testDuplicateReplayIsRejectedInProcessAndAfterRestart() throws {
