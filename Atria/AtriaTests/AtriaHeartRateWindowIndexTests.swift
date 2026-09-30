@@ -430,6 +430,42 @@ final class AtriaHeartRateWindowIndexTests: XCTestCase {
         return try XCTUnwrap((attributes[.size] as? NSNumber)?.uint64Value)
     }
 
+    /// Device 2026-09-30: drained history is routinely > 12 h older than its
+    /// capture. A clock-verified row must stay at its measured time; the old
+    /// capture-time rule filed Sep 28 rows under the Sep 30 drain.
+    func testDrainedRowKeepsItsMeasuredTimeNotItsCaptureTime() throws {
+        let root = try temporaryDirectory()
+        let rawRoot = root.appendingPathComponent("segments/raw-v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: rawRoot, withIntermediateDirectories: true)
+        let url = rawRoot.appendingPathComponent("drained.jsonl")
+        let measured = 1_790_594_654
+        // Real v24 payload bytes (gravity magnitude 0.99, validated).
+        let payload = "2f18052d999e014c4eba6a487080543601700000000000000000000000be0bff08cc683ec36d493f71cd4fbee1b6113f00005846c36d493f71cd4fbee1b6113f9802bc02fb03be0242015008010c020c00000000000800010735000000000000"
+        let line = "{\"capturedAt\":\"2026-09-30T03:24:00Z\",\"clockCorrectedUnix7\":\(measured),\"clockCorrectionStatus\":\"clock_ref_present\",\"gravityValidated\":true,\"layoutVersion\":\"\(HistoricalArchive.layoutVersion)\",\"metricUsable\":true,\"rawPayloadHex\":\"\(payload)\",\"subsec11\":0,\"unix7\":\(measured - 18),\"whoofHR17\":112}"
+        try Data((line + "\n").utf8).write(to: url)
+        var diagnostics = HistoricalArchive.HeartRateWindowReadDiagnostics(
+            startUnix: 0, endUnix: 0, elapsedMilliseconds: 0,
+            candidateFileCount: 0, trustedOutsideWindowSkipped: 0,
+            selectedFileCount: 0, scannedFileCount: 0, scannedByteCount: 0,
+            scannedLineCount: 0, heartRateCandidateLineCount: 0,
+            inWindowPointCount: 0, catalogGeneration: 0, catalogChunkCount: 0,
+            terminal: "unset"
+        )
+        func points(around unix: Int) -> [HistoricalArchive.HeartRatePoint]? {
+            HistoricalArchive.exactMetricHeartRatePoints(
+                in: [url], catalog: nil, archiveRoot: root,
+                start: Date(timeIntervalSince1970: TimeInterval(unix - 60)),
+                end: Date(timeIntervalSince1970: TimeInterval(unix + 60)),
+                maximumPoints: 10, diagnostics: &diagnostics
+            )?.points
+        }
+        let atMeasured = try XCTUnwrap(points(around: measured))
+        XCTAssertEqual(atMeasured.map(\.bpm), [112])
+        XCTAssertEqual(atMeasured.first?.t, Date(timeIntervalSince1970: TimeInterval(measured)))
+        let captured = Int(ISO8601DateFormatter().date(from: "2026-09-30T03:24:00Z")!.timeIntervalSince1970)
+        XCTAssertEqual(try XCTUnwrap(points(around: captured)), [])
+    }
+
     private func metricHeartRateLine(unix: Int, bpm: Int) -> String {
         "{\"clockCorrectedUnix7\":\(unix),\"clockCorrectionStatus\":\"clock_ref_present\",\"gravityValidated\":true,\"layoutVersion\":\"\(HistoricalArchive.layoutVersion)\",\"metricUsable\":true,\"subsec11\":0,\"unix7\":\(unix),\"whoofHR17\":\(bpm)}"
     }

@@ -74,4 +74,46 @@ final class AtriaGyroOpenSpanMemoTests: XCTestCase {
         }
         XCTAssertGreaterThan(state.boundaryTotalSteps(), 0, "the synthetic walk registers steps")
     }
+
+    /// 2026-09-30 background cpu_resource_fatal: the open span is scored
+    /// incrementally. Per-second boundary totals (and the size-bound cut at
+    /// 10 minutes) must equal the batch pedometer over the same samples.
+    func testIncrementalScoringMatchesBatchPedometerAcrossSizeBoundCut() {
+        typealias Shadow = AtriaGyroCadenceResearchShadow
+        var state = Shadow.State()
+        var ts: UInt32 = 1_790_000_000
+        var all: [Double] = []
+        var closedBatch = 0.0
+        var observed = 0.0
+        var spanStart = 0
+        for second in 0..<660 {
+            let walking = (second % 200) >= 40
+            let magnitudes = (0..<100).map { i -> Double in
+                walking ? 60 + 55 * sin(Double(second * 100 + i) * 2 * .pi / 55.0) : 1.5
+            }
+            let before = state.snapshot().closedSpans
+            _ = state.ingest(deviceTimestamp: ts, rotationMagnitudes: magnitudes)
+            ts += 1
+            all.append(contentsOf: magnitudes)
+            if state.snapshot().closedSpans > before {
+                let prefix = all.count - spanStart - Shadow.carrySamples
+                closedBatch += AtriaGyroCadenceResearchPedometer.steps(
+                    contiguousRotationMagnitudes: Array(all[spanStart..<(spanStart + prefix)])
+                )
+                spanStart += prefix
+            }
+            if second % 30 == 0 || (596...604).contains(second) {
+                let open = AtriaGyroCadenceResearchPedometer.steps(
+                    contiguousRotationMagnitudes: Array(all[spanStart...])
+                )
+                // Totals are monotonic: a bout split by the cut may score a
+                // little lower than it did whole, and the higher total stands.
+                observed = max(observed, closedBatch + open)
+                XCTAssertEqual(state.boundaryTotalSteps(), observed, accuracy: 1e-9,
+                               "second \(second)")
+            }
+        }
+        XCTAssertEqual(state.snapshot().closedSpans, 1, "the 10-minute size bound cut once")
+        XCTAssertGreaterThan(closedBatch, 0)
+    }
 }

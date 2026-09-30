@@ -330,8 +330,8 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
             drainedThroughUnix: date(day: 9, hour: 18, minute: 0).timeIntervalSince1970,
             now: now, calendar: calendar, locale: locale,
             drainCursorUnix: date(day: 8, hour: 12, minute: 0).timeIntervalSince1970)
-        XCTAssertEqual(copy.title, "Catching up strap history · 31 h behind")
-        XCTAssertEqual(copy.compactTitle, "Catching up · 31 h behind")
+        XCTAssertEqual(copy.title, "Strap history · 31 h behind") // copy 2026-09-30
+        XCTAssertEqual(copy.compactTitle, "History · 31 h behind")
         XCTAssertTrue(copy.accessibilityLabel.contains("live heart rate is current"))
         XCTAssertEqual(AtriaHomeRecoverySyncPresentation.behindText(
             fillThroughUnix: now.addingTimeInterval(-40 * 60).timeIntervalSince1970, now: now), "40 min")
@@ -352,13 +352,13 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
             now: now, calendar: calendar, locale: locale,
             drainCursorUnix: now.addingTimeInterval(-68 * 3_600).timeIntervalSince1970,
             strapPendingRecords: 26_529)
-        XCTAssertEqual(copy.compactTitle, "Catching up · 7 h left")
-        XCTAssertEqual(copy.title, "Catching up strap history · 7 h left")
+        XCTAssertEqual(copy.compactTitle, "History · 7 h to sync")
+        XCTAssertEqual(copy.title, "Strap history · 7 h to sync")
         let tiny = AtriaHomeRecoverySyncPresentation.copy(
             savedRecords: 0, drainedThroughUnix: nil, now: now, calendar: calendar, locale: locale,
             drainCursorUnix: now.addingTimeInterval(-31 * 3_600).timeIntervalSince1970,
             strapPendingRecords: 30)
-        XCTAssertEqual(tiny.compactTitle, "Catching up · 31 h behind",
+        XCTAssertEqual(tiny.compactTitle, "History · 31 h behind",
                        "under 2 min left falls back to the cursor")
     }
 

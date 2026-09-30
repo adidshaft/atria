@@ -7891,7 +7891,9 @@ enum HistoricalArchive {
     // legacy, digestless, corrupt or mismatched sidecars — falls back to the
     // conservative raw scan. The raw archive is never rewritten.
     enum HeartRateChunkIndex {
-        static let readerVersion = 1
+        /// v2 (2026-09-30): v1 sidecars re-dated drained rows to their
+        /// capture time; bumping the version rebuilds them from raw.
+        static let readerVersion = 2
         static let directoryName = "hr-index-v1"
 
         struct Binding: Codable, Equatable {
@@ -8032,6 +8034,20 @@ enum HistoricalArchive {
         }
     }
 
+    /// Sidecars written by an older reader version can never validate again;
+    /// delete them so the index directory does not hold two copies.
+    static func removeSupersededHeartRateSidecars(
+        archiveRoot: URL,
+        fileManager: FileManager = .default
+    ) {
+        let directory = heartRateSidecarDirectory(archiveRoot: archiveRoot)
+        let current = ".hr.v\(HeartRateChunkIndex.readerVersion).jsonl"
+        guard let names = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return }
+        for name in names where name.contains(".hr.v") && !name.hasSuffix(current) {
+            try? fileManager.removeItem(at: directory.appendingPathComponent(name))
+        }
+    }
+
     /// One-time cooperative backfill: build sidecars for sealed, digested
     /// chunks that lack a valid one. Runs off-main (launch follow-up) so
     /// real navigations meet a warm index. Returns the number built.
@@ -8042,6 +8058,7 @@ enum HistoricalArchive {
         guard let catalog = (try? catalogStoreLocked()).flatMap({ try? $0.snapshot() }),
               (try? catalog.validate()) != nil else { return 0 }
         let root = archiveDirectory
+        removeSupersededHeartRateSidecars(archiveRoot: root)
         var built = 0
         for chunk in catalog.chunks {
             guard shouldContinue() else { break }
@@ -9036,6 +9053,8 @@ enum HistoricalArchive {
         let sequence: Int
         let bpm: Int
         let currentSessionUsable: Bool
+        /// Verified strap time; never re-dated to its capture.
+        var clockCorrected = false
     }
 
     private static func loadHeartRateSamples(since: Date?, limit: Int?) -> [HeartRatePoint] {
@@ -9062,7 +9081,8 @@ enum HistoricalArchive {
                                                unix: unix,
                                                sequence: (object["sequence"] as? NSNumber)?.intValue ?? 0,
                                                bpm: bpm,
-                                               currentSessionUsable: currentSessionUsable(object: object)))
+                                               currentSessionUsable: currentSessionUsable(object: object),
+                                               clockCorrected: (correctedUnix ?? 0) > 0))
         }
 
         let currentUsable = records.filter(\.currentSessionUsable)
@@ -9078,6 +9098,7 @@ enum HistoricalArchive {
         for item in records {
             let timestamp: TimeInterval
             if item.currentSessionUsable,
+               !item.clockCorrected,
                let anchor = currentAnchor,
                abs(item.capturedAt - TimeInterval(item.unix)) > 12 * 60 * 60 {
                 timestamp = anchor.capturedAt
@@ -9169,7 +9190,13 @@ enum HistoricalArchive {
         let unix = correctedUnix ?? rawUnix
         let capturedAt = (object["capturedAt"] as? String).flatMap(Self.iso8601TimeInterval(from:))
         let timestamp: TimeInterval
-        if currentSessionUsable(object: object),
+        if let correctedUnix, correctedUnix > 0 {
+            // `metricUsable` already required clock_ref_present, so this is
+            // the strap's measured time. Drained history is routinely > 12 h
+            // older than its capture (device 2026-09-30: 99% of 387k rows);
+            // the capture-time rule below re-dated all of it to the drain.
+            timestamp = TimeInterval(correctedUnix)
+        } else if currentSessionUsable(object: object),
            let capturedAt,
            let unix,
            abs(capturedAt - TimeInterval(unix)) > 12 * 60 * 60 {

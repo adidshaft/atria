@@ -1794,6 +1794,105 @@ enum AtriaHistoricalStressReplay {
         return evaluate(snapshot)
     }
 
+    /// Same replay with drained strap history filling live-HR holes.
+    static func evaluate(_ source: StorageSnapshot,
+                         archiveHeartRates: [HeartRateRow]) -> Result {
+        guard let snapshot = materialize(source) else { return .empty }
+        return evaluate(fillingHeartRateHoles(in: snapshot, from: archiveHeartRates))
+    }
+
+    /// Live HR pauses while the strap serves history (a ~2 min drain slice
+    /// every ~10 min, device 2026-09-30), and each pause cost the next five
+    /// minutes of stress: the kernel needs a gap-free 5-minute window. The
+    /// drained history rows carry that HR, so they fill the holes — never a
+    /// minute that already has live HR. A hole inside a live session goes
+    /// into that session (replay drops rows that arrive out of order across
+    /// sessions); a hole between sessions becomes its own archive session.
+    static let archiveHoleMinimum: TimeInterval = 20
+
+    static func fillingHeartRateHoles(in snapshot: Snapshot,
+                                      from archive: [HeartRateRow]) -> Snapshot {
+        guard !archive.isEmpty,
+              let ordered = chronologicallyOrderedSessions(snapshot.sessions) else {
+            return snapshot
+        }
+        let descending = ordered.first?.id != snapshot.sessions.first?.id
+            && snapshot.sessions.count > 1
+        let cutoff = snapshot.now.addingTimeInterval(
+            -replaySourceWindow - AtriaPhysiologicalStressModel.windowDuration
+        )
+        var timeline = ordered.flatMap { $0.heartRates.map(\.date) }
+        timeline.sort()
+        func insideHole(_ date: Date) -> Bool {
+            guard date >= cutoff, date <= snapshot.now else { return false }
+            var lo = 0, hi = timeline.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if timeline[mid] < date { lo = mid + 1 } else { hi = mid }
+            }
+            if lo < timeline.count, timeline[lo] == date { return false }
+            let before = lo > 0 ? timeline[lo - 1] : cutoff
+            guard lo < timeline.count else { return false }
+            return timeline[lo].timeIntervalSince(before) > archiveHoleMinimum
+        }
+        let fills = archive.filter { insideHole($0.date) }.sorted { $0.date < $1.date }
+        guard !fills.isEmpty else { return snapshot }
+
+        var hosted = Array(repeating: [HeartRateRow](), count: ordered.count)
+        var between = Array(repeating: [HeartRateRow](), count: ordered.count + 1)
+        for row in fills {
+            if let host = ordered.firstIndex(where: { session in
+                guard let first = session.heartRates.first?.date,
+                      let last = session.heartRates.last?.date else { return false }
+                return first < row.date && row.date < last
+            }) {
+                hosted[host].append(row)
+            } else {
+                let slot = ordered.firstIndex(where: {
+                    ($0.heartRates.first?.date ?? $0.start) > row.date
+                }) ?? ordered.count
+                between[slot].append(row)
+            }
+        }
+        var sessions: [Session] = []
+        func appendArchiveSession(_ rows: [HeartRateRow]) {
+            guard let first = rows.first, let last = rows.last, rows.count >= 2 else { return }
+            sessions.append(Session(id: archiveSessionID(start: first.date),
+                                    start: first.date,
+                                    end: last.date,
+                                    heartRates: rows,
+                                    rrIntervals: []))
+        }
+        for (index, session) in ordered.enumerated() {
+            appendArchiveSession(between[index])
+            guard !hosted[index].isEmpty else {
+                sessions.append(session)
+                continue
+            }
+            let merged = (session.heartRates + hosted[index]).sorted { $0.date < $1.date }
+            sessions.append(Session(id: session.id,
+                                    start: session.start,
+                                    end: session.end,
+                                    heartRates: merged,
+                                    rrIntervals: session.rrIntervals))
+        }
+        appendArchiveSession(between[ordered.count])
+        return Snapshot(sessions: descending ? sessions.reversed() : sessions,
+                        activityContexts: snapshot.activityContexts,
+                        sleepContexts: snapshot.sleepContexts,
+                        personalization: snapshot.personalization,
+                        now: snapshot.now)
+    }
+
+    /// Stable across relaunches so replay authority does not churn.
+    private static func archiveSessionID(start: Date) -> UUID {
+        let bits = start.timeIntervalSinceReferenceDate.bitPattern
+        var bytes = [UInt8](repeating: 0xA7, count: 16)
+        for index in 0..<8 { bytes[8 + index] = UInt8(truncatingIfNeeded: bits >> (8 * index)) }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
     /// Handoff-12 CP2: bounded per-minute classification of recent Stress
     /// gaps, written beside each replay so a visibly missing minute is never
     /// unexplained. `qualified_and_reconciled` counts minutes this replay

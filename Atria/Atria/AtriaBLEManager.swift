@@ -3216,10 +3216,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         candidates.compactMap { $0 }.max()
     }
 
-    private func heartRatePacketAge(now: Date = Date(), defaults: UserDefaults = .standard) -> TimeInterval? {
-        let lastPacketAt = lastRawHRNotificationAt ?? persistedLastRawNotificationAt(defaults: defaults)
-        return lastPacketAt.map { now.timeIntervalSince($0) }
-    }
 
     private func recordHeartRateReadPollResultIfNeeded(parsed: ParsedHeartRatePacket?,
                                                        defaults: UserDefaults = .standard,
@@ -5883,6 +5879,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Tracks step progress and decides the idle pause, with a short probe
     /// every `r10IdleProbeEvery` so a walk that does not raise heart rate much
     /// still turns R10 back on within the probe window.
+    /// See `backlogCatchUpWindowOpen`. Shares the R10 idle step clock.
+    private func backlogCatchUpWindowOpenNow(now: Date) -> Bool {
+        let steps = currentGyroCadenceResearchSessionSteps(now: now)
+        if steps != r10IdleLastSteps {
+            r10IdleLastSteps = steps
+            r10IdleLastStepChangeAt = now
+        }
+        return Self.backlogCatchUpWindowOpen(
+            phoneCharging: Self.phoneStateIsCharging(UIDevice.current.batteryState),
+            appForeground: foregroundInteractiveMode,
+            stepsQuietFor: now.timeIntervalSince(r10IdleLastStepChangeAt),
+            heartRate: heartRate,
+            restingHeartRate: dutyCycleRestHR
+        )
+    }
+
     private func r10IdlePausedNow(now: Date) -> Bool {
         let steps = currentGyroCadenceResearchSessionSteps(now: now)
         if steps != r10IdleLastSteps {
@@ -12620,7 +12632,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 pendingRecords: leftoverPending,
                 lastSliceFinishedAt: idleWindowDrainLastFinishedAt,
                 lastSliceYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
-                now: nowTs
+                now: nowTs,
+                catchUpWindowOpen: backlogCatchUpWindowOpenNow(now: nowTs)
             )
         )
         if idleFlag { return window }
@@ -18775,7 +18788,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     consumeToNow: idleWindowConsumeToNowConsent,
                     largeBacklog: (idleWindowRangeBeforeACK?.pendingRecords ?? 0)
                         >= Self.backlogSlicePendingThreshold,
-                    attendedForeground: foregroundInteractiveMode
+                    attendedForeground: foregroundInteractiveMode,
+                    catchUpWindow: backlogCatchUpWindowOpenNow(now: now)
                 ),
                 rangeRequestedAt: idleWindowDrainRangeRequestedAt
             )
@@ -23584,31 +23598,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return base * effectiveThermalCadenceMultiplier
     }
 
-    private nonisolated static func prunedJournalSamples(from samples: [HRSample],
-                                                         now: Date,
-                                                         maxAge: TimeInterval,
-                                                         maxSamples: Int) -> ArraySlice<HRSample> {
-        let capped = samples.suffix(maxSamples)
-        guard let firstRecentIndex = capped.firstIndex(where: { now.timeIntervalSince($0.t) <= maxAge }) else {
-            return []
-        }
-        return capped[firstRecentIndex...]
-    }
 
-    private nonisolated static func prunedJournalRRSamples(from samples: [RRInterval],
-                                                           now: Date,
-                                                           first: Date,
-                                                           last: Date,
-                                                           maxAge: TimeInterval,
-                                                           maxSamples: Int) -> ArraySlice<RRInterval> {
-        let capped = samples.suffix(maxSamples)
-        guard let firstRecentIndex = capped.firstIndex(where: {
-            now.timeIntervalSince($0.t) <= maxAge && $0.t >= first
-        }) else {
-            return []
-        }
-        return capped[firstRecentIndex...].prefix { $0.t <= last.addingTimeInterval(1) }
-    }
 
     /// One coalesced timer is anchored to the first dirty accepted sample. It
     /// is never postponed by later samples. If another fsync is in flight, the
@@ -26165,56 +26155,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               label)
     }
 
-    private func scheduleRRPresenceWatchdogIfNeeded(timeout: TimeInterval,
-                                                    interval: TimeInterval,
-                                                    label: String) {
-        rrPresenceWatchdogTask?.cancel()
-        AtriaDebugLog("ATRIADBG rr_presence_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@ source=2A37 action=hold_hr_connection_reassert_2a37 hrv_policy=learning_only",
-              timeout, interval, label)
-        rrPresenceWatchdogTask = Task { @MainActor in
-            var consecutive = 0
-            var lastActionAt: Date?
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
-                if Task.isCancelled { break }
-                guard longWearModeEnabled, standardHROnlyMode else { continue }
-                guard status == .connected else { continue }
-                guard session.count >= autoSaveMinSamples else { continue }
-                let now = Date()
-                guard let lastAcceptedHRAt else { continue }
-                let acceptedGap = now.timeIntervalSince(lastAcceptedHRAt)
-                guard acceptedGap <= max(interval + 5, 20) else {
-                    consecutive = 0
-                    continue
-                }
-                let rrReference: Date
-                let recoveryStatus: String
-                if rrArchive.isEmpty, let firstSample = session.first?.t {
-                    rrReference = firstSample
-                    recoveryStatus = "segment_hr_only"
-                } else {
-                    rrReference = lastStandardRRAt ?? lastRRBeatTime ?? session.first?.t ?? connectedAt ?? lastAcceptedHRAt
-                    recoveryStatus = "hr_only"
-                }
-                let rrGap = now.timeIntervalSince(rrReference)
-                guard rrGap >= timeout else {
-                    consecutive = 0
-                    continue
-                }
-                if let lastActionAt, now.timeIntervalSince(lastActionAt) < max(60, timeout) {
-                    continue
-                }
-                consecutive += 1
-                lastActionAt = now
-                recoverRRPresenceWatchdog(label: label,
-                                          status: recoveryStatus,
-                                          rrGap: rrGap,
-                                          acceptedGap: acceptedGap,
-                                          timeout: timeout,
-                                          consecutive: consecutive)
-            }
-        }
-    }
 
     private func recoverRRPresenceWatchdog(label: String,
                                            status recoveryStatus: String,
@@ -26441,46 +26381,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                         label: label)
     }
 
-    private func scheduleAcceptedHRWatchdogIfNeeded(timeout: TimeInterval,
-                                                    interval: TimeInterval,
-                                                    label: String) {
-        acceptedHRWatchdogTask?.cancel()
-        AtriaDebugLog("ATRIADBG accepted_hr_watchdog schedule timeout_s=%.1f interval_s=%.1f label=%@",
-              timeout, interval, label)
-        acceptedHRWatchdogTask = Task { @MainActor in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
-                if Task.isCancelled { break }
-                guard longWearModeEnabled else { continue }
-                guard status == .connected else { continue }
-                let now = Date()
-                guard let reference = Self.latestLinkActivity([lastAcceptedHRAt, connectedAt]) else { continue }
-                let acceptedGap = now.timeIntervalSince(reference)
-                guard acceptedGap >= timeout else { continue }
-
-                let lastSampleStatus = sampleDiagnostics.lastStatus
-                let lastSampleReason = sampleDiagnostics.lastReason
-                let rawGap = lastRawHRNotificationAt.map { now.timeIntervalSince($0) }
-                if let rawGap,
-                   rawGap < timeout,
-                   ["zero_contact", "hr_zero"].contains(lastSampleStatus)
-                    || ["zero_contact", "hr_zero"].contains(lastSampleReason) {
-                    AtriaDebugLog("ATRIADBG accepted_hr_watchdog status=stale_contact accepted_gap_s=%.1f raw_gap_s=%.1f timeout_s=%.1f samples=%d action=wait_for_contact",
-                          acceptedGap,
-                          rawGap,
-                          timeout,
-                          session.count)
-                    continue
-                }
-
-                recoverAcceptedHRWatchdog(label: label,
-                                          status: "stale",
-                                          acceptedGap: acceptedGap,
-                                          rawGap: rawGap,
-                                          timeout: timeout)
-            }
-        }
-    }
 
     private func scheduleDebugAcceptedHRWatchdog(after seconds: TimeInterval) {
         debugAcceptedHRWatchdogTask?.cancel()
@@ -27045,15 +26945,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         toggleRecording()
     }
 
-    private func rearmAutoCaptureAfterAbort(reason: String) {
-        guard autoCaptureRRThreshold > 0 else { return }
-        guard autoCaptureAttempt < autoCaptureMaxAttempts else {
-            AtriaDebugLog("ATRIADBG autoCapture exhausted label=%@ attempts=%d max_attempts=%d reason=%@",
-                  captureLabel, autoCaptureAttempt, autoCaptureMaxAttempts, reason)
-            return
-        }
-        scheduleAutoCaptureAttempt(reason: reason)
-    }
 
     private func appendAdaptiveAutoCaptureObservation(now: Date, rrnum: Int, source: String) -> Bool {
         guard autoCapturePending, autoCaptureRRThreshold > 0, !isRecording else { return false }
@@ -30850,40 +30741,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         String(metaSafe(value).prefix(48))
     }
 
-    private func rebuildSessionHeartRateStats() {
-        guard !session.isEmpty else {
-            sessionMinHeartRate = nil
-            sessionMaxHeartRate = nil
-            sessionHeartRateTotal = 0
-            sessionHeartRateAggregateCount = 0
-            sessionHeartRateMean = 0
-            sessionHeartRateM2 = 0
-            return
-        }
-
-        var minRate = Int.max
-        var maxRate = Int.min
-        var total = 0
-        var count = 0
-        var mean = 0.0
-        var m2 = 0.0
-        for sample in session {
-            minRate = min(minRate, sample.bpm)
-            maxRate = max(maxRate, sample.bpm)
-            total += sample.bpm
-            count += 1
-            let value = Double(sample.bpm)
-            let delta = value - mean
-            mean += delta / Double(count)
-            m2 += delta * (value - mean)
-        }
-        sessionMinHeartRate = minRate == Int.max ? nil : minRate
-        sessionMaxHeartRate = maxRate == Int.min ? nil : maxRate
-        sessionHeartRateTotal = total
-        sessionHeartRateAggregateCount = count
-        sessionHeartRateMean = mean
-        sessionHeartRateM2 = m2
-    }
 
     private func recordSessionHeartRateStats(rate: Int) {
         sessionMinHeartRate = min(sessionMinHeartRate ?? rate, rate)
@@ -31896,18 +31753,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         bytes.map { String(format: "%02x", $0) }.joined()
     }
 
-    private nonisolated static func documentsRelativePath(for url: URL) -> String {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return url.lastPathComponent
-        }
-        let documentPath = documents.standardizedFileURL.path
-        let filePath = url.standardizedFileURL.path
-        if filePath == documentPath { return "Documents" }
-        if filePath.hasPrefix(documentPath + "/") {
-            return "Documents/" + String(filePath.dropFirst(documentPath.count + 1))
-        }
-        return url.lastPathComponent
-    }
 
     private static func packetKind(_ type: UInt8) -> String {
         switch type {
@@ -49281,7 +49126,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 sliceStartPendingRecords: idleWindowRangeBeforeACK?.pendingRecords,
                 heartRatePauseElapsed: idleWindowDrainStartedAt
                     .map { Date().timeIntervalSince($0) } ?? 0,
-                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil
+                queuedPullIntent: queuedConnectedRawHistoryCatchUpIntent != nil,
+                catchUpWindow: backlogCatchUpWindowOpenNow(now: Date())
            ) {
             if AtriaWhoop4HistoryRangePointerPolicy
                 .shouldIssueIdleWindowPostACKRangeProbe(
@@ -52219,6 +52065,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             current: strapStepResearchCount,
             incomingGyro: gyroCadenceSteps
         )
+        AtriaStrapStepMinuteLog.shared.record(sessionSteps: strapStepResearchCount,
+                                              at: snapshot.receivedAt ?? now)
         strapStepResearchPeakCount = reconciledTotals.rawSteps
         if snapshot.deviceTimestamp > 0 {
             strapStepResearchDeviceTimestamp = Self.newestR10DeviceTimestamp(
@@ -57591,14 +57439,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                                     frameTime: Date())
     }
 
-    private nonisolated static func parseRealtimeProprietaryPacket(_ data: Data) -> ParsedRealtimePacket? {
-        parseFastRealtimeProprietaryPacket(data)
-            ?? {
-                guard let update = parseProprietaryUpdate(data, source: ""),
-                      case .realtime(let packet) = update else { return nil }
-                return packet
-            }()
-    }
 
     // Heart Rate Measurement per BLE spec: flags byte, then uint8 or uint16 BPM.
     static func parseHeartRate(_ data: Data) -> Int {
