@@ -1055,11 +1055,15 @@ final class AtriaHistoricalArchiveDurableStore {
             while let chunk = try reader.read(upToCount: Self.identityCompactionBufferBytes),
                   !chunk.isEmpty {
                 pending.append(chunk)
-                while let newline = pending.firstIndex(of: 0x0a) {
-                    let line = pending[pending.startIndex..<newline]
-                    try consider(line: Data(line))
-                    pending = Data(pending[pending.index(after: newline)...])
+                // Walk lines with a cursor and drop the consumed prefix once
+                // per chunk; re-copying the remainder after every line made
+                // this pass quadratic in the chunk size.
+                var cursor = pending.startIndex
+                while let newline = pending[cursor...].firstIndex(of: 0x0a) {
+                    try consider(line: Data(pending[cursor..<newline]))
+                    cursor = pending.index(after: newline)
                 }
+                pending = Data(pending[cursor...])
             }
             // `repairTornJSONLTail` guarantees a trailing newline, so `pending`
             // is normally empty here; keep the residue honest if it is not.
@@ -1159,29 +1163,43 @@ final class AtriaHistoricalArchiveDurableStore {
         cutoff: TimeInterval,
         protectedKeys: Set<String>
     ) -> Bool {
-        guard let observedAt = scanDecoratedObservedAt(line) else {
+        // The live index file holds `IndexEntry` lines ("key" /
+        // "observedAtUnix"), not decorated archive rows. Matching only the
+        // decorated names sent every index line to the JSON parser and then
+        // retained it (device 2026-09-30: 390k lines parsed per prune under
+        // the store lock, a 1.6 s main-thread hang, zero lines ever dropped).
+        guard let observedAt = scanDecoratedObservedAt(line)
+                ?? scanDecoratedObservedAt(line, property: indexObservedAtProperty) else {
             guard let object = try? JSONSerialization.jsonObject(with: line),
                   let dictionary = object as? [String: Any],
-                  let parsed = dictionary[identityObservedAtProperty] as? Double else {
+                  let parsed = (dictionary[identityObservedAtProperty]
+                                ?? dictionary[indexObservedAtProperty]) as? Double else {
                 return true
             }
-            if let key = dictionary[identityProperty] as? String,
+            if let key = (dictionary[identityProperty] ?? dictionary[indexKeyProperty]) as? String,
                protectedKeys.contains(key) {
                 return true
             }
             return parsed >= cutoff
         }
-        if !protectedKeys.isEmpty,
-           let key = scanDecoratedKey(line),
-           protectedKeys.contains(key) {
-            return true
+        if !protectedKeys.isEmpty {
+            // Unreadable key while keys are protected: fail safe (retain).
+            guard let key = scanDecoratedKey(line)
+                    ?? scanDecoratedKey(line, property: indexKeyProperty) else { return true }
+            if protectedKeys.contains(key) { return true }
         }
         return observedAt >= cutoff
     }
 
-    private static func scanDecoratedObservedAt(_ line: Data) -> Double? {
+    private static let indexObservedAtProperty = "observedAtUnix"
+    private static let indexKeyProperty = "key"
+
+    private static func scanDecoratedObservedAt(
+        _ line: Data,
+        property: String = identityObservedAtProperty
+    ) -> Double? {
         guard let range = line.range(of: Data(
-            "\"\(identityObservedAtProperty)\":".utf8
+            "\"\(property)\":".utf8
         )) else { return nil }
         var index = range.upperBound
         var digits = [UInt8]()
@@ -1196,9 +1214,12 @@ final class AtriaHistoricalArchiveDurableStore {
         return Double(text)
     }
 
-    private static func scanDecoratedKey(_ line: Data) -> String? {
+    private static func scanDecoratedKey(
+        _ line: Data,
+        property: String = identityProperty
+    ) -> String? {
         guard let range = line.range(of: Data(
-            "\"\(identityProperty)\":\"".utf8
+            "\"\(property)\":\"".utf8
         )) else { return nil }
         var index = range.upperBound
         var bytes = [UInt8]()

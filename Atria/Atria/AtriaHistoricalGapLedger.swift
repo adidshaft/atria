@@ -1073,12 +1073,20 @@ enum AtriaHistoricalGapLedger {
         guard count > 0, let bits, !bits.isEmpty else { return [] }
         var indexes: [Int] = []
         indexes.reserveCapacity(min(count, bits.count * 8))
-        for second in 0..<count {
-            let byteIndex = second / 8
-            guard byteIndex < bits.count else { break }
-            let mask = UInt8(1 << UInt8(second % 8))
-            if bits[byteIndex] & mask != 0 {
-                indexes.append(second)
+        // Byte-wise over raw memory, skipping empty bytes (HangTracer
+        // 2026-09-30: per-second `Data` subscripting over multi-day windows
+        // held the main thread at every drain-slice finish). Same indexes,
+        // same order.
+        bits.withUnsafeBytes { raw in
+            let byteCount = min(raw.count, (count + 7) / 8)
+            for byteIndex in 0..<byteCount {
+                let byte = raw[byteIndex]
+                guard byte != 0 else { continue }
+                for bit in 0..<8 {
+                    let second = byteIndex * 8 + bit
+                    guard second < count else { break }
+                    if byte & UInt8(1 << bit) != 0 { indexes.append(second) }
+                }
             }
         }
         return indexes
