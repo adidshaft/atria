@@ -242,4 +242,15 @@ final class AtriaCivilDayStepAuthorityTests: XCTestCase {
             record(computedAt: 1, complete: false)
         ))
     }
+
+    /// Device 2026-09-30: new rows changed Monday's fingerprint, the re-read
+    /// could not qualify, and the week chart fell back to a cycle fold
+    /// (8,407+) over the cached exact 5,064.
+    func testAFinishedDayKeepsItsExactTotalWhenAReReadCannotAnswer() {
+        XCTAssertEqual(AtriaCivilDayStepAuthority.lastExactCompleteDayTotal(
+            record(computedAt: 1, complete: true)), record(computedAt: 1, complete: true).steps)
+        XCTAssertNil(AtriaCivilDayStepAuthority.lastExactCompleteDayTotal(
+            record(computedAt: 1, complete: false)), "an open day's old count is not an answer")
+        XCTAssertNil(AtriaCivilDayStepAuthority.lastExactCompleteDayTotal(nil))
+    }
 }
