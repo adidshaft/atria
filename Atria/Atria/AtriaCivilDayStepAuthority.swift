@@ -157,6 +157,13 @@ final class AtriaCivilDayStepAuthority {
         record.dayWasComplete
     }
 
+    /// A completed day's cached exact count, for when a fresh read cannot
+    /// qualify. The cycle-scoped receipt fold is never closer than this.
+    static func lastExactCompleteDayTotal(_ record: DayRecord?) -> Int? {
+        guard let record, record.dayWasComplete else { return nil }
+        return record.steps
+    }
+
     // MARK: - The read
 
     /// Per-day totals for `days`, exact where shards can answer, `fallback`
@@ -266,7 +273,13 @@ final class AtriaCivilDayStepAuthority {
             )
             guard case .qualified(let evidence) = read else {
                 // Not cached: an unanswerable day must stay eligible for the
-                // moment its shards (or a backfill) can answer it.
+                // moment its shards (or a backfill) can answer it. Meanwhile a
+                // finished day keeps its last exact total (device 2026-09-30:
+                // Mon showed the cycle fold 8,407+ over a cached exact 5,064
+                // after new rows changed its fingerprint).
+                if let kept = Self.lastExactCompleteDayTotal(loaded[day.timeIntervalSince1970]) {
+                    exact[day] = kept
+                }
                 continue
             }
             exact[day] = evidence.steps

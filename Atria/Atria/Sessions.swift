@@ -1436,6 +1436,7 @@ struct SavedSession: Codable, Identifiable {
     private static let rrImpliedMedianCache = SavedSessionRespiratoryRateCache()
     private static let localHRVCache = SavedSessionLocalHRVCache()
     private static let rangeLocalHRVCache = SavedSessionRangeLocalHRVCache()
+    private static let rangeLocalHRVCancellableCache = SavedSessionRangeLocalHRVCache()
 
     let id: UUID
     let start: Date
@@ -1685,6 +1686,16 @@ struct SavedSession: Codable, Identifiable {
               rrPoints.count >= Self.minimumQualifiedRRBeatCount() else {
             return (nil, 0)
         }
+        // Content-keyed like `localHRVSummary(in:end:)` (HangTracer
+        // 2026-09-30: the baseline rebuild on sleep save re-derived every
+        // night's RMSSD windows on the main actor). Own cache: this variant
+        // does not require qualified RR provenance, so results differ.
+        let cacheKey = SavedSessionRangeLocalHRVCacheKey(session: localHRVCacheKey(rrPoints: rrPoints),
+                                                         rangeStart: rangeStart,
+                                                         rangeEnd: rangeEnd)
+        if let cached = Self.rangeLocalHRVCancellableCache.lookup(cacheKey) {
+            return (cached.rmssd, cached.windowCount)
+        }
         let deadline = AtriaSleepSettlementDeadline(
             uptimeNanoseconds: .max,
             monotonicNow: {
@@ -1703,6 +1714,10 @@ struct SavedSession: Codable, Identifiable {
         } else {
             rmssd = nil
         }
+        Self.rangeLocalHRVCancellableCache.store(
+            SavedSessionLocalHRVSummary(rmssd: rmssd, windowCount: lnRMSSDs.count),
+            for: cacheKey
+        )
         return (rmssd, lnRMSSDs.count)
     }
 
