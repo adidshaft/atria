@@ -11597,6 +11597,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || reason == "interrupted_full_drain_relaunch"
     }
 
+    /// The oldest-first idle/natural-gap slice is what drains toward a
+    /// draining authority's gap; refusing it until the stranded heuristic
+    /// fires left history parked after a workout (2026-10-01: cursor held at
+    /// 20:43 for 80 min, 570 records waiting, phone charging, unblocked only
+    /// by a relaunch).
+    nonisolated static func drainingAuthorityAdmitsHistoryRequest(
+        reason: String,
+        strandedResume: Bool
+    ) -> Bool {
+        isPersistedDrainAuthorityResumeReason(reason)
+            || strandedResume
+            || reason == "idle_window_drain"
+            || reason == "natural_gap_drain"
+    }
+
     /// A process expiry is not a terminal no-rows result. Permit exactly one
     /// later re-acquisition for the same durable authority only after the
     /// current link has been stable long enough to establish that live capture
@@ -13635,8 +13650,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         authority.authorityIdentifier
                     )
                 }
-                guard Self.isPersistedDrainAuthorityResumeReason(reason)
-                        || strandedResume else {
+                guard Self.drainingAuthorityAdmitsHistoryRequest(
+                    reason: reason,
+                    strandedResume: strandedResume
+                ) else {
                     defaults.set(
                         "deferred_existing_drain_authority",
                         forKey: OfflineSyncDefaults.lastStatus
