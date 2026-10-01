@@ -12634,6 +12634,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 lastSliceYieldedRows: lastIdleWindowDrainAttemptYieldedRows(),
                 now: nowTs,
                 catchUpWindowOpen: backlogCatchUpWindowOpenNow(now: nowTs)
+            ) || Self.keepUpSliceIsDue(
+                pendingRecords: leftoverPending,
+                lastSliceFinishedAt: idleWindowDrainLastFinishedAt,
+                catchUpWindowOpen: backlogCatchUpWindowOpenNow(now: nowTs),
+                now: nowTs
             )
         )
         if idleFlag { return window }
@@ -18789,7 +18794,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     largeBacklog: (idleWindowRangeBeforeACK?.pendingRecords ?? 0)
                         >= Self.backlogSlicePendingThreshold,
                     attendedForeground: foregroundInteractiveMode,
-                    catchUpWindow: backlogCatchUpWindowOpenNow(now: now)
+                    catchUpWindow: backlogCatchUpWindowOpenNow(now: now),
+                    keepUpBacklog: Self.isKeepUpBacklog(idleWindowRangeBeforeACK?.pendingRecords)
                 ),
                 rangeRequestedAt: idleWindowDrainRangeRequestedAt
             )
@@ -45824,9 +45830,22 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                     pendingHistoryEndACK?.key == identifier
                         ? pendingHistoryEndACK.map { Data($0.payload) } : nil
                 }
+                // Per-page flush timing (2026-10-01: ~3.3 s foreground / ~7 s
+                // background between HISTORY_END and the ACK; this decides
+                // drain throughput).
+                let flushScheduledAt = DispatchTime.now().uptimeNanoseconds
                 historicalArchiveQueue.async { [weak self] in
                     let error: Error?
                     var authorityResult: FullDrainFlushAuthorityResult?
+                    var flushMarks: [UInt64] = [DispatchTime.now().uptimeNanoseconds]
+                    defer {
+                        let marks = flushMarks + [DispatchTime.now().uptimeNanoseconds]
+                        let ms = zip(marks, marks.dropFirst()).map { Int(($1 - $0) / 1_000_000) }
+                        AtriaDebugLog("ATRIADBG history_flush_timing generation=%llu queue_ms=%d steps_ms=%@",
+                                      generation,
+                                      Int((marks[0] - flushScheduledAt) / 1_000_000),
+                                      ms.map(String.init).joined(separator: ","))
+                    }
                     do {
                         if let ledger = admissionLedger,
                            let attempt = admissionAttempt,
@@ -45843,6 +45862,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                 historyClockSyncEnabled: admissionReconciliationClockEnabled
                             )
                         }
+                        flushMarks.append(DispatchTime.now().uptimeNanoseconds)  // admission
                         guard let archiveReceipt = try HistoricalArchive
                             .synchronizeDurableStorage(
                             generation: generation
@@ -45856,6 +45876,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                         // ticket verifier sees every point admitted by this
                         // generation. Failure deliberately leaves the motion
                         // ticket pending without invalidating raw history.
+                        flushMarks.append(DispatchTime.now().uptimeNanoseconds)  // archive
                         do {
                             try AtriaWhoop4MotionTickCompactStore.shared
                                 .synchronize()
@@ -45866,6 +45887,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                 String(describing: error)
                             )
                         }
+                        flushMarks.append(DispatchTime.now().uptimeNanoseconds)  // motion shard
                         guard !admissionFailed,
                               let ledger = admissionLedger,
                               let attempt = admissionAttempt else {
@@ -45888,6 +45910,7 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                     archiveReceipt: archiveReceipt
                                 )
                         }
+                        flushMarks.append(DispatchTime.now().uptimeNanoseconds)  // admission ledger
                         let stores = AtriaHistoricalFullDrainCoveragePolicy.DurableStorePair(
                             raw: .init(
                                 storeIdentifier: archiveReceipt.raw.storeIdentifier,
@@ -45960,6 +45983,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             return
                         }
                         self.historyDurableFlushInFlight = false
+                        AtriaDebugLog("ATRIADBG history_flush_timing generation=%llu main_hop_done_ms=%d",
+                                      generation,
+                                      Int((DispatchTime.now().uptimeNanoseconds - flushScheduledAt) / 1_000_000))
                         if self.historicalDrainTelemetry.generation == generation {
                             if error == nil {
                                 self.historicalDrainTelemetry.flushSucceeded += 1

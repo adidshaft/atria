@@ -1340,11 +1340,20 @@ enum HistoricalArchive {
             durableStoreLock.unlock()
             throw error
         }
+        let storeFlushedAt = DispatchTime.now().uptimeNanoseconds
         if let receipt {
             try reconcileActiveCatalogAfterDurableFlush(
                 synchronizedFiles: receipt.synchronizedFiles,
                 catalogStore: try catalogStoreLocked()
             )
+        }
+        let catalogReconciledAt = DispatchTime.now().uptimeNanoseconds
+        defer {
+            let done = DispatchTime.now().uptimeNanoseconds
+            AtriaDebugLog("ATRIADBG history_flush_timing generation=%llu archive_catalog_ms=%d archive_post_ms=%d",
+                          generation,
+                          Int((catalogReconciledAt - storeFlushedAt) / 1_000_000),
+                          Int((done - catalogReconciledAt) / 1_000_000))
         }
         flushDurableDiagnostics(generation: generation)
         // Handoff-9 CP1: durable history appends intentionally bypass

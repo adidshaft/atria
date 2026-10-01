@@ -24284,8 +24284,11 @@ final class SessionStore: ObservableObject {
                                 sleepStageSegments: sleepSegments,
                                 sleepConsistencyPercent: sleepConsistencyPercent,
                                 strain: strain,
-                                strainCoverageFraction: strainCoverage,
-                                strainEvidenceQuality: strainPresentation.quality,
+                                // No strain yet at the morning freeze: stamp no
+                                // strain evidence. An "unavailable" here outlived
+                                // the day's later strain and hid it (2026-10-01).
+                                strainCoverageFraction: strain == nil ? nil : strainCoverage,
+                                strainEvidenceQuality: strain == nil ? nil : strainPresentation.quality,
                                 // Assessment P1.7: persist the raw TRIMP truth
                                 // beside its display skin. The wear fallback
                                 // freezes the exact integral it displayed.

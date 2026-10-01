@@ -995,6 +995,37 @@ extension AtriaBLEManager {
     nonisolated static let backlogCatchUpSliceInterval: TimeInterval = 60
     nonisolated static let backlogCatchUpDryRetryInterval: TimeInterval = 10 * 60
 
+    /// Keep-up slices (owner 2026-10-01: "step count ... should at least
+    /// catch within the next 30-40 mins"). Daily steps come from drained
+    /// motion history, and below `backlogSlicePendingThreshold` (~3 h of
+    /// data at ~18 s per record) a worn, awake link was never sliced, so
+    /// history (and steps) lagged by hours. Outside the catch-up window a
+    /// short slice now syncs ~30 min of waiting data every 30 min; its 60 s
+    /// live-HR hole is refilled into stress from that same history.
+    nonisolated static let keepUpSlicePendingThreshold: UInt32 = dryLeftoverMaximumPendingRecords + 1
+    nonisolated static let keepUpSliceInterval: TimeInterval = 30 * 60
+    nonisolated static let keepUpSliceLimit: TimeInterval = 60
+
+    nonisolated static func keepUpSliceIsDue(
+        pendingRecords: UInt32?,
+        lastSliceFinishedAt: Date?,
+        catchUpWindowOpen: Bool,
+        now: Date
+    ) -> Bool {
+        guard !catchUpWindowOpen,
+              let pendingRecords,
+              pendingRecords >= keepUpSlicePendingThreshold,
+              pendingRecords < backlogSlicePendingThreshold else { return false }
+        guard let lastSliceFinishedAt else { return true }
+        return now.timeIntervalSince(lastSliceFinishedAt) >= keepUpSliceInterval
+    }
+
+    nonisolated static func isKeepUpBacklog(_ pendingRecords: UInt32?) -> Bool {
+        guard let pendingRecords else { return false }
+        return pendingRecords >= keepUpSlicePendingThreshold
+            && pendingRecords < backlogSlicePendingThreshold
+    }
+
     nonisolated static func backlogCatchUpWindowOpen(
         phoneCharging: Bool,
         appForeground: Bool,
@@ -1040,6 +1071,9 @@ extension AtriaBLEManager {
         if let pending = sliceStartPendingRecords, pending >= backlogSlicePendingThreshold {
             return heartRatePauseElapsed >= backlogSliceLimit(attendedForeground: attendedForeground,
                                                               catchUpWindow: catchUpWindow)
+        }
+        if isKeepUpBacklog(sliceStartPendingRecords), !chargingOrOffWrist {
+            return heartRatePauseElapsed >= keepUpSliceLimit
         }
         if attendedForeground { return true }
         if chargingOrOffWrist { return false }
@@ -1126,13 +1160,17 @@ extension AtriaBLEManager {
         consumeToNow: Bool = false,
         largeBacklog: Bool = false,
         attendedForeground: Bool = false,
-        catchUpWindow: Bool = false
+        catchUpWindow: Bool = false,
+        keepUpBacklog: Bool = false
     ) -> TimeInterval {
         // A large strap backlog gets the timed backlog slice (device
         // 2026-09-27: 320 rows in 21.7 s, then this 20 s budget stopped it).
         if largeBacklog, !chargingOrOffWrist {
             return backlogSliceLimit(attendedForeground: attendedForeground,
                                      catchUpWindow: catchUpWindow)
+        }
+        if keepUpBacklog, !chargingOrOffWrist {
+            return keepUpSliceLimit
         }
         if consumeToNow && !chargingOrOffWrist { return 20 }
         return chargingOrOffWrist ? 180 : 20
