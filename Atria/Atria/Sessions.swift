@@ -13432,10 +13432,21 @@ final class SessionStore: ObservableObject {
         now: Date,
         dayWindow: Int = SessionStore.cycleStrainDisplayDayWindow,
         calendar: Calendar = .current,
+        closedCycleStore: AtriaClosedCycleStrainStore? = nil,
+        coldSessionIndex: (() -> [AtriaFullFidelityColdSessionStore.Manifest.Entry])? = nil,
+        coldSessions: ((DateInterval) -> [SavedSession])? = nil,
+        historyDrainedThrough: Date? = nil,
+        archiveHeartRates: ((DateInterval) -> [HistoricalArchive.HeartRatePoint])? = nil,
         shouldContinue: @escaping @Sendable () -> Bool = { true }
     ) -> [Date: Double]? {
         guard shouldContinue() else { return nil }
         guard !confirmedSleeps.isEmpty else { return [:] }
+        // A cycle with any session only in the cold store has partly aged out
+        // of residence; recomputing it from what is resident collapsed its
+        // strain (device 2026-10-01: Sep 28, 8.7 -> 0.5). The cold store is a
+        // full-fidelity superset, so "cold but not resident" is exact.
+        let residentIDs = Set(canonicalSessions.map(\.id))
+        let evictedEntries = (coldSessionIndex?() ?? []).filter { !residentIDs.contains($0.sessionID) }
         let sleepIntervals = confirmedSleeps.compactMap {
             $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
         }
@@ -13482,9 +13493,44 @@ final class SessionStore: ObservableObject {
                   cycle.interval.start < openCycleStart,
                   cycle.interval.duration > 0,
                   seenCycleStarts.insert(cycle.interval.start).inserted else { continue }
+            let workoutsKey = AtriaClosedCycleStrainStore.workoutsKey(confirmedWorkouts,
+                                                                      in: cycle.interval)
+            // Synced strap history fills a cycle's session gaps once the drain
+            // has passed its end; only then is the cycle's load final and
+            // worth remembering (device: Sep 26's 38 h cycle had almost no
+            // sessions but complete history, and showed 0.06).
+            let historyComplete = historyDrainedThrough.map { $0 >= cycle.interval.end } ?? false
+            let partlyEvicted = evictedEntries.contains {
+                $0.end > cycle.interval.start && $0.start < cycle.interval.end
+            }
+            // Remembered only once history passed the cycle's end, keyed to
+            // its exact bounds and workouts: final for any cycle.
+            if let remembered = closedCycleStore?.trimp(for: cycle.interval,
+                                                        workoutsKey: workoutsKey) {
+                let day = AtriaStepsWeekChart.predominantCivilDay(
+                    windowStart: cycle.interval.start,
+                    windowEnd: cycle.interval.end,
+                    calendar: calendar
+                )
+                trimpByDisplayDay[day, default: 0] += remembered
+                continue
+            }
+            var cycleSessions = canonicalSessions
+            if partlyEvicted {
+                // Not remembered (aged out before this store existed): read
+                // the cycle's full-fidelity sessions back once, or leave the
+                // day's stored value alone rather than overwrite it.
+                guard let coldSessions else { continue }
+                let restored = coldSessions(cycle.interval)
+                guard !restored.isEmpty else { continue }
+                cycleSessions = makeCanonicalSessions(from: canonicalSessions + restored)
+            }
+            let cycleArchive = historyComplete
+                ? (archiveHeartRates?(cycle.interval) ?? archiveSlice(cycle.interval))
+                : archiveSlice(cycle.interval)
             guard let aggregate = homeSavedAggregateCancellable(
-                from: canonicalSessions,
-                archiveHeartRatePoints: archiveSlice(cycle.interval),
+                from: cycleSessions,
+                archiveHeartRatePoints: cycleArchive,
                 rest: rest,
                 maxHR: maxHR,
                 biologicalSex: biologicalSex,
@@ -13504,9 +13550,50 @@ final class SessionStore: ObservableObject {
                 calendar: calendar
             )
             trimpByDisplayDay[day, default: 0] += aggregate.savedTodayTRIMP
+            if historyComplete {
+                closedCycleStore?.record(trimp: aggregate.savedTodayTRIMP,
+                                         for: cycle.interval,
+                                         workoutsKey: workoutsKey)
+            }
         }
         guard shouldContinue() else { return nil }
         return trimpByDisplayDay.mapValues { Metrics.strain(fromTRIMP: $0) }
+    }
+
+    /// Full-fidelity sessions of one closed cycle from the cold store, bounded
+    /// like `archivedSessions(overlapping:)`. Read once per aged-out cycle;
+    /// the result is remembered in `AtriaClosedCycleStrainStore`.
+    private nonisolated static func closedCycleColdStore() -> AtriaFullFidelityColdSessionStore {
+        let coldURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("sessions-cold.json")
+        return AtriaFullFidelityColdSessionStore(
+            rootURL: AtriaFullFidelityColdSessionStore.rootURL(nextTo: coldURL)
+        )
+    }
+
+    nonisolated static func historyDrainedThroughForClosedCycles() -> Date? {
+        (UserDefaults.standard.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        ) as? Double).map(Date.init(timeIntervalSince1970:))
+    }
+
+    nonisolated static func archiveHeartRatesForClosedCycle(
+        _ interval: DateInterval
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        HistoricalArchive.metricHeartRatePoints(start: interval.start,
+                                                end: interval.end,
+                                                maximumPoints: 250_000)?.points ?? []
+    }
+
+    nonisolated static func coldSessionIndexForClosedCycles() -> [AtriaFullFidelityColdSessionStore.Manifest.Entry] {
+        (try? closedCycleColdStore().loadManifest().entries) ?? []
+    }
+
+    nonisolated static func coldSessionsForClosedCycle(_ interval: DateInterval) -> [SavedSession] {
+        let store = closedCycleColdStore()
+        return (try? store.sessions(overlapping: interval,
+                                    maximumSessionCount: 200,
+                                    maximumDecodedBytes: 96 * 1_024 * 1_024)) ?? []
     }
 
     nonisolated static func preparedDailyRollupsNeedPersistence(_ prepared: [DailyRollupStoreEntry],
@@ -13722,7 +13809,12 @@ final class SessionStore: ObservableObject {
             biologicalSex: biologicalSex,
             openCycleStart: cycle.start,
             now: preparedAt,
-            calendar: calendar
+            calendar: calendar,
+            closedCycleStore: .shared,
+            coldSessionIndex: Self.coldSessionIndexForClosedCycles,
+            coldSessions: Self.coldSessionsForClosedCycle,
+            historyDrainedThrough: Self.historyDrainedThroughForClosedCycles(),
+            archiveHeartRates: Self.archiveHeartRatesForClosedCycle
         ) ?? [:]
         let cycleAlignedMetrics = applyingClosedCycleStrain(
             in: activeAlignedMetrics,
@@ -13879,6 +13971,11 @@ final class SessionStore: ObservableObject {
                     openCycleStart: cycle.start,
                     now: preparedAt,
                     calendar: calendar,
+                    closedCycleStore: .shared,
+                    coldSessionIndex: Self.coldSessionIndexForClosedCycles,
+                    coldSessions: Self.coldSessionsForClosedCycle,
+                    historyDrainedThrough: Self.historyDrainedThroughForClosedCycles(),
+                    archiveHeartRates: Self.archiveHeartRatesForClosedCycle,
                     shouldContinue: shouldContinue
                 ) else { return nil }
         let closedAlignedMetrics = applyingClosedCycleStrain(

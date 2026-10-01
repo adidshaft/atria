@@ -252,6 +252,91 @@ final class AtriaPhysiologicalDayCounterAlignmentTests: XCTestCase {
         )
     }
 
+    // MARK: - 2026-10-01: aged-out cycles keep their strain
+
+    private func coldEntry(_ session: SavedSession) -> AtriaFullFidelityColdSessionStore.Manifest.Entry {
+        .init(sessionID: session.id, filename: "x", compressedSHA256: "x", decodedSHA256: "x",
+              compressedByteCount: 1, decodedByteCount: 1, start: session.start, end: session.end)
+    }
+
+    private func closedSeries(resident: [SavedSession],
+                              cold: [SavedSession] = [],
+                              archive: [HistoricalArchive.HeartRatePoint] = [],
+                              drainedThrough: Date? = nil,
+                              memo: AtriaClosedCycleStrainStore? = nil,
+                              sleeps: [UserConfirmedSleep],
+                              now: Date,
+                              calendar: Calendar) -> [Date: Double]? {
+        let open = AtriaPhysiologicalCycle.current(now: now, confirmedSleeps: sleeps, calendar: calendar)
+        return SessionStore.physiologicalCycleStrainByDisplayDayCancellable(
+            canonicalSessions: resident,
+            confirmedSleeps: sleeps,
+            confirmedWorkouts: [],
+            archiveHeartRatePoints: [],
+            rest: 60, maxHR: 200, biologicalSex: .unspecified,
+            openCycleStart: open.start, now: now, calendar: calendar,
+            closedCycleStore: memo,
+            coldSessionIndex: { (resident + cold).map(self.coldEntry) },
+            coldSessions: { interval in (resident + cold).filter { $0.end > interval.start && $0.start < interval.end } },
+            historyDrainedThrough: drainedThrough,
+            archiveHeartRates: { interval in archive.filter { $0.t >= interval.start && $0.t < interval.end } }
+        )
+    }
+
+    /// Device: Sep 28 (two logged workouts) collapsed 8.7 -> 0.5 once its
+    /// afternoon sessions moved to the cold store.
+    func testAgedOutCycleIsRestoredFromColdNeverFromWhatIsResident() throws {
+        let calendar = utc
+        let sleeps = [
+            sleep(id: "a", start: date(2026, 8, 1, 0, calendar: calendar), end: date(2026, 8, 1, 8, calendar: calendar)),
+            sleep(id: "b", start: date(2026, 8, 2, 0, calendar: calendar), end: date(2026, 8, 2, 8, calendar: calendar)),
+        ]
+        let morning = session(start: date(2026, 8, 1, 9, calendar: calendar), duration: 1_800, bpm: 90)
+        let workout = session(start: date(2026, 8, 1, 17, calendar: calendar), duration: 3_600, bpm: 155)
+        let now = date(2026, 8, 2, 12, calendar: calendar)
+        let aug1 = date(2026, 8, 1, 0, calendar: calendar)
+        let full = try XCTUnwrap(closedSeries(resident: [morning, workout], sleeps: sleeps,
+                                              now: now, calendar: calendar)?[aug1])
+        let restored = try XCTUnwrap(closedSeries(resident: [morning], cold: [workout], sleeps: sleeps,
+                                                  now: now, calendar: calendar)?[aug1])
+        XCTAssertEqual(restored, full, accuracy: 1e-9)
+        let withoutCold = SessionStore.physiologicalCycleStrainByDisplayDayCancellable(
+            canonicalSessions: [morning], confirmedSleeps: sleeps, confirmedWorkouts: [],
+            archiveHeartRatePoints: [], rest: 60, maxHR: 200, biologicalSex: .unspecified,
+            openCycleStart: sleeps[1].end, now: now, calendar: calendar,
+            coldSessionIndex: { [morning, workout].map(self.coldEntry) },
+            coldSessions: { _ in [] }
+        )
+        XCTAssertNil(withoutCold?[aug1], "an aged-out cycle that cannot be restored keeps its stored value")
+    }
+
+    func testCompleteHistoryFillsGapsAndIsRememberedOnlyOnceFinal() throws {
+        let calendar = utc
+        let sleeps = [
+            sleep(id: "a", start: date(2026, 8, 1, 0, calendar: calendar), end: date(2026, 8, 1, 8, calendar: calendar)),
+            sleep(id: "b", start: date(2026, 8, 2, 0, calendar: calendar), end: date(2026, 8, 2, 8, calendar: calendar)),
+        ]
+        let resident = session(start: date(2026, 8, 1, 9, calendar: calendar), duration: 1_800, bpm: 90)
+        // A walk only the drained strap history saw.
+        let archive = stride(from: 0.0, to: 3_600, by: 2).map {
+            HistoricalArchive.HeartRatePoint(t: date(2026, 8, 1, 15, calendar: calendar).addingTimeInterval($0), bpm: 140)
+        }
+        let now = date(2026, 8, 2, 12, calendar: calendar)
+        let aug1 = date(2026, 8, 1, 0, calendar: calendar)
+        let memo = AtriaClosedCycleStrainStore(
+            fileURL: FileManager.default.temporaryDirectory.appendingPathComponent("cycle-\(UUID()).json"))
+        let pending = try XCTUnwrap(closedSeries(resident: [resident], archive: archive,
+                                                 drainedThrough: date(2026, 8, 1, 20, calendar: calendar),
+                                                 memo: memo, sleeps: sleeps, now: now, calendar: calendar)?[aug1])
+        let complete = try XCTUnwrap(closedSeries(resident: [resident], archive: archive,
+                                                  drainedThrough: now, memo: memo,
+                                                  sleeps: sleeps, now: now, calendar: calendar)?[aug1])
+        XCTAssertGreaterThan(complete, pending, "synced history fills the session gap once it covers the cycle")
+        let remembered = try XCTUnwrap(closedSeries(resident: [], drainedThrough: now, memo: memo,
+                                                    sleeps: sleeps, now: now, calendar: calendar)?[aug1])
+        XCTAssertEqual(remembered, complete, accuracy: 1e-9)
+    }
+
     func testShiftedSchedulePreWakeLoadStaysWithItsCycle() throws {
         let calendar = utc
         // The owner's real shape: main sleep mid-afternoon, ~14:30-18:30.
