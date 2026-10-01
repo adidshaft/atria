@@ -206,6 +206,19 @@ final class AtriaBacklogCatchUpWindowTests: XCTestCase {
             heartRatePauseElapsed: B.backlogSliceBackgroundLimit, catchUpWindow: true))
     }
 
+    func testWindowDrainsASmallBacklogTooNotOnlyALargeOne() {
+        XCTAssertTrue(B.largeBacklogSliceIsDue(pendingRecords: 292,
+                                               lastSliceFinishedAt: now.addingTimeInterval(-61),
+                                               lastSliceYieldedRows: true, now: now, catchUpWindowOpen: true))
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 100,
+                                                lastSliceFinishedAt: nil,
+                                                lastSliceYieldedRows: true, now: now, catchUpWindowOpen: true),
+                       "a dry live tail is still not backlog")
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 292, lastSliceFinishedAt: nil,
+                                                lastSliceYieldedRows: true, now: now),
+                       "legacy callers keep the 3 h rule")
+    }
+
     func testDrySliceCannotParkCatchUpInsideTheWindow() {
         XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 16_045,
                                                 lastSliceFinishedAt: now.addingTimeInterval(-3_600),
