@@ -11473,6 +11473,30 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// The launch value mirrors the full-drain authority file, and only an
+    /// exact publication ticket releases it. When BLE clears a stale draining
+    /// authority no ticket ever runs, so the lease held History, compaction
+    /// and workout rehydration back for the life of the process (2026-10-01).
+    private func releaseExactRecoveryArchivePriorityIfAuthorityGone(
+        reason: String
+    ) {
+        guard exactRecoveryArchivePriorityLeaseActive,
+              exactRecoveryProjectionArchiveRevisions.isEmpty,
+              !HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+        else { return }
+        exactRecoveryArchivePriorityLeaseActive = false
+        AtriaDebugLog(
+            "ATRIADBG recovered_projection status=archive_priority_released reason=%@ detail=authority_cleared action=resume_coalesced_non_exact_consumers",
+            reason
+        )
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.resumeDeferredForegroundArchiveWork(
+                reason: "exact_recovery_authority_cleared"
+            )
+        }
+    }
+
     private func refreshHistorySnapshotCache(
         deferred: Bool = true,
         isRecoveredPublication: Bool = false,
@@ -16583,6 +16607,7 @@ final class SessionStore: ObservableObject {
         automaticCurrentCycleCutoff: Date? = nil
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
+        releaseExactRecoveryArchivePriorityIfAuthorityGone(reason: reason)
         let shouldRetainDeferredRequest =
             Self.shouldRetainDeferredRecoveredDataRequest(
                 reason: reason,
@@ -27812,6 +27837,9 @@ final class SessionStore: ObservableObject {
             )
             reserveArchiveCompactionForSafeBackground()
         }
+        releaseExactRecoveryArchivePriorityIfAuthorityGone(
+            reason: "archive_compaction_\(reason)"
+        )
         let exactRecoveryOwnsPriority = exactRecoveryArchivePriorityLeaseActive
             || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
         guard Self.shouldAdmitAutomaticArchiveCompaction(

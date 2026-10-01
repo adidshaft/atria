@@ -334,6 +334,57 @@ enum AtriaHistoricalGapLedger {
         )
     }
 
+    struct DrainedPastSettlement: Equatable {
+        let settledWindows: Int
+        let denseWindows: Int
+        let remainingWindows: Int
+    }
+
+    /// Clock-corrected history timestamps can sit a little out of order; the
+    /// cursor must clear a window's end by this much before it counts as past.
+    static let drainedPastMargin: TimeInterval = 120
+
+    /// Oldest-first drain hands over every strap record up to its durable
+    /// cursor, and the ACK erases them from the strap. A closed window that
+    /// ends before that cursor can receive no more rows: what reached the
+    /// archive is all there is. Left pending, it re-mints a full-drain
+    /// authority that can never finish, and that authority holds back
+    /// recovered projection and archive compaction (2026-10-01: 14 such
+    /// windows at 0% while the archive held their rows; every recovered
+    /// projection deferred for days).
+    @discardableResult
+    static func settleWindowsDrainedPast(
+        cursorUnix: TimeInterval,
+        margin: TimeInterval = drainedPastMargin,
+        defaults: UserDefaults = .standard
+    ) -> DrainedPastSettlement? {
+        guard cursorUnix.isFinite, cursorUnix > 0 else { return nil }
+        storeLock.lock(); defer { storeLock.unlock() }
+        guard let current = validWindowsForMutation(defaults: defaults) else {
+            return nil
+        }
+        func drainedPast(_ window: Window) -> Bool {
+            guard let end = window.end,
+                  window.id != corruptionSentinelID,
+                  !window.reason.hasPrefix("durable_gap_ledger_corrupt_"),
+                  !isLegacyCoalescedWindow(window) else { return false }
+            return end.timeIntervalSince1970 + margin <= cursorUnix
+        }
+        let settled = current.filter(drainedPast)
+        guard !settled.isEmpty else {
+            return DrainedPastSettlement(settledWindows: 0,
+                                         denseWindows: 0,
+                                         remainingWindows: current.count)
+        }
+        let retained = current.filter { !drainedPast($0) }
+        guard persist(retained, defaults: defaults) else { return nil }
+        return DrainedPastSettlement(
+            settledWindows: settled.count,
+            denseWindows: settled.filter { continuity(for: $0).continuous }.count,
+            remainingWindows: retained.count
+        )
+    }
+
     /// Closes the newest open interval on the first accepted post-reconnect HR.
     /// Short transitions below the product's 15-second continuity boundary are
     /// discarded because they do not represent missing workout coverage.

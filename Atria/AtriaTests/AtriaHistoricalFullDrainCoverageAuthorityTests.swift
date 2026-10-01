@@ -14,7 +14,7 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         roots.removeAll()
     }
 
-    func testExactRecoveryAuthorityOwnsProjectionPriorityUntilGapResolution() throws {
+    func testDrainingAuthorityDoesNotOwnProjectionPriority() throws {
         let archiveRoot = try temporaryRoot()
         let store = Store(
             directoryURL: archiveRoot.appendingPathComponent(
@@ -29,9 +29,9 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
 
         _ = try store.arm(gap: gap(), attempt: attempt(), now: date(102))
 
-        XCTAssertTrue(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+        XCTAssertFalse(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
             archiveRoot: archiveRoot
-        ))
+        ), "a draining authority has nothing to publish and may never finish on an oldest-first strap")
     }
 
     func testOnlyRecoveredHistoryProjectionBypassesExactRecoveryPriority() {

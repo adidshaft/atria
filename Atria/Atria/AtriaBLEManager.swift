@@ -1708,12 +1708,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 postHistoryLiveRestorationPending:
                     postHistoryLiveRestorationGeneration != nil,
                 explicitRequestPending:
-                    pendingOfflineHistoricalSyncRequest?.explicitRequest == true,
+                    pendingOfflineHistoricalSyncRequest?.explicitRequest == true
+                        && !queuedHistoryRequestParkedBehindRealtime,
                 freshOwnerCutoverPending: freshHistoryOwnerCutoverPending,
                 freshOwnerConnectionArmed:
                     freshHistoryOwnerConnectionGeneration != nil,
                 explicitLaunchIntentPending: explicitHistoryLaunchIntentPending
             )
+    }
+    /// Realtime continuity holds a queued request until a natural disconnect,
+    /// and a strap on the wrist can stay connected all day. Counting that
+    /// parked request as history ownership deferred every recovered
+    /// projection once a minute (2026-10-01 device log, 16:39-16:42).
+    private var queuedHistoryRequestParkedBehindRealtime: Bool {
+        Self.shouldDeferHistoricalTransportForRealtimeContinuity(
+            linkConnected: peripheral?.state == .connected,
+            linkConnecting: peripheral?.state == .connecting,
+            syncInProgress: offlineHistoricalSyncInProgress
+        )
     }
     /// Exact recovered-data publication is local archive work. It must defer
     /// only while a history operation actually owns or is cutting over the
@@ -12204,6 +12216,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func restoreInterruptedFullDrainLaunchIntentIfNeeded(
         defaults: UserDefaults
     ) {
+        settleGapWindowsDrainedPastHistoryCursor(reason: "launch")
         guard persistedDrainResumeAllowed else {
             logPersistedDrainResumePaused(reason: "interrupted_full_drain_relaunch",
                                           action: "preserve_live_no_cutover")
@@ -12246,6 +12259,40 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         syncInProgress: Bool
     ) -> Bool {
         warmState != .ready && !syncInProgress
+    }
+
+    private var gapWindowsSettledThroughCursorUnix: TimeInterval = 0
+
+    /// Settles gap windows the oldest-first drain has already passed, then
+    /// clears a draining full-drain authority whose gap that removed. Runs at
+    /// sync start (before an authority is chosen) and at sync finish (so the
+    /// recovered projection behind the next archive update is not deferred).
+    private func settleGapWindowsDrainedPastHistoryCursor(reason: String) {
+        let cursor = UserDefaults.standard.double(
+            forKey: OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        // Requests arrive on every tick; the ledger read is only worth it
+        // once the cursor has moved.
+        guard cursor > 0, cursor != gapWindowsSettledThroughCursorUnix else { return }
+        gapWindowsSettledThroughCursorUnix = cursor
+        guard let settlement = AtriaHistoricalGapLedger
+            .settleWindowsDrainedPast(cursorUnix: cursor),
+              settlement.settledWindows > 0 else { return }
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=gap_windows_drained_past reason=%@ cursor_unix=%.0f settled=%d dense=%d remaining=%d",
+            reason,
+            cursor,
+            settlement.settledWindows,
+            settlement.denseWindows,
+            settlement.remainingWindows
+        )
+        if let authority = try? historicalFullDrainCoverageStore.load(),
+           authority.status == .draining {
+            reconcileStaleDrainingFullDrainAuthority(
+                authority,
+                reason: "drained_past_\(reason)"
+            )
+        }
     }
 
     /// A crash can leave a `.draining` authority after its exact gap row was
@@ -13257,6 +13304,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 previousMotionBankAuthorization
             transientConnectedRealtimeOwnerPreservation =
                 previousRealtimeOwnerPreservation
+        }
+        if !offlineHistoricalSyncInProgress {
+            // A draining authority for a gap the drain already passed would
+            // otherwise defer this request and every recovered projection.
+            settleGapWindowsDrainedPastHistoryCursor(reason: "request_\(reason)")
         }
         guard !readOnlyHistoryCaptureRequested else {
             AtriaDebugLog("ATRIADBG offline_sync status=deferred reason=%@ detail=read_only_capture_owns_transport action=no_production_commands",
@@ -17382,6 +17434,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         historicalCheckpointCoordinator.begin(generation: syncGeneration)
+        settleGapWindowsDrainedPastHistoryCursor(reason: "offline_sync_preflight")
         let persistedFullDrainAuthority = try? historicalFullDrainCoverageStore.load()
         if activeConnectedRawHistoryCatchUpAuthority(
             generation: syncGeneration
@@ -19539,6 +19592,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // an in-flight RX/stream4 callback is never dropped inside the drain.
         _ = historyTransportPhaseFence.deactivate(ifMatching: generation)
         HistoricalArchive.endDurableDrain(generation: generation)
+        settleGapWindowsDrainedPastHistoryCursor(reason: "offline_sync_finish")
         offlineHistoricalSyncTimeoutTask?.cancel()
         offlineHistoricalSyncTimeoutTask = nil
         offlineHistoricalSyncLastProgressUptime = nil

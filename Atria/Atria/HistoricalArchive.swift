@@ -7538,6 +7538,10 @@ enum HistoricalArchive {
     /// Starting a multi-hundred-megabyte shadow build first can otherwise hold
     /// the shared serial queue past the finite projection lease and leave a
     /// physically proven gap permanently parked at `coverageProven`.
+    /// A `.draining` authority has nothing to publish yet, and on an
+    /// oldest-first strap it can stay draining for hours or never finish; it
+    /// does not own the lane (2026-10-01: it deferred every recovered
+    /// projection, History refresh and compaction for days).
     static func exactRecoveryProjectionOwnsArchivePriority(
         archiveRoot: URL? = nil
     ) -> Bool {
@@ -7551,12 +7555,12 @@ enum HistoricalArchive {
         do {
             guard let status = try store.load()?.status else { return false }
             switch status {
-            case .draining,
-                 .historyComplete,
+            case .historyComplete,
                  .coverageProven,
                  .consumersCommitted:
                 return true
-            case .gapResolvedConsumersPending,
+            case .draining,
+                 .gapResolvedConsumersPending,
                  .resolved:
                 return false
             }
