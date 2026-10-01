@@ -2502,6 +2502,114 @@ enum HistoricalArchive {
         )
     }
 
+    /// Consumers read up to 36 h either side of a chunk (sleep/workout
+    /// lookback, the next civil midnight for daily totals).
+    static let drainedThroughCompletionLookahead: TimeInterval = 36 * 60 * 60
+
+    /// Oldest-first drain never sends HISTORY_COMPLETE, so no terminal
+    /// completion record ever existed and raw retirement stalled from 09-25
+    /// (965 MB, `terminalCompletionAttestationUnavailable`). The durable drain
+    /// cursor is the strap's own guarantee: every record up to it was handed
+    /// over and fsynced before its ACK erased it from the strap. This records
+    /// exactly that claim, archive start through the cursor, against the
+    /// current file-verified catalog, and only once the cursor has cleared the
+    /// chunk by its consumers' lookahead. Retirement keeps every other gate.
+    @discardableResult
+    static func recordDrainedThroughCompletionIfNeeded(
+        chunkID: String,
+        catalogStore: AtriaHistoricalArchiveCatalogStore,
+        drainCursorUnix: TimeInterval = UserDefaults.standard.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        ),
+        archiveRoot: URL? = nil,
+        now: Date = Date(),
+        shouldContinue: () -> Bool = { true }
+    ) throws -> Bool {
+        guard drainCursorUnix.isFinite, drainCursorUnix > 0 else { return false }
+        let root = archiveRoot ?? archiveDirectory
+        let drainedThrough = Date(timeIntervalSince1970: drainCursorUnix)
+        guard drainedThrough <= now.addingTimeInterval(5 * 60) else { return false }
+        let catalog = try catalogStore.snapshotVerifiedAgainstFiles(
+            shouldContinue: shouldContinue
+        )
+        try catalog.validate()
+        guard let chunk = catalog.chunks.first(where: { $0.id == chunkID }),
+              chunk.state == .sealed,
+              let chunkLast = chunk.lastTimestamp,
+              chunkLast.addingTimeInterval(drainedThroughCompletionLookahead)
+                <= drainedThrough,
+              let archiveStart = catalog.chunks
+                .compactMap(\.firstTimestamp).min(),
+              archiveStart < drainedThrough else { return false }
+        // The drain began at the strap's oldest record, so nothing earlier
+        // exists; consumers of the oldest chunk look back past archive start.
+        let requestedStart = archiveStart.addingTimeInterval(
+            -2 * drainedThroughCompletionLookahead
+        )
+        let catalogData = try AtriaHistoricalActivityInspectionProofFactory
+            .canonicalCatalogData(catalog)
+        let catalogSHA256 = AtriaHistoricalDrainCompletionGenerationStore.sha256(catalogData)
+        let completionStore = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: root.appendingPathComponent(
+                "drain-completions-v1", isDirectory: true
+            )
+        )
+        let prior = try? completionStore.loadLatest()
+        if let prior,
+           prior.catalogGeneration == catalog.generation,
+           prior.catalogSnapshotSHA256 == catalogSHA256,
+           prior.requestedEnd >= chunkLast.addingTimeInterval(
+               drainedThroughCompletionLookahead
+           ) {
+            return false
+        }
+        guard shouldContinue() else { return false }
+        let aggregateReader = AtriaHistoricalAggregateReader(
+            aggregateDirectoryURL: root.appendingPathComponent(
+                "aggregates-v2", isDirectory: true
+            ),
+            manifestDirectoryURL: root.appendingPathComponent(
+                "retention-manifests-v2", isDirectory: true
+            )
+        )
+        guard let streamed = aggregateReader.streamedWholeArchiveDigest(
+                limits: AtriaHistoricalAggregateReader.LoadLimits
+                    .unboundedConsumerProjection
+              ),
+              streamed.diagnostics.rejectedManifests == 0 else { return false }
+        let durableSequence = UInt64(drainCursorUnix.rounded(.down))
+        let generation = try terminalCompletionGeneration(
+            prior: prior,
+            terminalBatchNumber: 0,
+            durableSequence: durableSequence,
+            requestedStart: requestedStart,
+            requestedEnd: drainedThrough,
+            completedAt: now,
+            catalogGeneration: catalog.generation,
+            catalogSnapshotSHA256: catalogSHA256,
+            aggregateSnapshotSHA256: streamed.digest
+        )
+        let published = try completionStore.recordTerminal(
+            generation: generation,
+            terminalBatchNumber: 0,
+            durableSequence: durableSequence,
+            requestedStart: requestedStart,
+            requestedEnd: drainedThrough,
+            completedAt: now,
+            verifiedCatalog: catalog,
+            catalogData: catalogData,
+            aggregateSnapshotDigest: streamed.digest
+        )
+        AtriaDebugLog(
+            "ATRIADBG archive_retention status=drained_through_completion_recorded chunk=%@ generation=%llu drained_through_unix=%.0f catalog_generation=%llu",
+            chunkID,
+            published.record.generation,
+            drainCursorUnix,
+            catalog.generation
+        )
+        return true
+    }
+
     /// Publishes and immediately re-reads one five-artifact app-facing consumer
     /// set plus the independently durable exact replay-identity shard for an
     /// already committed shadow aggregate. This is deliberately not retirement
@@ -9902,6 +10010,11 @@ enum HistoricalArchive {
                             bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
                         )
                     }
+                    _ = try? recordDrainedThroughCompletionIfNeeded(
+                        chunkID: chunkID,
+                        catalogStore: store,
+                        shouldContinue: maintenanceShouldContinue
+                    )
                     let cutover = try publishAndVerifyHistoricalConsumerCutover(
                         chunkID: chunkID,
                         archiveRoot: archiveDirectory,
@@ -10043,6 +10156,11 @@ enum HistoricalArchive {
                         )
                     }
                     do {
+                        _ = try? recordDrainedThroughCompletionIfNeeded(
+                            chunkID: chunkID,
+                            catalogStore: store,
+                            shouldContinue: maintenanceShouldContinue
+                        )
                         let cutover = try publishAndVerifyHistoricalConsumerCutover(
                             chunkID: chunkID,
                             archiveRoot: archiveDirectory,
@@ -10201,6 +10319,11 @@ enum HistoricalArchive {
                             bytesAfter: Int(clamping: retention.plan.rawBytesBefore)
                         )
                     }
+                    _ = try? recordDrainedThroughCompletionIfNeeded(
+                        chunkID: value.chunk.id,
+                        catalogStore: store,
+                        shouldContinue: maintenanceShouldContinue
+                    )
                     let cutover = try publishAndVerifyHistoricalConsumerCutover(
                         chunkID: value.chunk.id,
                         archiveRoot: archiveDirectory,
