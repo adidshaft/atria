@@ -8076,6 +8076,7 @@ enum HistoricalArchive {
         for chunk in catalog.chunks {
             guard shouldContinue() else { break }
             guard chunk.state == .sealed, chunk.contentSHA256 != nil else { continue }
+            recordMissingSealedMetadata(for: chunk, archiveRoot: root)
             let fileURL = root.appendingPathComponent(chunk.relativePath)
                 .standardizedFileURL
             let sidecarURL = heartRateSidecarURL(
@@ -8146,12 +8147,55 @@ enum HistoricalArchive {
         }
     }
 
+    /// Size rotation seals a chunk without its row count or metric bounds.
+    /// Only the terminal full-drain seal and one-chunk-per-run retention used
+    /// to fill them, and neither keeps up on an oldest-first strap (~32
+    /// chunks a day). The current-window bootstrap refuses any window holding
+    /// a chunk without bounds (2026-10-01: every chunk sealed after 14:25
+    /// lacked them, so the recovered projection never ran).
+    @discardableResult
+    static func recordMissingSealedMetadata(
+        for chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        archiveRoot: URL
+    ) -> Bool {
+        guard chunk.state == .sealed,
+              chunk.compressedStorage == nil,
+              chunk.rowCount == nil
+                || chunk.firstTimestamp == nil
+                || chunk.lastTimestamp == nil,
+              let store = try? catalogStoreLocked() else { return false }
+        let sourceURL = archiveRoot.appendingPathComponent(chunk.relativePath)
+        guard let build = try? AtriaHistoricalAggregateBuilder.build(
+                sourceURL: sourceURL,
+                chunkID: chunk.id,
+                createdAt: chunk.sealedAt ?? chunk.createdAt
+              ),
+              build.aggregate.source.rawRowCount > 0 else { return false }
+        do {
+            try store.recordSealedMetadata(
+                chunkID: chunk.id,
+                rowCount: build.aggregate.source.rawRowCount,
+                firstTimestamp: build.aggregate.source.firstTimestamp,
+                lastTimestamp: build.aggregate.source.lastTimestamp,
+                contentSHA256: build.aggregate.source.rawSHA256
+            )
+            AtriaDebugLog("ATRIADBG sealed_chunk_metadata status=recorded chunk=%@ rows=%d",
+                          chunk.id, build.aggregate.source.rawRowCount)
+            return true
+        } catch {
+            AtriaDebugLog("ATRIADBG sealed_chunk_metadata status=failed chunk=%@ error=%@",
+                          chunk.id, String(describing: error))
+            return false
+        }
+    }
+
     private static func buildHeartRateSidecarNow(chunkID: String) {
         guard let catalog = (try? catalogStoreLocked()).flatMap({ try? $0.snapshot() }),
               let chunk = catalog.chunks.first(where: { $0.id == chunkID }),
               chunk.state == .sealed,
               chunk.contentSHA256 != nil else { return }
         let root = archiveDirectory
+        recordMissingSealedMetadata(for: chunk, archiveRoot: root)
         let fileURL = root.appendingPathComponent(chunk.relativePath)
             .standardizedFileURL
         let sidecarURL = heartRateSidecarURL(
