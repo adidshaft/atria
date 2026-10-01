@@ -359,3 +359,17 @@ final class AtriaGapWindowsDrainedPastTests: XCTestCase {
         }
     }
 }
+
+/// 2026-10-01 post-gym pull: a draining authority refused the oldest-first
+/// slice that drains toward its own gap; history sat at 20:43 for 80 min.
+final class AtriaDrainingAuthorityAdmitsSliceTests: XCTestCase {
+    func testOldestFirstSlicesPassADrainingAuthority() {
+        typealias B = AtriaBLEManager
+        XCTAssertTrue(B.drainingAuthorityAdmitsHistoryRequest(reason: "idle_window_drain", strandedResume: false))
+        XCTAssertTrue(B.drainingAuthorityAdmitsHistoryRequest(reason: "natural_gap_drain", strandedResume: false))
+        XCTAssertTrue(B.drainingAuthorityAdmitsHistoryRequest(reason: "interrupted_full_drain_relaunch", strandedResume: false))
+        XCTAssertFalse(B.drainingAuthorityAdmitsHistoryRequest(reason: "maintenance_ticker", strandedResume: false),
+                       "other lanes still wait for the persisted resume")
+        XCTAssertTrue(B.drainingAuthorityAdmitsHistoryRequest(reason: "maintenance_ticker", strandedResume: true))
+    }
+}
