@@ -739,8 +739,8 @@ struct AtriaStressDetailView: View {
                             .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
                     }
                 }
-                // Full-bleed plot inside the card (2026-08-05 width audit).
-                .padding(.horizontal, -16)
+                // Inside the card gutter: full-bleed put the axis labels on the
+                // card edge (2026-10-01 chart pass).
 
                 // The Sleep legend appears only while sleep minutes are
                 // actually in the rendered window — a permanent entry would
@@ -1115,9 +1115,7 @@ struct AtriaStressDailyTrendCard: View {
             }
 
             if framed.count >= Self.minimumMeasuredDays {
-                // Full-bleed plot inside the card (2026-08-05 width audit).
                 chart(framed)
-                    .padding(.horizontal, -16)
                 HStack(spacing: 14) {
                     legend(color: .green, label: "Calm")
                     legend(color: .yellow, label: "Moderate")

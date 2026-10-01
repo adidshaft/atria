@@ -148,6 +148,18 @@ struct AtriaNightBaselineCard: View {
                     Text(learning)
                         .font(.caption2.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.secondary)
+                } else if usualHours != nil {
+                    // Names the dashed line, as every reference line does.
+                    HStack(spacing: 5) {
+                        Capsule()
+                            .stroke(Color.secondary.opacity(0.7),
+                                    style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                            .frame(width: 14, height: 1.5)
+                        Text("Usual")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
             chart
@@ -185,8 +197,8 @@ struct AtriaNightBaselineCard: View {
             }
             if let usualHours {
                 RuleMark(y: .value("Usual", usualHours))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .foregroundStyle(Color.secondary.opacity(0.5))
             }
         }
         .chartYAxis {
