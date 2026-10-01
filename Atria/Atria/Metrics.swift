@@ -274,16 +274,25 @@ enum Metrics {
             // A legacy persisted number has no proof that its full day was
             // observed. Preserve it as a lower bound instead of silently
             // upgrading it to exact after relaunch.
+            // A stored "unavailable" beside a real value and ~zero coverage is
+            // the morning-frozen daily snapshot (taken before the day had any
+            // HR) that a later cycle strain was written over (device
+            // 2026-10-01: every day's strain sat behind it and dropped out of
+            // the exact strain trend). It carries no evidence either way.
+            let morningFreezeArtifact = persistedQuality == .unavailable
+                && normalizedCoverage.map({ $0 < 0.001 }) ?? true
+            let storedQuality = morningFreezeArtifact ? nil : persistedQuality
+            let coverage = morningFreezeArtifact ? nil : normalizedCoverage
             let quality: StrainEvidenceQuality
-            if persistedQuality == .unavailable {
+            if storedQuality == .unavailable {
                 quality = .unavailable
-            } else if persistedQuality == .partial
+            } else if storedQuality == .partial
                         || additionalIncompleteEvidence
-                        || normalizedCoverage.map({ $0 < strongCoverageThreshold }) == true {
+                        || coverage.map({ $0 < strongCoverageThreshold }) == true {
                 quality = .partial
-            } else if persistedQuality == .exact
-                        || normalizedCoverage.map({ $0 >= strongCoverageThreshold }) == true
-                        || normalizedCoverage == nil {
+            } else if storedQuality == .exact
+                        || coverage.map({ $0 >= strongCoverageThreshold }) == true
+                        || coverage == nil {
                 quality = .exact
             } else {
                 quality = .partial
@@ -297,7 +306,7 @@ enum Metrics {
                 resolvedConfidence = baseConfidence
             }
             return Self(value: quality == .unavailable ? nil : value,
-                        coverageFraction: normalizedCoverage,
+                        coverageFraction: morningFreezeArtifact ? nil : normalizedCoverage,
                         quality: quality,
                         confidence: resolvedConfidence)
         }

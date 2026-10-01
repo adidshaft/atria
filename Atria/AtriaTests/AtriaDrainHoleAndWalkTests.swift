@@ -217,4 +217,53 @@ final class AtriaBacklogCatchUpWindowTests: XCTestCase {
                                                lastSliceFinishedAt: now.addingTimeInterval(-601),
                                                lastSliceYieldedRows: false, now: now, catchUpWindowOpen: true))
     }
+
+    /// Owner 2026-10-01: steps within ~30-40 min. Below the 3 h large-backlog
+    /// threshold a worn, awake link now gets one short slice per 30 min.
+    func testKeepUpSliceSyncsHalfAnHourOfDataEveryHalfHour() {
+        let due = B.keepUpSliceIsDue(pendingRecords: 200, lastSliceFinishedAt: now.addingTimeInterval(-1_801),
+                                     catchUpWindowOpen: false, now: now)
+        XCTAssertTrue(due)
+        XCTAssertFalse(B.keepUpSliceIsDue(pendingRecords: 200, lastSliceFinishedAt: now.addingTimeInterval(-600),
+                                          catchUpWindowOpen: false, now: now), "at most one per 30 min")
+        XCTAssertFalse(B.keepUpSliceIsDue(pendingRecords: 100, lastSliceFinishedAt: nil,
+                                          catchUpWindowOpen: false, now: now), "a dry live tail is not backlog")
+        XCTAssertFalse(B.keepUpSliceIsDue(pendingRecords: 200, lastSliceFinishedAt: nil,
+                                          catchUpWindowOpen: true, now: now), "the window has its own rules")
+        XCTAssertFalse(B.keepUpSliceIsDue(pendingRecords: 16_000, lastSliceFinishedAt: nil,
+                                          catchUpWindowOpen: false, now: now), "large backlogs wait for the window")
+        XCTAssertFalse(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 2, sliceStartPendingRecords: 200,
+            heartRatePauseElapsed: 20), "a keep-up slice is not one page")
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 20, sliceStartPendingRecords: 200,
+            heartRatePauseElapsed: B.keepUpSliceLimit))
+        XCTAssertEqual(B.idleWindowHistoryDrainAbsoluteBudgetLimit(chargingOrOffWrist: false,
+                                                                   keepUpBacklog: true), B.keepUpSliceLimit)
+    }
+}
+
+/// Device 2026-10-01: every day's strain carried the morning snapshot's
+/// "unavailable" quality, so history showed "--" and the trend dropped it.
+final class AtriaStrainMorningFreezeTests: XCTestCase {
+    func testMorningFreezeArtifactNoLongerHidesARealStrain() {
+        let resolved = Metrics.StrainPresentation.resolve(value: 8.7, coverageFraction: 0,
+                                                          baseConfidence: "dated history",
+                                                          persistedQuality: .unavailable)
+        XCTAssertEqual(resolved.value, 8.7)
+        XCTAssertNotEqual(resolved.quality, .unavailable)
+    }
+
+    func testGenuinePartialAndUnavailableEvidenceIsUnchanged() {
+        XCTAssertEqual(Metrics.StrainPresentation.resolve(value: 8.7, coverageFraction: 0.4,
+                                                          baseConfidence: "dated history",
+                                                          persistedQuality: .partial).quality, .partial)
+        XCTAssertEqual(Metrics.StrainPresentation.resolve(value: 8.7, coverageFraction: 0.5,
+                                                          baseConfidence: "dated history",
+                                                          persistedQuality: .unavailable).quality, .unavailable,
+                       "an unavailable verdict with real coverage is not the morning artifact")
+        XCTAssertNil(Metrics.StrainPresentation.resolve(value: nil, coverageFraction: 0,
+                                                        baseConfidence: "dated history",
+                                                        persistedQuality: .unavailable).value)
+    }
 }

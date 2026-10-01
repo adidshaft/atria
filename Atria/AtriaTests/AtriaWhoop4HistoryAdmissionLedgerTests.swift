@@ -4,6 +4,42 @@ import XCTest
 @testable import Atria
 
 final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
+    /// Device 2026-10-01: each 50-row page waited 4-5 s in `pendingFrames`
+    /// and 12-23 s in the durable receipt, because the pending lookups
+    /// range-scanned every already-durable frame of the attempt. Per-page
+    /// cost must not grow with the durable prefix.
+    func testPendingPageCostDoesNotScaleWithTheDurablePrefix() throws {
+        let fixture = try Fixture()
+        let ledger = try fixture.ledger()
+        let attempt = try ledger.beginAttempt(strapIdentifier: "strap-throughput")
+        try fixture.seedDurableEnumerationPrefix(
+            attempt: attempt, recordCount: 300_000,
+            rawDigest: "raw", identityDigest: "identity",
+            prefixDigest: "prefix", chainDigest: "seed-chain"
+        )
+        let reopened = try fixture.ledger()
+        _ = try fixture.archiveReceipt(recordCount: 0)   // move past the seeded sequence
+        for index in 0..<50 {
+            _ = try reopened.classify(frame: Data([0x2f, 0xee, UInt8(index)]), attempt: attempt)
+        }
+        let through: UInt64 = 300_049
+        let started = Date()
+        let pending = try reopened.pendingFrames(attempt: attempt, through: through)
+        let pendingSeconds = Date().timeIntervalSince(started)
+        XCTAssertEqual(pending.count, 50)
+        let receiptStarted = Date()
+        let receipt = try reopened.markCurrentPrefixArchiveDurableWithReceipt(
+            attempt: attempt,
+            through: through,
+            archiveReceipt: fixture.archiveReceipt(recordCount: 50)
+        )
+        let receiptSeconds = Date().timeIntervalSince(receiptStarted)
+        XCTAssertEqual(receipt.changedRows, 50)
+        print("ATRIA_PERF pending_s=\(pendingSeconds) receipt_s=\(receiptSeconds)")
+        XCTAssertLessThan(pendingSeconds, 0.25, "pending lookup touched the durable prefix")
+        XCTAssertLessThan(receiptSeconds, 1.0, "receipt touched the durable prefix")
+    }
+
     func testIncrementalDurablePrefixesKeepTerminalReceiptCumulative() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()
