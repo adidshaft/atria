@@ -165,8 +165,10 @@ enum AtriaChartVisualGrammar {
         return .top
     }
 
-    /// Compact week tick (`F 18`) so a 7-day window never stacks `S S` or
-    /// clips `Sep 18` on a narrow phone. Month windows keep month+day.
+    /// Week windows label each day with its weekday initial only. The
+    /// period header already states the dates ("Sep 25–Oct 1"), and the
+    /// `F 25` pair crowded under each bar on a phone (owner 2026-10-01).
+    /// Month windows keep month+day.
     static func nightAxisLabelText(
         for mark: Date,
         domain: ClosedRange<Date>,
@@ -179,21 +181,22 @@ enum AtriaChartVisualGrammar {
             calendar.dateComponents([.day], from: start, to: end).day ?? 1
         )
         if spanDays <= 8 {
-            return compactWeekdayDayLabel(for: mark, calendar: calendar)
+            return weekdayAxisLabel(for: mark, calendar: calendar)
         }
         return mark.formatted(.dateTime.month(.abbreviated).day())
     }
 
-    /// Weekday initial plus day-of-month (`M 10`, `T 11`). Shared by the
-    /// overnight week axis and the strain/recovery combo so those two
-    /// 7-day surfaces do not invent different tick copy.
-    static func compactWeekdayDayLabel(
+    /// Weekday initial (`M`, `T`). Shared by every 7-day axis so the
+    /// overnight charts, steps, the strain/recovery combo and the sleep
+    /// planner name a day the same way.
+    static func weekdayAxisLabel(
         for day: Date,
         calendar: Calendar = .current
     ) -> String {
-        let weekday = day.formatted(.dateTime.weekday(.narrow))
-        let dayOfMonth = calendar.component(.day, from: day)
-        return "\(weekday) \(dayOfMonth)"
+        var format = Date.FormatStyle.dateTime.weekday(.narrow)
+        format.calendar = calendar
+        format.timeZone = calendar.timeZone
+        return day.formatted(format)
     }
 
     /// Rounded daily columns. One radius and one relative width so Recovery,
@@ -252,6 +255,10 @@ enum AtriaChartVisualGrammar {
     /// Time-of-day axes on intraday traces: three labels read at a glance
     /// on a phone without colliding ("06:00  12:00  18:00").
     static let intradayTimeTickCount = 4
+    /// Hour ticks on day- and night-length axes ("1 PM", locale-aware). The
+    /// app mixed "1 AM" and "1:00 PM" for the same kind of axis; minutes stay
+    /// only on workout-length charts.
+    static let intradayTimeFormat: Date.FormatStyle = .dateTime.hour()
 
     /// No-data band: quieter than the typical-range band (0.12) so a gap
     /// never reads as a data region, but visible on the plot fill.
@@ -276,6 +283,31 @@ enum AtriaChartVisualGrammar {
         lineJoin: .round,
         dash: [5, 4]
     )
+}
+
+/// Calm / moderate / high bands behind every 0–3 stress trace. The Vitals
+/// monitor drew them and Activity's stress chart (same data, same day) did
+/// not, so one chart read as two (2026-10-01 chart pass).
+struct AtriaStressZoneBandMarks: ChartContent {
+    let domain: ClosedRange<Date>
+
+    var body: some ChartContent {
+        RectangleMark(xStart: .value("Calm start", domain.lowerBound),
+                      xEnd: .value("Calm end", domain.upperBound),
+                      yStart: .value("Calm floor", 0),
+                      yEnd: .value("Calm ceiling", 1))
+            .foregroundStyle(Metrics.electricGreen.opacity(0.055))
+        RectangleMark(xStart: .value("Moderate start", domain.lowerBound),
+                      xEnd: .value("Moderate end", domain.upperBound),
+                      yStart: .value("Moderate floor", 1),
+                      yEnd: .value("Moderate ceiling", 2))
+            .foregroundStyle(Metrics.electricYellow.opacity(0.045))
+        RectangleMark(xStart: .value("High start", domain.lowerBound),
+                      xEnd: .value("High end", domain.upperBound),
+                      yStart: .value("High floor", 2),
+                      yEnd: .value("High ceiling", 3))
+            .foregroundStyle(Metrics.electricRed.opacity(0.045))
+    }
 }
 
 // MARK: - Drag-to-inspect scrub (shared interaction grammar, 2026-08-29)
@@ -423,7 +455,7 @@ extension View {
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel()
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
     }
@@ -469,9 +501,10 @@ extension View {
         }
     }
 
-    /// Plot surface plus top headroom in ONE `chartPlotStyle`. Chaining a
-    /// second `chartPlotStyle` replaces the first, which is why the quiet
-    /// fill used to vanish the moment a chart also asked for label room.
+    /// The quiet plot well for daily charts. Headroom for annotations comes
+    /// from the y-domain, not from padding: a `.padding(.top)` inside
+    /// `chartPlotStyle` shifts the plot DOWN over its own x-axis labels, which
+    /// cut the weekday letters in half under every daily chart (2026-10-01).
     func atriaDailyChartPlotChrome() -> some View {
         chartPlotStyle { plot in
             plot
@@ -482,7 +515,6 @@ extension View {
                         style: .continuous
                     )
                 )
-                .padding(.top, 8)
         }
     }
 }

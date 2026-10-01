@@ -170,18 +170,11 @@ private struct AtriaInspectableGraphModifier: ViewModifier {
                 guard graph != nil else { return }
                 isPresented = true
             }
-            .overlay(alignment: .topTrailing) {
-                if graph != nil {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .padding(7)
-                        .background(Color(uiColor: .secondarySystemBackground), in: Circle())
-                        .padding(6)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
+            // No floating expand glyph: as an overlay it covered the top-right
+            // of every chart (where the newest reading lands), and as a strip it
+            // floated outside the cards that wrap whole sections (2026-10-01).
+            // Tapping the graph still opens the inspector; VoiceOver announces
+            // it as a button with the hint below.
             .accessibilityAddTraits(graph == nil ? [] : .isButton)
             .accessibilityHint(graph == nil ? "" : "Opens a full-screen landscape graph inspector")
             .fullScreenCover(isPresented: $isPresented) {

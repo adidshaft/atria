@@ -10,11 +10,10 @@ final class AtriaChartShapeGrammarTests: XCTestCase {
         let bars = AtriaMetricDetailKind.allCases.filter(\.rendersAsDailyBar)
         XCTAssertEqual(Set(bars),
                        [.recovery, .sleep, .strain, .sleepPerformance,
-                        .hrv, .restingHeartRate, .respiratoryRate,
                         .sleepEfficiency],
                        "a change to this set is a product decision, not a "
-                           + "side effect — HRV/RHR/respiration drew bars on "
-                           + "their tiles and lines when opened until 2026-08-27")
+                           + "side effect — owner 2026-10-01: levels (HRV, "
+                           + "RHR, respiration) are dots on a line everywhere")
     }
 
     func testStressStaysALineBecauseItMovesThroughTheDay() {
@@ -55,15 +54,15 @@ final class AtriaChartShapeGrammarTests: XCTestCase {
             XCTAssertTrue(kind.chartAnchorsAtZero, "\(kind.rawValue) is a magnitude")
         }
         for kind in [AtriaMetricDetailKind.hrv, .restingHeartRate, .respiratoryRate] {
-            XCTAssertTrue(kind.rendersAsDailyBar, "\(kind.rawValue) is once a day")
+            XCTAssertFalse(kind.rendersAsDailyBar, "\(kind.rawValue) is a level, drawn as dots")
             XCTAssertFalse(kind.chartAnchorsAtZero,
                            "\(kind.rawValue) would hide its signal on a 0-based axis")
         }
     }
 
     func testVitalsTrendUsesTheSameBarGrammar() {
-        XCTAssertTrue(AtriaTrendMetric.hrv.rendersAsDailyBar)
-        XCTAssertTrue(AtriaTrendMetric.restingHR.rendersAsDailyBar)
+        XCTAssertFalse(AtriaTrendMetric.hrv.rendersAsDailyBar)
+        XCTAssertFalse(AtriaTrendMetric.restingHR.rendersAsDailyBar)
         XCTAssertTrue(AtriaTrendMetric.strain.rendersAsDailyBar)
         XCTAssertFalse(AtriaTrendMetric.hrv.chartAnchorsAtZero)
         XCTAssertFalse(AtriaTrendMetric.restingHR.chartAnchorsAtZero)

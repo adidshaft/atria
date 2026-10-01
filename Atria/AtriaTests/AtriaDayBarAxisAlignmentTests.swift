@@ -25,8 +25,9 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
         // A `BarMark(x:unit:.day)` is drawn across the whole day, i.e. centred
         // at noon. An axis tick sits at midnight. Without `centered: true` the
         // weekday letter lands half a day left of its own bar.
-        for name in ["AtriaStepsWeekChart.swift",
-                     "AtriaStressDetailView.swift"] {
+        // The steps chart moved to wake-to-wake cycle slots (categorical x,
+        // labels centred by construction) on 2026-10-01.
+        for name in ["AtriaStressDetailView.swift"] {
             let text = try source(name)
             guard text.contains("unit: .day") else {
                 return XCTFail("\(name) no longer draws day-unit bars")
@@ -176,14 +177,9 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
 
     // MARK: - The chart spans its plot
 
-    func testTheWeekChartUsesTheFullWidthInsteadOfPaddingBothEnds() throws {
+    func testTheWeekChartGivesEachCycleOneSlotAcrossTheFullWidth() throws {
         let text = try source("AtriaStepsWeekChart.swift")
-        XCTAssertFalse(text.contains("value: -18, to: start"),
-                       "the ±18h padding inset every bar from the plot edges")
-        XCTAssertTrue(text.contains("let axisLo = start"),
-                      "the domain starts at the first day")
-        XCTAssertTrue(text.contains("byAdding: .day, value: 1, to: end"),
-                      "and ends at the close of the last day, so seven "
-                          + "day-slots fill the width exactly")
+        XCTAssertTrue(text.contains(".chartXScale(domain: slotIDs)"),
+                      "seven categorical cycle slots fill the width exactly")
     }
 }

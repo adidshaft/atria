@@ -137,9 +137,11 @@ final class AtriaStepsWeekChartDayLabellingTests: XCTestCase {
             overview.contains("calendar.startOfDay(for: receipt.windowStart)"),
             "the wake-date bucketing must be gone, not shadowed"
         )
+        // Owner 2026-10-01: the Steps sheet's bars count wake to wake, like
+        // its headline, through the shared cycle rule.
         XCTAssertTrue(
-            overview.contains("AtriaStepsWeekChart.dailyStepTotals"),
-            "the week chart must fold days through the shared rule"
+            overview.contains("AtriaStepsWeekChart.cycleStepTotals"),
+            "the week chart must fold cycles through the shared rule"
         )
     }
 }

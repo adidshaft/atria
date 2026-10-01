@@ -132,16 +132,18 @@ final class AtriaStepReceiptOverlapTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(summers, ["AtriaStepsWeekChart.swift:\(sumLineNumber(in: dir))"],
-                       "step receipts may only be summed inside "
-                           + "dailyStepTotals, which deduplicates first: \(summers)")
+        XCTAssertEqual(summers.sorted(), ["AtriaStepsWeekChart.swift:\(sumLineNumber(in: dir))",
+                                          "AtriaStepsWeekChart.swift:\(sumLineNumber(in: dir, marker: "totals[window.start, default: 0] += receipt.steps"))"].sorted(),
+                       "step receipts may only be summed inside dailyStepTotals "
+                           + "or cycleStepTotals, which both deduplicate first: \(summers)")
     }
 
-    private func sumLineNumber(in dir: URL) -> Int {
+    private func sumLineNumber(in dir: URL,
+                               marker: String = "totals[day, default: 0] += receipt.steps") -> Int {
         guard let text = try? String(contentsOf: dir.appendingPathComponent("AtriaStepsWeekChart.swift"),
                                      encoding: .utf8) else { return -1 }
         for (index, line) in text.components(separatedBy: "\n").enumerated()
-        where line.contains("totals[day, default: 0] += receipt.steps") {
+        where line.contains(marker) {
             return index + 1
         }
         return -1

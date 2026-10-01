@@ -816,7 +816,7 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
                         AxisValueLabel {
                             Text(date, format: .dateTime.weekday(.narrow))
                                 .font(.caption2.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }
@@ -3254,21 +3254,7 @@ private struct AtriaVitalsStressTimelineChart: View {
 
     var body: some View {
         Chart {
-            RectangleMark(xStart: .value("Calm start", xDomain.lowerBound),
-                          xEnd: .value("Calm end", xDomain.upperBound),
-                          yStart: .value("Calm floor", 0),
-                          yEnd: .value("Calm ceiling", 1))
-                .foregroundStyle(Metrics.electricGreen.opacity(0.055))
-            RectangleMark(xStart: .value("Moderate start", xDomain.lowerBound),
-                          xEnd: .value("Moderate end", xDomain.upperBound),
-                          yStart: .value("Moderate floor", 1),
-                          yEnd: .value("Moderate ceiling", 2))
-                .foregroundStyle(Metrics.electricYellow.opacity(0.045))
-            RectangleMark(xStart: .value("High start", xDomain.lowerBound),
-                          xEnd: .value("High end", xDomain.upperBound),
-                          yStart: .value("High floor", 2),
-                          yEnd: .value("High ceiling", 3))
-                .foregroundStyle(Metrics.electricRed.opacity(0.045))
+            AtriaStressZoneBandMarks(domain: xDomain)
 
             RuleMark(y: .value("Calm to moderate", 1))
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
@@ -3353,7 +3339,7 @@ private struct AtriaVitalsStressTimelineChart: View {
                     if let value = value.as(Int.self) {
                         Text("\(value)")
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -3361,7 +3347,7 @@ private struct AtriaVitalsStressTimelineChart: View {
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                     .font(AtriaChartVisualGrammar.axisLabelFont)
                     .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
@@ -4835,7 +4821,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
                                 .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }
@@ -4854,7 +4840,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
                                 .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }

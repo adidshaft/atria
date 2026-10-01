@@ -590,7 +590,7 @@ struct AtriaHealthspanDetailView: View {
                     LineMark(x: .value("Date", entry.point.day),
                              y: .value("Fitness age", entry.point.value),
                              series: .value("Run", entry.runID))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .lineStyle(AtriaChartVisualGrammar.trendLine)
                         .foregroundStyle(Metrics.electricStrain)
 

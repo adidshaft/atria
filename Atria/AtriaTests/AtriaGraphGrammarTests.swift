@@ -244,18 +244,18 @@ final class AtriaGraphGrammarTests: XCTestCase {
         )
     }
 
-    func testWeekAxisLabelsUseWeekdayAndDay() {
+    func testWeekAxisLabelsUseWeekdayInitialOnly() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
         let friday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 18))!
         XCTAssertEqual(
-            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar),
-            friday.formatted(.dateTime.weekday(.narrow)) + " 18"
+            AtriaChartVisualGrammar.weekdayAxisLabel(for: friday, calendar: calendar),
+            "F"
         )
         let week = friday.addingTimeInterval(-6 * 86_400)...friday
         XCTAssertEqual(
             AtriaChartVisualGrammar.nightAxisLabelText(for: friday, domain: week, calendar: calendar),
-            AtriaChartVisualGrammar.compactWeekdayDayLabel(for: friday, calendar: calendar)
+            "F"
         )
         let month = friday.addingTimeInterval(-29 * 86_400)...friday
         XCTAssertEqual(

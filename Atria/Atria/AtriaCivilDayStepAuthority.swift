@@ -27,6 +27,10 @@ import Foundation
 final class AtriaCivilDayStepAuthority {
 
     static let shared = AtriaCivilDayStepAuthority()
+    /// Wake-to-wake windows (owner 2026-10-01: the Steps headline and its
+    /// bars both count since wake). A separate cache so a cycle that starts at
+    /// midnight never overwrites that calendar day's record.
+    static let cycles = AtriaCivilDayStepAuthority(cacheFileName: "cycle-steps-v1.json")
 
     /// Activity kinds whose confirmed windows are excluded from step credit.
     ///
@@ -46,6 +50,9 @@ final class AtriaCivilDayStepAuthority {
         let exclusionFingerprint: String
         let computedAtUnix: Double
         let dayWasComplete: Bool
+        /// End of the counted window. Nil on calendar-day records written
+        /// before cycle windows existed; those are always one civil day.
+        var windowEndUnix: Double? = nil
     }
 
     private let cacheURL: URL
@@ -57,6 +64,7 @@ final class AtriaCivilDayStepAuthority {
     private var records: [Double: DayRecord]?
 
     init(cacheURL: URL? = nil,
+         cacheFileName: String = "civil-day-steps-v1.json",
          store: AtriaWhoop4MotionTickCompactStore = .shared) {
         if let cacheURL {
             self.cacheURL = cacheURL
@@ -67,7 +75,7 @@ final class AtriaCivilDayStepAuthority {
             ).first ?? FileManager.default.temporaryDirectory
             self.cacheURL = support
                 .appendingPathComponent("Atria/verified-step-evidence-v1")
-                .appendingPathComponent("civil-day-steps-v1.json")
+                .appendingPathComponent(cacheFileName)
         }
         self.store = store
     }
@@ -229,12 +237,67 @@ final class AtriaCivilDayStepAuthority {
                                    strapIdentifier: String,
                                    nonGaitExclusions: [DateInterval],
                                    now: Date) -> [Date: Int] {
+        exactTotalsLocked(
+            windows: days.map { DateInterval(start: $0, end: Self.civilDayEnd(after: $0)) },
+            strapIdentifier: strapIdentifier,
+            nonGaitExclusions: nonGaitExclusions,
+            now: now
+        )
+    }
+
+    /// A cached record answers a window only when it was computed for that
+    /// same end; legacy records (no end) are whole civil days.
+    static func record(_ record: DayRecord, matchesWindowEnd end: Date) -> Bool {
+        guard let recorded = record.windowEndUnix else {
+            return civilDayEnd(after: Date(timeIntervalSince1970: record.dayStartUnix))
+                == end
+        }
+        return abs(recorded - end.timeIntervalSince1970) < 1
+    }
+
+    /// Exact totals for arbitrary windows (wake-to-wake cycles), keyed by
+    /// window start, plus the windows whose count is only partial: still open,
+    /// under the coverage floor, or answered from `fallback` alone.
+    func windowTotalsAndPartial(windows: [DateInterval],
+                                strapIdentifier: String,
+                                nonGaitExclusions: [DateInterval],
+                                fallback: [Date: Int],
+                                now: Date = Date()) async -> (totals: [Date: Int], partial: Set<Date>) {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                let exact = exactTotalsLocked(
+                    windows: windows,
+                    strapIdentifier: strapIdentifier,
+                    nonGaitExclusions: nonGaitExclusions,
+                    now: now
+                )
+                let totals = Self.overlay(fallback: fallback, exact: exact)
+                var partial = Set<Date>()
+                for window in windows where totals[window.start] != nil {
+                    guard exact[window.start] != nil,
+                          let record = records?[window.start.timeIntervalSince1970],
+                          Self.record(record, matchesWindowEnd: window.end),
+                          !Self.isPartial(record: record, dayLength: window.duration) else {
+                        partial.insert(window.start)
+                        continue
+                    }
+                }
+                continuation.resume(returning: (totals, partial))
+            }
+        }
+    }
+
+    private func exactTotalsLocked(windows: [DateInterval],
+                                   strapIdentifier: String,
+                                   nonGaitExclusions: [DateInterval],
+                                   now: Date) -> [Date: Int] {
         var loaded = records ?? Self.load(from: cacheURL)
         var exact: [Date: Int] = [:]
         var dirty = false
 
-        for day in days {
-            let dayEnd = Self.civilDayEnd(after: day)
+        for window in windows {
+            let day = window.start
+            let dayEnd = window.end
             let readEnd = min(dayEnd, now)
             guard readEnd > day else { continue }
             // Fingerprint the WHOLE day's buckets even while the day is open,
@@ -247,7 +310,8 @@ final class AtriaCivilDayStepAuthority {
             let exclusionPrint = Self.exclusionFingerprint(
                 nonGaitExclusions, dayStart: day, dayEnd: dayEnd
             )
-            if let record = loaded[day.timeIntervalSince1970] {
+            if let record = loaded[day.timeIntervalSince1970],
+               Self.record(record, matchesWindowEnd: dayEnd) {
                 if let fingerprint,
                    Self.isServable(record: record,
                                    sourceFingerprint: fingerprint,
@@ -277,7 +341,9 @@ final class AtriaCivilDayStepAuthority {
                 // finished day keeps its last exact total (device 2026-09-30:
                 // Mon showed the cycle fold 8,407+ over a cached exact 5,064
                 // after new rows changed its fingerprint).
-                if let kept = Self.lastExactCompleteDayTotal(loaded[day.timeIntervalSince1970]) {
+                if let cached = loaded[day.timeIntervalSince1970],
+                   Self.record(cached, matchesWindowEnd: dayEnd),
+                   let kept = Self.lastExactCompleteDayTotal(cached) {
                     exact[day] = kept
                 }
                 continue
@@ -291,7 +357,8 @@ final class AtriaCivilDayStepAuthority {
                 sourceFingerprint: fingerprint,
                 exclusionFingerprint: exclusionPrint,
                 computedAtUnix: now.timeIntervalSince1970,
-                dayWasComplete: dayComplete
+                dayWasComplete: dayComplete,
+                windowEndUnix: dayEnd.timeIntervalSince1970
             )
             dirty = true
         }

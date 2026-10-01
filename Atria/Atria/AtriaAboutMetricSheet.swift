@@ -415,7 +415,7 @@ struct AtriaMiniTrendCard: View {
                                  y: .value(subject, entry.point.value),
                                  series: .value("Run", "r\(entry.runID)"))
                             .foregroundStyle(tint)
-                            .interpolationMethod(.monotone)
+                            .interpolationMethod(.linear)
                             .lineStyle(AtriaChartVisualGrammar.trendLine)
                     }
                     ForEach(trend.points) { point in

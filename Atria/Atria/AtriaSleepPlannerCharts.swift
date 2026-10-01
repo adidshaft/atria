@@ -667,7 +667,7 @@ struct AtriaSleepDebtChartCard: View {
                     if let value = value.as(Double.self) {
                         Text(AtriaMetricFormat.sleepHours(value))
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -678,9 +678,9 @@ struct AtriaSleepDebtChartCard: View {
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel(centered: true, verticalSpacing: 6) {
                     if let day = value.as(Date.self) {
-                        Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day))
+                        Text(AtriaChartVisualGrammar.weekdayAxisLabel(for: day))
                             .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }

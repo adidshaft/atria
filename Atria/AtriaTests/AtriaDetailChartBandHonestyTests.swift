@@ -34,7 +34,8 @@ final class AtriaDetailChartBandHonestyTests: XCTestCase {
 
     func testAreaFillIsWithheldOnAWindowWithMissingDays() throws {
         let source = try source
-        XCTAssertTrue(source.contains("private var rendersAreaFill: Bool { windowMissingDayCount == nil }"))
+        // 2026-10-01: also withheld under level lines (padded floor).
+        XCTAssertTrue(source.contains("private var rendersAreaFill: Bool { windowMissingDayCount == nil && anchorsAtZero }"))
         XCTAssertTrue(source.contains("ForEach(rendersAreaFill ? points.contiguousDayRuns() : [], id: \\.point.day)"),
                       "the gradient fill is gated; the line and the points are not")
         XCTAssertTrue(source.contains("ForEach(rendersAsDailyBar ? [] : points.contiguousDayRuns(), id: \\.point.day)"),

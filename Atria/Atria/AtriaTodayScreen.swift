@@ -536,7 +536,8 @@ struct AtriaTodayScreen: View {
                                        explainedWindows: store.confirmedWorkouts.compactMap {
                                            $0.end > $0.start
                                                ? DateInterval(start: $0.start, end: $0.end) : nil
-                                       })
+                                       },
+                                       confirmedSleeps: store.confirmedSleeps)
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -621,6 +622,9 @@ struct AtriaTodayScreen: View {
             }
             if Self.debugShowsWeeklyReport(arguments: ProcessInfo.processInfo.arguments) {
                 showWeeklyReport = true
+            }
+            if ProcessInfo.processInfo.arguments.contains("steps-detail") {
+                showStrapStepsDetail = true
             }
             if Self.debugShowsBreathwork(arguments: ProcessInfo.processInfo.arguments) {
                 showBreathworkSession = true
@@ -2820,6 +2824,8 @@ struct AtriaTodayScreen: View {
         switch metric {
         case .stress:
             return .line
+        case .hrv, .rhr, .respiratoryRate, .bodyTemp, .bioAge:
+            return .dots
         default:
             return .bars
         }
@@ -3999,9 +4005,13 @@ struct AtriaGlanceSparkline: View {
     ///   cannot say. Drawing daily averages as a line would imply within-day
     ///   shape that is not in the data, so a line is only ever fed an
     ///   intra-day series.
+    /// * `.dots` — a once-a-day LEVEL (HRV, resting HR, respiratory rate):
+    ///   one dot per night on a thin connecting line. A bar from an arbitrary
+    ///   floor turned a 2 bpm move into a doubled column (owner 2026-10-01).
     enum Style: Equatable {
         case bars
         case line
+        case dots
     }
 
     let values: [Double]
@@ -4034,7 +4044,7 @@ struct AtriaGlanceSparkline: View {
     var body: some View {
         // A line keeps far more of the day than seven bars can, so it is
         // sampled to a wider cap; bars stay one-per-day and bounded at a week.
-        let series = style == .bars
+        let series = style != .line
             ? Array(values.suffix(Self.maximumBars))
             : Self.resampled(values, to: Self.maximumLinePoints)
         let low = series.min() ?? 0
@@ -4058,6 +4068,37 @@ struct AtriaGlanceSparkline: View {
                 }
                 .frame(width: geo.size.width, height: geo.size.height,
                        alignment: .bottomTrailing)
+            case .dots:
+                let usable = geo.size.height - Self.dotDiameter
+                let step = series.count > 1
+                    ? (geo.size.width - Self.dotDiameter) / CGFloat(series.count - 1)
+                    : 0
+                let points = series.enumerated().map { index, value in
+                    CGPoint(
+                        x: Self.dotDiameter / 2 + CGFloat(index) * step,
+                        y: Self.dotDiameter / 2 + usable * (1 - Self.barFraction(
+                            value: value, low: low, high: high
+                        ))
+                    )
+                }
+                ZStack {
+                    Path { path in
+                        guard let first = points.first else { return }
+                        path.move(to: first)
+                        points.dropFirst().forEach { path.addLine(to: $0) }
+                    }
+                    .stroke(tint.opacity(0.34),
+                            style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+                    ForEach(Array(points.enumerated()), id: \.offset) { index, point in
+                        let isLatest = index == points.count - 1
+                        Circle()
+                            .fill(tint.opacity(isLatest ? 0.95 : 0.45))
+                            .frame(width: isLatest ? Self.dotDiameter + 1 : Self.dotDiameter - 1,
+                                   height: isLatest ? Self.dotDiameter + 1 : Self.dotDiameter - 1)
+                            .position(point)
+                    }
+                }
+                .frame(width: geo.size.width, height: geo.size.height)
             case .line:
                 Path { path in
                     guard series.count >= 2 else { return }
@@ -4091,6 +4132,7 @@ struct AtriaGlanceSparkline: View {
 
     static let maximumLinePoints = 24
     private static let lineWidth: CGFloat = 1.5
+    private static let dotDiameter: CGFloat = 4
 
     /// Even-stride resample so a whole day fits 34 points wide without
     /// favouring either end. Series shorter than the cap are returned as-is —
@@ -4228,7 +4270,16 @@ private struct AtriaTodayLiveGlanceTileHost: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: steps.valueText,
-                                        detail: legendDetail(motion.glanceDetail(liveFallback: steps.detailText),
+                                        // Where strap motion has synced to, so a
+                                        // wearer can tell whether their latest walk
+                                        // is counted (owner 2026-10-01).
+                                        detail: legendDetail(steps.count == nil
+                                                             ? motion.glanceDetail(liveFallback: steps.detailText)
+                                                             : AtriaStrapMotionSyncStatus.make(
+                                                                syncedThrough: AtriaStrapMotionSyncStatus
+                                                                    .persistedSyncedThrough(),
+                                                                now: now
+                                                             ).title,
                                                              showsDetail: showsDetail),
                                         systemImage: metric.systemImage,
                                         tint: steps.count == nil ? .secondary : motion.tint,

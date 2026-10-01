@@ -349,6 +349,58 @@ enum AtriaActivityHeartRateRefreshPolicy {
     }
 }
 
+/// Activities never share time (owner 2026-10-01, as WHOOP enforces): a
+/// detection that grazes a saved activity is trimmed to the free stretch,
+/// and one with under `minimumRemainder` left is not offered at all.
+enum AtriaActivityOverlapPolicy {
+    static let minimumRemainder: TimeInterval = 5 * 60
+
+    /// The longest stretch of `window` that no `occupied` interval covers,
+    /// or nil when that stretch is shorter than `minimumRemainder`.
+    static func freeWindow(_ window: DateInterval,
+                           occupied: [DateInterval],
+                           minimum: TimeInterval = minimumRemainder) -> DateInterval? {
+        let blocking = occupied
+            .filter { $0.end > window.start && $0.start < window.end }
+            .sorted { $0.start < $1.start }
+        guard !blocking.isEmpty else { return window }
+        var best: DateInterval?
+        var cursor = window.start
+        for interval in blocking {
+            if interval.start > cursor {
+                let gap = DateInterval(start: cursor, end: min(interval.start, window.end))
+                if gap.duration > (best?.duration ?? 0) { best = gap }
+            }
+            cursor = max(cursor, interval.end)
+            if cursor >= window.end { break }
+        }
+        if cursor < window.end {
+            let tail = DateInterval(start: cursor, end: window.end)
+            if tail.duration > (best?.duration ?? 0) { best = tail }
+        }
+        guard let best, best.duration >= minimum else { return nil }
+        return best
+    }
+
+    static func trimmed(_ detection: ActivityDetection,
+                        occupied: [DateInterval]) -> ActivityDetection? {
+        guard detection.end > detection.start,
+              let free = freeWindow(DateInterval(start: detection.start, end: detection.end),
+                                    occupied: occupied) else { return nil }
+        guard free.start != detection.start || free.end != detection.end else { return detection }
+        return ActivityDetection(id: detection.id,
+                                 kind: detection.kind,
+                                 confidence: detection.confidence,
+                                 start: free.start,
+                                 end: free.end,
+                                 duration: free.duration,
+                                 avgHR: detection.avgHR,
+                                 peakHR: detection.peakHR,
+                                 reason: detection.reason,
+                                 suggestedActivityType: detection.suggestedActivityType)
+    }
+}
+
 /// Keeps sensor suggestions visible without duplicating an already-saved
 /// workout or showing the same physiological window twice through the general
 /// detector and the higher-quality workout-review cache.
@@ -357,20 +409,25 @@ enum AtriaActivityReviewProjection {
                                   workoutReview: WorkoutReviewCandidate?,
                                   confirmedWorkouts: [UserConfirmedWorkout],
                                   interval: DateInterval) -> [ActivityDetection] {
-        detections.filter { detection in
-            guard detection.kind == .activityCandidate || detection.kind == .workout,
-                  detection.end > interval.start,
-                  detection.start < interval.end,
-                  !overlapsConfirmedWorkout(start: detection.start,
-                                            end: detection.end,
-                                            confirmedWorkouts: confirmedWorkouts) else { return false }
+        let saved = confirmedWorkouts.compactMap { workout in
+            workout.end > workout.start ? DateInterval(start: workout.start, end: workout.end) : nil
+        }
+        return detections.compactMap { candidate -> ActivityDetection? in
+            guard candidate.kind == .activityCandidate || candidate.kind == .workout,
+                  candidate.end > interval.start,
+                  candidate.start < interval.end,
+                  !overlapsConfirmedWorkout(start: candidate.start,
+                                            end: candidate.end,
+                                            confirmedWorkouts: confirmedWorkouts),
+                  let detection = AtriaActivityOverlapPolicy.trimmed(candidate, occupied: saved)
+            else { return nil }
             if let workoutReview {
                 let overlap = min(workoutReview.end, detection.end)
                     .timeIntervalSince(max(workoutReview.start, detection.start))
                 let shortest = min(workoutReview.duration, detection.duration)
-                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) { return false }
+                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) { return nil }
             }
-            return true
+            return detection
         }.sorted { $0.start > $1.start }
     }
 
@@ -488,6 +545,34 @@ struct AtriaActivityTimelineWorkoutSpan: Equatable, Identifiable {
     let icon: String
 }
 
+/// Marker pills above the day chart. Short back-to-back activities used to
+/// draw their minimum-width pills on top of each other (device 2026-10-01:
+/// Strength, Walk and a detection stacked into one blob). Pills keep time
+/// order, are pushed apart, and stay inside the strip.
+enum AtriaActivityTimelineStripLayout {
+    static let minimumWidth: CGFloat = 18
+    static let spacing: CGFloat = 2
+
+    static func frames(spans: [(start: CGFloat, end: CGFloat)],
+                       width: CGFloat) -> [(x: CGFloat, width: CGFloat)] {
+        var frames = spans.map { span in
+            (x: span.start, width: max(minimumWidth, span.end - span.start))
+        }
+        // Forward pass: nothing starts before the previous pill ends.
+        for index in frames.indices.dropFirst() {
+            let previousEnd = frames[index - 1].x + frames[index - 1].width + spacing
+            frames[index].x = max(frames[index].x, previousEnd)
+        }
+        // Backward pass: pull anything past the trailing edge back inside.
+        var limit = width
+        for index in frames.indices.reversed() {
+            frames[index].x = max(0, min(frames[index].x, limit - frames[index].width))
+            limit = frames[index].x - spacing
+        }
+        return frames
+    }
+}
+
 struct AtriaActivityTimelineAxisTick: Equatable, Identifiable {
     let date: Date
     let label: String
@@ -597,7 +682,7 @@ enum AtriaActivityTimelineAxis {
         }
         return dates.enumerated().map { index, date in
             let isEnd = index == dates.count - 1
-            let label = isEnd && isCurrent ? "Now" : date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+            let label = isEnd && isCurrent ? "Now" : date.formatted(AtriaChartVisualGrammar.intradayTimeFormat)
             return AtriaActivityTimelineAxisTick(date: date,
                                                  label: label,
                                                  accessibilityLabel: isEnd && isCurrent ? "Now" : date.formatted(date: .omitted, time: .shortened))
@@ -2583,14 +2668,12 @@ struct AtriaActivityMonitorTab: View {
                 heartRateTimelineChart(range: plotRange,
                                        axisTicks: axisTicks,
                                        spans: spans)
-                    // Full-bleed plot (2026-08-05 width audit).
-                    .padding(.horizontal, -12)
+                    // Inside the card gutter: full-bleed put the axis labels on the card edge (2026-10-01).
             } else {
                 stressTimelineChart(range: plotRange,
                                     axisTicks: axisTicks,
                                     spans: spans)
-                    // Full-bleed plot (2026-08-05 width audit).
-                    .padding(.horizontal, -12)
+                    // Inside the card gutter: full-bleed put the axis labels on the card edge (2026-10-01).
             }
         }
         .padding(12)
@@ -2609,14 +2692,20 @@ struct AtriaActivityMonitorTab: View {
         let total = max(1, range.upperBound.timeIntervalSince(range.lowerBound))
         return GeometryReader { geometry in
             let width = geometry.size.width
-            ForEach(spans) { span in
-                let startFraction = min(max(0,
-                    span.start.timeIntervalSince(range.lowerBound) / total), 1)
-                let endFraction = min(max(0,
-                    span.end.timeIntervalSince(range.lowerBound) / total), 1)
-                let x0 = CGFloat(startFraction) * width
-                let x1 = CGFloat(endFraction) * width
-                let pillWidth = max(16, x1 - x0)
+            let ordered = spans.sorted { $0.start < $1.start }
+            let frames = AtriaActivityTimelineStripLayout.frames(
+                spans: ordered.map { span in
+                    let startFraction = min(max(0,
+                        span.start.timeIntervalSince(range.lowerBound) / total), 1)
+                    let endFraction = min(max(0,
+                        span.end.timeIntervalSince(range.lowerBound) / total), 1)
+                    return (CGFloat(startFraction) * width, CGFloat(endFraction) * width)
+                },
+                width: width
+            )
+            ForEach(Array(ordered.enumerated()), id: \.element.id) { index, span in
+                let x0 = frames[index].x
+                let pillWidth = frames[index].width
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(span.tint.opacity(0.28))
                     .overlay {
@@ -2752,6 +2841,7 @@ struct AtriaActivityMonitorTab: View {
             evidence: AtriaChartGapEvidenceProvider.current()
         )
         return Chart {
+            AtriaStressZoneBandMarks(domain: range)
             AtriaNoDataBandMarks(bands: gapBands, domain: range)
             ForEach(points) { point in
                 // Translucent fill descending to the x-axis, matching the Vitals
@@ -2849,8 +2939,8 @@ struct AtriaActivityMonitorTab: View {
                 if let date = value.as(Date.self),
                    let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
                     Text(tick.label)
-                        .font(.system(size: 9, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .font(AtriaChartVisualGrammar.axisLabelFont)
+                        .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         .accessibilityLabel(tick.accessibilityLabel)
                 }
             }
@@ -3774,8 +3864,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                                 xDomain: workout.start...max(workout.end, workout.start.addingTimeInterval(1)))
                             .frame(height: 150)
                             .clipped()
-                            // Full-bleed plot (2026-08-05 width audit).
-                            .padding(.horizontal, -12)
+                            // Inside the card gutter: full-bleed put the axis labels on the card edge (2026-10-01).
                     } else {
                         Text("No heart-rate samples recorded during this window.")
                             .font(.caption)
@@ -3790,8 +3879,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             window: workout.start...max(workout.end, workout.start.addingTimeInterval(1))
                         )
                             .frame(height: 150)
-                            // Full-bleed plot (2026-08-05 width audit).
-                            .padding(.horizontal, -12)
+                            // Inside the card gutter: full-bleed put the axis labels on the card edge (2026-10-01).
 
                     case .cardiacArousal:
                         VStack(alignment: .leading, spacing: 6) {
@@ -3808,7 +3896,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                 .foregroundStyle(.secondary)
                         }
                         .frame(height: 150)
-                        .padding(.horizontal, -12)
+                        // Inside the card gutter: full-bleed put the axis labels on the card edge (2026-10-01).
 
                     case .empty:
                         Text(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(

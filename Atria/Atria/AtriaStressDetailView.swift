@@ -1163,7 +1163,7 @@ struct AtriaStressDailyTrendCard: View {
             AxisMarks(values: axisDays) { _ in
                 AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisValueLabel(format: .dateTime.day(), centered: true)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     .font(.caption2)
             }
         }
@@ -1560,7 +1560,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
                     if let score = value.as(Double.self) {
                         Text(score == 0 ? "0" : String(format: "%.0f", score))
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -1569,7 +1569,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                     .font(AtriaChartVisualGrammar.axisLabelFont)
                     .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
@@ -1713,7 +1713,7 @@ private struct AtriaStressHeartRateTimelineChart: View {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                     .font(AtriaChartVisualGrammar.axisLabelFont)
                     .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
@@ -1828,7 +1828,7 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                     .font(AtriaChartVisualGrammar.axisLabelFont)
                     .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }

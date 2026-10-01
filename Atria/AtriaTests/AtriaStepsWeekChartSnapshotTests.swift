@@ -7,24 +7,20 @@ import SwiftUI
 final class AtriaStepsWeekChartSnapshotTests: XCTestCase {
     @MainActor
     func testRenderStepsWeekForVisualReview() throws {
-        // Use Calendar.current so the day-start keys match the chart's own
-        // Calendar.current bucketing (a fixed UTC calendar would land keys on a
-        // different day and render the empty state).
-        let calendar = Calendar.current
-        let end = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_785_000_000))
-        func day(_ offset: Int) -> Date {
-            calendar.date(byAdding: .day, value: -offset, to: end)!
+        // Seven wake-to-wake cycles; one has no reading (no bar) to show the
+        // honest gap, and the newest is the open cycle.
+        let wake = Date(timeIntervalSince1970: 1_785_000_000)
+        let steps: [Int?] = [5120, 12680, 9310, nil, 6740, 11020, 4158]
+        let bars = steps.enumerated().map { index, value in
+            AtriaStepsWeekChart.CycleBar(
+                start: wake.addingTimeInterval(Double(index - 6) * 86_400),
+                steps: value,
+                isPartial: index == 6,
+                isCurrent: index == 6
+            )
         }
-        // Six of seven days have a verified total; one mid-week day is missing
-        // (no bar) to show the honest gap.
-        let stepsByDay: [Date: Int] = [
-            day(0): 8432, day(1): 11020, day(2): 6740,
-            day(4): 9310, day(5): 12680, day(6): 5120,
-        ]
 
-        let content = AtriaStepsWeekChart(stepsByDay: stepsByDay,
-                                          goal: 10000,
-                                          referenceDate: end)
+        let content = AtriaStepsWeekChart(bars: bars, goal: 10000)
             .frame(width: 360, height: 210)
             .padding(16)
             .background(Color.black)

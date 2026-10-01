@@ -1,23 +1,26 @@
 import SwiftUI
 import Charts
 
-/// Fixed 7-day weekday bar chart of verified per-day step totals (design backlog
-/// P2, 2026-08-03). Matches the "7 fixed weekday ticks" rule: seven day-ticks
-/// always, a bar only on days with a verified receipt (missing ≠ zero, never a
-/// zero-height bar implying "0 steps recorded"). Native Swift Charts.
+/// Last seven wake-to-wake days of verified strap steps (owner 2026-10-01:
+/// the Steps headline and its bars both count since wake). The current
+/// cycle's bar is the headline count itself, so the two can never disagree.
+/// A cycle with no reading draws no bar — missing is not zero.
 ///
 /// Self-contained (no environment) so it renders straight to an image in a test.
 struct AtriaStepsWeekChart: View {
-    /// Day-start → verified step total. Days absent from the map draw no bar.
-    let stepsByDay: [Date: Int]
+    struct CycleBar: Identifiable, Equatable {
+        /// Wake that opened the cycle; the bar is labelled by its weekday.
+        let start: Date
+        let steps: Int?
+        /// Still open, thinly covered, or answered only by a cycle receipt.
+        let isPartial: Bool
+        let isCurrent: Bool
+        var id: Date { start }
+    }
+
+    /// Oldest first, at most seven.
+    let bars: [CycleBar]
     let goal: Int
-    /// The day the 7-day window ends on (defaults to today). A parameter so a
-    /// test can anchor deterministically.
-    var referenceDate: Date = Date()
-    /// Days whose count is only partial (still open, strap off or history not
-    /// synced). Drawn faded with an "at least" `+`, never coloured as a
-    /// missed goal.
-    var partialDays: Set<Date> = []
 
     private let calendar = Calendar.current
 
@@ -174,100 +177,225 @@ struct AtriaStepsWeekChart: View {
         }
     }
 
+    /// "8.5k" above a bar: the exact count is the headline (current cycle)
+    /// or one tap away; seven full numbers crowded into each other.
+    static func compactCountLabel(steps: Int, isPartial: Bool) -> String {
+        let text: String
+        if steps >= 1_000 {
+            text = (Double(steps) / 1_000).formatted(.number.precision(.fractionLength(1))) + "k"
+        } else {
+            text = "\(steps)"
+        }
+        return text + (isPartial ? "+" : "")
+    }
+
+    /// Recent wake-to-wake windows, oldest first. The last one is the open
+    /// cycle and ends at `now`. Each earlier start is the cycle that was
+    /// current just before the next one began, so no-sleep fallback days
+    /// follow the same rule as everywhere else.
+    static func cycleWindows(now: Date,
+                             confirmedSleeps: [UserConfirmedSleep],
+                             count: Int = 7,
+                             calendar: Calendar = .current) -> [DateInterval] {
+        var windows: [DateInterval] = []
+        var end = now
+        var probe = now
+        for _ in 0..<max(count, 0) {
+            let start = AtriaPhysiologicalCycle.current(
+                now: probe,
+                confirmedSleeps: confirmedSleeps,
+                calendar: calendar
+            ).start
+            guard start < end else { break }
+            windows.append(DateInterval(start: start, end: end))
+            end = start
+            probe = start.addingTimeInterval(-1)
+        }
+        return windows.reversed()
+    }
+
+    /// Receipt fallback per cycle: closed receipts whose window midpoint lies
+    /// in the cycle, contained duplicates dropped (see `dailyStepTotals`).
+    static func cycleStepTotals(
+        receipts: [HistoricalArchive.MotionTickDayEvidence],
+        windows: [DateInterval]
+    ) -> [Date: Int] {
+        let ordered = receipts.sorted { $0.windowStart < $1.windowStart }
+        let deduplicated = ordered.filter { candidate in
+            !ordered.contains { other in
+                (other.windowStart != candidate.windowStart
+                    || other.windowEnd != candidate.windowEnd)
+                    && other.windowStart <= candidate.windowStart
+                    && other.windowEnd >= candidate.windowEnd
+            }
+        }
+        var totals: [Date: Int] = [:]
+        for receipt in deduplicated {
+            let middle = receipt.windowStart.addingTimeInterval(
+                receipt.windowEnd.timeIntervalSince(receipt.windowStart) / 2
+            )
+            guard let window = windows.first(where: {
+                $0.start <= middle && middle < $0.end
+            }) else { continue }
+            totals[window.start, default: 0] += receipt.steps
+        }
+        return totals
+    }
+
+    private var slotIDs: [String] { bars.indices.map(String.init) }
+
     var body: some View {
-        let end = calendar.startOfDay(for: referenceDate)
-        let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
-        let days = (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
-        let hasAny = days.contains { stepsByDay[$0] != nil }
-        // Exactly the seven days, edge to edge. A `unit: .day` BarMark occupies
-        // its whole day slot, so a domain of [first 00:00, last 24:00) gives
-        // each bar precisely one seventh of the width with no dead margin —
-        // the earlier ±18h padding bought room for the end labels at the cost
-        // of insetting every bar from the plot edges.
-        let axisLo = start
-        let axisHi = calendar.date(byAdding: .day, value: 1, to: end) ?? end
+        let measured = bars.compactMap(\.steps)
+        let top = Double(max(measured.max() ?? 0, max(goal, 1)))
+        let hasPartial = bars.contains { $0.steps != nil && $0.isPartial && !$0.isCurrent }
 
         VStack(alignment: .leading, spacing: 8) {
-            Text("This week")
-                .font(.subheadline.weight(.semibold))
-
-            if hasAny {
-                Chart {
-                    ForEach(days, id: \.self) { day in
-                        if let steps = stepsByDay[day] {
-                            let isPartial = partialDays.contains(day)
-                            BarMark(x: .value("Day", day, unit: .day),
-                                    y: .value("Steps", steps),
-                                    width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
-                                .foregroundStyle(barTint(Self.barStyle(steps: steps, goal: goal,
-                                                                       isPartial: isPartial))
-                                    .opacity(isPartial ? 0.6 : 0.85))
-                                .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
-                                // Per-bar count (2026-08-08): bars alone gave no
-                                // read of the actual number. Small label above
-                                // each bar; days with no bar stay empty.
-                                // The newest day sits hard against the trailing
-                                // edge, so its count was clipped mid-number
-                                // ("5,8" for 5,878) — the chart cut the one
-                                // value the reader most wants. Let Charts pull
-                                // an overflowing label back inside the plot.
-                                .annotation(position: .top, spacing: 2) {
-                                    Text(Self.countLabel(steps: steps, isPartial: partialDays.contains(day)))
-                                        .font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize()
-                                }
-                        }
-                    }
-                    if goal > 0 {
-                        RuleMark(y: .value("Goal", goal))
-                            .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                            .foregroundStyle(.secondary.opacity(0.5))
-                            .annotation(position: .top, alignment: .trailing, spacing: 1) {
-                                Text("goal \(goal)")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                            }
-                    }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Last 7 days")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                // The goal names its dashed line here, outside the plot, so it
+                // can never sit on top of a bar's count (device 2026-10-01).
+                HStack(spacing: 5) {
+                    Capsule()
+                        .stroke(Color.secondary.opacity(0.7),
+                                style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
+                        .frame(width: 14, height: 1.5)
+                    Text("Goal \(goal.formatted(.number.grouping(.automatic)))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
-                .atriaDailyChartPlotChrome()
-                .chartXScale(domain: axisLo...axisHi)
-                .chartXAxis {
-                    AxisMarks(values: days) { _ in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
-                        AxisTick().foregroundStyle(.clear)
-                        // `centered: true` places the letter in the MIDDLE of
-                        // the day it names, which is where a `unit: .day` bar
-                        // is drawn.
-                        AxisValueLabel(format: .dateTime.weekday(.narrow),
-                                       centered: true)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .atriaDailyQuantityYAxis()
-                .frame(height: 140)
-                // The plot used to be pulled 12pt wider than its card on each
-                // side to sit "full bleed". That is wider than the space it
-                // has, so the axis labels and the newest day's bar fell outside
-                // and `.clipped()` cut them off — the chart lost its most
-                // recent column, which is the one the reader wants most. Let it
-                // fit the card instead.
+                .accessibilityElement(children: .combine)
+            }
 
-                Text(partialDays.isEmpty
-                     ? "Green met goal · amber under · red well under. No bar, no reading."
-                     : "Green met · amber under · red well under · grey + so far.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
+            if measured.isEmpty {
                 Text("Verified step days will appear here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Chart {
+                    RuleMark(y: .value("Goal", goal))
+                        .foregroundStyle(Color.secondary.opacity(0.5))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    ForEach(Array(bars.enumerated()), id: \.element.id) { index, bar in
+                        if let steps = bar.steps {
+                            let style = Self.barStyle(steps: steps, goal: goal,
+                                                      isPartial: bar.isPartial)
+                            BarMark(x: .value("Day", String(index)),
+                                    y: .value("Steps", steps),
+                                    width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
+                                .foregroundStyle(barTint(style).opacity(bar.isPartial ? 0.7 : 0.9))
+                                .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
+                                .annotation(position: .top, spacing: 3,
+                                            overflowResolution: .init(x: .fit(to: .chart),
+                                                                      y: .fit(to: .chart))) {
+                                    Text(Self.compactCountLabel(steps: steps,
+                                                                isPartial: bar.isPartial && !bar.isCurrent))
+                                        .font(.caption2.weight(bar.isCurrent ? .semibold : .regular)
+                                                .monospacedDigit())
+                                        .foregroundStyle(bar.isCurrent
+                                                         ? Color.primary
+                                                         : AtriaChartVisualGrammar.axisLabelColor)
+                                }
+                                .accessibilityLabel(bar.start.formatted(.dateTime.weekday(.wide)))
+                                .accessibilityValue("\(steps) steps\(bar.isPartial ? ", so far" : "")")
+                        }
+                    }
+                }
+                .chartXScale(domain: slotIDs)
+                .chartYScale(domain: 0...(top * 1.18))
+                .chartYAxis(.hidden)
+                .chartXAxis {
+                    AxisMarks(values: slotIDs) { value in
+                        if let id = value.as(String.self), let index = Int(id),
+                           bars.indices.contains(index) {
+                            let bar = bars[index]
+                            AxisValueLabel {
+                                Text(AtriaChartVisualGrammar.weekdayAxisLabel(for: bar.start))
+                                    .font(bar.isCurrent
+                                          ? AtriaChartVisualGrammar.axisLabelFont.weight(.bold)
+                                          : AtriaChartVisualGrammar.axisLabelFont)
+                                    .foregroundStyle(bar.isCurrent
+                                                     ? Color.primary
+                                                     : AtriaChartVisualGrammar.axisLabelColor)
+                            }
+                        }
+                    }
+                }
+                .atriaDailyChartPlotChrome()
+                .frame(height: 150)
+
+                Text(hasPartial
+                     ? "Each bar runs wake to wake · + still syncing"
+                     : "Each bar runs wake to wake")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .atriaInsetCard(tint: Metrics.electricGreen)
+    }
+}
+
+/// How far strap motion has reached the phone (owner 2026-10-01: "the user
+/// never knows if their latest walk was recorded"). Steps come from the
+/// strap's history, so the honest answer is the durable drain cursor.
+struct AtriaStrapMotionSyncStatus: Equatable {
+    let title: String
+    let detail: String
+    let isUpToDate: Bool
+
+    /// The drain lands rows in ~1 min slices and keep-up runs every 30 min;
+    /// inside this lag the wearer's latest movement is already counted.
+    static let upToDateLag: TimeInterval = 15 * 60
+
+    static func make(syncedThrough: Date?,
+                     now: Date,
+                     calendar: Calendar = .current) -> Self {
+        guard let syncedThrough, syncedThrough.timeIntervalSince1970 > 0 else {
+            return Self(title: "Waiting for first sync",
+                        detail: "Steps appear once the strap's motion syncs",
+                        isUpToDate: false)
+        }
+        let time = timeText(syncedThrough, now: now, calendar: calendar)
+        let lag = now.timeIntervalSince(syncedThrough)
+        if lag <= upToDateLag {
+            return Self(title: "Up to date",
+                        detail: "Motion synced through \(time)",
+                        isUpToDate: true)
+        }
+        return Self(title: "Synced to \(time)",
+                    detail: "\(lagText(lag)) of motion still on the strap",
+                    isUpToDate: false)
+    }
+
+    static func persistedSyncedThrough(
+        defaults: UserDefaults = .standard,
+        now: Date = Date()
+    ) -> Date? {
+        // Sample data reads as a normal recent sync, like its motion badge.
+        if AtriaAppReviewDemo.isActive {
+            return now.addingTimeInterval(-AtriaAppReviewDemo.demoMotionAge)
+        }
+        let unix = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        return unix > 0 ? Date(timeIntervalSince1970: unix) : nil
+    }
+
+    static func timeText(_ date: Date, now: Date, calendar: Calendar) -> String {
+        let clock = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDate(date, inSameDayAs: now) { return clock }
+        return date.formatted(.dateTime.weekday(.abbreviated)) + " " + clock
+    }
+
+    static func lagText(_ lag: TimeInterval) -> String {
+        let minutes = max(1, Int((lag / 60).rounded()))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
     }
 }
