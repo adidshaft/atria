@@ -139,7 +139,14 @@ struct AtriaNightTimelinePresentation: Equatable {
         self.bands = bands.sorted {
             $0.kind.layer == $1.kind.layer ? $0.start < $1.start : $0.kind.layer < $1.kind.layer
         }
-        let present = Set(bands.map(\.kind))
+        // Settling and Awake share one gray, so the legend names that gray
+        // once ("Awake"); seven entries with three near-identical grays read
+        // as noise (2026-10-01). The text below still says when each was.
+        var present = Set(bands.map(\.kind))
+        if present.contains(.settling) {
+            present.remove(.settling)
+            present.insert(.awake)
+        }
         legend = Lane.allCases.filter { present.contains($0) }
         insights = Self.insights(result, timeZone: model.timeZone)
     }
