@@ -5614,6 +5614,17 @@ struct AtriaHomeView: View {
             if let sync {
                 result.append(sync)
             }
+            if let tip = AtriaHomeRecoverySyncPresentation.fasterSyncTip(
+                strapPendingRecords: AtriaHomeRecoverySyncPresentation.freshStrapPendingRecords(
+                    defaults: .standard, now: now
+                ),
+                phoneCharging: [.charging, .full].contains(UIDevice.current.batteryState)
+            ) {
+                result.append(Status(title: tip.title,
+                                     symbol: "bolt.fill",
+                                     accessibilityLabel: tip.accessibilityLabel,
+                                     compactTitle: tip.compactTitle))
+            }
             // A catch-up note is redundant next to the sync notice above; a
             // pause reason is not (it says why live data stopped).
             if let note = liveDataNoteStore.note,
@@ -7135,6 +7146,26 @@ enum AtriaHomeRecoverySyncPresentation {
 
     /// The strap's last pending-record count, only while it is recent
     /// enough (30 min) to describe what is left.
+    /// Owner 2026-10-01: tell the wearer how to flush a backlog faster.
+    /// A worn link drains in long slices only while the phone charges, and a
+    /// locked phone gets 5-minute slices instead of 45-second ones (device:
+    /// ~19 rows/s locked on the charger vs ~10 with the app open, ~0 while
+    /// unplugged). Shown only while a large backlog is waiting.
+    static func fasterSyncTip(strapPendingRecords: Int?, phoneCharging: Bool) -> Copy? {
+        guard let strapPendingRecords,
+              strapPendingRecords >= Int(AtriaBLEManager.backlogSlicePendingThreshold) else {
+            return nil
+        }
+        if phoneCharging {
+            return Copy(title: "Tip · Lock your phone to sync faster",
+                        compactTitle: "Lock phone to sync faster",
+                        accessibilityLabel: "Tip: strap history syncs fastest while your phone is locked and charging.")
+        }
+        return Copy(title: "Tip · Charge & lock your phone to sync faster",
+                    compactTitle: "Charge + lock to sync faster",
+                    accessibilityLabel: "Tip: strap history syncs fastest while your phone is locked and charging.")
+    }
+
     static func freshStrapPendingRecords(defaults: UserDefaults, now: Date) -> Int? {
         guard let pending = defaults.object(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords) as? Int,

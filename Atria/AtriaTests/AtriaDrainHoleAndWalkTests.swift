@@ -267,3 +267,17 @@ final class AtriaStrainMorningFreezeTests: XCTestCase {
                                                         persistedQuality: .unavailable).value)
     }
 }
+
+/// Owner 2026-10-01: show the wearer how to flush a backlog faster.
+final class AtriaFasterSyncTipTests: XCTestCase {
+    func testTipOnlyWhileALargeBacklogWaitsAndMatchesThePhoneState() {
+        typealias P = AtriaHomeRecoverySyncPresentation
+        XCTAssertNil(P.fasterSyncTip(strapPendingRecords: nil, phoneCharging: false))
+        XCTAssertNil(P.fasterSyncTip(strapPendingRecords: 300, phoneCharging: false),
+                     "a small backlog keeps up on its own")
+        XCTAssertEqual(P.fasterSyncTip(strapPendingRecords: 7_650, phoneCharging: false)?.title,
+                       "Tip · Charge & lock your phone to sync faster")
+        XCTAssertEqual(P.fasterSyncTip(strapPendingRecords: 7_650, phoneCharging: true)?.title,
+                       "Tip · Lock your phone to sync faster")
+    }
+}
