@@ -294,3 +294,68 @@ final class AtriaFasterSyncTipTests: XCTestCase {
                        "Tip · Lock your phone to sync faster")
     }
 }
+
+/// 2026-10-01 pull: 14 gap windows sat at 0% behind the drain cursor; the
+/// full-drain authority minted for one of them stayed draining and deferred
+/// every recovered projection.
+final class AtriaGapWindowsDrainedPastTests: XCTestCase {
+    private func withDefaults(_ body: (UserDefaults) throws -> Void) rethrows {
+        let suite = "AtriaGapWindowsDrainedPastTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer {
+            AtriaHistoricalGapLedger.resetStorageForTesting(defaults: defaults)
+            defaults.removePersistentDomain(forName: suite)
+        }
+        try body(defaults)
+    }
+
+    private func addClosedWindow(at start: Date, seconds: TimeInterval, defaults: UserDefaults) {
+        XCTAssertTrue(AtriaHistoricalGapLedger.beginGap(at: start, reason: "disconnect", defaults: defaults))
+        XCTAssertTrue(AtriaHistoricalGapLedger.closeOpenGap(at: start.addingTimeInterval(seconds),
+                                                            defaults: defaults))
+    }
+
+    func testWindowsTheDrainHasPassedSettleAndLaterOnesStay() throws {
+        try withDefaults { defaults in
+            let base = Date(timeIntervalSince1970: 1_790_840_000)
+            addClosedWindow(at: base, seconds: 62, defaults: defaults)
+            addClosedWindow(at: base.addingTimeInterval(3_600), seconds: 61, defaults: defaults)
+            XCTAssertEqual(AtriaHistoricalGapLedger.windows(defaults: defaults).count, 2)
+
+            let cursor = base.addingTimeInterval(1_800).timeIntervalSince1970
+            let settlement = try XCTUnwrap(AtriaHistoricalGapLedger.settleWindowsDrainedPast(
+                cursorUnix: cursor, defaults: defaults))
+            XCTAssertEqual(settlement.settledWindows, 1)
+            XCTAssertEqual(settlement.remainingWindows, 1)
+            let left = AtriaHistoricalGapLedger.windows(defaults: defaults)
+            XCTAssertEqual(left.map(\.start), [base.addingTimeInterval(3_600)],
+                           "the window ahead of the cursor can still be drained")
+        }
+    }
+
+    func testCursorJustPastTheEndWaitsForTheMargin() throws {
+        try withDefaults { defaults in
+            let base = Date(timeIntervalSince1970: 1_790_840_000)
+            addClosedWindow(at: base, seconds: 62, defaults: defaults)
+            let end = base.addingTimeInterval(62).timeIntervalSince1970
+            let early = AtriaHistoricalGapLedger.settleWindowsDrainedPast(cursorUnix: end + 30,
+                                                                         defaults: defaults)
+            XCTAssertEqual(early?.settledWindows, 0)
+            let late = AtriaHistoricalGapLedger.settleWindowsDrainedPast(
+                cursorUnix: end + AtriaHistoricalGapLedger.drainedPastMargin, defaults: defaults)
+            XCTAssertEqual(late?.settledWindows, 1)
+        }
+    }
+
+    func testOpenWindowAndUnknownCursorAreNeverSettled() throws {
+        try withDefaults { defaults in
+            let base = Date(timeIntervalSince1970: 1_790_840_000)
+            XCTAssertTrue(AtriaHistoricalGapLedger.beginGap(at: base, reason: "disconnect", defaults: defaults))
+            XCTAssertNil(AtriaHistoricalGapLedger.settleWindowsDrainedPast(cursorUnix: 0, defaults: defaults))
+            let settlement = AtriaHistoricalGapLedger.settleWindowsDrainedPast(
+                cursorUnix: base.addingTimeInterval(86_400).timeIntervalSince1970, defaults: defaults)
+            XCTAssertEqual(settlement?.settledWindows, 0, "an open window's end is not known yet")
+            XCTAssertTrue(AtriaHistoricalGapLedger.hasOpenWindow(defaults: defaults))
+        }
+    }
+}
