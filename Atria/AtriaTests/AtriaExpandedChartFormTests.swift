@@ -39,7 +39,8 @@ final class AtriaExpandedChartFormTests: XCTestCase {
         // deciding. If this fails, classify the new metric deliberately.
         XCTAssertEqual(
             AtriaMetricDetailKind.allCases.filter(\.rendersAsDailyBar).count,
-            8
+            5,
+            "owner 2026-10-01: HRV, resting HR and respiration are levels drawn as dots"
         )
     }
 

@@ -126,8 +126,10 @@ struct AtriaTrendChartCard: View {
                 AtriaTextSelector(items: AtriaTrendMetric.allCases,
                                   title: { $0.shortLabel },
                                   selection: $metric)
+                // Full words like every other range picker ("Week", not "W"):
+                // this card offers only two ranges, so there is room.
                 AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,
-                                  title: { $0.segmentedLabel },
+                                  title: { $0.menuLabel },
                                   selection: $range)
             }
 
@@ -1941,9 +1943,12 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
     /// Once-a-day values are bars, matching the metric-detail tiles.
     /// Levels still refuse a zero floor so a 4 bpm / 4 ms move stays visible.
+    /// Strain is a magnitude (bars from zero); HRV and resting HR are levels
+    /// drawn as dots on a line, same as their detail sheets (2026-10-01).
     var rendersAsDailyBar: Bool {
         switch self {
-        case .strain, .restingHR, .hrv: return true
+        case .strain: return true
+        case .restingHR, .hrv: return false
         }
     }
 

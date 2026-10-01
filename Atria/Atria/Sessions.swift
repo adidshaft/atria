@@ -33797,6 +33797,32 @@ final class SessionStore: ObservableObject {
                                       workoutSteps: Int? = nil,
                                       workoutStepsAreEstimated: Bool? = nil,
                                       workoutStepsCapturedAt: Date? = nil) async -> UserConfirmedWorkout? {
+        // A confirmed detection never takes time a saved activity already
+        // holds (owner 2026-10-01). Stats below are recomputed from the
+        // samples inside the final window, so they describe what was kept.
+        var requestedStart = requestedStart
+        var requestedEnd = requestedEnd
+        if reviewSource == "detected_activity_review", requestedEnd > requestedStart {
+            let saved = confirmedWorkouts.compactMap { workout in
+                workout.end > workout.start
+                    ? DateInterval(start: workout.start, end: workout.end) : nil
+            }
+            guard let free = AtriaActivityOverlapPolicy.freeWindow(
+                DateInterval(start: requestedStart, end: requestedEnd),
+                occupied: saved
+            ) else {
+                AtriaDebugLog("ATRIADBG workout_confirm status=rejected reason=overlaps_saved_activity source=%@ start=%@ end=%@",
+                              source, isoString(requestedStart), isoString(requestedEnd))
+                return nil
+            }
+            if free.start != requestedStart || free.end != requestedEnd {
+                AtriaDebugLog("ATRIADBG workout_confirm status=trimmed reason=overlaps_saved_activity source=%@ from=%@-%@ to=%@-%@",
+                              source, isoString(requestedStart), isoString(requestedEnd),
+                              isoString(free.start), isoString(free.end))
+            }
+            requestedStart = free.start
+            requestedEnd = free.end
+        }
         guard requestedEnd > requestedStart else {
             AtriaDebugLog("ATRIADBG workout_confirm status=learning reason=invalid_window source=%@ start=%@ end=%@ metric_promotions=0",
                   source,
@@ -61623,7 +61649,18 @@ struct SessionDetail: View {
                             // it the same way rather than leaving this one
                             // surface angular.
                             .interpolationMethod(.monotone)
+                            .lineStyle(AtriaChartVisualGrammar.traceLine)
                             .foregroundStyle(.red.gradient)
+                    }
+                    .atriaGraphPlotSurface()
+                    .atriaDailyQuantityYAxis()
+                    .chartXAxis {
+                        AxisMarks(values: .automatic(desiredCount: AtriaChartVisualGrammar.intradayTimeTickCount)) { _ in
+                            AxisGridLine().foregroundStyle(Color.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                            AxisValueLabel()
+                                .font(AtriaChartVisualGrammar.axisLabelFont)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
+                        }
                     }
                     .frame(height: 220)
                     .padding()

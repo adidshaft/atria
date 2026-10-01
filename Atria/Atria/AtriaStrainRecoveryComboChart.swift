@@ -208,7 +208,7 @@ struct AtriaStrainRecoveryComboChart: View {
     /// narrow weekday initials repeat (`S S`, `T T`) stays unambiguous.
     /// Internal for the tick-formatter tests.
     static func dayTickLabel(for day: Date, calendar: Calendar = .current) -> String {
-        AtriaChartVisualGrammar.compactWeekdayDayLabel(for: day, calendar: calendar)
+        AtriaChartVisualGrammar.weekdayAxisLabel(for: day, calendar: calendar)
     }
 }
 

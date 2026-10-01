@@ -373,3 +373,96 @@ final class AtriaDrainingAuthorityAdmitsSliceTests: XCTestCase {
         XCTAssertTrue(B.drainingAuthorityAdmitsHistoryRequest(reason: "maintenance_ticker", strandedResume: true))
     }
 }
+
+/// Owner 2026-10-01: activities never share time. A detection 9:36–10:07
+/// that grazed a saved 9:22–9:37 walk was shown overlapping it.
+final class AtriaActivityOverlapPolicyTests: XCTestCase {
+    private func at(_ minutes: Double) -> Date { Date(timeIntervalSince1970: 1_790_870_000 + minutes * 60) }
+
+    func testAGrazingDetectionIsTrimmedToTheFreeStretch() {
+        let walk = DateInterval(start: at(0), end: at(15))
+        let free = AtriaActivityOverlapPolicy.freeWindow(DateInterval(start: at(14), end: at(45)),
+                                                         occupied: [walk])
+        XCTAssertEqual(free, DateInterval(start: at(15), end: at(45)))
+    }
+
+    func testTheLongestGapWinsBetweenTwoSavedActivities() {
+        let free = AtriaActivityOverlapPolicy.freeWindow(
+            DateInterval(start: at(0), end: at(60)),
+            occupied: [DateInterval(start: at(10), end: at(20)), DateInterval(start: at(50), end: at(70))]
+        )
+        XCTAssertEqual(free, DateInterval(start: at(20), end: at(50)))
+    }
+
+    func testAnAlmostCoveredDetectionIsNotOffered() {
+        XCTAssertNil(AtriaActivityOverlapPolicy.freeWindow(
+            DateInterval(start: at(0), end: at(20)),
+            occupied: [DateInterval(start: at(-5), end: at(17))]
+        ), "three minutes left is not an activity")
+    }
+
+    func testAClearDetectionIsUnchanged() {
+        let window = DateInterval(start: at(0), end: at(30))
+        XCTAssertEqual(AtriaActivityOverlapPolicy.freeWindow(window, occupied: [DateInterval(start: at(40), end: at(50))]),
+                       window)
+    }
+}
+
+final class AtriaActivityTimelineStripLayoutTests: XCTestCase {
+    func testBackToBackPillsNeverOverlapAndStayInside() {
+        let frames = AtriaActivityTimelineStripLayout.frames(
+            spans: [(300, 305), (306, 309), (308, 312)], width: 312)
+        for (a, b) in zip(frames, frames.dropFirst()) {
+            XCTAssertLessThanOrEqual(a.x + a.width, b.x, "pills must not overlap")
+        }
+        XCTAssertLessThanOrEqual(frames.last!.x + frames.last!.width, 312)
+        XCTAssertGreaterThanOrEqual(frames.first!.x, 0)
+    }
+
+    func testWidePillsKeepTheirTimePosition() {
+        let frames = AtriaActivityTimelineStripLayout.frames(spans: [(10, 80), (120, 200)], width: 300)
+        XCTAssertEqual(frames[0].x, 10)
+        XCTAssertEqual(frames[1].x, 120)
+        XCTAssertEqual(frames[1].width, 80)
+    }
+}
+
+/// Owner 2026-10-01: Steps headline and bars count the same wake-to-wake
+/// window, and the sheet says where strap motion has synced to.
+final class AtriaStepsSinceWakeTests: XCTestCase {
+    func testCycleFallbackFoldsReceiptsIntoTheCycleHoldingTheirMiddle() {
+        let base = Date(timeIntervalSince1970: 1_790_800_000)
+        let windows = [DateInterval(start: base, end: base.addingTimeInterval(86_400)),
+                       DateInterval(start: base.addingTimeInterval(86_400), end: base.addingTimeInterval(2 * 86_400))]
+        func receipt(_ s: TimeInterval, _ e: TimeInterval, _ steps: Int) -> HistoricalArchive.MotionTickDayEvidence {
+            HistoricalArchive.MotionTickDayEvidence(
+                windowStart: base.addingTimeInterval(s), windowEnd: base.addingTimeInterval(e),
+                motionTicks: steps * 2, steps: steps, knownCoverageSeconds: Int(e - s),
+                missingCoverageSeconds: 0, decodedRows: 100, capturedThrough: base.addingTimeInterval(e))
+        }
+        let totals = AtriaStepsWeekChart.cycleStepTotals(
+            receipts: [receipt(0, 86_000, 6_000),
+                       receipt(10_000, 20_000, 900),          // contained duplicate
+                       receipt(86_400, 150_000, 4_200)],
+            windows: windows)
+        XCTAssertEqual(totals[windows[0].start], 6_000)
+        XCTAssertEqual(totals[windows[1].start], 4_200)
+    }
+
+    func testCompactLabelsStayShort() {
+        XCTAssertEqual(AtriaStepsWeekChart.compactCountLabel(steps: 8_508, isPartial: false), "8.5k")
+        XCTAssertEqual(AtriaStepsWeekChart.compactCountLabel(steps: 5_762, isPartial: true), "5.8k+")
+        XCTAssertEqual(AtriaStepsWeekChart.compactCountLabel(steps: 640, isPartial: false), "640")
+    }
+
+    func testSyncStatusNamesWhereMotionHasReached() {
+        let now = Date(timeIntervalSince1970: 1_790_873_000)
+        XCTAssertTrue(AtriaStrapMotionSyncStatus.make(syncedThrough: now.addingTimeInterval(-300), now: now).isUpToDate)
+        let behind = AtriaStrapMotionSyncStatus.make(syncedThrough: now.addingTimeInterval(-6_060), now: now)
+        XCTAssertFalse(behind.isUpToDate)
+        XCTAssertTrue(behind.title.hasPrefix("Synced to "))
+        XCTAssertEqual(behind.detail, "1 h 41 min of motion still on the strap")
+        XCTAssertEqual(AtriaStrapMotionSyncStatus.make(syncedThrough: nil, now: now).title,
+                       "Waiting for first sync")
+    }
+}

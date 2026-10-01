@@ -3377,7 +3377,7 @@ struct AtriaSleepStressCard: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                         AxisTick().foregroundStyle(.clear)
-                        AxisValueLabel(format: .dateTime.hour().minute())
+                        AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                             .font(AtriaChartVisualGrammar.axisLabelFont)
                             .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }

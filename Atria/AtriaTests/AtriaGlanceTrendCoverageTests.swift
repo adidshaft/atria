@@ -70,12 +70,16 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
         // AtriaCivilDayStepAuthority (2026-08-27 audit: a day showing 505 held
         // ~7,000 in its shards, another showing 0 held 3,615), with the
         // receipt fold as the fallback for days whose shards rotated out.
-        for (name, text) in [("Today", today), ("Overview", overview)] {
-            XCTAssertTrue(text.contains("AtriaCivilDayStepAuthority.shared.dailyTotals"),
-                          "\(name) must read exact day totals from the authority")
-            XCTAssertTrue(text.contains("AtriaStepsWeekChart.dailyStepTotals"),
-                          "\(name) must keep the receipt fold as its fallback")
-        }
+        XCTAssertTrue(today.contains("AtriaCivilDayStepAuthority.shared.dailyTotals"),
+                      "Today must read exact day totals from the authority")
+        XCTAssertTrue(today.contains("AtriaStepsWeekChart.dailyStepTotals"),
+                      "Today must keep the receipt fold as its fallback")
+        // Owner 2026-10-01: the Steps sheet counts wake to wake, through the
+        // same authority (cycle windows) with the cycle receipt fold behind it.
+        XCTAssertTrue(overview.contains("AtriaCivilDayStepAuthority.cycles.windowTotalsAndPartial"),
+                      "the Steps sheet must read exact cycle totals from the authority")
+        XCTAssertTrue(overview.contains("AtriaStepsWeekChart.cycleStepTotals"),
+                      "the Steps sheet must keep the cycle receipt fold as its fallback")
         XCTAssertFalse(overview.contains("map[day, default: 0] += receipt.steps"),
                        "the second copy of the folding rule must be gone — two "
                            + "copies is how the card and its own chart came to "

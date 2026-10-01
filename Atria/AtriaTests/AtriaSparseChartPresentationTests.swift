@@ -20,23 +20,18 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
 
     // MARK: - Date ticks
 
-    func testDayTickLabelsDistinguishAllSevenDaysDespiteRepeatedInitials() {
+    func testDayTicksAreWeekdayInitialsLikeEveryWeekAxis() {
+        // Owner 2026-10-01: "F 25"-style ticks crowded under each bar. Every
+        // week axis now names a day by its weekday initial; the dates live in
+        // the chart's period header.
         let labels = (0..<7).map {
             AtriaStrainRecoveryComboChart.dayTickLabel(for: day($0), calendar: calendar)
         }
-        XCTAssertEqual(Set(labels).count, 7,
-                       "Weekday+day ticks must be unique across a week: \(labels)")
         for (offset, label) in labels.enumerated() {
-            let dayOfMonth = calendar.component(.day, from: day(offset))
-            XCTAssertTrue(label.hasSuffix(" \(dayOfMonth)"),
-                          "\(label) must end with its day of month \(dayOfMonth)")
-            XCTAssertFalse(label.trimmingCharacters(in: .whitespaces).isEmpty)
+            XCTAssertEqual(label, AtriaChartVisualGrammar.weekdayAxisLabel(for: day(offset),
+                                                                            calendar: calendar))
+            XCTAssertEqual(label.count, 1)
         }
-        // Narrow weekday initials alone genuinely repeat inside one week —
-        // the day number is what disambiguates.
-        let initials = labels.map { String($0.prefix(1)) }
-        XCTAssertLessThan(Set(initials).count, 7,
-                          "Fixture week should contain repeated initials for the test to be meaningful")
     }
 
     // MARK: - Gap truth

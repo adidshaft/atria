@@ -683,7 +683,7 @@ struct RestingTrendChart: View {
                         LineMark(x: .value("Date", sample.date),
                                  y: .value("Resting", sample.value),
                                  series: .value("Observed run", "resting-\(sample.segment)"))
-                            .interpolationMethod(.monotone)
+                            .interpolationMethod(.linear)
                             .lineStyle(AtriaChartVisualGrammar.trendLine)
                             .foregroundStyle(.teal)
                         PointMark(x: .value("Date", sample.date),

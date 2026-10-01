@@ -198,7 +198,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(timeline.contains("LineMark(x: .value(\"Time\", point.t)"))
         XCTAssertTrue(timeline.contains("timelinePlotOverlay"),
                       "The single activity-marker lane should share the monitor plot")
-        XCTAssertTrue(timeline.contains("font(.system(size: 9"))
+        XCTAssertTrue(timeline.contains(".font(AtriaChartVisualGrammar.axisLabelFont)"),
+                      "the time axis uses the shared axis type (2026-10-01)")
         XCTAssertTrue(timeline.contains(".accessibilityLabel(\"Heart rate and activity timeline\")"))
         XCTAssertTrue(timeline.contains(".accessibilityLabel(\"Stress and activity timeline\")"))
         XCTAssertTrue(timeline.contains(".frame(height: 154)"),

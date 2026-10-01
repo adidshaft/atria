@@ -2067,17 +2067,17 @@ struct AtriaWeeklyReportSheet: View {
                         AxisTick().foregroundStyle(.clear)
                         if let date = value.as(Date.self) {
                             AxisValueLabel(centered: true, verticalSpacing: 6) {
-                                Text(AtriaChartVisualGrammar.compactWeekdayDayLabel(for: date,
+                                Text(AtriaChartVisualGrammar.weekdayAxisLabel(for: date,
                                                                                    calendar: reportCalendar))
                                     .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                             }
                         }
                     }
                 }
+                // Fits the card: clipping a negatively padded plot cut the
+                // top axis label ("100") and the edge bars (2026-10-01).
                 .frame(height: 120)
-                .clipped()
-                .padding(.horizontal, -14)
                 .accessibilityLabel("\(selectedTrend.rawValue) color bars for each recorded day of the week. \(selectedTrendThresholdLabel).")
             }
 
@@ -2782,13 +2782,11 @@ struct AtriaStrapStepsDetailSheet: View {
     @State private var autoResolvedSteps = 0
     @State private var minorMovementSteps = 0
 
-    /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
-    /// loaded once from the durable motion-tick day store. Days without a
-    /// verified receipt simply have no entry (and no bar).
-    @State private var weekSteps: [Date: Int] = [:]
-    /// Days on the week chart whose count is partial (today so far, thin
-    /// strap coverage, or receipt fallback only).
-    @State private var weekPartialDays: Set<Date> = []
+    /// Confirmed sleeps, for the wake-to-wake windows the bars count.
+    var confirmedSleeps: [UserConfirmedSleep] = []
+    /// Last seven wake-to-wake cycles, oldest first; the newest is the count
+    /// above (owner 2026-10-01: headline and bars use one window).
+    @State private var cycleBars: [AtriaStepsWeekChart.CycleBar] = []
 
     var body: some View {
         NavigationStack {
@@ -2803,40 +2801,45 @@ struct AtriaStrapStepsDetailSheet: View {
                             .releaseDailyAuthorityQualified
                 )
 
+                let sync = AtriaStrapMotionSyncStatus.make(
+                    syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+                    now: context.date
+                )
+                let syncTint: Color = sync.isUpToDate ? Metrics.electricGreen : .orange
+
                 ScrollView {
                   VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 12) {
-                        Image(systemName: "shoeprints.fill")
+                        Image(systemName: sync.isUpToDate
+                              ? "checkmark.circle.fill"
+                              : "arrow.triangle.2.circlepath")
                             .font(.title3.weight(.bold))
-                            .foregroundStyle(status.tint)
+                            .foregroundStyle(syncTint)
                             .frame(width: 42, height: 42)
-                            .background(status.tint.opacity(0.12), in: Circle())
+                            .background(syncTint.opacity(0.12), in: Circle())
 
+                        // Where strap motion has reached the phone: the one
+                        // thing a wearer needs to know whether their latest
+                        // walk is in the count (owner 2026-10-01).
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(
-                                status.isLive
-                                    ? "Motion live"
-                                    : "Motion not live"
-                            )
+                            Text(sync.title)
                                 .font(.headline)
-                            // Sentence case: .capitalized made "1m ago" read "1M Ago".
-                            Text(status.lastMotionText.prefix(1).uppercased()
-                                 + status.lastMotionText.dropFirst())
+                            Text(sync.detail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
 
                         Spacer(minLength: 8)
 
-                        Text(presentation.valueText)
+                        Text(presentation.count.map { $0.formatted(.number.grouping(.automatic)) }
+                             ?? presentation.valueText)
                             .font(AtriaDesignTokens.Typography.cardHeroValue)
                             .monospacedDigit()
                             .contentTransition(reduceMotion ? .identity : .numericText())
                             .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: presentation.valueText)
                     }
-                    if AtriaAppReviewDemo.isActive {
-                        AtriaSampleDataBadge(compact: true)
-                    }
+                    // The toolbar already badges sample data; a second chip
+                    // here repeated it.
                     AtriaSourcesLink(metricID: "steps", compact: true)
 
                     // 2026-09-30 device audit: a "Measurement" card only repeated
@@ -2845,9 +2848,9 @@ struct AtriaStrapStepsDetailSheet: View {
                     VStack(alignment: .leading, spacing: 7) {
                         if let count = presentation.count {
                             HStack {
-                                Text(status.isLive ? "Daily goal" : "Saved progress")
+                                Text("Since you woke")
                                 Spacer()
-                                Text("\(presentation.valueText) / \(max(goal, 0))")
+                                Text("\(count.formatted(.number.grouping(.automatic))) / \(max(goal, 0).formatted(.number.grouping(.automatic)))")
                                     .monospacedDigit()
                             }
                             .font(.caption.weight(.semibold))
@@ -2858,28 +2861,8 @@ struct AtriaStrapStepsDetailSheet: View {
                             // visual fill; the exact count remains visible above.
                             ProgressView(value: Double(min(max(count, 0), max(goal, 1))),
                                          total: Double(max(goal, 1)))
-                                .tint(status.tint)
+                                .tint(count >= goal ? Metrics.electricGreen : status.tint)
 
-                            if presentation.completeness != .complete {
-                                // The typed motion authority overrides the
-                                // forward-looking promise when the transport is a
-                                // terminal pure-HR fallback (motion won't sync in
-                                // this mode); the verified count above is unchanged.
-                                // A stalled IMU must not keep promising that the
-                                // number "grows as you move" — silent seconds are
-                                // not reconstructed. Wearer guidance says what
-                                // actually keeps the live stream healthy.
-                                // Plain words on screen (device audit 2026-09-30 read
-                                // "Not compact 0x33 gait"); the provenance footnote
-                                // stays in the presentation model for diagnostics.
-                                Text(status.wearerGuidance
-                                     ?? presentation.motionAvailabilityFootnote
-                                     ?? (presentation.source == .live
-                                         ? "Counted from strap motion as you move."
-                                         : "Counted so far. Gaps stay gaps — nothing is guessed."))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
                         } else {
                             Text(presentation.detailText)
                                 .font(.caption.weight(.semibold))
@@ -2992,16 +2975,7 @@ struct AtriaStrapStepsDetailSheet: View {
     }
 
     private var stepsWeekChartCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal, partialDays: weekPartialDays)
-            // The bars are CALENDAR days computed exactly from the strap's
-            // recorded rows; the count at the top of this sheet is since your
-            // wake. Saying so stops the two honest numbers reading as a bug
-            // when a cycle spans midnight.
-            Text("Bars are calendar days · the count above is since your wake")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
+        AtriaStepsWeekChart(bars: cycleBars, goal: goal)
     }
 
     /// How close a receipt's end must be to now to count as the cycle still
@@ -3009,28 +2983,29 @@ struct AtriaStrapStepsDetailSheet: View {
     /// `windowEnd` trails `now` by minutes, not hours.
 
     private func loadWeekSteps() async {
-        guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
         let now = Date()
+        let windows = AtriaStepsWeekChart.cycleWindows(now: now, confirmedSleeps: confirmedSleeps)
+        guard let current = windows.last else { return }
+        if AtriaAppReviewDemo.isActive {
+            var totals: [Date: Int] = [:]
+            for window in windows {
+                totals[window.start] = AtriaAppReviewDemo.stepCount(on: window.start, now: now)
+            }
+            cycleBars = makeCycleBars(windows: windows, totals: totals,
+                                      partial: [], current: current)
+            return
+        }
+        guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
         let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier,
                                                                             limit: 14)
-        // Receipt folding first, shown immediately: it is instant, and it is
-        // the fallback for days whose shards have rotated out.
-        let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
-        weekSteps = fallback
-        // Until the exact read lands every bar is a receipt fold: partial.
-        weekPartialDays = Set(fallback.keys)
-        // Then the exact per-calendar-day totals from the shards themselves.
-        // Receipts are cycle-scoped, frozen at publication, and can be missing
-        // for whole days — the 2026-08-27 audit measured a day showing 505
-        // where the shards hold ~7,000, and another showing 0. The authority
-        // replaces every day the rows can answer and leaves the rest alone.
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: now)
-        let days = (0..<7).compactMap {
-            calendar.date(byAdding: .day, value: -$0, to: today)
-        }
-        let week = await AtriaCivilDayStepAuthority.shared.dailyTotalsAndPartialDays(
-            days: days,
+        // Receipts are cycle-scoped: shown at once, and the answer for cycles
+        // whose shards have rotated out (~4 days).
+        let fallback = AtriaStepsWeekChart.cycleStepTotals(receipts: receipts, windows: windows)
+        cycleBars = makeCycleBars(windows: windows, totals: fallback,
+                                  partial: Set(fallback.keys), current: current)
+        let closed = Array(windows.dropLast())
+        let exact = await AtriaCivilDayStepAuthority.cycles.windowTotalsAndPartial(
+            windows: closed,
             strapIdentifier: identifier,
             // The wearer's "Not walking" answers join the labelled non-gait
             // blocks — same rule at every step surface.
@@ -3039,9 +3014,25 @@ struct AtriaStrapStepsDetailSheet: View {
             fallback: fallback,
             now: now
         )
-        weekSteps = week.totals
-        weekPartialDays = week.partial
+        cycleBars = makeCycleBars(windows: windows, totals: exact.totals,
+                                  partial: exact.partial, current: current)
         await refreshUnverifiedClusters(identifier: identifier, now: now)
+    }
+
+    /// The open cycle's bar IS the headline count, so they cannot disagree.
+    private func makeCycleBars(windows: [DateInterval],
+                               totals: [Date: Int],
+                               partial: Set<Date>,
+                               current: DateInterval) -> [AtriaStepsWeekChart.CycleBar] {
+        windows.map { window in
+            let isCurrent = window.start == current.start
+            return AtriaStepsWeekChart.CycleBar(
+                start: window.start,
+                steps: isCurrent ? (presentation.count ?? totals[window.start]) : totals[window.start],
+                isPartial: isCurrent || partial.contains(window.start),
+                isCurrent: isCurrent
+            )
+        }
     }
 
     /// Sustained counter activity in the last 24 h that no workout label and
@@ -3783,8 +3774,11 @@ enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
         // silently switched to lines when tapped open, which is exactly the
         // unpredictability the 2026-08-27 goal names. Aligned here so the
         // full-screen shape is the shape that was tapped.
-        case .recovery, .sleep, .strain, .sleepPerformance,
-             .hrv, .restingHeartRate, .respiratoryRate, .sleepEfficiency:
+        // HRV, resting HR and respiratory rate are LEVELS: they draw as dots
+        // on a line over the typical band. Bars from a padded floor made a
+        // 2 bpm move read as a doubled column (owner 2026-10-01, superseding
+        // the 2026-08-26 all-daily-values-are-bars rule for levels).
+        case .recovery, .sleep, .strain, .sleepPerformance, .sleepEfficiency:
             return true
         // Stated exclusions, each for a reason rather than by omission:
         //  .stress          intra-day — the rule's own line case
@@ -4580,12 +4574,8 @@ struct AtriaMetricDetailSheet: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(metric.title) meaning and coaching")
                 }
-                if AtriaAppReviewDemo.isActive {
-                    AtriaSampleDataBadge(compact: true)
-                    AtriaSourcesLink(metricID: metric.rawValue, compact: true)
-                } else {
-                    AtriaSourcesLink(metricID: metric.rawValue, compact: true)
-                }
+                // The sheet's top inset already badges sample data.
+                AtriaSourcesLink(metricID: metric.rawValue, compact: true)
 
                 if preparation.value == nil {
                     preparationShell
@@ -7256,7 +7246,10 @@ private struct AtriaPreparedMetricChart: View {
     /// therefore shades some points and not others, which reads as a solid
     /// block sitting under an arbitrary part of the chart (2026-09-03 render).
     /// Draw it only when the window is completely covered.
-    private var rendersAreaFill: Bool { windowMissingDayCount == nil }
+    /// Also only on zero-anchored charts: a fill under a level line (HRV,
+    /// resting HR) claims a quantity measured from the padded floor
+    /// (2026-10-01 chart pass).
+    private var rendersAreaFill: Bool { windowMissingDayCount == nil && anchorsAtZero }
 
     /// The chart clips to `prepared.xDomain`; the header must quote the last
     /// point actually drawn, never one that fell outside the domain
@@ -7324,7 +7317,7 @@ private struct AtriaPreparedMetricChart: View {
                     AreaMark(x: .value("Day", entry.point.day, unit: .day),
                              y: .value(title, entry.point.value),
                              series: .value("Fill run", "fill-\(entry.runID)"))
-                        .interpolationMethod(.monotone)
+                        .interpolationMethod(.linear)
                         .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
                                                         startPoint: .top, endPoint: .bottom))
                 }
@@ -7342,9 +7335,12 @@ private struct AtriaPreparedMetricChart: View {
             // drawing a straight segment across days with no reading (2026-08-03
             // chart-honesty rule). Points still render on every real day.
             ForEach(rendersAsDailyBar ? [] : points.contiguousDayRuns(), id: \.point.day) { entry in
+                // Straight segments: one reading per night, and a curve
+                // between them drew peaks and dips no night recorded (the
+                // resting-HR line swung past 56 between two 56s, 2026-10-01).
                 LineMark(x: .value("Day", entry.point.day, unit: .day), y: .value(title, entry.point.value),
                          series: .value("Series", "current-\(entry.runID)"))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(lineStyle)
                     // Without plot-area alignment Swift Charts resolves the
@@ -7461,10 +7457,6 @@ private struct AtriaPreparedMetricChart: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                 }
-                Text("One observation in this view · a trend needs multiple days")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
@@ -7472,7 +7464,7 @@ private struct AtriaPreparedMetricChart: View {
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .accessibilityLabel("\(accessibilitySummary) One observation in this view. A trend needs multiple days.")
+        .accessibilityLabel("\(accessibilitySummary) One reading in this view.")
     }
 
     private var fallbackXDomain: ClosedRange<Date> {
@@ -8600,9 +8592,6 @@ private struct AtriaMetricMeaningSheet: View {
         NavigationStack {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    if AtriaAppReviewDemo.isActive {
-                        AtriaSampleDataBadge(compact: true)
-                    }
                     VStack(alignment: .leading, spacing: 8) {
                         Text(headline)
                             .font(.title3.weight(.bold))

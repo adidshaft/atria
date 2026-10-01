@@ -355,7 +355,7 @@ struct AtriaNightTimelineCard: View {
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: AtriaChartVisualGrammar.intradayTimeTickCount)) { _ in
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                     .font(AtriaChartVisualGrammar.axisLabelFont)
                     .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
@@ -382,7 +382,7 @@ struct AtriaNightTimelineCard: View {
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: AtriaChartVisualGrammar.intradayTimeTickCount)) { _ in
                     AxisTick().foregroundStyle(.clear)
-                    AxisValueLabel(format: .dateTime.hour().minute())
+                    AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
                         .font(AtriaChartVisualGrammar.axisLabelFont)
                         .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                 }
