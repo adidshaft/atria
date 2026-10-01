@@ -964,7 +964,14 @@ extension AtriaBLEManager {
         now: Date,
         catchUpWindowOpen: Bool? = nil
     ) -> Bool {
-        guard let pendingRecords, pendingRecords >= backlogSlicePendingThreshold else { return false }
+        // Inside the catch-up window any backlog worth a slice is drained
+        // (device 2026-10-01: phone charging, 292 records waiting, nothing
+        // synced for 74 min — the window waited for 600 while keep-up waits
+        // for the window to close).
+        let threshold = catchUpWindowOpen == true
+            ? keepUpSlicePendingThreshold
+            : backlogSlicePendingThreshold
+        guard let pendingRecords, pendingRecords >= threshold else { return false }
         if catchUpWindowOpen == false { return false }
         guard lastSliceYieldedRows else {
             // Outside the window a dry strap never earns an HR pause. Inside
