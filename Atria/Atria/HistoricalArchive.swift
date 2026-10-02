@@ -1863,6 +1863,7 @@ enum HistoricalArchive {
             throw TerminalConsumerProjectionError.committedAggregateUnavailable
         }
         let catalogStore = try catalogStoreLocked()
+        try catalogStore.advanceGenerationIfAppendHintsUnpersisted()
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
