@@ -671,6 +671,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
 
         XCTAssertTrue(hrvCard.contains("title: \"Morning HRV\""))
         XCTAssertTrue(hrvCard.contains("value: displaySettledHRV.value"))
-        XCTAssertTrue(hrvCard.contains("detail: legendDetail(displaySettledHRV.detail)"))
+        // 2026-10-02: wrapped in the shared last-night status rule.
+        XCTAssertTrue(hrvCard.contains("fallback: displaySettledHRV.detail)"))
     }
 }

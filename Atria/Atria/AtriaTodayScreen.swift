@@ -2249,7 +2249,8 @@ struct AtriaTodayScreen: View {
         let display = displayRecovery
         return AtriaTriRingMetric(title: "Recovery",
                                   value: display.value,
-                                  detail: display.detail,
+                                  detail: lastNightDetail(isComputed: display.percent != nil,
+                                                          fallback: display.detail),
                                   systemImage: "arrow.clockwise.heart.fill",
                                   // EXCEPTION to the identity-hue rule (color-coherence pass,
                                   // 2026-07-05): recovery's hue IS its value (WHOOP red/yellow/
@@ -2264,6 +2265,31 @@ struct AtriaTodayScreen: View {
                                   targetBand: display.percent == nil
                                     ? nil
                                     : AtriaRingMetricProjection.recoveryTargetBand(greenLower: recoveryGreenLower))
+    }
+
+    /// Ready / Calculating / Syncing for a value computed from last night
+    /// (owner 2026-10-02). A missing value whose night is still syncing or
+    /// being calculated says so; once the night synced over an hour ago the
+    /// metric's own explanation (`fallback`) stands.
+    private func lastNightDetail(isComputed: Bool, fallback: String) -> String {
+        guard !isComputed,
+              let end = latestSleep?.end,
+              Date().timeIntervalSince(end) < 24 * 60 * 60 else { return fallback }
+        return AtriaInsightReadiness.resolve(
+            isComputed: false,
+            dataEnd: end,
+            syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+            unavailableReason: fallback
+        ).label() ?? fallback
+    }
+
+    /// For values counted over today: an empty value whose history is still
+    /// on the strap says "Syncing · to HH:MM" instead of an absence.
+    private func todayDetail(isComputed: Bool, fallback: String) -> String {
+        guard !isComputed, strainHistoryIsSyncing else { return fallback }
+        return AtriaInsightReadiness.syncing(
+            through: AtriaStrapMotionSyncStatus.persistedSyncedThrough()
+        ).label() ?? fallback
     }
 
     /// Today's heart-rate history is still partly on the strap.
@@ -2908,7 +2934,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: recoveryMetric.value,
-                                        detail: legendDetail(recoveryMetric.detail),
+                                        detail: legendDetail(lastNightDetail(
+                                            isComputed: recoveryMetric.fill != nil,
+                                            fallback: recoveryMetric.detail)),
                                         systemImage: metric.systemImage,
                                         tint: recoveryMetric.tint,
                                         layoutSize: layoutSize(for: metric),
@@ -2938,7 +2966,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displayHero.hrZoneMinutes.valueText,
-                                        detail: legendDetail(displayHero.hrZoneMinutes.detailText),
+                                        detail: legendDetail(todayDetail(
+                                            isComputed: displayHero.hrZoneMinutes.hasSamples,
+                                            fallback: displayHero.hrZoneMinutes.detailText)),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric),
@@ -2969,7 +2999,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: "Morning HRV",
                                         metricKey: metric.rawValue,
                                         value: displaySettledHRV.value,
-                                        detail: legendDetail(displaySettledHRV.detail),
+                                        detail: legendDetail(lastNightDetail(
+                                            isComputed: displaySettledHRV.value != AtriaCompactMetricPresentation.noValue,
+                                            fallback: displaySettledHRV.detail)),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricHRV,
                                         layoutSize: layoutSize(for: metric),
@@ -2979,7 +3011,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: displayHero.stressMetricTitle,
                                         metricKey: metric.rawValue,
                                         value: displayHero.stressValue,
-                                        detail: legendDetail(displayHero.stressDetail),
+                                        detail: legendDetail(todayDetail(
+                                            isComputed: displayHero.stressValue != AtriaCompactMetricPresentation.noValue,
+                                            fallback: displayHero.stressDetail)),
                                         systemImage: metric.systemImage,
                                         // Identity hue (2026-07-09): stress was electricStrain (cool blue),
                                         // reading as strain; electricStress (amber) matches its detail sheet.
@@ -3047,7 +3081,9 @@ struct AtriaTodayScreen: View {
                                         // show two different sleep-performance percentages.
                                         value: sleepPerformancePercent.map { "\($0)%" }
                                             ?? AtriaCompactMetricPresentation.noValue,
-                                        detail: legendDetail("of need"),
+                                        detail: legendDetail(sleepPerformancePercent == nil
+                                            ? lastNightDetail(isComputed: false, fallback: "of need")
+                                            : "of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),
@@ -3057,7 +3093,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: displaySettledRHR.value,
-                                        detail: legendDetail(displaySettledRHR.detail),
+                                        detail: legendDetail(lastNightDetail(
+                                            isComputed: displaySettledRHR.value != AtriaCompactMetricPresentation.noValue,
+                                            fallback: displaySettledRHR.detail)),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRHR,
                                         layoutSize: layoutSize(for: metric),
@@ -3071,7 +3109,9 @@ struct AtriaTodayScreen: View {
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
                                         value: respiratory.map { String(format: "%.1f", $0) } ?? "--",
-                                        detail: legendDetail(respiratory == nil ? "After a sleep" : "/min"),
+                                        detail: legendDetail(respiratory == nil
+                                            ? lastNightDetail(isComputed: false, fallback: "After a sleep")
+                                            : "/min"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRespiratory,
                                         layoutSize: layoutSize(for: metric),
