@@ -466,3 +466,31 @@ final class AtriaStepsSinceWakeTests: XCTestCase {
                        "Waiting for first sync")
     }
 }
+
+/// Owner 2026-10-02: after the 07:38 wake Today showed yesterday's 9.0
+/// strain (a previous-cycle aggregate read as the new cycle's load), and the
+/// rings showed no target zones.
+final class AtriaTodayStrainAndRingTargetTests: XCTestCase {
+    func testAnAggregateFromAnotherCycleIsNotThisCyclesLoad() {
+        let wake = Date(timeIntervalSince1970: 1_790_906_933)
+        XCTAssertTrue(AtriaHomeModel.savedAggregateDescribesCycle(aggregateCycleStart: wake, cycleStart: wake))
+        XCTAssertFalse(AtriaHomeModel.savedAggregateDescribesCycle(
+            aggregateCycleStart: wake.addingTimeInterval(-81_000), cycleStart: wake))
+    }
+
+    func testStrainBandIsTargetPlusMinusTheGreenBand() throws {
+        let band = try XCTUnwrap(AtriaRingMetricProjection.strainTargetBand(12, greenBand: 1.5))
+        XCTAssertEqual(band.lowerBound, 10.5 / 21, accuracy: 0.0001)
+        XCTAssertEqual(band.upperBound, 13.5 / 21, accuracy: 0.0001)
+        XCTAssertNil(AtriaRingMetricProjection.strainTargetBand(nil, greenBand: 1.5))
+        let top = try XCTUnwrap(AtriaRingMetricProjection.strainTargetBand(20.5, greenBand: 1.5))
+        XCTAssertEqual(top.upperBound, 1, "the band stays on the ring")
+    }
+
+    func testRecoveryAndSleepZonesFollowTheirGreenThresholds() throws {
+        let recovery = try XCTUnwrap(AtriaRingMetricProjection.recoveryTargetBand(greenLower: 67))
+        XCTAssertEqual(recovery.lowerBound, 0.67, accuracy: 0.0001)
+        XCTAssertEqual(recovery.upperBound, 1)
+        XCTAssertEqual(AtriaRingMetricProjection.sleepTargetBand, 0.85...1.0)
+    }
+}

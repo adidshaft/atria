@@ -2037,7 +2037,9 @@ struct AtriaTodayScreen: View {
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
                                   // computed nightly need to close against -- never a fabricated
                                   // target when `sleepNeedHoursValue` can't be computed yet.
-                                  targetFraction: fillProjection.authority == .nightlyNeed ? 1.0 : nil)
+                                  targetFraction: fillProjection.authority == .nightlyNeed ? 1.0 : nil,
+                                  targetBand: fillProjection.authority == .nightlyNeed
+                                    ? AtriaRingMetricProjection.sleepTargetBand : nil)
     }
 
     /// Dated prior-night chip caption, e.g. "Aug 19 · 7h 12m" (declutter R22).
@@ -2255,9 +2257,13 @@ struct AtriaTodayScreen: View {
                                   // missing score is neutral, and configured thresholds own the
                                   // grade everywhere this ring is projected.
                                   tint: ringRecoveryZone?.tint ?? .secondary,
-                                  fill: display.percent.map { Double($0) / 100.0 })
-                                  // No target marker: recovery has no separate "target" of its
-                                  // own -- its value is already the 0-100 scale it's graded on.
+                                  fill: display.percent.map { Double($0) / 100.0 },
+                                  // The green zone is today's target: notch at its
+                                  // lower bound, zone along the edge (owner 2026-10-02).
+                                  targetFraction: display.percent == nil ? nil : recoveryGreenLower / 100,
+                                  targetBand: display.percent == nil
+                                    ? nil
+                                    : AtriaRingMetricProjection.recoveryTargetBand(greenLower: recoveryGreenLower))
     }
 
     private var strainMetric: AtriaTriRingMetric {
@@ -2286,9 +2292,12 @@ struct AtriaTodayScreen: View {
                                   // thing about the value the user is looking at,
                                   // and matches the "≥" prefix already on it.
                                   detail: pending
-                                    ? "HR pending"
+                                    ? (target.map { String(format: "Target %.1f", $0) } ?? "HR pending")
                                     : (incomplete
-                                        ? (currentStrainLimitation?.compactState
+                                        // The target is still today's target when
+                                        // the strain so far is partial.
+                                        ? (target.map { String(format: "of %.1f · partial", $0) }
+                                            ?? currentStrainLimitation?.compactState
                                             ?? "Strain data incomplete")
                                         // §13.4: a fused value names itself as
                                         // the labeled combined total.
@@ -2307,7 +2316,12 @@ struct AtriaTodayScreen: View {
                                   ),
                                   fill: fill,
                                   stateTint: incomplete || pending ? nil : ringStrainZone(target: target)?.tint,
-                                  targetFraction: incomplete || pending ? nil : AtriaRingMetricProjection.strainTargetFraction(target))
+                                  // The target comes from Recovery, not from how
+                                  // complete today's strain is: show it whenever it
+                                  // exists (owner 2026-10-02: "no strain target is
+                                  // mentioned or depicted").
+                                  targetFraction: AtriaRingMetricProjection.strainTargetFraction(target),
+                                  targetBand: AtriaRingMetricProjection.strainTargetBand(target, greenBand: strainGreenBand))
     }
 
     /// The ring, compact header, accessibility summary and glance grid all ask
