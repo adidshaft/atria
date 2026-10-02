@@ -637,7 +637,7 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         let path = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(path.contains(
-            "let sourceCanonicalRevision = self.canonicalSessionsRevision"
+            "let sourceCanonicalRevision = self.canonicalSessionsSourceRevision"
         ))
         XCTAssertTrue(path.contains(
             "let sourceConfirmedSleepsRevision ="
@@ -646,7 +646,7 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
             "Self.recoveredProjectionSourceRevisionsAreCurrent("
         ))
         let capture = try XCTUnwrap(path.range(
-            of: "let sourceCanonicalRevision = self.canonicalSessionsRevision"
+            of: "let sourceCanonicalRevision = self.canonicalSessionsSourceRevision"
         ))
         let worker = try XCTUnwrap(path.range(
             of: "Self.historySnapshotProjectionQueue.async"
@@ -659,6 +659,44 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         ))
         XCTAssertLessThan(capture.lowerBound, worker.lowerBound)
         XCTAssertLessThan(fence.lowerBound, install.lowerBound)
+    }
+
+    // 2026-10-02 device: a ~40 s exact recovery install failed with
+    // canonical_or_sleep_authority_changed because the 60 s live checkpoint
+    // landed mid-run. Live checkpoints no longer invalidate the install; the
+    // ones that landed mid-run are re-applied afterwards, oldest first.
+    func testLiveCheckpointsDuringRecoveredRunAreReappliedInOrder() {
+        let early = UUID(), active = UUID(), other = UUID()
+        XCTAssertEqual(
+            SessionStore.liveCheckpointSessionIDsToReapply(
+                [early: 3, active: 9, other: 7], since: 5),
+            [other, active])
+        XCTAssertTrue(SessionStore.liveCheckpointSessionIDsToReapply(
+            [early: 3], since: 5).isEmpty)
+    }
+
+    func testLiveCheckpointDoesNotAdvanceRecoveredSourceRevision() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let checkpoint = try XCTUnwrap(source.range(
+            of: "    func checkpoint(_ s: SavedSession) -> Bool {"))
+        let checkpointBody = String(source[checkpoint.lowerBound...].prefix(1_600))
+        XCTAssertTrue(checkpointBody.contains("isLiveCheckpoint: true"))
+        let setter = try XCTUnwrap(source.range(
+            of: "    private func setCachedCanonicalSessions("))
+        let setterBody = String(source[setter.lowerBound...].prefix(700))
+        XCTAssertTrue(setterBody.contains(
+            "if !isLiveCheckpoint {\n            canonicalSessionsSourceRevision &+= 1"))
+        XCTAssertTrue(source.contains(
+            "canonicalRevision: self.canonicalSessionsSourceRevision,"))
+        let install = try XCTUnwrap(source.range(
+            of: "installPreparation.canonicalSessions\n                )\n                self.reapplyLiveCheckpointsAfterRecoveredInstall("))
+        XCTAssertNotNil(install)
     }
 
     func testRecoveredCompactRetryRequiresExactLiveTicketAuthority() {

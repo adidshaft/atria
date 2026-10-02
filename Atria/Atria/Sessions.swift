@@ -10607,6 +10607,16 @@ final class SessionStore: ObservableObject {
     private var sessionBackupStatusGeneration: UInt64 = 0
     private var cachedCanonicalSessions: [SavedSession]
     private var canonicalSessionsRevision = 0
+    /// Canonical changes other than a live checkpoint replacing the active
+    /// session in place. A recovered projection takes ~40 s on device and
+    /// live checkpoints land every ~60 s, so keying its install on the full
+    /// revision discarded nearly every exact recovery while the strap was
+    /// worn (2026-10-02: coverageProven parked behind
+    /// canonical_or_sleep_authority_changed). Checkpoints that land mid-run
+    /// are re-applied after install instead — see
+    /// `liveCheckpointCanonicalRevisionBySessionID`.
+    private var canonicalSessionsSourceRevision = 0
+    private var liveCheckpointCanonicalRevisionBySessionID: [UUID: Int] = [:]
     /// Finalized/load-driven source changes are distinct from live checkpoint
     /// replacements of an existing canonical session.
     private var biologicalAgeSourceSessionsRevision = 0
@@ -15017,7 +15027,8 @@ final class SessionStore: ObservableObject {
         // all element walking; the MainActor install later swaps only prepared
         // values after exact ticket + authority validation.
         let sourceSessions = sessions
-        let sourceCanonicalRevision = canonicalSessionsRevision
+        let sourceCanonicalRevision = canonicalSessionsSourceRevision
+        let sourceLiveCanonicalRevision = canonicalSessionsRevision
         let sourceConfirmedSleepsRevision = confirmedSleepsRevision
         let previousRecoveredSessions = cachedRecoveredHeartRateSessions
         let previousArchiveHeartRatePoints =
@@ -15703,7 +15714,7 @@ final class SessionStore: ObservableObject {
                     return
                 }
                 guard Self.recoveredProjectionSourceRevisionsAreCurrent(
-                    canonicalRevision: self.canonicalSessionsRevision,
+                    canonicalRevision: self.canonicalSessionsSourceRevision,
                     expectedCanonicalRevision:
                         installPreparation.sourceCanonicalRevision,
                     confirmedSleepsRevision: self.confirmedSleepsRevision,
@@ -15754,6 +15765,9 @@ final class SessionStore: ObservableObject {
                 )
                 self.setCachedCanonicalSessions(
                     installPreparation.canonicalSessions
+                )
+                self.reapplyLiveCheckpointsAfterRecoveredInstall(
+                    since: sourceLiveCanonicalRevision
                 )
                 if automaticCurrentCycleCutoff == nil {
                     self.setLatestReferenceValidatedHRVSource(
@@ -18882,7 +18896,7 @@ final class SessionStore: ObservableObject {
             let rollups = self.historySnapshot.rollups
             let confirmedSleeps = self.cachedConfirmedSleeps
             let dismissedCandidates = self.dismissedSleepCandidates
-            let sourceCanonicalRevision = self.canonicalSessionsRevision
+            let sourceCanonicalRevision = self.canonicalSessionsSourceRevision
             let sourceConfirmedSleepsRevision =
                 self.confirmedSleepsRevision
             Self.historySnapshotProjectionQueue.async { [weak self] in
@@ -18909,7 +18923,7 @@ final class SessionStore: ObservableObject {
                           authority.shouldContinue() else { return }
                     guard Self.recoveredProjectionSourceRevisionsAreCurrent(
                         canonicalRevision:
-                            self.canonicalSessionsRevision,
+                            self.canonicalSessionsSourceRevision,
                         expectedCanonicalRevision:
                             sourceCanonicalRevision,
                         confirmedSleepsRevision:
@@ -25951,7 +25965,8 @@ final class SessionStore: ObservableObject {
         advancesBiologicalAgeSourceGeneration: Bool = true,
         replacesCanonicalSessionWithSameID: Bool = false,
         refreshHRV: Bool = true,
-        scheduleSleepReviewRefresh: Bool = true
+        scheduleSleepReviewRefresh: Bool = true,
+        isLiveCheckpoint: Bool = false
     ) {
         if refreshHRV {
             setLatestReferenceValidatedHRVSource(Self.latestReferenceValidatedHRVSourceAfterUpsert(
@@ -25972,22 +25987,77 @@ final class SessionStore: ObservableObject {
             replacesSameID: replacesCanonicalSessionWithSameID
         ),
         advancesBiologicalAgeSourceGeneration: advancesBiologicalAgeSourceGeneration,
-        scheduleSleepReviewRefresh: scheduleSleepReviewRefresh)
+        scheduleSleepReviewRefresh: scheduleSleepReviewRefresh,
+        isLiveCheckpoint: isLiveCheckpoint)
+        if isLiveCheckpoint {
+            liveCheckpointCanonicalRevisionBySessionID[session.id] =
+                canonicalSessionsRevision
+            if liveCheckpointCanonicalRevisionBySessionID.count > 16,
+               let oldest = liveCheckpointCanonicalRevisionBySessionID
+                .min(by: { $0.value < $1.value })?.key {
+                liveCheckpointCanonicalRevisionBySessionID[oldest] = nil
+            }
+        }
         cachedHomeSavedAggregate = nil
         cachedTodayTRIMP = nil
         cachedCurrentCollectionStatus = nil
         refreshMaxHRSuggestion(reason: "session_upsert", force: false)
     }
 
+    /// The recovered install swaps in canonical sessions prepared from the
+    /// pre-run capture. A live checkpoint that replaced the active session
+    /// during the run is re-applied exactly as it would have been had it
+    /// landed just after the install.
+    private func reapplyLiveCheckpointsAfterRecoveredInstall(since revision: Int) {
+        let ids = Self.liveCheckpointSessionIDsToReapply(
+            liveCheckpointCanonicalRevisionBySessionID,
+            since: revision
+        )
+        guard !ids.isEmpty else { return }
+        var canonical = cachedCanonicalSessions
+        for id in ids {
+            guard let live = sessions.first(where: { $0.id == id }) else { continue }
+            canonical = Self.canonicalSessionsAfterUpsert(
+                live,
+                into: canonical,
+                preferredSession: preferredSession,
+                replacesSameID: false
+            )
+        }
+        setCachedCanonicalSessions(
+            canonical,
+            advancesBiologicalAgeSourceGeneration: false,
+            scheduleSleepReviewRefresh: false,
+            isLiveCheckpoint: true
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_projection status=live_checkpoints_reapplied count=%d",
+            ids.count
+        )
+    }
+
+    nonisolated static func liveCheckpointSessionIDsToReapply(
+        _ revisions: [UUID: Int],
+        since revision: Int
+    ) -> [UUID] {
+        revisions.filter { $0.value > revision }
+            .sorted { $0.value < $1.value }
+            .map(\.key)
+    }
+
     private func setCachedCanonicalSessions(
         _ sessions: [SavedSession],
         advancesBiologicalAgeSourceGeneration: Bool = true,
-        scheduleSleepReviewRefresh: Bool = true
+        scheduleSleepReviewRefresh: Bool = true,
+        isLiveCheckpoint: Bool = false
     ) {
         cachedCanonicalSessions = sessions
         // A checkpoint commonly replaces one canonical session in place. Count
         // equality therefore says nothing about whether sleep evidence changed.
         canonicalSessionsRevision &+= 1
+        if !isLiveCheckpoint {
+            canonicalSessionsSourceRevision &+= 1
+        }
         if advancesBiologicalAgeSourceGeneration {
             biologicalAgeSourceSessionsRevision &+= 1
         }
@@ -30076,7 +30146,8 @@ final class SessionStore: ObservableObject {
             s,
             advancesBiologicalAgeSourceGeneration: false,
             refreshHRV: refreshHRV,
-            scheduleSleepReviewRefresh: false
+            scheduleSleepReviewRefresh: false,
+            isLiveCheckpoint: true
         )
         // ActiveSessionJournal is the crash-safe live authority. Keep this
         // checkpoint dirty and let finalization/backgrounding perform one
