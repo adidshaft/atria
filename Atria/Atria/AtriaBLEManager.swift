@@ -46697,6 +46697,23 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             .pendingConsumerDependencyMissing
                     }
                     let previousFullScan = try fullScanCompletionStore.loadLatest()
+                    let closingWatermark = HistoricalArchive
+                        .fullScanWatermarkClosingDependency(
+                            previous: previousFullScan.cursorWatermark,
+                            requiredEnd: Date(timeIntervalSince1970:
+                                dependency.requiredEndUnix),
+                            drainCursorUnix: UserDefaults.standard.double(
+                                forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                            ),
+                            now: Date()
+                        )
+                    let remintWatermark = closingWatermark
+                        ?? previousFullScan.cursorWatermark
+                    // The store requires terminalAt >= watermark; the drain
+                    // cursor's proof time is the watermark itself.
+                    let remintTerminalAt = max(
+                        previousFullScan.terminalAt, remintWatermark
+                    )
                     let refreshedSnapshot = try AtriaTransientWorkThread.run(
                         name: "atria.terminal-evidence",
                         qualityOfService: .utility
@@ -46751,8 +46768,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             peripheralIdentifier:
                                 previousFullScan.peripheralIdentifier,
                             strapIdentity: previousFullScan.strapIdentity,
-                            cursorWatermark: previousFullScan.cursorWatermark,
-                            terminalAt: previousFullScan.terminalAt,
+                            cursorWatermark: remintWatermark,
+                            terminalAt: remintTerminalAt,
                             sourceChunkID: previousFullScan.sourceChunkID,
                             sourceRawSHA256:
                                 refreshedSnapshot.source.rawSHA256,
@@ -46794,8 +46811,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             peripheralIdentifier:
                                 previousFullScan.peripheralIdentifier,
                             strapIdentity: previousFullScan.strapIdentity,
-                            cursorWatermark: previousFullScan.cursorWatermark,
-                            terminalAt: previousFullScan.terminalAt,
+                            cursorWatermark: remintWatermark,
+                            terminalAt: remintTerminalAt,
                             sourceChunkID: previousFullScan.sourceChunkID,
                             sourceRawSHA256:
                                 refreshedSnapshot.source.rawSHA256,
@@ -46813,6 +46830,46 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                             aggregateSnapshotSHA256:
                                 previousFullScan.aggregateSnapshotSHA256
                         ))
+                    } else if closingWatermark != nil {
+                        guard previousFullScan.generation < UInt64.max else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .fullScanGenerationExhausted
+                        }
+                        _ = try fullScanCompletionStore.recordCompletion(.init(
+                            version: AtriaHistoricalFullScanCompletionStore
+                                .Record.currentVersion,
+                            generation: previousFullScan.generation + 1,
+                            transportGeneration:
+                                previousFullScan.transportGeneration,
+                            transportNonce: previousFullScan.transportNonce,
+                            peripheralIdentifier:
+                                previousFullScan.peripheralIdentifier,
+                            strapIdentity: previousFullScan.strapIdentity,
+                            cursorWatermark: remintWatermark,
+                            terminalAt: remintTerminalAt,
+                            sourceChunkID: previousFullScan.sourceChunkID,
+                            sourceRawSHA256: previousFullScan.sourceRawSHA256,
+                            sourceFirstTimestamp:
+                                previousFullScan.sourceFirstTimestamp,
+                            sourceLastTimestamp:
+                                previousFullScan.sourceLastTimestamp,
+                            observedArchiveFirstTimestamp:
+                                previousFullScan.observedArchiveFirstTimestamp,
+                            catalogGeneration:
+                                previousFullScan.catalogGeneration,
+                            catalogSnapshotSHA256:
+                                previousFullScan.catalogSnapshotSHA256,
+                            aggregateSnapshotSHA256:
+                                previousFullScan.aggregateSnapshotSHA256
+                        ))
+                    }
+                    if let closingWatermark {
+                        AtriaDebugLog(
+                            "ATRIADBG historical_full_scan status=watermark_advanced_by_drain_cursor generation=%llu watermark=%.0f required_end=%.0f",
+                            transportGeneration,
+                            closingWatermark.timeIntervalSince1970,
+                            dependency.requiredEndUnix
+                        )
                     }
                     let report = try AtriaTransientWorkThread.run(
                         name: "atria.terminal-consumers",
@@ -48269,6 +48326,20 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
 
     /// Called after SessionStore installs the recovered-data publication fence.
     /// It never starts BLE; it only resumes an already-fsynced terminal journal.
+    static let terminalCoverageDrainCursorRetryKey =
+        "atria.offlineSync.terminalCoverageDrainCursorRetry.v1"
+
+    nonisolated static func shouldRetireCoverageFailureForDrainCursor(
+        requiredEndUnix: TimeInterval,
+        drainCursorUnix: TimeInterval,
+        lastRetryFingerprint: String?,
+        fingerprint: String
+    ) -> Bool {
+        drainCursorUnix.isFinite
+            && drainCursorUnix >= requiredEndUnix
+            && lastRetryFingerprint != fingerprint
+    }
+
     func resumePendingFullDrainPublicationIfNeeded(reason: String) {
         guard !historicalRadioTransportOwnsLink,
               !connectedMotionBankFirstAttemptOwnsForegroundPriority else {
@@ -48370,10 +48441,34 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             // would keep skipping the real attempt even after the daily
             // bound yields (observed 2026-08-06 09:21: bound bypassed, then
             // snapshot_unchanged from the equality site).
+            // One retry per dependency once the drain cursor has covered its
+            // end: the re-mint can now close it, and waiting out the daily
+            // bound left recovered days unpublished for a day (2026-10-02).
+            let drainCursorClosesDependency: () -> Bool = {
+                guard let dependency = authority.pendingConsumerDependency,
+                      dependency.isValid else { return false }
+                let fingerprint = "\(dependency.sourceChunkID)-\(Int(dependency.requiredEndUnix))"
+                guard Self.shouldRetireCoverageFailureForDrainCursor(
+                    requiredEndUnix: dependency.requiredEndUnix,
+                    drainCursorUnix: defaults.double(
+                        forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                    ),
+                    lastRetryFingerprint: defaults.string(
+                        forKey: Self.terminalCoverageDrainCursorRetryKey
+                    ),
+                    fingerprint: fingerprint
+                ) else { return false }
+                defaults.set(
+                    fingerprint,
+                    forKey: Self.terminalCoverageDrainCursorRetryKey
+                )
+                return true
+            }
             if let staleCachedAt = defaults.object(
                 forKey: Self.terminalConsumerCoverageFailureAtKey
             ) as? Date,
-               dependencyWindowPassedSince(staleCachedAt) {
+               dependencyWindowPassedSince(staleCachedAt)
+                || drainCursorClosesDependency() {
                 defaults.removeObject(
                     forKey: Self.terminalConsumerCoverageFailureKey
                 )
