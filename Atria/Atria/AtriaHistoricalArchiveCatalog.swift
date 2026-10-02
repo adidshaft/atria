@@ -149,6 +149,9 @@ final class AtriaHistoricalArchiveCatalogStore {
     private let fileManager: FileManager
     private let makeIdentifier: () -> String
     private var catalog: AtriaHistoricalArchiveCatalog?
+    /// The value most recently fsynced. Append-size hints update `catalog`
+    /// without a durable generation; see `advanceGenerationIfAppendHintsUnpersisted`.
+    private var lastDurableCatalog: AtriaHistoricalArchiveCatalog?
     /// Chunk IDs sealed by this store instance whose derived HR sidecars have
     /// not been scheduled yet (handoff-9 CP1). Appended inside the seal
     /// critical sections; consumed by `takeSealedChunksAwaitingDerivedIndexes`
@@ -199,6 +202,7 @@ final class AtriaHistoricalArchiveCatalogStore {
                 }
             }
             catalog = loaded
+            lastDurableCatalog = loaded
             return loaded
         }
 
@@ -665,6 +669,27 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// (generation, snapshot digest) observes a strictly newer checkpoint
     /// instead of a same-generation digest change, which the terminal
     /// publication lane rejects permanently.
+    /// Append-size hints (`recordAppendCompleted`, the non-rotating
+    /// `writableChunkURL` path) change the canonical catalog bytes at the same
+    /// generation. A terminal completion minted from such a snapshot has a
+    /// same-generation digest change against the previous one, which
+    /// `refreshCompletionPublished` rejects permanently — with the strap
+    /// appending rows continuously, every recovered night parked at
+    /// completionPublished (2026-10-02 device: catalog generation 645 with
+    /// two digests). Publishers call this first so any drift since the last
+    /// fsync becomes a strictly newer durable generation.
+    @discardableResult
+    func advanceGenerationIfAppendHintsUnpersisted() throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var value = catalog else { throw StoreError.catalogNotLoaded }
+        guard value != lastDurableCatalog else { return false }
+        value.generation &+= 1
+        try persistDurably(value)
+        catalog = value
+        return true
+    }
+
     func recordAggregateRepairGenerationAdvance(chunkID: String) throws {
         lock.lock()
         defer { lock.unlock() }
@@ -795,6 +820,7 @@ final class AtriaHistoricalArchiveCatalogStore {
             try fileManager.moveItem(at: temporary, to: catalogURL)
         }
         try Self.synchronizeDirectory(catalogURL.deletingLastPathComponent())
+        lastDurableCatalog = value
     }
 
     private func decodeCatalog(at url: URL) throws -> AtriaHistoricalArchiveCatalog {

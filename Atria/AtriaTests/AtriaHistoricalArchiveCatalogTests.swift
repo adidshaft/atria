@@ -278,6 +278,43 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(try restarted.snapshotVerifiedAgainstFiles().activeChunk?.byteCount, 12)
     }
 
+    // 2026-10-02 device: live appends changed the canonical catalog bytes at
+    // generation 645, so two terminal completions shared a generation with
+    // different digests and refreshCompletionPublished rejected the newer one
+    // forever. Publishers now turn that drift into a newer durable generation.
+    func testAppendHintDriftAdvancesToANewDurableGenerationOnlyWhenPresent() throws {
+        let root = try temporaryDirectory()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: IdentifierSource(["active-a"]).next
+        )
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let activeURL = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(
+            at: activeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        XCTAssertFalse(try store.advanceGenerationIfAppendHintsUnpersisted())
+        let before = try store.snapshot()
+
+        try Data("one-row\n".utf8).write(to: activeURL)
+        try store.recordAppendCompleted(at: activeURL)
+        XCTAssertEqual(try store.snapshot().generation, before.generation,
+                       "the append hint itself never bumps the generation")
+
+        XCTAssertTrue(try store.advanceGenerationIfAppendHintsUnpersisted())
+        let advanced = try store.snapshot()
+        XCTAssertEqual(advanced.generation, before.generation + 1)
+        XCTAssertEqual(advanced.activeChunk?.byteCount, 8)
+        XCTAssertFalse(try store.advanceGenerationIfAppendHintsUnpersisted(),
+                       "no drift since the last fsync, no new generation")
+
+        let restarted = AtriaHistoricalArchiveCatalogStore(rootURL: root)
+        let recovered = try restarted.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        XCTAssertEqual(recovered, advanced, "the advanced generation is durable")
+    }
+
     func testDurableFlushReconcilesActiveCatalogBeforeTerminalProof() throws {
         let root = try temporaryDirectory()
         let now = Date(timeIntervalSince1970: 2_000_000_000)
