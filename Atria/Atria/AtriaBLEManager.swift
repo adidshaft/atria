@@ -2629,6 +2629,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var postHistoryLiveRestorationGeneration: UInt64?
     private let postHistoryLiveRestorationTimeout: TimeInterval = 15
     private var resumeFullDrainPublicationAfterFreshHR = false
+    private var terminalPublicationBackgroundWindowActive = false
     private var terminalConsumerRawFirstSliceRefusal:
         TerminalConsumerRawFirstSliceOrchestrationState?
     private var terminalConsumerRawFirstSliceTimeoutTask: Task<Void, Never>?
@@ -48367,7 +48368,9 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             // only this local projection until the UI is genuinely active.
             guard Self.shouldRunTerminalConsumerMaterialization(
                 applicationIsActive:
-                    UIApplication.shared.applicationState == .active
+                    UIApplication.shared.applicationState == .active,
+                backgroundWindowActive:
+                    terminalPublicationBackgroundWindowActive
             ) else {
                 UserDefaults.standard.set(
                     "terminal_consumer_materialization_deferred_foreground",
@@ -48658,10 +48661,114 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         ) != nil
     }
 
+    /// Restoration and ordinary background wakes stay deferred (their CPU
+    /// budget produced cpu_resource_fatal). Only an explicit BGProcessing
+    /// window, which owns a duty-cycled throttle lease, may finish a parked
+    /// journal off-screen.
     nonisolated static func shouldRunTerminalConsumerMaterialization(
-        applicationIsActive: Bool
+        applicationIsActive: Bool,
+        backgroundWindowActive: Bool = false
     ) -> Bool {
-        applicationIsActive
+        applicationIsActive || backgroundWindowActive
+    }
+
+    var hasParkedTerminalPublication: Bool {
+        guard let status = (try? historicalFullDrainCoverageStore.load())?.status else {
+            return false
+        }
+        return Self.terminalPublicationParkedStatuses.contains(status)
+    }
+
+    /// Scheduler-side twin: a parked journal asks iOS for the tight
+    /// processing cadence until a window finishes it.
+    nonisolated static func parkedTerminalPublicationPendingOnDisk() -> Bool {
+        let store = AtriaHistoricalFullDrainCoverageStore(
+            directoryURL: FileManager.default.urls(for: .documentDirectory,
+                                                   in: .userDomainMask)[0]
+                .appendingPathComponent("atria-historical/full-drain-authority-v1",
+                                        isDirectory: true)
+        )
+        guard let status = (try? store.load())?.status else { return false }
+        return terminalPublicationParkedStatuses.contains(status)
+    }
+
+    nonisolated static let terminalPublicationParkedStatuses:
+        Set<AtriaHistoricalFullDrainCoverageStore.Authority.Status> = [
+            .historyComplete, .coverageProven,
+            .gapResolvedConsumersPending, .consumersCommitted
+        ]
+
+    /// The last steps of a recovered night (consumer projection + the ~70 s
+    /// recovered-data fence) used to need the app on screen without a single
+    /// interruption; auto-lock or a notification restarted them, so a user
+    /// who never held the phone open never got the night published
+    /// (2026-10-02). The BGProcessing task now drives the parked journal to
+    /// completion under its throttle lease, re-entering after each step.
+    func runParkedTerminalPublicationInBackgroundWindow(
+        reason: String,
+        timeout: TimeInterval
+    ) async -> Bool {
+        guard let start = try? historicalFullDrainCoverageStore.load(),
+              Self.terminalPublicationParkedStatuses.contains(start.status) else {
+            return false
+        }
+        terminalPublicationBackgroundWindowActive = true
+        defer { terminalPublicationBackgroundWindowActive = false }
+        AtriaDebugLog(
+            "ATRIADBG historical_full_drain_publish status=background_window_started stage=%@ reason=%@",
+            start.status.rawValue,
+            reason
+        )
+        var lastStatus = start.status
+        resumePendingFullDrainPublicationIfNeeded(reason: "\(reason)_background_window")
+        let deadline = Date().addingTimeInterval(timeout)
+        var idlePolls = 0
+        var reentries = 0
+        while Date() < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(1))
+            let status = (try? historicalFullDrainCoverageStore.load())?.status
+            guard let status,
+                  Self.terminalPublicationParkedStatuses.contains(status) else {
+                break
+            }
+            if historicalConsumerMaterializationInFlight {
+                idlePolls = 0
+                continue
+            }
+            idlePolls += 1
+            guard idlePolls >= 3 else { continue }
+            guard Self.backgroundWindowShouldReenterTerminalPublication(
+                previous: lastStatus,
+                current: status,
+                reentries: reentries
+            ) else { break }
+            lastStatus = status
+            reentries += 1
+            idlePolls = 0
+            resumePendingFullDrainPublicationIfNeeded(
+                reason: "\(reason)_background_window_step"
+            )
+        }
+        let end = (try? historicalFullDrainCoverageStore.load())?.status
+        AtriaDebugLog(
+            "ATRIADBG historical_full_drain_publish status=background_window_finished from=%@ to=%@ reentries=%d",
+            start.status.rawValue,
+            end?.rawValue ?? "none",
+            reentries
+        )
+        return end.map { !Self.terminalPublicationParkedStatuses.contains($0) } ?? true
+    }
+
+    /// Re-enter after each step advances the journal (coverageProven →
+    /// gapResolvedConsumersPending → …); one extra attempt at an unchanged
+    /// stage covers a fence that failed transiently; never loop.
+    nonisolated static func backgroundWindowShouldReenterTerminalPublication(
+        previous: AtriaHistoricalFullDrainCoverageStore.Authority.Status,
+        current: AtriaHistoricalFullDrainCoverageStore.Authority.Status,
+        reentries: Int
+    ) -> Bool {
+        guard reentries < 4 else { return false }
+        return current != previous || reentries == 0
     }
 
     private func scheduleTerminalConsumerDependencyRetry() {

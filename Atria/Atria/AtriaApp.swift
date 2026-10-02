@@ -937,6 +937,22 @@ struct AtriaApp: App {
                 _ = store.scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe(
                     reason: "bg_processing"
                 )
+                // A recovered night parked behind its foreground-only final
+                // steps finishes here, before generic projection, so nobody
+                // has to hold the phone open for it.
+                if !ble.historicalRadioTransportOwnsLink,
+                   ble.hasParkedTerminalPublication,
+                   let lease = store.beginExactRecoveryBackgroundWindowIfSafe(
+                    reason: reason
+                   ) {
+                    recoveredProjectionOwner.set(lease)
+                    _ = await ble.runParkedTerminalPublicationInBackgroundWindow(
+                        reason: reason,
+                        timeout: 240
+                    )
+                    store.endExactRecoveryBackgroundWindow(lease)
+                    recoveredProjectionOwner.clear(lease)
+                }
                 let priorProjectionRevision = store.recoveredDataArchiveRevisionSnapshot
                 if let lease = store.requestBackgroundArchiveProjectionIfSafe(
                     reason: "bg_projection"
@@ -1217,6 +1233,7 @@ struct AtriaApp: App {
             AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
             || SessionStore.automaticRecoveredDataBootstrapIntentIsPending
             || SessionStore.archiveCompactionIsOverdue()
+            || AtriaBLEManager.parkedTerminalPublicationPendingOnDisk()
         request.earliestBeginDate = Date(
             timeIntervalSinceNow: backgroundProcessingEarliestDelay(
                 backlogPending: backlogPending
