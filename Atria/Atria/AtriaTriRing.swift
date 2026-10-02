@@ -26,6 +26,11 @@ struct AtriaTriRingMetric: Equatable {
     /// 1.0. Nil -- and no marker drawn -- whenever there isn't a real target
     /// to honestly show (never fabricated).
     var targetFraction: Double? = nil
+    /// The day's target ZONE (low…high), as ring fractions: strain target ±
+    /// its green band, sleep 85–100 % of need, recovery's green zone. Drawn
+    /// as a thin bright edge over the ring, so it stays visible after the
+    /// fill passes it (owner 2026-10-02). Nil when no real target exists.
+    var targetBand: ClosedRange<Double>? = nil
     /// True when the ring center already shows this metric's value — the
     /// chip then renders title + detail only (dedup audit 2026-07-07: the
     /// big center numeral repeated verbatim in its own legend chip).
@@ -58,6 +63,24 @@ enum AtriaRingMetricProjection {
     static func strainTargetFraction(_ target: Double?) -> Double? {
         guard let target, target.isFinite, target > 0 else { return nil }
         return min(max(target / 21, 0), 1)
+    }
+
+    /// Strain target ± the configured green band, on the 0–21 ring.
+    static func strainTargetBand(_ target: Double?, greenBand: Double) -> ClosedRange<Double>? {
+        guard let target, target.isFinite, target > 0,
+              greenBand.isFinite, greenBand >= 0 else { return nil }
+        let low = min(max((target - greenBand) / 21, 0), 1)
+        let high = min(max((target + greenBand) / 21, 0), 1)
+        return high > low ? low...high : nil
+    }
+
+    /// Sleep's green zone: 85 % of the night's need up to the need itself.
+    static let sleepTargetBand: ClosedRange<Double> = 0.85...1.0
+
+    /// Recovery's green zone from its configured lower bound to 100.
+    static func recoveryTargetBand(greenLower: Double) -> ClosedRange<Double>? {
+        guard greenLower.isFinite, greenLower > 0, greenLower < 100 else { return nil }
+        return (greenLower / 100)...1.0
     }
 
     static func achievementTintHex(fill: Double?) -> String {
@@ -686,11 +709,31 @@ struct AtriaTriRing: View, Equatable {
                                                dash: [4, 16]))
             }
 
+            if let band = metric.targetBand {
+                targetBandEdge(diameter: diameter, lineWidth: lineWidth, band: band)
+            }
             if let targetFraction = metric.targetFraction {
                 targetMarker(diameter: diameter, lineWidth: lineWidth, tint: metric.stateTint ?? metric.tint, fraction: targetFraction)
             }
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    /// The target zone as a thin bright line along the ring's outer edge,
+    /// drawn above the fill so it reads on both the track and a full arc.
+    private func targetBandEdge(diameter: CGFloat,
+                                lineWidth: CGFloat,
+                                band: ClosedRange<Double>) -> some View {
+        let edgeWidth: CGFloat = 2.5
+        let edgeDiameter = diameter + lineWidth - edgeWidth
+        return Circle()
+            .trim(from: min(max(band.lowerBound, 0), 1),
+                  to: min(max(band.upperBound, 0), 1))
+            .stroke(Color.primary.opacity(0.75),
+                    style: StrokeStyle(lineWidth: edgeWidth, lineCap: .round))
+            .frame(width: edgeDiameter, height: edgeDiameter)
+            .rotationEffect(.degrees(-90))
+            .accessibilityHidden(true)
     }
 
     /// A small RADIAL clock-tick marking a REAL target/recommendation on the

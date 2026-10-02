@@ -1146,10 +1146,13 @@ enum AtriaHeldDailyStepFloor {
 /// widgets kept Today’s 0.7 while Home hero TRIMP reset to 0 and diagnosis
 /// reported `widget_strain_7_today_0`.
 enum AtriaHeldDayStrainFloor {
-    static let valueKey = "atria.strain.heldDayValue"
-    static let cycleKey = "atria.strain.heldDayCycleStart"
-    static let expiresKey = "atria.strain.heldDayCycleExpiresAt"
-    static let detailKey = "atria.strain.heldDayDetail"
+    // v2 (2026-10-02): v1 could hold the previous cycle's load under the new
+    // cycle's start (stale aggregate right after a wake); a fresh key drops
+    // any such value once instead of keeping it for a whole day.
+    static let valueKey = "atria.strain.heldDayValue.v2"
+    static let cycleKey = "atria.strain.heldDayCycleStart.v2"
+    static let expiresKey = "atria.strain.heldDayCycleExpiresAt.v2"
+    static let detailKey = "atria.strain.heldDayDetail.v2"
 
     static func persist(value: Double,
                         cycleStart: Date,

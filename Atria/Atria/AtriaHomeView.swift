@@ -11444,6 +11444,12 @@ final class AtriaHomeModel {
         )
     }
 
+    /// True when an off-main saved aggregate was built for this cycle.
+    nonisolated static func savedAggregateDescribesCycle(aggregateCycleStart: Date,
+                                                         cycleStart: Date) -> Bool {
+        abs(aggregateCycleStart.timeIntervalSince(cycleStart)) < 1
+    }
+
     /// The start of the CONTINUOUS active period the cumulative Today metrics
     /// (strain/TRIMP/calories/wear) integrate over. For a confirmed boundary —
     /// or when nothing usable precedes the cycle within the bound — this is
@@ -12891,10 +12897,19 @@ final class AtriaHomeModel {
             physiologicalCycleStart: physiologicalCycle.start,
             now: now
         )
-        let liveTRIMP = live.liveTRIMP
+        // The saved aggregate (and the live TRIMP clipped to its window) is
+        // refreshed off the main actor and can still describe the PREVIOUS
+        // cycle right after a wake is confirmed. Read as the new cycle's load,
+        // it showed yesterday's 9.0 as today's and ratcheted into the held
+        // floor for the whole day (device 2026-10-02, wake 07:38).
+        let aggregateIsCurrentCycle = Self.savedAggregateDescribesCycle(
+            aggregateCycleStart: savedAggregate.cycleStart,
+            cycleStart: physiologicalCycle.start
+        )
+        let liveTRIMP = aggregateIsCurrentCycle ? live.liveTRIMP : 0
         let totalTRIMP = SessionStore.mergedTodayTRIMP(
-            savedToday: savedAggregate.savedTodayTRIMP,
-            savedActiveSession: savedAggregate.savedActiveSessionTRIMP,
+            savedToday: aggregateIsCurrentCycle ? savedAggregate.savedTodayTRIMP : 0,
+            savedActiveSession: aggregateIsCurrentCycle ? savedAggregate.savedActiveSessionTRIMP : 0,
             liveActiveSession: liveTRIMP
         )
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
@@ -13026,7 +13041,7 @@ final class AtriaHomeModel {
             heroDetail: heldStrain?.detail
         )
         let presentedStrain = presentedStrainResolution.value
-        if presentedStrain > 0 {
+        if presentedStrain > 0, aggregateIsCurrentCycle {
             AtriaHeldDayStrainFloor.persist(
                 value: presentedStrain,
                 cycleStart: physiologicalCycle.start,

@@ -7650,8 +7650,14 @@ enum HistoricalArchive {
     /// oldest-first strap it can stay draining for hours or never finish; it
     /// does not own the lane (2026-10-01: it deferred every recovered
     /// projection, History refresh and compaction for days).
+    /// A terminal authority's publication runs only while the app is active
+    /// (it scans the whole archive; background CPU is budgeted). In the
+    /// background it cannot use the lane, so it does not hold it: overnight on
+    /// 2026-10-01/02 a `coverageProven` record waited for the foreground all
+    /// night and refused every background compaction and recovered projection.
     static func exactRecoveryProjectionOwnsArchivePriority(
-        archiveRoot: URL? = nil
+        archiveRoot: URL? = nil,
+        applicationIsForeground: Bool = !AtriaHistoricalProjectionForegroundGate.isBackgrounded
     ) -> Bool {
         let root = archiveRoot ?? archiveDirectory
         let store = AtriaHistoricalFullDrainCoverageStore(
@@ -7666,7 +7672,7 @@ enum HistoricalArchive {
             case .historyComplete,
                  .coverageProven,
                  .consumersCommitted:
-                return true
+                return applicationIsForeground
             case .draining,
                  .gapResolvedConsumersPending,
                  .resolved:
