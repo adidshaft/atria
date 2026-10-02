@@ -4065,4 +4065,41 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(checkpointOffMain(throttle, processedDelta: 1000),
                        "after end() the throttle is inactive again")
     }
+
+    // 2026-10-02 (owner): metrics keep catching up on battery, slower. The
+    // background lanes run down to 25% unplugged, still never in Low Power
+    // Mode or serious heat.
+    func testBackgroundWorkRunsOnBatteryDownToTwentyFivePercent() {
+        func allowed(_ level: Float, lowPower: Bool = false) -> Bool {
+            SessionStore.shouldStartBackgroundArchiveProjection(
+                thermalState: .nominal, isLowPowerModeEnabled: lowPower,
+                batteryState: .unplugged, batteryLevel: level,
+                minimumBatteryLevel: SessionStore.backgroundWorkOnBatteryFloor)
+        }
+        XCTAssertTrue(allowed(0.35))
+        XCTAssertTrue(allowed(0.25))
+        XCTAssertFalse(allowed(0.20))
+        XCTAssertFalse(allowed(0.9, lowPower: true))
+    }
+
+    // The BLE-side history-save loops never saw the projection throttle, so a
+    // background window could run them at 100% CPU. They now pace only when
+    // backgrounded under a lease, and stay full speed on screen.
+    func testHistorySaveLoopsPaceOnlyInABackgroundWindow() throws {
+        XCTAssertTrue(AtriaBackgroundWorkPacer.shouldPace(backgrounded: true, leaseActive: true))
+        XCTAssertFalse(AtriaBackgroundWorkPacer.shouldPace(backgrounded: false, leaseActive: true))
+        XCTAssertFalse(AtriaBackgroundWorkPacer.shouldPace(backgrounded: true, leaseActive: false))
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        for (file, minimum) in [("AtriaHistoricalRetentionTransaction.swift", 1),
+                                ("AtriaHistoricalSealedJSONLCompression.swift", 3),
+                                ("AtriaHistoricalAggregateReader.swift", 1)] {
+            let source = try String(contentsOf: root.appendingPathComponent(file),
+                                    encoding: .utf8)
+            XCTAssertGreaterThanOrEqual(
+                source.components(separatedBy: "AtriaBackgroundWorkPacer.checkpoint(").count - 1,
+                minimum, file)
+        }
+    }
 }

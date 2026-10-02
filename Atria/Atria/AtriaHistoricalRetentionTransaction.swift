@@ -571,6 +571,7 @@ struct AtriaHistoricalRetentionTransaction {
             if count == 0 { break }
             hasher.update(bufferPointer: UnsafeRawBufferPointer(start: buffer,
                                                                 count: count))
+            AtriaBackgroundWorkPacer.checkpoint()
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }

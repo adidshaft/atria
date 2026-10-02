@@ -17018,6 +17018,12 @@ final class SessionStore: ObservableObject {
         return true
     }
 
+    /// Metrics must keep catching up on battery, just slower (owner,
+    /// 2026-10-02): unplugged background work is duty-cycled to ~50% CPU, so
+    /// it runs down to 25% instead of stopping at 50%. Low Power Mode, heat
+    /// and the 25% floor still stop it; on screen it always runs.
+    nonisolated static let backgroundWorkOnBatteryFloor: Float = 0.25
+
     nonisolated static func shouldExecuteAutomaticFullBackgroundProjection()
         -> Bool {
         false
@@ -17038,7 +17044,8 @@ final class SessionStore: ObservableObject {
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryState: UIDevice.current.batteryState,
-            batteryLevel: UIDevice.current.batteryLevel)
+            batteryLevel: UIDevice.current.batteryLevel,
+            minimumBatteryLevel: Self.backgroundWorkOnBatteryFloor)
         guard allowed else {
             AtriaDebugLog("ATRIADBG bg_projection status=skipped reason=%@ action=guard_unsafe", reason)
             return nil
@@ -17108,7 +17115,8 @@ final class SessionStore: ObservableObject {
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
             batteryState: UIDevice.current.batteryState,
-            batteryLevel: UIDevice.current.batteryLevel
+            batteryLevel: UIDevice.current.batteryLevel,
+            minimumBatteryLevel: Self.backgroundWorkOnBatteryFloor
         ) else {
             AtriaDebugLog(
                 "ATRIADBG exact_recovery_bg_window status=skipped reason=%@ action=guard_unsafe",

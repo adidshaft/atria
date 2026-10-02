@@ -313,6 +313,7 @@ struct AtriaHistoricalAggregateReader {
         var limitExceeded = false
 
         for manifestURL in manifestURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            AtriaBackgroundWorkPacer.checkpoint()
             do {
                 let manifestData = try boundedData(at: manifestURL,
                                                    maximumBytes: limits.maximumManifestBytes)

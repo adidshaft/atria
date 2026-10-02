@@ -295,3 +295,23 @@ final class AtriaBackgroundProjectionThrottle {
         return shouldAbort
     }
 }
+
+/// Paces the BLE-side history-save loops (file hashing, JSONL reads/inflate,
+/// whole-archive aggregate digest) that the projection throttle never saw.
+/// Those ran at full speed inside a background window and could trip iOS's
+/// sustained-CPU watchdog (`cpu_resource_fatal`). No-op on screen or without
+/// a background lease; otherwise the same ~50% duty cycle as projection.
+enum AtriaBackgroundWorkPacer {
+    static func checkpoint(units: Int = 1) {
+        guard shouldPace(
+            backgrounded: AtriaHistoricalProjectionForegroundGate.isBackgrounded,
+            leaseActive: AtriaBackgroundProjectionThrottle.shared.isActive
+        ) else { return }
+        _ = AtriaBackgroundProjectionThrottle.shared
+            .cooperativeCheckpointShouldAbort(processedDelta: units)
+    }
+
+    static func shouldPace(backgrounded: Bool, leaseActive: Bool) -> Bool {
+        backgrounded && leaseActive
+    }
+}
