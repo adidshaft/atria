@@ -1981,6 +1981,8 @@ enum HistoricalArchive {
             .appendingPathComponent("aggregate-\(seal.chunkID).json")
         let manifestURL = manifestDirectoryURL
             .appendingPathComponent("manifest-\(seal.chunkID).json")
+        // Compare in persisted form: raw rows carry 1/32,768 s timestamps but
+        // the committed file stores whole-second ISO-8601 dates.
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let aggregateData = try? Data(contentsOf: aggregateURL),
@@ -1990,19 +1992,23 @@ enum HistoricalArchive {
               let manifest = try? decoder.decode(
                   AtriaHistoricalRetentionTransaction.Manifest.self,
                   from: manifestData),
+              let built = try? persistedISO8601Value(seal.aggregateBuild.aggregate),
+              built != committed,
               manifest.transactionID == seal.chunkID,
               manifest.sourceChunkID == seal.chunkID,
-              committed.source == seal.aggregateBuild.aggregate.source,
-              manifest.sourceSHA256 == committed.source.rawSHA256 else {
-            return seal
-        }
-        let built = try? persistedISO8601Value(seal.aggregateBuild.aggregate)
-        guard built != committed,
-              (try? AtriaHistoricalAggregateBuilder.verify(
+              committed.source == built.source,
+              manifest.sourceSHA256 == committed.source.rawSHA256,
+              AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: committed)
+                == manifest.semanticParityReceipt,
+              (try? AtriaHistoricalJSONLInput.identity(at: seal.sourceURL).sha256)
+                == committed.source.rawSHA256,
+              let rebuilt = try? AtriaHistoricalAggregateBuilder.build(
                   sourceURL: seal.sourceURL,
-                  aggregate: committed,
-                  semanticParityReceipt: manifest.semanticParityReceipt
-              )) == true else {
+                  chunkID: seal.chunkID,
+                  createdAt: committed.createdAt,
+                  materializedProjections: committed.materializedProjections
+              ).aggregate,
+              (try? persistedISO8601Value(rebuilt)) == committed else {
             return seal
         }
         AtriaDebugLog(

@@ -287,7 +287,10 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
         encoder.dateEncodingStrategy = .iso8601
         var file = Data()
         for offset: UInt32 in [0, 10, 30] {
+            // Sub-second rows, as on the strap: the committed file keeps
+            // whole seconds, so equality must be judged in persisted form.
             file.append(try encoder.encode(record(unix: 1_800_000_000 + offset,
+                                                  subsec: 19_141,
                                                   heartRate: 70 + Int(offset))))
             file.append(0x0a)
         }
