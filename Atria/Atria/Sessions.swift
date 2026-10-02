@@ -38237,6 +38237,14 @@ final class SessionStore: ObservableObject {
         var recoveredMotionEpochRows = 0
         var seenRecoveredMotionEpochs =
             Set<CompactLatestNightMotionEpochKey>()
+        // After a drain, the live session and the recovered strap history
+        // both cover the same hours, doubling ~1 Hz physiology past the 80k
+        // ceiling and failing every recovered transaction's sleep settlement
+        // (2026-10-02 device: heartRateCapExceeded). The first session to
+        // supply a whole second owns it; overlapping sessions skip it. Sessions
+        // that only touch end to end keep every row.
+        var secondOwner: [Int: Int] = [:]
+        var acceptedWindows: [(start: Date, end: Date)] = []
         func deadlineExceeded() -> Bool {
             if let cooperativeDeadline {
                 do {
@@ -38273,6 +38281,20 @@ final class SessionStore: ObservableObject {
             // confirmed-window physiology and the compact motion reader; a
             // connection UUID remains the de-duplication authority.
             var points: [SavedSession.Point] = []
+            var claimedSeconds: [Int] = []
+            let overlapsEarlierSession = acceptedWindows.contains {
+                min(clippedEnd, $0.end).timeIntervalSince(
+                    max(clippedStart, $0.start)) > 1
+            }
+            func ownsSecond(_ timestamp: Date) -> Bool {
+                let second = Int(timestamp.timeIntervalSince1970.rounded(.down))
+                if let owner = secondOwner[second] {
+                    return owner == index || !overlapsEarlierSession
+                }
+                secondOwner[second] = index
+                claimedSeconds.append(second)
+                return true
+            }
             points.reserveCapacity(min(
                 source.points.count,
                 compactLatestNightMaximumHeartRateRows - heartRateRows
@@ -38286,7 +38308,8 @@ final class SessionStore: ObservableObject {
                 }
                 let timestamp = source.start.addingTimeInterval(max(0, point.t))
                 guard timestamp >= clippedStart,
-                      timestamp <= clippedEnd else { continue }
+                      timestamp <= clippedEnd,
+                      ownsSecond(timestamp) else { continue }
                 guard heartRateRows + points.count
                         < compactLatestNightMaximumHeartRateRows else {
                     return .failure(.heartRateCapExceeded)
@@ -38320,7 +38343,8 @@ final class SessionStore: ObservableObject {
                         max(0, point.t)
                     )
                     guard timestamp >= clippedStart,
-                          timestamp <= clippedEnd else { continue }
+                          timestamp <= clippedEnd,
+                          ownsSecond(timestamp) else { continue }
                     if rrRows + boundedRR.count
                         >= compactLatestNightMaximumRRRows {
                         qualifiedRRWouldExceedCap = true
@@ -38345,7 +38369,11 @@ final class SessionStore: ObservableObject {
             // A session with no in-window HR cannot source a latest-night
             // sleep candidate. Ignore it before reserving attached-motion
             // identity so a duplicate epoch on a valid session remains usable.
-            guard !points.isEmpty else { continue }
+            guard !points.isEmpty else {
+                for second in claimedSeconds { secondOwner[second] = nil }
+                continue
+            }
+            acceptedWindows.append((clippedStart, clippedEnd))
             var boundedMotionEpochs: [AtriaRecoveredMotionEpoch]? = nil
             if preserveAttachedMotion,
                let sourceEpochs = source.recoveredMotionEpochs {
