@@ -355,6 +355,17 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     /// authority.
     let isConfirmedNight: Bool
 
+    /// Where this night's motion stands, for the unavailable states only.
+    private var nightReadiness: AtriaInsightReadiness? {
+        guard isConfirmedNight, !isManualEntry, let end else { return nil }
+        return AtriaInsightReadiness.resolve(
+            isComputed: false,
+            dataEnd: end,
+            syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+            unavailableReason: "No motion that night"
+        )
+    }
+
     init(segments: [SleepStageSegment],
          start: Date?,
          end: Date?,
@@ -518,7 +529,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 honestState(title: "Stage analysis unavailable for this night",
                             detail: Self.unavailableStagesDetail(
                                 base: Self.needsMotionBase,
-                                motionAvailability: motionAvailability))
+                                motionAvailability: motionAvailability,
+                                readiness: nightReadiness))
             case .manualEntry:
                 honestState(title: "No stages — manual entry",
                             detail: Self.manualEntryDetail)
@@ -526,7 +538,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 honestState(title: "Stage analysis unavailable for this night",
                             detail: Self.unavailableStagesDetail(
                                 base: Self.buildingBase,
-                                motionAvailability: motionAvailability))
+                                motionAvailability: motionAvailability,
+                                readiness: nightReadiness))
             }
         }
         .padding(14)
@@ -552,7 +565,22 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         "Entered by hand — stage timelines come only from sensor data; duration and overnight vitals are kept."
 
     static func unavailableStagesDetail(base: String,
-                                        motionAvailability: AtriaStrapMotionAvailability?) -> String {
+                                        motionAvailability: AtriaStrapMotionAvailability?,
+                                        readiness: AtriaInsightReadiness? = nil,
+                                        now: Date = Date()) -> String {
+        // This night's own sync state, in the words every insight uses, wins
+        // over the live link's state (owner 2026-10-02).
+        switch readiness {
+        case .syncing:
+            return base + " " + (readiness?.label(now: now) ?? "Syncing")
+                + " — stages follow once this night's motion is on the phone."
+        case .calculating:
+            return base + " Calculating — this night's motion is on the phone."
+        case .unavailable(let reason):
+            return base + " \(reason)."
+        case .ready, .none:
+            break
+        }
         switch motionAvailability {
         case .catchingUp:
             return base + " Stages validate after the strap syncs motion — catching up now."
@@ -822,14 +850,16 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             return "\(provenanceText). Stage analysis unavailable for this night. "
                 + Self.unavailableStagesDetail(
                     base: Self.needsMotionBase,
-                    motionAvailability: motionAvailability)
+                    motionAvailability: motionAvailability,
+                    readiness: nightReadiness)
         case .manualEntry:
             return "\(provenanceText). No stages — manual entry. \(Self.manualEntryDetail)"
         case .building:
             return "\(provenanceText). Stage analysis unavailable for this night. "
                 + Self.unavailableStagesDetail(
                     base: Self.buildingBase,
-                    motionAvailability: motionAvailability)
+                    motionAvailability: motionAvailability,
+                    readiness: nightReadiness)
         }
     }
 

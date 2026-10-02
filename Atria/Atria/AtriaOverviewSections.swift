@@ -5109,7 +5109,7 @@ struct AtriaMetricDetailSheet: View {
             // chart). Below 5 nights the old honest-partial copy remains.
             if let trend = sleepEfficiencyTrend {
                 AtriaMetricDetailTemplate(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
-                                          heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
+                                          heroState: sleepHistory.latestMainSleep.map { night in night.motionReadiness(syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough()).label() ?? "of time in bed" } ?? "After a confirmed sleep",
                                           tint: Metrics.electricSleep) {
                     EmptyView()
                 } chart: {
@@ -5124,7 +5124,7 @@ struct AtriaMetricDetailSheet: View {
                 }
             } else {
                 honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
-                                    heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
+                                    heroState: sleepHistory.latestMainSleep.map { night in night.motionReadiness(syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough()).label() ?? "of time in bed" } ?? "After a confirmed sleep",
                                     tint: Metrics.electricSleep,
                                     bodyText: "Time asleep compared with time in bed. The night-by-night trend needs 5 confirmed nights with strap motion.")
             }

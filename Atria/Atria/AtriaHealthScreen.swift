@@ -706,8 +706,13 @@ enum AtriaHealthMetricEvidencePresentation {
         return liveValueAvailable ? "live estimate" : "needs qualified sleep"
     }
 
-    static func respiratoryDetail(valueAvailable: Bool) -> String {
-        valueAvailable ? "sleep average" : "needs qualified sleep"
+    static func respiratoryDetail(valueAvailable: Bool,
+                                  readiness: AtriaInsightReadiness? = nil) -> String {
+        if valueAvailable { return "sleep average" }
+        // A recorded night whose data is still syncing or being calculated
+        // says so, in the shared words (owner 2026-10-02).
+        if let label = readiness?.label(), readiness != .ready { return label }
+        return "needs qualified sleep"
     }
 
     static func settledRestingHeartRateDetail(rollup: DailyRollupStoreEntry,
@@ -2000,7 +2005,15 @@ struct AtriaHealthScreen: View {
 
     private var respiratoryDetail: String {
         AtriaHealthMetricEvidencePresentation.respiratoryDetail(
-            valueAvailable: respiratoryValue != AtriaCompactMetricPresentation.noValue
+            valueAvailable: respiratoryValue != AtriaCompactMetricPresentation.noValue,
+            readiness: currentDisplaySleep.map {
+                AtriaInsightReadiness.resolve(
+                    isComputed: false,
+                    dataEnd: $0.end,
+                    syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+                    unavailableReason: "not enough signal that night"
+                )
+            }
         )
     }
 

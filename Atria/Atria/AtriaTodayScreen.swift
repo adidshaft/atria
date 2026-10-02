@@ -2266,6 +2266,14 @@ struct AtriaTodayScreen: View {
                                     : AtriaRingMetricProjection.recoveryTargetBand(greenLower: recoveryGreenLower))
     }
 
+    /// Today's heart-rate history is still partly on the strap.
+    private var strainHistoryIsSyncing: Bool {
+        !AtriaStrapMotionSyncStatus.make(
+            syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+            now: Date()
+        ).isUpToDate
+    }
+
     private var strainMetric: AtriaTriRingMetric {
         // The arc is actual strain on the canonical 0–21 scale. Achievement
         // color and the marker are separate and require a real frozen target.
@@ -2296,7 +2304,14 @@ struct AtriaTodayScreen: View {
                                     : (incomplete
                                         // The target is still today's target when
                                         // the strain so far is partial.
-                                        ? (target.map { String(format: "of %.1f · partial", $0) }
+                                        // Partial because the strap's history
+                                        // is still syncing reads "syncing", the
+                                        // same word as the banner (2026-10-02).
+                                        ? (target.map {
+                                            String(format: "of %.1f · ", $0)
+                                                + (strainHistoryIsSyncing ? "syncing" : "partial")
+                                          }
+                                            ?? (strainHistoryIsSyncing ? "Syncing" : nil)
                                             ?? currentStrainLimitation?.compactState
                                             ?? "Strain data incomplete")
                                         // §13.4: a fused value names itself as
@@ -3010,9 +3025,15 @@ struct AtriaTodayScreen: View {
                                                 // "/min"), so spend it saying
                                                 // what the percentage is OF.
                                                 ? "of time in bed"
-                                                : (latestSleep?.sleepEfficiency == nil
-                                                    ? "After a confirmed sleep"
-                                                    : "Needs motion data")),
+                                                // Ready / Calculating / Syncing,
+                                                // the same words every insight
+                                                // uses (owner 2026-10-02).
+                                                : (latestSleep.flatMap {
+                                                    $0.motionReadiness(
+                                                        syncedThrough: AtriaStrapMotionSyncStatus
+                                                            .persistedSyncedThrough()
+                                                    ).label()
+                                                } ?? "After a confirmed sleep")),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),

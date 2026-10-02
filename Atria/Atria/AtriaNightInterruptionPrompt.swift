@@ -62,6 +62,21 @@ enum AtriaNightInterruptionAnswerStore {
         if answers.count > maximumAnswers { answers = Array(answers.suffix(maximumAnswers)) }
         if let data = try? JSONEncoder().encode(answers) {
             defaults.set(data, forKey: defaultsKey)
+            if defaults === UserDefaults.standard {
+                NotificationCenter.default.post(name: didRecordNotification, object: nil)
+            }
+        }
+    }
+
+    /// Posted after an answer is saved, so stored sleeps can take it in.
+    static let didRecordNotification = Notification.Name("AtriaNightInterruptionAnswerStore.didRecord")
+
+    /// Every answered interruption is time the wearer says they were awake,
+    /// whatever the reason ("Couldn't sleep", "Bathroom", ...). Skips are not.
+    static func confirmedWakeIntervals(defaults: UserDefaults = .standard) -> [DateInterval] {
+        all(defaults: defaults).compactMap { answer in
+            guard answer.label != nil, answer.end > answer.start else { return nil }
+            return DateInterval(start: answer.start, end: answer.end)
         }
     }
 

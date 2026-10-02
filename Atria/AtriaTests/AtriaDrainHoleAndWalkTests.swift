@@ -494,3 +494,64 @@ final class AtriaTodayStrainAndRingTargetTests: XCTestCase {
         XCTAssertEqual(AtriaRingMetricProjection.sleepTargetBand, 0.85...1.0)
     }
 }
+
+/// Owner 2026-10-02: four "Couldn't sleep" answers, 0 awake minutes; sleep
+/// efficiency stuck at "--" after the night's motion synced; one status
+/// grammar (ready / calculating / syncing) for every insight.
+final class AtriaSleepTruthAndReadinessTests: XCTestCase {
+    private func at(_ minutes: Double) -> Date { Date(timeIntervalSince1970: 1_790_880_000 + minutes * 60) }
+
+    func testAnsweredWakeBecomesAwakeAndCoverageIsUnchanged() {
+        let segments = [
+            SleepStageSegment(id: "research-hr-estimate-v1-a", start: at(0), end: at(60), stage: .light),
+            SleepStageSegment(id: "research-hr-estimate-v1-b", start: at(60), end: at(120), stage: .deep),
+        ]
+        let out = SleepStageSegment.overlayingConfirmedWake(
+            segments, wake: [DateInterval(start: at(50), end: at(70))])
+        let awake = out.filter { $0.stage == .awake }.reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(awake, 20 * 60, accuracy: 0.5)
+        XCTAssertEqual(out.reduce(0) { $0 + $1.duration }, 120 * 60, accuracy: 0.5,
+                       "the night keeps its full coverage")
+        XCTAssertTrue(out.allSatisfy { $0.id.hasPrefix("research-hr-estimate-v1-") },
+                      "provenance lane is preserved")
+        XCTAssertEqual(out.first?.start, at(0))
+        XCTAssertEqual(out.last?.end, at(120))
+    }
+
+    func testNoAnswersLeaveStagesUntouched() {
+        let segments = [SleepStageSegment(id: "x", start: at(0), end: at(30), stage: .rem)]
+        XCTAssertEqual(SleepStageSegment.overlayingConfirmedWake(segments, wake: []), segments)
+    }
+
+    func testReadinessSaysSyncingCalculatingOrWhy() {
+        let end = at(0)
+        XCTAssertEqual(AtriaInsightReadiness.resolve(isComputed: true, dataEnd: end, syncedThrough: nil), .ready)
+        XCTAssertEqual(AtriaInsightReadiness.resolve(isComputed: false, dataEnd: end, syncedThrough: at(-30)),
+                       .syncing(through: at(-30)))
+        XCTAssertEqual(AtriaInsightReadiness.resolve(isComputed: false, dataEnd: end, syncedThrough: at(10)),
+                       .calculating)
+        XCTAssertEqual(AtriaInsightReadiness.resolve(isComputed: false, dataEnd: end, syncedThrough: at(90),
+                                                     unavailableReason: "No motion that night"),
+                       .unavailable("No motion that night"),
+                       "fully synced an hour ago and still missing is final, not pending")
+        XCTAssertEqual(AtriaInsightReadiness.calculating.label(), "Calculating")
+    }
+
+    func testANightThatJustFinishedSyncingSkipsTheThrottle() {
+        let sleep = UserConfirmedSleep(id: "s", createdAt: at(-10), start: at(-400), end: at(-10),
+                                       source: "aggregate_sleep", confidence: "user_confirmed_hr_only",
+                                       sessions: 1, samples: 100, avgHR: 60, peakHR: 90, restingHR: 55,
+                                       hrv: nil, hrvWindowCount: 0, respiratoryRate: nil,
+                                       duration: 390 * 60, span: 390 * 60, reason: "test",
+                                       motionSource: "historical_gravity_recovered_epoch_v1_missing", motionValidated: false, stageSegments: nil,
+                                       eventTimeZoneIdentifier: nil)
+        let throttled = SessionStore.compactMotionSleepEvidenceUpgradeCandidateWindows(
+            now: at(0), lastAttempt: at(-5), upgradeInFlight: false, recomputeIdle: true,
+            confirmedSleeps: [sleep], syncedThrough: at(-20), syncedThroughAtLastAttempt: at(-30))
+        XCTAssertNil(throttled, "motion not synced past the night yet: keep the throttle")
+        let fired = SessionStore.compactMotionSleepEvidenceUpgradeCandidateWindows(
+            now: at(0), lastAttempt: at(-5), upgradeInFlight: false, recomputeIdle: true,
+            confirmedSleeps: [sleep], syncedThrough: at(-2), syncedThroughAtLastAttempt: at(-20))
+        XCTAssertEqual(fired?.count, 1, "the night's motion just finished syncing: upgrade now")
+    }
+}
