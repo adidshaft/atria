@@ -3992,6 +3992,18 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertLessThan(orphanSuccess.lowerBound, orphanGeneric.lowerBound)
     }
 
+    func testDeferredGlanceRetryHandsTerminalPublicationBackWhenGlanceDoesNotStart() {
+        // Firmware without a compact bank never starts the glance, so the
+        // first accepted HR must re-enter terminal publication itself.
+        XCTAssertTrue(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: false, radioTransportOwnsLink: false))
+        // A started glance owns the link; publication waits for its release.
+        XCTAssertFalse(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: true, radioTransportOwnsLink: false))
+        XCTAssertFalse(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: false, radioTransportOwnsLink: true))
+    }
+
     func testInteractiveForegroundPrioritizesBoundedGlanceBeforeHeavyProjection() throws {
         let source = try managerSource()
         let methodStart = try XCTUnwrap(source.range(
@@ -4007,8 +4019,16 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "checkpointHistoricalMotionBankOnGlanceIfNeeded("
         ))
         let heavy = try XCTUnwrap(method.range(
-            of: "resumeDeferredTerminalConsumerMaterializationIfNeeded("
+            of: "resumeForegroundTerminalPublication(reason: \"scene_active\")"
         ))
+        let sharedResume = try XCTUnwrap(source.range(
+            of: "private func resumeForegroundTerminalPublication(reason: String)"
+        ))
+        let sharedResumeBody = String(source[sharedResume.lowerBound...].prefix(1_400))
+        XCTAssertTrue(sharedResumeBody.contains(
+            "resumeDeferredTerminalConsumerMaterializationIfNeeded(reason: reason)"
+        ))
+        XCTAssertTrue(sharedResumeBody.contains("resumePendingFullDrainPublicationIfNeeded("))
         let retryArm = try XCTUnwrap(method.range(
             of: "foregroundGlanceCheckpointRetryGate.recordForegroundAttempt("
         ))
@@ -4089,6 +4109,13 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "checkpointHistoricalMotionBankOnGlanceIfNeeded("
         ))
         XCTAssertLessThan(consume.lowerBound, checkpoint.lowerBound)
+        // 2026-10-02: a glance that still cannot start must hand the skipped
+        // scene-active publication back, or a coverageProven journal parks
+        // forever once the strap backlog is empty.
+        let handBack = try XCTUnwrap(retry.range(
+            of: "resumeForegroundTerminalPublication(\n                reason: \"first_foreground_accepted_hr\""
+        ))
+        XCTAssertLessThan(checkpoint.lowerBound, handBack.lowerBound)
         XCTAssertTrue(retry.contains(
             "UIApplication.shared.applicationState == .active"
         ))
