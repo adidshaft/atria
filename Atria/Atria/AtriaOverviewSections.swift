@@ -5242,7 +5242,22 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var sleepPerformanceHeroState: String {
-        preparedHistory.sleepPerformance[range]?.last == nil ? "Learning" : "of nightly need"
+        preparedHistory.sleepPerformance[range]?.last == nil
+            ? lastNightHeroState(fallback: "Learning")
+            : "of nightly need"
+    }
+
+    /// Ready / Calculating / Syncing for a hero computed from last night,
+    /// the same rule and words as the tiles (owner 2026-10-02).
+    private func lastNightHeroState(fallback: String) -> String {
+        guard let end = sleepHistory.latestMainSleep?.end,
+              Date().timeIntervalSince(end) < 24 * 60 * 60 else { return fallback }
+        return AtriaInsightReadiness.resolve(
+            isComputed: false,
+            dataEnd: end,
+            syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+            unavailableReason: fallback
+        ).label() ?? fallback
     }
 
     private var fitnessAgeHeroValue: String {
@@ -5777,7 +5792,9 @@ struct AtriaMetricDetailSheet: View {
     private var recoveryHeroState: String {
         // Canonical not-ready word is "Learning" (never "Building") — must match
         // the recovery ring center + legend chip for the same Day-1 state.
-        guard let percent = recoveryHeroRawPercent.map({ Int($0.rounded()) }) else { return "Learning" }
+        guard let percent = recoveryHeroRawPercent.map({ Int($0.rounded()) }) else {
+            return lastNightHeroState(fallback: "Learning")
+        }
         if recoveryHeroUsesPreviousSavedDay {
             return "Previous sleep"
         }

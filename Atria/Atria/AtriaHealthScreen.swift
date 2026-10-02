@@ -1941,7 +1941,23 @@ struct AtriaHealthScreen: View {
     }
 
     private func recoveryDetail(live: AtriaHealthMonitorLiveProjection) -> String {
-        currentMetricProjection(live: live).recoveryDetail
+        let projection = currentMetricProjection(live: live)
+        return lastNightDetail(isComputed: projection.recoveryPercent != nil,
+                               fallback: projection.recoveryDetail)
+    }
+
+    /// Ready / Calculating / Syncing for a card computed from last night,
+    /// the same rule and words as Today (owner 2026-10-02).
+    private func lastNightDetail(isComputed: Bool, fallback: String) -> String {
+        guard !isComputed,
+              let end = currentDisplaySleep?.end,
+              Date().timeIntervalSince(end) < 24 * 60 * 60 else { return fallback }
+        return AtriaInsightReadiness.resolve(
+            isComputed: false,
+            dataEnd: end,
+            syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
+            unavailableReason: fallback
+        ).label() ?? fallback
     }
 
     private func recoveryTint(live: AtriaHealthMonitorLiveProjection) -> Color {
@@ -1965,7 +1981,8 @@ struct AtriaHealthScreen: View {
            let caption = Self.restingHeartRateDeltaCaption(value: value, mean: stats.mean, count: stats.count) {
             return caption
         }
-        return projection.restingHeartRateDetail
+        return lastNightDetail(isComputed: projection.restingHeartRate != nil,
+                               fallback: projection.restingHeartRateDetail)
     }
 
     /// "2 below usual", "same as usual", "3 above usual"; nil below three
@@ -1982,7 +1999,9 @@ struct AtriaHealthScreen: View {
     }
 
     private func hrvDetail(live: AtriaHealthMonitorLiveProjection) -> String {
-        currentMetricProjection(live: live).hrvDetail
+        let projection = currentMetricProjection(live: live)
+        return lastNightDetail(isComputed: projection.hrvValue != AtriaCompactMetricPresentation.noValue,
+                               fallback: projection.hrvDetail)
     }
 
     private var respiratoryValue: String {
@@ -2004,16 +2023,11 @@ struct AtriaHealthScreen: View {
     }
 
     private var respiratoryDetail: String {
-        AtriaHealthMetricEvidencePresentation.respiratoryDetail(
-            valueAvailable: respiratoryValue != AtriaCompactMetricPresentation.noValue,
-            readiness: currentDisplaySleep.map {
-                AtriaInsightReadiness.resolve(
-                    isComputed: false,
-                    dataEnd: $0.end,
-                    syncedThrough: AtriaStrapMotionSyncStatus.persistedSyncedThrough(),
-                    unavailableReason: "not enough signal that night"
-                )
-            }
+        lastNightDetail(
+            isComputed: respiratoryValue != AtriaCompactMetricPresentation.noValue,
+            fallback: AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+                valueAvailable: respiratoryValue != AtriaCompactMetricPresentation.noValue
+            )
         )
     }
 

@@ -24,6 +24,8 @@ final class AtriaRestingHRTileCaptionTests: XCTestCase {
         let window = String(source[start.lowerBound...].prefix(900))
         XCTAssertTrue(window.contains("let stats = vitalsStore.state.baseline.restingStats,"))
         XCTAssertTrue(window.contains("Self.restingHeartRateDeltaCaption(value: value, mean: stats.mean, count: stats.count)"))
-        XCTAssertTrue(window.contains("return projection.restingHeartRateDetail"), "the projection's own caption remains the fallback")
+        // 2026-10-02: the fallback passes through the shared Ready /
+        // Calculating / Syncing rule, which returns it once the night is in.
+        XCTAssertTrue(window.contains("fallback: projection.restingHeartRateDetail)"), "the projection's own caption remains the fallback")
     }
 }
