@@ -17094,6 +17094,51 @@ final class SessionStore: ObservableObject {
         return started ? lease : nil
     }
 
+    /// BGProcessing-only window in which a parked exact recovery may finish
+    /// off-screen under the duty-cycled throttle (see
+    /// `AtriaBLEManager.runParkedTerminalPublicationInBackgroundWindow`).
+    private(set) var exactRecoveryBackgroundWindowLease:
+        AtriaBackgroundProjectionThrottle.ActiveLease?
+
+    func beginExactRecoveryBackgroundWindowIfSafe(
+        reason: String,
+        budgetSeconds: TimeInterval = 300
+    ) -> AtriaBackgroundProjectionThrottle.ActiveLease? {
+        guard Self.shouldStartBackgroundArchiveProjection(
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG exact_recovery_bg_window status=skipped reason=%@ action=guard_unsafe",
+                reason
+            )
+            return nil
+        }
+        let lease = AtriaBackgroundProjectionThrottle.shared.begin(
+            budgetSeconds: budgetSeconds
+        )
+        exactRecoveryBackgroundWindowLease = lease
+        return lease
+    }
+
+    func endExactRecoveryBackgroundWindow(
+        _ lease: AtriaBackgroundProjectionThrottle.ActiveLease
+    ) {
+        if exactRecoveryBackgroundWindowLease == lease {
+            exactRecoveryBackgroundWindowLease = nil
+        }
+        _ = AtriaBackgroundProjectionThrottle.shared.end(lease: lease)
+    }
+
+    nonisolated static func exactRecoveryUsesBackgroundWindow(
+        applicationIsActive: Bool,
+        windowLeaseLive: Bool
+    ) -> Bool {
+        !applicationIsActive && windowLeaseLive
+    }
+
     /// Starts one current-window bootstrap pass for the explicit BLE fairness
     /// yield. The caller has already required an active, cool, non-LPM phone;
     /// unlike unattended BGProcessing, this attended <=8 MiB pass does not
@@ -17911,10 +17956,19 @@ final class SessionStore: ObservableObject {
         timeout: Duration = .seconds(120)
     ) async -> Bool {
         let priorRevision = recoveredDataPublicationFence.archiveRevision
+        let inBackgroundWindow = Self.exactRecoveryUsesBackgroundWindow(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active,
+            windowLeaseLive: exactRecoveryBackgroundWindowLease.map {
+                AtriaBackgroundProjectionThrottle.shared
+                    .activeLeaseShouldContinue($0)
+            } ?? false
+        )
         guard requestRecoveredDataRecomputation(
             reason: reason,
             allowsIncompleteOnboarding: true,
-            isExactRecoveryPublication: true
+            isExactRecoveryPublication: true,
+            backgroundProjectionAllowed: inBackgroundWindow
         ) else { return false }
         return await awaitRecoveredDataPublication(after: priorRevision,
                                                    timeout: timeout)

@@ -179,6 +179,48 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    // 2026-10-02: a recovered night's last steps needed ~70 s of
+    // uninterrupted foreground and restarted on every auto-lock. Only an
+    // explicit BGProcessing window (throttle lease) may finish it off-screen;
+    // ordinary background and restoration wakes stay deferred.
+    func testOnlyAnExplicitBackgroundWindowFinishesAParkedNightOffScreen() throws {
+        XCTAssertTrue(AtriaBLEManager.shouldRunTerminalConsumerMaterialization(
+            applicationIsActive: false, backgroundWindowActive: true))
+        XCTAssertFalse(AtriaBLEManager.shouldRunTerminalConsumerMaterialization(
+            applicationIsActive: false, backgroundWindowActive: false))
+        XCTAssertTrue(SessionStore.exactRecoveryUsesBackgroundWindow(
+            applicationIsActive: false, windowLeaseLive: true))
+        XCTAssertFalse(SessionStore.exactRecoveryUsesBackgroundWindow(
+            applicationIsActive: true, windowLeaseLive: true),
+            "on screen, the ordinary foreground ticket runs")
+        XCTAssertFalse(SessionStore.exactRecoveryUsesBackgroundWindow(
+            applicationIsActive: false, windowLeaseLive: false))
+
+        typealias Status = AtriaHistoricalFullDrainCoverageStore.Authority.Status
+        XCTAssertTrue(AtriaBLEManager.backgroundWindowShouldReenterTerminalPublication(
+            previous: .coverageProven, current: .coverageProven, reentries: 0))
+        XCTAssertFalse(AtriaBLEManager.backgroundWindowShouldReenterTerminalPublication(
+            previous: .coverageProven, current: .coverageProven, reentries: 1),
+            "an unchanged stage gets one retry, never a loop")
+        XCTAssertTrue(AtriaBLEManager.backgroundWindowShouldReenterTerminalPublication(
+            previous: .coverageProven, current: .gapResolvedConsumersPending,
+            reentries: 1))
+        XCTAssertFalse(AtriaBLEManager.backgroundWindowShouldReenterTerminalPublication(
+            previous: .coverageProven, current: .gapResolvedConsumersPending,
+            reentries: 4))
+
+        let app = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
+        let window = try XCTUnwrap(app.range(
+            of: "ble.runParkedTerminalPublicationInBackgroundWindow("))
+        let generic = try XCTUnwrap(app.range(
+            of: "store.requestBackgroundArchiveProjectionIfSafe("))
+        XCTAssertLessThan(window.lowerBound, generic.lowerBound)
+        XCTAssertTrue(app.contains("beginExactRecoveryBackgroundWindowIfSafe("))
+        XCTAssertTrue(app.contains("AtriaBLEManager.parkedTerminalPublicationPendingOnDisk()"))
+    }
+
     func testTerminalConsumerMaterializationUsesForegroundCPUBudget() {
         XCTAssertTrue(AtriaBLEManager.shouldRunTerminalConsumerMaterialization(
             applicationIsActive: true
