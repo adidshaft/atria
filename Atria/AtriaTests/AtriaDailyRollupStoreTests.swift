@@ -267,6 +267,34 @@ final class AtriaDailyRollupStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.rollup(for: day)?.fitnessAgeDelta, 1)
     }
 
+    // 2026-10-02 device: launch rewrote the whole rollup file 41 times in one
+    // second, one per upsert. A burst now coalesces into the newest image, and
+    // an explicit flush can never write an image older than one on disk.
+    func testUpsertBurstPersistsNewestImageAndExplicitFlushNeverRegresses() throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("daily-rollups-burst-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let store = DailyRollupStore(url: tempURL, calendar: calendar)
+        for recovery in 1...40 {
+            store.upsert(DailyRollupStoreEntry(day: day, recovery: recovery,
+                                               calendar: calendar))
+        }
+        let flushed = expectation(description: "flush")
+        store.persistCurrentSnapshot { XCTAssertTrue($0); flushed.fulfill() }
+        store.upsert(DailyRollupStoreEntry(day: day, recovery: 41, calendar: calendar))
+        wait(for: [flushed], timeout: 5)
+        _ = try waitForPersistedRollups(at: tempURL) { entries in
+            entries.first?.recovery == 41
+        }
+        XCTAssertEqual(DailyRollupStore(url: tempURL, calendar: calendar)
+            .rollup(for: day)?.recovery, 41)
+
+        XCTAssertTrue(DailyRollupStore.shouldWritePersistedImage(sequence: 5, lastWritten: 4))
+        XCTAssertFalse(DailyRollupStore.shouldWritePersistedImage(sequence: 4, lastWritten: 5))
+    }
+
     func testUpdateCalendarKolkataToLosAngelesPreservesCivilDayAndOneRowOnUpsert() throws {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("daily-rollups-calendar-test-\(UUID().uuidString).json")
