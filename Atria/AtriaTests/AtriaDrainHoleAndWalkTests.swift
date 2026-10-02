@@ -554,4 +554,44 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
             confirmedSleeps: [sleep], syncedThrough: at(-2), syncedThroughAtLastAttempt: at(-20))
         XCTAssertEqual(fired?.count, 1, "the night's motion just finished syncing: upgrade now")
     }
+
+    // 2026-10-02 device: the recovered night's consumers waited on a full scan
+    // watermarked 10-01 22:23 while the dependency needed 10-02 02:43 and the
+    // drain cursor was already 10-02 13:29. Oldest-first drain never sends
+    // another HISTORY_COMPLETE, so the cursor closes it.
+    func testDrainCursorClosesPendingFullScanDependencyOnlyWhenItCoversTheEnd() {
+        let previous = Date(timeIntervalSince1970: 1_790_873_620)
+        let requiredEnd = Date(timeIntervalSince1970: 1_790_891_580)
+        let now = Date(timeIntervalSince1970: 1_790_936_000)
+        XCTAssertEqual(
+            HistoricalArchive.fullScanWatermarkClosingDependency(
+                previous: previous, requiredEnd: requiredEnd,
+                drainCursorUnix: 1_790_931_554, now: now),
+            Date(timeIntervalSince1970: 1_790_931_554))
+        XCTAssertNil(HistoricalArchive.fullScanWatermarkClosingDependency(
+            previous: previous, requiredEnd: requiredEnd,
+            drainCursorUnix: 1_790_880_000, now: now),
+            "a cursor short of the end proves nothing new")
+        XCTAssertNil(HistoricalArchive.fullScanWatermarkClosingDependency(
+            previous: requiredEnd, requiredEnd: requiredEnd,
+            drainCursorUnix: 1_790_931_554, now: now),
+            "an already-closed dependency is not re-minted")
+        XCTAssertEqual(
+            HistoricalArchive.fullScanWatermarkClosingDependency(
+                previous: previous, requiredEnd: requiredEnd,
+                drainCursorUnix: now.timeIntervalSince1970 + 600, now: now),
+            now, "never claims beyond now")
+    }
+
+    func testCoverageFailureRetiresOncePerDependencyWhenDrainCursorCoversIt() {
+        XCTAssertTrue(AtriaBLEManager.shouldRetireCoverageFailureForDrainCursor(
+            requiredEndUnix: 100, drainCursorUnix: 200,
+            lastRetryFingerprint: nil, fingerprint: "c-100"))
+        XCTAssertFalse(AtriaBLEManager.shouldRetireCoverageFailureForDrainCursor(
+            requiredEndUnix: 100, drainCursorUnix: 200,
+            lastRetryFingerprint: "c-100", fingerprint: "c-100"))
+        XCTAssertFalse(AtriaBLEManager.shouldRetireCoverageFailureForDrainCursor(
+            requiredEndUnix: 100, drainCursorUnix: 50,
+            lastRetryFingerprint: nil, fingerprint: "c-100"))
+    }
 }

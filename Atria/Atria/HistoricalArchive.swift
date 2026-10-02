@@ -2082,6 +2082,26 @@ enum HistoricalArchive {
         )
     }
 
+    /// Oldest-first drain never sends HISTORY_COMPLETE, so no later full scan
+    /// ever advances a pending dependency's watermark past the original
+    /// terminal's command time (2026-10-02 device: watermark 10-01 22:23,
+    /// dependency needs 10-02 02:43, drain cursor already 10-02 13:29). The
+    /// durable drain cursor is the strap's own guarantee that every record up
+    /// to it was fsynced before its ACK erased it, so once it covers the
+    /// dependency end the re-minted scan may claim it — never beyond `now`.
+    nonisolated static func fullScanWatermarkClosingDependency(
+        previous: Date,
+        requiredEnd: Date,
+        drainCursorUnix: TimeInterval,
+        now: Date
+    ) -> Date? {
+        guard previous < requiredEnd,
+              drainCursorUnix.isFinite, drainCursorUnix > 0 else { return nil }
+        let cursor = min(Date(timeIntervalSince1970: drainCursorUnix), now)
+        guard cursor >= requiredEnd else { return nil }
+        return cursor
+    }
+
     /// Cheap retry identity for terminal consumer publication admission.
     ///
     /// This intentionally hashes only immutable sealed catalog identity from
@@ -2183,7 +2203,11 @@ enum HistoricalArchive {
         ) else {
             throw TerminalConsumerProjectionError.committedAggregateUnavailable
         }
-        let catalog = try catalogStoreLocked().snapshotVerifiedAgainstFiles()
+        let evidenceCatalogStore = try catalogStoreLocked()
+        // Same trap as terminal completion minting: append hints change the
+        // catalog digest at one generation, which the re-mint below rejects.
+        try evidenceCatalogStore.advanceGenerationIfAppendHintsUnpersisted()
+        let catalog = try evidenceCatalogStore.snapshotVerifiedAgainstFiles()
         // The caller's `sourceRawSHA256` is deliberately not consulted for the
         // match below — see `resolveCommittedFullScanSource` for the honesty
         // trade this encodes. Every other gate (limit, rejected manifests,
