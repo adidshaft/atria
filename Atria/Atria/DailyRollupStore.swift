@@ -1214,8 +1214,18 @@ final class DailyRollupStore {
         }
         let snapshot = cache
         let targetURL = url
-        queue.async {
-            let succeeded = Self.persist(snapshot, to: targetURL)
+        persistenceSequence &+= 1
+        let sequence = persistenceSequence
+        queue.async { [self] in
+            // A coalesced write that ran first may already hold a newer image.
+            let succeeded = Self.shouldWritePersistedImage(
+                sequence: sequence, lastWritten: lastWrittenPersistenceSequence
+            ) ? Self.persist(snapshot, to: targetURL) : true
+            if succeeded {
+                lastWrittenPersistenceSequence = max(
+                    lastWrittenPersistenceSequence, sequence
+                )
+            }
             DispatchQueue.main.async {
                 completion(succeeded)
             }
@@ -1269,13 +1279,49 @@ final class DailyRollupStore {
         }
     }
 
+    /// Launch fired 41 whole-file rewrites in one second (2026-10-02 device),
+    /// one per upsert. Writes now coalesce: a burst queues one write, which
+    /// takes the newest image when it runs. Fences still drain the queue, so
+    /// durability ordering is unchanged.
+    private let coalescedPersistenceLock = NSLock()
+    private var coalescedPersistenceSnapshot:
+        (entries: [DailyRollupStoreEntry], sequence: UInt64)?
+    /// MainActor-assigned order of every requested image; the serial queue
+    /// never writes an image older than one it already wrote.
+    private var persistenceSequence: UInt64 = 0
+    private var lastWrittenPersistenceSequence: UInt64 = 0
+
+    nonisolated static func shouldWritePersistedImage(
+        sequence: UInt64,
+        lastWritten: UInt64
+    ) -> Bool {
+        sequence > lastWritten
+    }
+
     private func schedulePersistence(of snapshot: [DailyRollupStoreEntry]) {
         if persistencePauseDepth > 0 {
             return
         }
+        persistenceSequence &+= 1
+        coalescedPersistenceLock.lock()
+        let writeAlreadyQueued = coalescedPersistenceSnapshot != nil
+        coalescedPersistenceSnapshot = (snapshot, persistenceSequence)
+        coalescedPersistenceLock.unlock()
+        guard !writeAlreadyQueued else { return }
         let targetURL = url
-        queue.async {
-            Self.persist(snapshot, to: targetURL)
+        queue.async { [self] in
+            coalescedPersistenceLock.lock()
+            let latest = coalescedPersistenceSnapshot
+            coalescedPersistenceSnapshot = nil
+            coalescedPersistenceLock.unlock()
+            if let latest,
+               Self.shouldWritePersistedImage(
+                sequence: latest.sequence,
+                lastWritten: lastWrittenPersistenceSequence
+               ),
+               Self.persist(latest.entries, to: targetURL) {
+                lastWrittenPersistenceSequence = latest.sequence
+            }
         }
     }
 
