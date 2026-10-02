@@ -229,3 +229,61 @@ enum AtriaCurrentDayPresentation {
         return estimate
     }
 }
+
+/// One status grammar for every insight (owner 2026-10-02). A number shows
+/// only when it is computed; otherwise the surface says which of the two
+/// honest waits it is in:
+/// * `.calculating` — the strap's data for this window is on the phone and
+///   the result is being worked out.
+/// * `.syncing` — some of the window's data is still on the strap; the time
+///   is the same "synced through" the sync banner and Steps sheet show.
+enum AtriaInsightReadiness: Equatable {
+    case ready
+    case calculating
+    case syncing(through: Date?)
+    /// Fully synced long enough ago that the result will not come: the data
+    /// was never recorded (strap off, motion missing). Says why, never spins.
+    case unavailable(String)
+
+    /// Calculation runs as soon as a window finishes syncing; past this the
+    /// missing result is final, not pending.
+    static let calculatingGiveUp: TimeInterval = 60 * 60
+
+    /// Clock-corrected history can trail by a minute or two; within this the
+    /// window counts as fully synced.
+    static let syncedMargin: TimeInterval = 120
+
+    static func resolve(isComputed: Bool,
+                        dataEnd: Date?,
+                        syncedThrough: Date?,
+                        unavailableReason: String? = nil,
+                        margin: TimeInterval = syncedMargin) -> Self {
+        if isComputed { return .ready }
+        guard let dataEnd else { return .calculating }
+        guard let syncedThrough else { return .syncing(through: nil) }
+        guard syncedThrough.addingTimeInterval(margin) >= dataEnd else {
+            return .syncing(through: syncedThrough)
+        }
+        if let unavailableReason,
+           syncedThrough.timeIntervalSince(dataEnd) > calculatingGiveUp {
+            return .unavailable(unavailableReason)
+        }
+        return .calculating
+    }
+
+    /// Short line for tiles and chips; nil when the value itself is shown.
+    func label(now: Date = Date(), calendar: Calendar = .current) -> String? {
+        switch self {
+        case .ready:
+            return nil
+        case .calculating:
+            return "Calculating"
+        case .syncing(let through):
+            guard let through else { return "Syncing" }
+            return "Syncing · to "
+                + AtriaStrapMotionSyncStatus.timeText(through, now: now, calendar: calendar)
+        case .unavailable(let reason):
+            return reason
+        }
+    }
+}

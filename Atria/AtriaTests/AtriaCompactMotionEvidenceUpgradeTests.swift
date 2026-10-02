@@ -247,7 +247,7 @@ final class AtriaCompactMotionEvidenceUpgradeTests: XCTestCase {
         )
         // Eligible: recent hr_only night, idle recompute, no throttle.
         XCTAssertEqual(
-            planner(now, nil, false, true, [hrOnly], 30 * 60, 4 * 86_400)?
+            planner(now, nil, false, true, [hrOnly], nil, nil, 30 * 60, 4 * 86_400)?
                 .count,
             1
         )
@@ -255,15 +255,15 @@ final class AtriaCompactMotionEvidenceUpgradeTests: XCTestCase {
         // not re-run the rebuild (no storm on repeated notifications).
         XCTAssertNil(planner(
             now, now.addingTimeInterval(-60), false, true, [hrOnly],
-            30 * 60, 4 * 86_400
+            nil, nil, 30 * 60, 4 * 86_400
         ))
         XCTAssertNotNil(planner(
             now, now.addingTimeInterval(-31 * 60), false, true, [hrOnly],
-            30 * 60, 4 * 86_400
+            nil, nil, 30 * 60, 4 * 86_400
         ))
         // In-flight and active-projection guards.
-        XCTAssertNil(planner(now, nil, true, true, [hrOnly], 30 * 60, 4 * 86_400))
-        XCTAssertNil(planner(now, nil, false, false, [hrOnly], 30 * 60, 4 * 86_400))
+        XCTAssertNil(planner(now, nil, true, true, [hrOnly], nil, nil, 30 * 60, 4 * 86_400))
+        XCTAssertNil(planner(now, nil, false, false, [hrOnly], nil, nil, 30 * 60, 4 * 86_400))
         // Nothing upgradeable: validated + staged, manual, or out of the
         // store's retention window.
         let done = makeConfirmedSleep(
@@ -278,16 +278,16 @@ final class AtriaCompactMotionEvidenceUpgradeTests: XCTestCase {
                 stage: .light
             )]
         )
-        XCTAssertNil(planner(now, nil, false, true, [done], 30 * 60, 4 * 86_400))
+        XCTAssertNil(planner(now, nil, false, true, [done], nil, nil, 30 * 60, 4 * 86_400))
         let manual = makeConfirmedSleep(
             source: "manual_sleep",
             confidence: "manual_user_entered",
             motionSource: "manual"
         )
-        XCTAssertNil(planner(now, nil, false, true, [manual], 30 * 60, 4 * 86_400))
+        XCTAssertNil(planner(now, nil, false, true, [manual], nil, nil, 30 * 60, 4 * 86_400))
         XCTAssertNil(planner(
             now.addingTimeInterval(10 * 86_400), nil, false, true, [hrOnly],
-            30 * 60, 4 * 86_400
+            nil, nil, 30 * 60, 4 * 86_400
         ))
     }
 

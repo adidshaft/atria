@@ -3666,6 +3666,46 @@ struct SleepStageSegment: Codable, Identifiable, Equatable {
         max(0, end.timeIntervalSince(start))
     }
 
+    /// Time the wearer confirmed they were awake (an answered "what was it?"
+    /// interruption) is awake, whatever the stager inferred (owner
+    /// 2026-10-02: four "Couldn't sleep" answers, 0 awake minutes). Portions
+    /// inside `wake` become `.awake`; ids keep their source prefix so
+    /// provenance checks still read the same lane; coverage is unchanged.
+    static func overlayingConfirmedWake(_ segments: [SleepStageSegment],
+                                        wake: [DateInterval]) -> [SleepStageSegment] {
+        let wake = wake.filter { $0.duration > 0 }.sorted { $0.start < $1.start }
+        guard !segments.isEmpty, !wake.isEmpty else { return segments }
+        var pieces: [SleepStageSegment] = []
+        for segment in segments.sorted(by: { $0.start < $1.start }) {
+            guard segment.stage != .awake else {
+                pieces.append(segment)
+                continue
+            }
+            var cursor = segment.start
+            for interval in wake where interval.end > segment.start && interval.start < segment.end {
+                let lo = max(interval.start, segment.start)
+                let hi = min(interval.end, segment.end)
+                if lo > cursor {
+                    pieces.append(SleepStageSegment(id: "\(segment.id)-s\(Int(cursor.timeIntervalSince1970))",
+                                                    start: cursor, end: lo, stage: segment.stage))
+                }
+                if hi > max(lo, cursor) {
+                    let from = max(lo, cursor)
+                    pieces.append(SleepStageSegment(id: "\(segment.id)-w\(Int(from.timeIntervalSince1970))",
+                                                    start: from, end: hi, stage: .awake))
+                }
+                cursor = max(cursor, hi)
+            }
+            if cursor == segment.start {
+                pieces.append(segment)
+            } else if segment.end > cursor {
+                pieces.append(SleepStageSegment(id: "\(segment.id)-s\(Int(cursor.timeIntervalSince1970))",
+                                                start: cursor, end: segment.end, stage: segment.stage))
+            }
+        }
+        return pieces
+    }
+
     /// Provenance receipt minted only when the fail-closed engine staged from
     /// dense, local HR PLUS sufficient time-aligned recovered motion epochs.
     /// Segments with this prefix are the only ones eligible for the
@@ -10976,8 +11016,10 @@ final class SessionStore: ObservableObject {
     /// with compact context, and a same-launch arrival pass preparing from
     /// a pre-upgrade snapshot was one leg of the 08-29 device oscillation.
     private var lastCompactMotionSleepEvidenceUpgradeAttempt: Date? = Date()
+    private var syncedThroughAtLastCompactMotionSleepUpgrade: Date?
     private var compactMotionSleepEvidenceUpgradeInFlight = false
     private var systemTimeZoneObserver: NSObjectProtocol?
+    private var nightInterruptionAnswerObserver: NSObjectProtocol?
     private var recoveredThermalStateObserver: NSObjectProtocol?
     private var recoveredPowerStateObserver: NSObjectProtocol?
     private var activeJournalSleepReviewObserver: NSObjectProtocol?
@@ -25006,6 +25048,15 @@ final class SessionStore: ObservableObject {
                     )
                 }
             }
+        self.nightInterruptionAnswerObserver = NotificationCenter.default.addObserver(
+            forName: AtriaNightInterruptionAnswerStore.didRecordNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.applyConfirmedWakeToStoredSleeps()
+            }
+        }
         self.systemTimeZoneObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name.NSSystemTimeZoneDidChange,
                                                                               object: nil,
                                                                               queue: .main) { [weak self] _ in
@@ -43656,6 +43707,29 @@ final class SessionStore: ObservableObject {
                                   motionValidated: authoritative.motionValidated)
     }
 
+    /// An answered interruption is applied to the stored night at once, so
+    /// hours, stages and the efficiency that follow from them agree with what
+    /// the wearer said (owner 2026-10-02).
+    func applyConfirmedWakeToStoredSleeps() async {
+        let wake = AtriaNightInterruptionAnswerStore.confirmedWakeIntervals()
+        guard !wake.isEmpty else { return }
+        var changed = false
+        let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
+            guard let segments = sleep.stageSegments, !segments.isEmpty,
+                  wake.contains(where: { $0.end > sleep.start && $0.start < sleep.end }) else {
+                return sleep
+            }
+            let rewritten = Self.copyConfirmedSleep(sleep, stageSegments: segments)
+            if rewritten != sleep { changed = true }
+            return rewritten
+        }
+        guard changed else { return }
+        let saved = await saveConfirmedSleeps(updated)
+        AtriaDebugLog("ATRIADBG confirmed_wake_overlay status=%@ answers=%d",
+                      saved ? "saved" : "save_failed",
+                      wake.count)
+    }
+
     nonisolated private static func copyConfirmedSleep(
         _ sleep: UserConfirmedSleep,
         stageSegments: [SleepStageSegment]?,
@@ -43663,6 +43737,15 @@ final class SessionStore: ObservableObject {
         motionValidated: Bool? = nil,
         confidence: String? = nil
     ) -> UserConfirmedSleep {
+        // Confirmed wake rides along with every stage rewrite, so a later
+        // re-stage cannot erase what the wearer said.
+        let stageSegments = stageSegments.map {
+            SleepStageSegment.overlayingConfirmedWake(
+                $0,
+                wake: AtriaNightInterruptionAnswerStore.confirmedWakeIntervals()
+                    .filter { $0.end > sleep.start && $0.start < sleep.end }
+            )
+        }
         return UserConfirmedSleep(id: sleep.id,
                                   createdAt: sleep.createdAt,
                                   start: sleep.start,
@@ -46236,14 +46319,38 @@ final class SessionStore: ObservableObject {
         upgradeInFlight: Bool,
         recomputeIdle: Bool,
         confirmedSleeps: [UserConfirmedSleep],
+        syncedThrough: Date? = nil,
+        syncedThroughAtLastAttempt: Date? = nil,
         minimumInterval: TimeInterval = 30 * 60,
         coverageWindow: TimeInterval = 4 * 86_400
     ) -> [DateInterval]? {
         guard !upgradeInFlight, recomputeIdle else { return nil }
+        let windows = candidateWindows(now: now,
+                                       confirmedSleeps: confirmedSleeps,
+                                       coverageWindow: coverageWindow)
+        guard !windows.isEmpty else { return nil }
         if let lastAttempt,
            now.timeIntervalSince(lastAttempt) < minimumInterval {
-            return nil
+            // The throttle waits out repeat attempts on the SAME evidence. A
+            // night whose motion finished syncing since the last attempt is
+            // new evidence: upgrade now, not half an hour later (owner
+            // 2026-10-02: efficiency stayed "--" after the sync caught up).
+            guard let syncedThrough,
+                  windows.contains(where: { window in
+                      window.end <= syncedThrough
+                          && window.end > (syncedThroughAtLastAttempt ?? .distantPast)
+                  }) else {
+                return nil
+            }
         }
+        return windows
+    }
+
+    private nonisolated static func candidateWindows(
+        now: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        coverageWindow: TimeInterval
+    ) -> [DateInterval] {
         let cutoff = now.addingTimeInterval(-coverageWindow)
         let windows = confirmedSleeps.compactMap {
             sleep -> DateInterval? in
@@ -46258,7 +46365,7 @@ final class SessionStore: ObservableObject {
             }
             return DateInterval(start: sleep.start, end: sleep.end)
         }
-        return windows.isEmpty ? nil : windows
+        return windows
     }
 
     /// Wire-2 (2026-08-29): a durable compact-motion generation schedules
@@ -46272,15 +46379,19 @@ final class SessionStore: ObservableObject {
         guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
             .persistedStrapIdentifiers().first else { return }
         let now = Date()
+        let syncedThrough = AtriaStrapMotionSyncStatus.persistedSyncedThrough(now: now)
         guard let windows = Self
             .compactMotionSleepEvidenceUpgradeCandidateWindows(
                 now: now,
                 lastAttempt: lastCompactMotionSleepEvidenceUpgradeAttempt,
                 upgradeInFlight: compactMotionSleepEvidenceUpgradeInFlight,
                 recomputeIdle: recoveredDataRecompute.phase == .idle,
-                confirmedSleeps: cachedConfirmedSleeps
+                confirmedSleeps: cachedConfirmedSleeps,
+                syncedThrough: syncedThrough,
+                syncedThroughAtLastAttempt: syncedThroughAtLastCompactMotionSleepUpgrade
             ) else { return }
         lastCompactMotionSleepEvidenceUpgradeAttempt = now
+        syncedThroughAtLastCompactMotionSleepUpgrade = syncedThrough
         compactMotionSleepEvidenceUpgradeInFlight = true
         let affectedSince = now.addingTimeInterval(-4 * 86_400)
         let store = AtriaWhoop4MotionTickCompactStore.shared
@@ -56513,6 +56624,9 @@ final class SessionStore: ObservableObject {
             deferDerivedPublication: true,
             narrowPublicationAfterCommit: true
         )
+        // Answers recorded before a night's stages existed (or before this
+        // overlay shipped) still reach the stored night.
+        await applyConfirmedWakeToStoredSleeps()
         resumeDeferredLaunchCardSettlementIfNeeded(reason: "deferred_session_load")
         AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=card_settlement_requested sessions=%d elapsed_ms=%d",
                       sessions.count,
@@ -59015,7 +59129,9 @@ struct SleepHistorySnapshot: Equatable {
                 // awake, and only on surfaces that show the mandatory
                 // `AtriaSleepStageEstimateLabel`. Stored segments stay
                 // untouched; failures fall closed to the generic estimate.
-                self.displayStageSegments = Self.reconciledHROnlyDisplaySegments(
+                // The estimate's awake reconciliation must not erase time the
+                // wearer confirmed awake.
+                let reconciled = Self.reconciledHROnlyDisplaySegments(
                     folded: Self.foldedDisplaySegments(from: stageSegments),
                     effectiveSleepDuration: duration,
                     start: start,
@@ -59023,6 +59139,17 @@ struct SleepHistorySnapshot: Equatable {
                     confirmed: confirmed,
                     source: source,
                     stagesPassIntegrity: stagesPassIntegrity)
+                if let start, let end, confirmed {
+                    self.displayStageSegments = Self.foldedDisplaySegments(
+                        from: SleepStageSegment.overlayingConfirmedWake(
+                            reconciled,
+                            wake: AtriaNightInterruptionAnswerStore.confirmedWakeIntervals()
+                                .filter { $0.end > start && $0.start < end }
+                        )
+                    )
+                } else {
+                    self.displayStageSegments = reconciled
+                }
             } else {
                 self.displayStageSegments = evidence == .none
                     ? []
@@ -59370,6 +59497,17 @@ struct SleepHistorySnapshot: Equatable {
 
         var respiratoryRateText: String {
             respiratoryRate.map { String(format: "%.1f", $0) } ?? "--"
+        }
+
+        /// Ready / Calculating / Syncing for this night's motion-based
+        /// values (efficiency, stages).
+        func motionReadiness(syncedThrough: Date?) -> AtriaInsightReadiness {
+            AtriaInsightReadiness.resolve(
+                isComputed: displaySleepEfficiency != nil,
+                dataEnd: end,
+                syncedThrough: syncedThrough,
+                unavailableReason: "No motion that night"
+            )
         }
 
         var sleepEfficiencyText: String {
