@@ -9696,22 +9696,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if !motionBankGlanceCheckpointStarted,
            !foregroundGlanceCheckpointRetryGate.isAwaitingFreshHeartRate,
            !historicalRadioTransportOwnsLink {
-            resumeDeferredTerminalConsumerMaterializationIfNeeded(
-                reason: "scene_active"
-            )
-            // A publication deferred for foreground in an EARLIER process leaves
-            // no in-memory generation for the resume above to replay, so pending
-            // consumer publication could sit unresolved across any number of
-            // foregrounds (2026-08-06: gapResolvedConsumersPending survived four
-            // foregrounds this way). Re-enter the top-level path too — it is
-            // fully self-guarded (authority status, foreground, ledger, fresh
-            // HR, transport ownership) and no-ops when nothing is pending.
-            resumePendingFullDrainPublicationIfNeeded(
-                reason: "scene_active_pending_publication"
-            )
-            _ = reconcileConsumedHistoricalTerminalPublicationIfNeeded(
-                reason: "scene_active"
-            )
+            resumeForegroundTerminalPublication(reason: "scene_active")
         }
         resumeForegroundScanIfNeeded(reason: "scene_active")
         restoreActiveSessionJournalIfNeeded(reason: "scene_active_foreground")
@@ -36496,9 +36481,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ) else {
             return false
         }
-        return checkpointHistoricalMotionBankOnGlanceIfNeeded(
+        let started = checkpointHistoricalMotionBankOnGlanceIfNeeded(
             at: date,
             reason: "first_foreground_accepted_hr"
+        )
+        // The scene-active branch skipped terminal publication only to give
+        // this glance checkpoint first refusal. When the checkpoint still does
+        // not start (e.g. firmware without a compact bank), nothing else
+        // re-enters publication once the strap backlog is empty, so a
+        // coverageProven journal sat unpublished across launches (2026-10-02).
+        if Self.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: started,
+            radioTransportOwnsLink: historicalRadioTransportOwnsLink
+        ) {
+            resumeForegroundTerminalPublication(
+                reason: "first_foreground_accepted_hr"
+            )
+        }
+        return started
+    }
+
+    nonisolated static func shouldResumeTerminalPublicationAfterGlanceRetry(
+        glanceCheckpointStarted: Bool,
+        radioTransportOwnsLink: Bool
+    ) -> Bool {
+        !glanceCheckpointStarted && !radioTransportOwnsLink
+    }
+
+    /// Foreground re-entry for parked terminal consumer publication, shared by
+    /// scene-active and the first accepted HR after a deferred glance.
+    private func resumeForegroundTerminalPublication(reason: String) {
+        resumeDeferredTerminalConsumerMaterializationIfNeeded(reason: reason)
+        // A publication deferred for foreground in an EARLIER process leaves
+        // no in-memory generation for the resume above to replay, so pending
+        // consumer publication could sit unresolved across any number of
+        // foregrounds (2026-08-06: gapResolvedConsumersPending survived four
+        // foregrounds this way). Re-enter the top-level path too — it is
+        // fully self-guarded (authority status, foreground, ledger, fresh
+        // HR, transport ownership) and no-ops when nothing is pending.
+        resumePendingFullDrainPublicationIfNeeded(
+            reason: "\(reason)_pending_publication"
+        )
+        _ = reconcileConsumedHistoricalTerminalPublicationIfNeeded(
+            reason: reason
         )
     }
 
