@@ -429,6 +429,7 @@ struct AtriaHistoricalSealedJSONLCompression {
         while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
             hasher.update(data: chunk)
             bytes &+= UInt64(chunk.count)
+            AtriaBackgroundWorkPacer.checkpoint()
         }
         return (bytes, hasher.finalize().hexString)
     }
@@ -525,6 +526,7 @@ enum AtriaHistoricalJSONLInput {
             defer { try? handle.close() }
             while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
                 try consume(chunk)
+                AtriaBackgroundWorkPacer.checkpoint()
             }
             return
         }
@@ -571,6 +573,7 @@ enum AtriaHistoricalJSONLInput {
         defer { output.deallocate() }
         var reachedEnd = false
         while let input = try handle.read(upToCount: chunkSize), !input.isEmpty {
+            AtriaBackgroundWorkPacer.checkpoint()
             try input.withUnsafeBytes { raw in
                 stream.next_in = UnsafeMutablePointer<Bytef>(mutating: raw.bindMemory(to: UInt8.self).baseAddress)
                 stream.avail_in = uInt(input.count)
