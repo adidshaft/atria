@@ -274,6 +274,72 @@ final class AtriaHistoricalAggregateBuilderTests: XCTestCase {
         XCTAssertEqual(timestamps, [TimeInterval(base + 1)])
     }
 
+    // 2026-10-02 device: retention committed this chunk's aggregate stamped
+    // with the seal time; the terminal retry rebuilt it stamped with the
+    // completion time and hit manifestConflict on every attempt, parking the
+    // journal at coverageProven. The retry must reuse the raw-proven commit.
+    func testTerminalRetryReusesCommittedAggregateThatDiffersOnlyInCreatedAt() throws {
+        let root = try temporaryDirectory()
+        let url = root.appendingPathComponent("sealed.jsonl")
+        let aggregates = root.appendingPathComponent("aggregates-v2", isDirectory: true)
+        let manifests = root.appendingPathComponent("retention-manifests-v2", isDirectory: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var file = Data()
+        for offset: UInt32 in [0, 10, 30] {
+            file.append(try encoder.encode(record(unix: 1_800_000_000 + offset,
+                                                  heartRate: 70 + Int(offset))))
+            file.append(0x0a)
+        }
+        try file.write(to: url)
+        let chunkID = "created-at-retry"
+        let commit: (AtriaHistoricalAggregateBuilder.FileBuildResult) throws
+            -> AtriaHistoricalRetentionTransaction.Result = { build in
+            try AtriaHistoricalRetentionTransaction(
+                now: { Date(timeIntervalSince1970: 1_800_000_100) },
+                semanticVerifier: AtriaHistoricalAggregateBuilder.verify
+            ).commit(.init(transactionID: chunkID,
+                           sourceURL: url,
+                           aggregateDirectoryURL: aggregates,
+                           manifestDirectoryURL: manifests,
+                           aggregate: build.aggregate,
+                           semanticParityReceipt: build.semanticParityReceipt,
+                           deleteSourceAfterCommit: false))
+        }
+        let sealTimeBuild = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: url, chunkID: chunkID,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_200))
+        _ = try commit(sealTimeBuild)
+
+        let completionTimeBuild = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: url, chunkID: chunkID,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_050))
+        XCTAssertThrowsError(try commit(completionTimeBuild),
+                             "the unreconciled retry is the reported conflict")
+
+        let retry = HistoricalArchive.adoptingCommittedEquivalentAggregate(
+            .init(chunkID: chunkID, sourceURL: url, aggregateBuild: completionTimeBuild),
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests)
+        XCTAssertEqual(retry.aggregateBuild.aggregate.createdAt,
+                       Date(timeIntervalSince1970: 1_800_000_200))
+        XCTAssertTrue(try commit(retry.aggregateBuild).reusedCommittedTransaction)
+
+        // A different raw source is never adopted.
+        let otherURL = root.appendingPathComponent("other.jsonl")
+        var other = try encoder.encode(record(unix: 1_800_000_000, heartRate: 99))
+        other.append(0x0a)
+        try other.write(to: otherURL)
+        let otherBuild = try AtriaHistoricalAggregateBuilder.build(
+            sourceURL: otherURL, chunkID: chunkID,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_050))
+        let untouched = HistoricalArchive.adoptingCommittedEquivalentAggregate(
+            .init(chunkID: chunkID, sourceURL: otherURL, aggregateBuild: otherBuild),
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests)
+        XCTAssertEqual(untouched.aggregateBuild.aggregate, otherBuild.aggregate)
+    }
+
     func testCatalogTimestampComparisonUsesPersistedWholeSecondPrecision() {
         let raw = Date(timeIntervalSince1970: 1_800_000_000.5)
         let persistedCatalog = Date(timeIntervalSince1970: 1_800_000_000)

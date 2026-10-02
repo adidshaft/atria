@@ -1826,6 +1826,11 @@ enum HistoricalArchive {
             "retention-manifests-v2",
             isDirectory: true
         )
+        let seal = adoptingCommittedEquivalentAggregate(
+            seal,
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
+        )
         let transaction = AtriaHistoricalRetentionTransaction(
             now: { completedAt },
             semanticVerifier: AtriaHistoricalAggregateBuilder.verify
@@ -1958,6 +1963,63 @@ enum HistoricalArchive {
         return next
     }
 
+    /// The aggregate's `createdAt` is a label, not raw-derived content, and
+    /// the terminal seal, crash-recovery and shadow-retention builders each
+    /// stamp a different one for the same chunk. A retry therefore rebuilt a
+    /// byte-different aggregate, the retention transaction reported
+    /// `manifestConflict`, and the journal parked at coverageProven for good
+    /// (2026-10-02 device: chunk committed with createdAt = seal time, retry
+    /// built it with createdAt = terminal completion). When a committed
+    /// aggregate exists for the same raw source and still rebuilds exactly
+    /// from that raw file, the retry reuses it instead of conflicting.
+    static func adoptingCommittedEquivalentAggregate(
+        _ seal: TerminalCatalogSealResult,
+        aggregateDirectoryURL: URL,
+        manifestDirectoryURL: URL
+    ) -> TerminalCatalogSealResult {
+        let aggregateURL = aggregateDirectoryURL
+            .appendingPathComponent("aggregate-\(seal.chunkID).json")
+        let manifestURL = manifestDirectoryURL
+            .appendingPathComponent("manifest-\(seal.chunkID).json")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let aggregateData = try? Data(contentsOf: aggregateURL),
+              let manifestData = try? Data(contentsOf: manifestURL),
+              let committed = try? decoder.decode(
+                  AtriaHistoricalAggregateChunk.self, from: aggregateData),
+              let manifest = try? decoder.decode(
+                  AtriaHistoricalRetentionTransaction.Manifest.self,
+                  from: manifestData),
+              manifest.transactionID == seal.chunkID,
+              manifest.sourceChunkID == seal.chunkID,
+              committed.source == seal.aggregateBuild.aggregate.source,
+              manifest.sourceSHA256 == committed.source.rawSHA256 else {
+            return seal
+        }
+        let built = try? persistedISO8601Value(seal.aggregateBuild.aggregate)
+        guard built != committed,
+              (try? AtriaHistoricalAggregateBuilder.verify(
+                  sourceURL: seal.sourceURL,
+                  aggregate: committed,
+                  semanticParityReceipt: manifest.semanticParityReceipt
+              )) == true else {
+            return seal
+        }
+        AtriaDebugLog(
+            "ATRIADBG historical_terminal_seal status=adopted_committed_equivalent_aggregate chunk=%@ committed_created_at=%.0f",
+            seal.chunkID,
+            committed.createdAt.timeIntervalSince1970
+        )
+        return TerminalCatalogSealResult(
+            chunkID: seal.chunkID,
+            sourceURL: seal.sourceURL,
+            aggregateBuild: .init(
+                aggregate: committed,
+                semanticParityReceipt: manifest.semanticParityReceipt
+            )
+        )
+    }
+
     /// Commits a terminal full-scan aggregate without claiming that WHOOP
     /// honored an exact time range. This is the evidence source for settling a
     /// previously recovered chunk's wider consumer dependencies.
@@ -1970,6 +2032,11 @@ enum HistoricalArchive {
         )
         let manifests = archiveDirectory.appendingPathComponent(
             "retention-manifests-v2", isDirectory: true
+        )
+        let seal = adoptingCommittedEquivalentAggregate(
+            seal,
+            aggregateDirectoryURL: aggregates,
+            manifestDirectoryURL: manifests
         )
         let aggregateCommit = try AtriaHistoricalRetentionTransaction(
             now: { completedAt },
