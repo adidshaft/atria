@@ -965,10 +965,11 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
             "scheduleForegroundBLETransitionIfNeeded()"
         ), "UIKit active must also retry deferred BLE/archive work without a source event")
 
+        // 2026-10-03: leaving-foreground work moved into one helper.
         let lifecycleStart = try XCTUnwrap(app.range(
-            of: ".onChange(of: scenePhase)"
+            of: "private func enterBackgroundedLifecycle(phase: ScenePhase) {"
         ))
-        let lifecycle = String(app[lifecycleStart.lowerBound..<activeNotification.lowerBound])
+        let lifecycle = String(app[lifecycleStart.lowerBound...].prefix(2_400))
         let closeProcessGate = try XCTUnwrap(lifecycle.range(
             of: "AtriaHistoricalProjectionForegroundGate.isBackgrounded = true"
         ))
@@ -1000,8 +1001,9 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         XCTAssertTrue(publish.contains(
             "shouldContinueForMainActorMutation("
         ))
+        // 2026-10-03: inactive glances no longer revoke; background still does.
         XCTAssertTrue(publish.contains(
-            "UIApplication.shared.applicationState == .active"
+            "Self.recoveredExecutionTreatsApplicationAsActive("
         ))
         let dashboardPublication = try XCTUnwrap(
             publish.range(of: "publishDashboardRevision()")

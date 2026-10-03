@@ -15689,7 +15689,8 @@ final class SessionStore: ObservableObject {
                     }
                     guard authority.shouldContinueForMainActorMutation(
                         applicationIsActive:
-                            UIApplication.shared.applicationState == .active
+                            Self.recoveredExecutionTreatsApplicationAsActive(
+                            UIApplication.shared.applicationState)
                     ) else {
                         self.deferRecoveredDataExecutionForLostAuthority(
                             ticket: ticket,
@@ -18011,7 +18012,8 @@ final class SessionStore: ObservableObject {
               execution.ticket == ticket else { return nil }
         guard execution.authority.shouldContinueForMainActorMutation(
             applicationIsActive:
-                UIApplication.shared.applicationState == .active
+                Self.recoveredExecutionTreatsApplicationAsActive(
+                            UIApplication.shared.applicationState)
         ) else {
             deferRecoveredDataExecutionForLostAuthority(
                 ticket: ticket,
@@ -18344,7 +18346,8 @@ final class SessionStore: ObservableObject {
                 }
                 guard execution.authority.shouldContinueForMainActorMutation(
                     applicationIsActive:
-                        UIApplication.shared.applicationState == .active
+                        Self.recoveredExecutionTreatsApplicationAsActive(
+                            UIApplication.shared.applicationState)
                 ) else {
                     deferRecoveredDataExecutionForLostAuthority(
                         ticket: ticket,
@@ -18654,7 +18657,8 @@ final class SessionStore: ObservableObject {
                 }
                 guard execution.authority.shouldContinueForMainActorMutation(
                     applicationIsActive:
-                        UIApplication.shared.applicationState == .active
+                        Self.recoveredExecutionTreatsApplicationAsActive(
+                            UIApplication.shared.applicationState)
                 ) else {
                     deferRecoveredDataExecutionForLostAuthority(
                         ticket: ticket,
@@ -25294,6 +25298,17 @@ final class SessionStore: ObservableObject {
             return .suspend
         }
         return applicationIsActive ? .resume : .none
+    }
+
+    /// A notification glance, Control Center or the app switcher makes the
+    /// scene inactive for a moment. Revoking the recovered fence there threw
+    /// away ~70 s of work for nothing (2026-10-02). Inactive now counts as
+    /// active for this fence; the app's scene handler revokes on a real
+    /// background (immediately) or an inactive spell that outlasts its grace.
+    nonisolated static func recoveredExecutionTreatsApplicationAsActive(
+        _ state: UIApplication.State
+    ) -> Bool {
+        state != .background
     }
 
     nonisolated static func recoveredMainActorMutationEnvironmentAllows(

@@ -407,6 +407,7 @@ struct AtriaApp: App {
     @State private var dependencies: AtriaAppDependencies
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
+    @State private var sceneInactiveGraceTask: Task<Void, Never>?
     @State private var foregroundBLETransitionTask: Task<Void, Never>?
     @State private var foregroundBLETransitionAuthority =
         AtriaForegroundDeferredWorkAuthority()
@@ -420,6 +421,42 @@ struct AtriaApp: App {
         let dependencies = AtriaAppDependencies()
         _dependencies = State(initialValue: dependencies)
         Self.registerBackgroundTasks(store: dependencies.store, ble: dependencies.ble)
+    }
+
+    /// Everything the app does when the scene really leaves the foreground:
+    /// immediately on background, or after `AtriaSceneInactiveGrace` of
+    /// uninterrupted inactivity.
+    @MainActor
+    private func enterBackgroundedLifecycle(phase: ScenePhase) {
+        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+        foregroundBLETransitionTask?.cancel()
+        foregroundBLETransitionTask = nil
+        foregroundBLETransitionAuthority.cancel()
+        let recoveredLifecycleReason = phase == .background
+            ? "scene_background" : "scene_inactive"
+        // Revoke the advisory user-initiated review projection
+        // before any background maintenance can begin. The
+        // latest invalidation is coalesced for scene-active.
+        if phase == .background {
+            store.suspendSleepReviewProjectionForBackground(
+                reason: "scene_background"
+            )
+        }
+        // Retire the attended foreground BG-throttle lease
+        // before revoking recovered execution. This ordering
+        // still preserves a later, independently minted real
+        // BGProcessing lease, and it must run even when a
+        // retained restore marker blocks ordinary maintenance.
+        let releasedAttendedProjection = ble
+            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
+                reason: recoveredLifecycleReason
+            )
+        if releasedAttendedProjection {
+            store.endBackgroundArchiveProjectionThrottle()
+        }
+        store.suspendRecoveredDataPublicationLeaseForBackground(
+            reason: recoveredLifecycleReason
+        )
     }
 
     var body: some Scene {
@@ -487,36 +524,31 @@ struct AtriaApp: App {
                     // return so a blocked restore can never leave a
                     // backgrounded lane looking foregrounded.
                     switch phase {
+                    case .inactive:
+                        // A glance (banner, Control Center, app switcher) must
+                        // not cost in-flight recovered work; only an inactive
+                        // spell that outlasts the grace is treated as leaving.
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = Task { @MainActor in
+                            try? await Task.sleep(
+                                for: .seconds(AtriaSceneInactiveGrace.seconds)
+                            )
+                            guard !Task.isCancelled else { return }
+                            enterBackgroundedLifecycle(phase: .inactive)
+                        }
+                    case .background:
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = nil
+                        enterBackgroundedLifecycle(phase: .background)
+                    case .active:
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = nil
+                    @unknown default:
+                        break
+                    }
+                    switch phase {
                     case .background, .inactive:
-                        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
-                        foregroundBLETransitionTask?.cancel()
-                        foregroundBLETransitionTask = nil
-                        foregroundBLETransitionAuthority.cancel()
-                        let recoveredLifecycleReason = phase == .background
-                            ? "scene_background" : "scene_inactive"
-                        // Revoke the advisory user-initiated review projection
-                        // before any background maintenance can begin. The
-                        // latest invalidation is coalesced for scene-active.
-                        if phase == .background {
-                            store.suspendSleepReviewProjectionForBackground(
-                                reason: "scene_background"
-                            )
-                        }
-                        // Retire the attended foreground BG-throttle lease
-                        // before revoking recovered execution. This ordering
-                        // still preserves a later, independently minted real
-                        // BGProcessing lease, and it must run even when a
-                        // retained restore marker blocks ordinary maintenance.
-                        let releasedAttendedProjection = ble
-                            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
-                                reason: recoveredLifecycleReason
-                            )
-                        if releasedAttendedProjection {
-                            store.endBackgroundArchiveProjectionThrottle()
-                        }
-                        store.suspendRecoveredDataPublicationLeaseForBackground(
-                            reason: recoveredLifecycleReason
-                        )
+                        break
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
                         NotificationCenter.default.post(
@@ -1631,4 +1663,10 @@ enum AtriaBackgroundTaskJournal {
     static func appending(_ entry: String, to entries: [String]) -> [String] {
         Array((entries + [entry]).suffix(capacity))
     }
+}
+
+/// How long the scene may stay inactive (banner, Control Center, app
+/// switcher) before the app treats it as leaving the foreground.
+enum AtriaSceneInactiveGrace {
+    static let seconds: TimeInterval = 2.5
 }
