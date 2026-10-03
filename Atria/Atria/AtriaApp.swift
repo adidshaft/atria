@@ -771,6 +771,7 @@ struct AtriaApp: App {
         }
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
+        AtriaBackgroundTaskJournal.record("\(reason) started")
         let completion = AtriaBackgroundTaskCompletionGate()
         let recoveredProjectionOwner = AtriaBackgroundProjectionLeaseOwner()
         let work = Task { @MainActor in
@@ -946,9 +947,13 @@ struct AtriaApp: App {
                     reason: reason
                    ) {
                     recoveredProjectionOwner.set(lease)
-                    _ = await ble.runParkedTerminalPublicationInBackgroundWindow(
+                    AtriaBackgroundTaskJournal.record("\(reason) parked_night_window started")
+                    let finished = await ble.runParkedTerminalPublicationInBackgroundWindow(
                         reason: reason,
                         timeout: 240
+                    )
+                    AtriaBackgroundTaskJournal.record(
+                        "\(reason) parked_night_window \(finished ? "finished" : "unfinished")"
                     )
                     store.endExactRecoveryBackgroundWindow(lease)
                     recoveredProjectionOwner.clear(lease)
@@ -994,12 +999,14 @@ struct AtriaApp: App {
                 reason: reason,
                 forceImmediateTimelineReload: true
             )
+            AtriaBackgroundTaskJournal.record("\(reason) completed")
             completion.complete(task,
                                 success: backupSucceeded
                                     && historicalRecoverySucceeded
                                     && recoveredPublicationSucceeded)
         }
         task.expirationHandler = {
+            AtriaBackgroundTaskJournal.record("\(reason) expired")
             work.cancel()
             if let lease = recoveredProjectionOwner.current() {
                 _ = AtriaBackgroundProjectionThrottle.shared.cancel(
@@ -1603,5 +1610,25 @@ struct AtriaApp: App {
             store.logGateStatusFromLaunchIfRequested(arguments: statusArguments)
             AtriaDebugLog("ATRIADBG launch_exports_post_healthkit_gate_status status=completed")
         }
+    }
+}
+
+/// Durable, bounded trail of background-task runs. Overnight there is no
+/// console, so whether iOS granted a window — and what the parked-night step
+/// did inside it — was unknowable from a morning pull (2026-10-03).
+enum AtriaBackgroundTaskJournal {
+    static let key = "atria.bgTask.journal.v1"
+    static let capacity = 60
+
+    static func record(_ event: String,
+                       now: Date = Date(),
+                       defaults: UserDefaults = .standard) {
+        let entry = "\(Int(now.timeIntervalSince1970)) \(event)"
+        defaults.set(appending(entry, to: defaults.stringArray(forKey: key) ?? []),
+                     forKey: key)
+    }
+
+    static func appending(_ entry: String, to entries: [String]) -> [String] {
+        Array((entries + [entry]).suffix(capacity))
     }
 }
