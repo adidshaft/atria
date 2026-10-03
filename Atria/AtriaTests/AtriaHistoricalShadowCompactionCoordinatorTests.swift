@@ -27,6 +27,36 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         XCTAssertEqual(failures.map(\.chunkID), [poison.id])
     }
 
+    // 2026-10-03 device: the idle fast path ranked every sealed chunk by
+    // size, so yesterday's 3.8 MB terminal-sealed chunk (inside the 7-day
+    // horizon, still bound to a parked save) beat 150 policy-selected 4.19 MB
+    // chunks, failed cutover with invalidSource, and was retried forever.
+    func testIdleRetirementOffersOnlyPolicySelectedChunks() {
+        var old = chunk(id: "old-selected", createdAt: now.addingTimeInterval(-9 * 86_400))
+        old.byteCount = 4_194_845
+        var shadowed = chunk(id: "old-shadowed", createdAt: now.addingTimeInterval(-8 * 86_400))
+        shadowed.byteCount = 4_194_483
+        var recent = chunk(id: "yesterday-terminal", createdAt: now.addingTimeInterval(-86_400))
+        recent.byteCount = 3_836_912
+        let offered = AtriaHistoricalShadowCompactionCoordinator.policySelectedSealedChunks(
+            [old, shadowed, recent],
+            uncommittedCandidates: [old],
+            shadowCommittedCandidateIDs: [shadowed.id])
+        XCTAssertEqual(Set(offered.map(\.id)), [old.id, shadowed.id])
+        let smallestFirst = AtriaHistoricalShadowCompactionCoordinator
+            .orderedIdleRetirementCandidates(offered, preferLarge: false, limit: 1)
+        XCTAssertEqual(smallestFirst.first?.id, shadowed.id,
+                       "the recent small chunk can no longer win by size")
+    }
+
+    func testBackgroundTaskJournalKeepsTheNewestEntriesOnly() {
+        let full = (0..<AtriaBackgroundTaskJournal.capacity).map { "e\($0)" }
+        let next = AtriaBackgroundTaskJournal.appending("newest", to: full)
+        XCTAssertEqual(next.count, AtriaBackgroundTaskJournal.capacity)
+        XCTAssertEqual(next.first, "e1")
+        XCTAssertEqual(next.last, "newest")
+    }
+
     func testSceneBackgroundRetirementSkipsHugeLegacyChunks() {
         var huge = chunk(id: "legacy-monolith", createdAt: now.addingTimeInterval(-80 * 86_400))
         huge.byteCount = 134_218_092

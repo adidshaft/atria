@@ -132,6 +132,23 @@ struct AtriaHistoricalShadowCompactionCoordinator {
 
     /// Scene-background has ~25s. A 134 MB legacy JSONL cannot finish in that
     /// window; skip it and keep oldest-first among chunks that can.
+    /// The idle fast paths used to rank EVERY sealed chunk by size, and the
+    /// smallest is always a recent chunk sealed early by a terminal history
+    /// save — inside the 7-day horizon and still bound to that save — so its
+    /// cutover failed (`invalidSource`) and was retried forever while 150
+    /// policy-selected chunks waited (2026-10-03 device: 1.16 GB, no
+    /// retirement since 09-25). Only chunks the retention policy selected
+    /// may be offered.
+    static func policySelectedSealedChunks(
+        _ chunks: [AtriaHistoricalArchiveCatalog.RawChunk],
+        uncommittedCandidates: [AtriaHistoricalArchiveCatalog.RawChunk],
+        shadowCommittedCandidateIDs: [String]
+    ) -> [AtriaHistoricalArchiveCatalog.RawChunk] {
+        let selected = Set(uncommittedCandidates.map(\.id))
+            .union(shadowCommittedCandidateIDs)
+        return chunks.filter { $0.state == .sealed && selected.contains($0.id) }
+    }
+
     static func sceneBackgroundRetirementCandidates(
         _ candidates: [AtriaHistoricalArchiveCatalog.RawChunk],
         maximumByteCount: UInt64 = 8 * 1024 * 1024
