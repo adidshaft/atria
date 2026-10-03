@@ -7245,6 +7245,28 @@ extension SavedSession {
     static let workoutContinuityGapLimit: TimeInterval = 15
     fileprivate static let workoutBorderlineThresholdMarginBPM = 5
     fileprivate static let restReviewMinimumDuration: TimeInterval = 2 * 60
+
+    /// Owner 2026-10-03: "many fake workouts/activity". Low-confidence
+    /// candidates (near-miss, strength-like, gap-recovered) are by definition
+    /// signals that failed the workout gate; stress, driving or stairs produce
+    /// them. They are suggested only when they are long and genuinely
+    /// elevated for this wearer — heart-rate reserve, so it holds for any
+    /// resting/max HR. Sustained (medium) efforts are unaffected.
+    nonisolated static let lowConfidenceSuggestionMinimumDuration: TimeInterval = 15 * 60
+    nonisolated static let lowConfidenceSuggestionMinimumHRR = 0.40
+
+    nonisolated static func lowConfidenceActivitySuggestionQualifies(
+        duration: TimeInterval,
+        averageHR: Int,
+        rest: Int,
+        maxHR: Int
+    ) -> Bool {
+        guard maxHR > rest, duration >= lowConfidenceSuggestionMinimumDuration else {
+            return false
+        }
+        let reserve = Double(averageHR - rest) / Double(maxHR - rest)
+        return reserve >= lowConfidenceSuggestionMinimumHRR
+    }
     fileprivate static let strictRestAvgOverRestBPM = 18
     fileprivate static let strictRestPeakOverRestBPM = 45
     fileprivate static let restReviewAvgOverRestBPM = 30
@@ -7635,6 +7657,9 @@ extension SavedSession {
         let lowHR = avg <= rest + 15 && peak <= rest + 35
         if duration >= 10 * 60 {
             let readiness = workoutReadiness(rest: rest, maxHR: maxHR)
+            let lowConfidenceSuggestionAllowed = Self.lowConfidenceActivitySuggestionQualifies(
+                duration: duration, averageHR: avg, rest: rest, maxHR: maxHR
+            )
             if readiness.ready {
                 // HR/RR can prove sustained cardiovascular load, but not its
                 // context. Stress, driving and a real workout can share the
@@ -7645,19 +7670,21 @@ extension SavedSession {
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak, reason: reason)
             }
-            if readiness.nearMiss && readiness.reviewWorthyCandidate {
+            if readiness.nearMiss && readiness.reviewWorthyCandidate
+                && lowConfidenceSuggestionAllowed {
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
                                          reason: "HR-only workout-like signal; \(readiness.nearMissReason); not counted as workout")
             }
-            if readiness.strengthCandidate && readiness.reviewWorthyCandidate {
+            if readiness.strengthCandidate && readiness.reviewWorthyCandidate
+                && lowConfidenceSuggestionAllowed {
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
                                          reason: "Strength-like HR signal; \(readiness.strengthCandidateReason); not counted as workout")
             }
-            if readiness.gappedStrengthReviewCandidate {
+            if readiness.gappedStrengthReviewCandidate && lowConfidenceSuggestionAllowed {
                 return ActivityDetection(id: id, kind: .activityCandidate, confidence: .low,
                                          start: start, end: end, duration: duration,
                                          avgHR: avg, peakHR: peak,
