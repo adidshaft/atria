@@ -87,6 +87,12 @@ final class AtriaChartNoDataBandsTests: XCTestCase {
         let narrow = AtriaChartGapBand(start: t0, end: t0.addingTimeInterval(20 * 60), reason: .noData)
         XCTAssertTrue(B.showsLabel(wide, domain: domain))
         XCTAssertFalse(B.showsLabel(narrow, domain: domain))
+        // 2026-10-03: one label per reason, on the widest band.
+        let secondWide = AtriaChartGapBand(start: wide.end.addingTimeInterval(3_600),
+                                           end: wide.end.addingTimeInterval(3_600 + wide.duration * 0.9),
+                                           reason: wide.reason)
+        XCTAssertTrue(B.showsLabel(secondWide, domain: domain), "both qualify on their own")
+        XCTAssertEqual(B.labelledBandIDs([secondWide, wide, narrow], domain: domain), [wide.id])
     }
 
     func testReasonCopyIsShortAndPlain() {

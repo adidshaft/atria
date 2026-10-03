@@ -177,6 +177,20 @@ enum AtriaChartNoDataBands {
         return band.duration / total >= labelMinimumDomainFraction
     }
 
+    /// One label per reason: the widest qualifying band. A day chart showed
+    /// "No data" twice, the second crammed beside a workout spike (owner:
+    /// fewer words). Every band is still drawn and spoken.
+    static func labelledBandIDs(_ bands: [AtriaChartGapBand],
+                                domain: ClosedRange<Date>) -> Set<String> {
+        var widest: [String: AtriaChartGapBand] = [:]
+        for band in bands where showsLabel(band, domain: domain) {
+            let key = band.reason.label
+            if let current = widest[key], current.duration >= band.duration { continue }
+            widest[key] = band
+        }
+        return Set(widest.values.map(\.id))
+    }
+
     /// Spoken summary for chart accessibility values, e.g.
     /// "No data 01:10–03:40". Nil when there are no bands.
     static func accessibilitySummary(_ bands: [AtriaChartGapBand],
@@ -236,12 +250,13 @@ struct AtriaNoDataBandMarks: ChartContent {
     let domain: ClosedRange<Date>
 
     var body: some ChartContent {
+        let labelled = AtriaChartNoDataBands.labelledBandIDs(bands, domain: domain)
         ForEach(bands) { band in
             RectangleMark(xStart: .value("Gap start", band.start),
                           xEnd: .value("Gap end", band.end))
                 .foregroundStyle(AtriaChartVisualGrammar.noDataBandFill)
                 .annotation(position: .overlay, alignment: .top, spacing: 4) {
-                    if AtriaChartNoDataBands.showsLabel(band, domain: domain) {
+                    if labelled.contains(band.id) {
                         Text(band.reason.label)
                             .font(AtriaChartVisualGrammar.noDataBandLabelFont)
                             .foregroundStyle(.secondary)

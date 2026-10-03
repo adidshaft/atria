@@ -296,13 +296,22 @@ struct AtriaWorkoutReviewSheet: View {
         .chartXScale(domain: chartInterval.start...chartInterval.end)
         // Fit the measured range (a 0–200 axis flattened a real effort).
         .chartYScale(domain: yDomain(projection))
+        // One chart grammar: quantity axis on the leading edge, shared
+        // label type/colour (it was the only trailing HR axis in the app).
         .chartYAxis {
-            AxisMarks(position: .trailing, values: .automatic(desiredCount: 3))
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisValueLabel()
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
+            }
         }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine()
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisValueLabel(format: .dateTime.hour().minute())
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
     }
