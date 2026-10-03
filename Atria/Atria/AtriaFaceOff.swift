@@ -334,7 +334,7 @@ struct AtriaFaceOffView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(14)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
     private func statRow(label: String, value: String) -> some View {

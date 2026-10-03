@@ -863,14 +863,9 @@ struct AtriaTriRing: View, Equatable {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.vertical, 4)
             .padding(.horizontal, 8)
-            // Identity-forward chip, unified with the glance tiles and trend
-            // summary pills (design-handoff "metric chip": hue wash + hue
-            // hairline). Radius snapped off the stray 8 to the `chip` token.
-            .background(metric.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke(metric.tint.opacity(0.22), lineWidth: 1)
-            )
+            // Neutral glass chip (owner 2026-10-03: colour for data only —
+            // the ring arc and the value carry the metric hue).
+            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: metric.tint, hueTinted: true)
         }
         .buttonStyle(.plain)
         // Mirror the visual de-duplication above so VoiceOver does not read

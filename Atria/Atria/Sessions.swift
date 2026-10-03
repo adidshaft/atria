@@ -61370,7 +61370,7 @@ private struct HistoryActivityRhythmCard: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: Capsule(style: .continuous))
     }
 }
 
@@ -61469,7 +61469,7 @@ private struct DailyRollupRow: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(tint.opacity(0.09), in: Capsule(style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: Capsule(style: .continuous))
     }
 
     private func formatMinutes(_ seconds: TimeInterval) -> String {
@@ -61767,7 +61767,7 @@ private struct TrendFocusMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 

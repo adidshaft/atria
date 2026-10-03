@@ -189,7 +189,7 @@ struct AtriaBehaviorImpactTopMover: View {
                     .foregroundStyle(tint)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 4)
-                    .background(tint.opacity(0.16), in: Capsule())
+                    .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
             }
             Text(stat.topMoverSentence)
                 .font(.caption)

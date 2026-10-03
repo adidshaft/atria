@@ -4546,7 +4546,7 @@ private struct AtriaStrainTargetCard: View, Equatable {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(String(format: "%.1f", currentStrain))
                         .font(.title3.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
+                        .foregroundStyle(.primary)
                         .contentTransition(reduceMotion ? .identity : .numericText())
                     Text("strain today")
                         .font(.caption.weight(.semibold))
@@ -4563,10 +4563,9 @@ private struct AtriaStrainTargetCard: View, Equatable {
         // reserved for the controls that act on it.
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
         .overlay {
-            // Keep the per-metric tint stroke (its identity) on top of the glass --
-            // same tint-stroke chrome as the glance tiles it sits beside.
+            // Neutral hairline (owner 2026-10-03: colour for data only).
             RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(target.map { "Strain target. \(String(format: "%.1f of %.1f", currentStrain, $0))." }
@@ -4613,7 +4612,7 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
             .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
             .overlay {
                 RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
-                    .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
             }
         }
         // The whole card IS the button into the weekly report, so it presses
@@ -4675,7 +4674,7 @@ private struct AtriaTodayWeeklyPlanTargetRow: View, Equatable {
                     Text(target.isLearning ? (target.learningProgressText ?? "Learning")
                          : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 

@@ -937,10 +937,10 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(item.tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(item.tint.opacity(0.12), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 
@@ -1306,10 +1306,10 @@ private struct AtriaTrendRangeLens: View, Equatable {
             // this lens keeps its coverage role only.
         }
         .padding(12)
-        .background(metric.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(metric.tint.opacity(0.12), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Trend period rail. \(range.menuLabel), \(coverageLabel), latest \(metric.shortLabel) \(summary?.latestText ?? "not ready").")
@@ -1501,10 +1501,10 @@ private struct AtriaTrendRangeSummaryStrip: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 }

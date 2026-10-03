@@ -560,7 +560,7 @@ struct AtriaAboutMetricSheet: View {
             Label("HONESTY NOTE", systemImage: "checkmark.shield.fill")
                 .font(.caption2.weight(.bold))
                 .tracking(0.6)
-                .foregroundStyle(metric.tint)
+                .foregroundStyle(.secondary)
             Text(metric.honestyNote)
                 .font(.footnote)
                 .foregroundStyle(.primary)

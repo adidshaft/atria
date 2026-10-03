@@ -533,7 +533,7 @@ private struct AtriaHistoryStatChip: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }

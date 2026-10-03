@@ -515,7 +515,7 @@ private struct AtriaCustomizePreview: View {
         }
         .padding(10)
         .frame(minHeight: 56)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private func sampleValue(for metric: AtriaTodayMetric?) -> String {
