@@ -35,8 +35,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(source.contains(
             "publisher(for: HistoricalArchive.didUpdateNotification)"
         ), "Per-row archive writes must not trigger repeated whole-day scans")
-        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay"),
+        // 2026-10-03: every day gets the resident session image; completed
+        // days use it only to fill archive gaps left by raw retirement.
+        XCTAssertTrue(source.contains("sessions: store.sessionsIncludingFreshActiveJournal(),"),
                       "The current wake cycle should start from the resident prepared session image")
+        XCTAssertTrue(source.contains("AtriaExactWindowHeartRate.fillingArchiveGaps("))
         XCTAssertTrue(source.contains("store.sessionsIncludingFreshActiveJournal()"),
                       "device 2026-09-11: Activity HR must include the open journal")
         XCTAssertTrue(source.contains("start: snapshot.interval.start"),
@@ -1910,5 +1913,20 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                           source: confirmed ? "manual_sleep" : "sleep_candidate",
                                           confirmed: confirmed,
                                           stageSegments: [])
+    }
+
+    func testSavedSessionsFillOnlyArchiveGapsOnCompletedDays() {
+        let t0 = Date(timeIntervalSince1970: 1_790_000_000)
+        let archive = (0..<10).map {
+            HistoricalArchive.HeartRatePoint(t: t0.addingTimeInterval(Double($0)), bpm: 60)
+        }
+        let covered = HistoricalArchive.HeartRatePoint(t: t0.addingTimeInterval(5.4), bpm: 61)
+        let hole = HistoricalArchive.HeartRatePoint(t: t0.addingTimeInterval(3_600), bpm: 58)
+        XCTAssertEqual(AtriaExactWindowHeartRate.fillingArchiveGaps(
+            canonical: [covered, hole], archive: archive), [hole],
+            "a session beat the archive already holds would double the trace")
+        XCTAssertEqual(AtriaExactWindowHeartRate.fillingArchiveGaps(
+            canonical: [covered, hole], archive: []), [covered, hole],
+            "a day whose raw was retired is drawn from saved sessions")
     }
 }
