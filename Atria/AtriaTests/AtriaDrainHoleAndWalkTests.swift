@@ -644,4 +644,18 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
         XCTAssertNil(AtriaSleepPlanner.recommendation(needHours: nil, goal: .peak,
                                                       wakeByMinutes: 8 * 60, nightEfficiencies: []))
     }
+
+    // 2026-10-03 owner: learnings as a stacked feed, never restating the rings
+    // (a ring-cloning "Today's read" bar was removed on 2026-09-18).
+    func testLearningsFeedSkipsRingRestatingKinds() {
+        func insight(_ kind: AtriaLearnedInsight.Kind) -> AtriaLearnedInsight {
+            AtriaLearnedInsight(id: kind.rawValue, kind: kind, headline: kind.rawValue,
+                                detail: "", isPositive: false, asOf: Date(timeIntervalSince1970: 0))
+        }
+        let items = AtriaTodayLearningsFeed.items(
+            learned: [insight(.daySnapshot), insight(.sleepDebt), insight(.readiness),
+                      insight(.hrvDrift), insight(.yesterdayStrain)],
+            behavior: [])
+        XCTAssertEqual(items.map(\.headline), ["sleepDebt", "hrvDrift"])
+    }
 }

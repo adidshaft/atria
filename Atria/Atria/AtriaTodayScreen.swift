@@ -396,6 +396,15 @@ struct AtriaTodayScreen: View {
             // reach here -- honouring that toggle is the point of it.
             journalFallbackPrompt
 
+            // Owner 2026-10-03: learnings and suggestions as a stacked feed.
+            AtriaTodayLearningsFeed(
+                items: AtriaTodayLearningsFeed.items(
+                    learned: sessionProjectionStore.state.learnedInsights,
+                    behavior: sessionProjectionStore.state.behaviorInsights
+                ),
+                onOpen: { showInsights = true }
+            )
+
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
                                          pulseStore: pulseStore)
