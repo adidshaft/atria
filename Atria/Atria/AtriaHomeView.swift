@@ -384,6 +384,7 @@ fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
     let rrContinuityState: String
     let hasRecentHeartRateSample: Bool
     let officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+    let bluetoothStackWedgeSuspected: Bool
     let lastScanRequestedAt: Date?
     let lastScanMatchAt: Date?
     let pendingKnownReconnectStartedAt: Date?
@@ -398,6 +399,7 @@ fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
         rrContinuityState = state.rrContinuityState
         hasRecentHeartRateSample = state.hasRecentHeartRateSample
         officialAppCoexistenceRisk = state.officialAppCoexistenceRisk
+        bluetoothStackWedgeSuspected = state.bluetoothStackWedgeSuspected
         lastScanRequestedAt = state.lastScanRequestedAt
         lastScanMatchAt = state.lastScanMatchAt
         pendingKnownReconnectStartedAt = state.pendingKnownReconnectStartedAt
@@ -8991,6 +8993,7 @@ final class AtriaHomeModel {
         var strapStepResearchState: String
         var dailyStepPresentation: AtriaDailyStepPresentation
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+        var bluetoothStackWedgeSuspected: Bool = false
         var lastScanRequestedAt: Date?
         var lastScanMatchAt: Date?
         var pendingKnownReconnectStartedAt: Date?
@@ -10414,6 +10417,7 @@ final class AtriaHomeModel {
             ble.$liveStrapStepResearchState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepCountCapturedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$bluetoothStackWedgeSuspected.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanRequestedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -12349,6 +12353,7 @@ final class AtriaHomeModel {
                              strapStepResearchState: ble.liveStrapStepResearchState,
                              dailyStepPresentation: dailyStepPresentation,
                              officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
+                             bluetoothStackWedgeSuspected: ble.bluetoothStackWedgeSuspected,
                              lastScanRequestedAt: ble.lastScanRequestedAt,
                              lastScanMatchAt: ble.lastScanMatchAt,
                              pendingKnownReconnectStartedAt: ble.pendingKnownReconnectStartedAt,
@@ -14673,7 +14678,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
     }
 
     var showsImmediately: Bool {
-        title == "Bluetooth is off"
+        title == Self.restartIPhoneTitle
+            || title == "Bluetooth is off"
             || title == "Bluetooth permission needed"
             || title == "Strap battery too low"
             || title == "Strap battery low"
@@ -14688,6 +14694,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
             || title == "Fit check needed"
     }
 
+    static let restartIPhoneTitle = "Restart your iPhone"
+
     static func derive(live: AtriaHomeModel.CoreLiveState,
                        pulse: AtriaHomeModel.PulseLiveState,
                        officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
@@ -14699,6 +14707,18 @@ private struct AtriaConnectionDiagnosis: Equatable {
         let needsContactCoach = pulse.needsContactCoach
             && !live.hasRecentHeartRateSample
             && !isRecoveringLiveSignal
+
+        if live.bluetoothStackWedgeSuspected,
+           live.status != .poweredOff,
+           !live.bluetoothPermissionDenied {
+            return AtriaConnectionDiagnosis(
+                title: Self.restartIPhoneTitle,
+                action: "Bluetooth on this iPhone keeps timing out, which often happens after an iOS update. Restarting the iPhone clears it; re-pairing won't.",
+                imperative: "Restart your iPhone",
+                systemImage: "arrow.clockwise.circle.fill",
+                tint: .orange,
+                guidanceDomain: .bluetoothLink)
+        }
 
         switch live.status {
         case .poweredOff:

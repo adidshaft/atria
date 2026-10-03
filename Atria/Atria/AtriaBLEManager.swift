@@ -1191,6 +1191,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// setup). Feeds the derived status so it shows "Searching" only when truly scanning.
     private var isActivelyScanning = false
     @Published private(set) var officialAppCoexistenceRisk: OfficialAppCoexistenceRisk = OfficialAppCoexistenceRisk.load()
+    /// The phone's Bluetooth stack is wedged (see `AtriaBluetoothWedgeDetector`):
+    /// the only fix the user can apply is restarting the iPhone.
+    @Published private(set) var bluetoothStackWedgeSuspected = false
+    private var bluetoothWedgeDetector = AtriaBluetoothWedgeDetector()
+    private var bluetoothWedgeClearTask: Task<Void, Never>?
     @Published private(set) var rangeLossBackfillPending = UserDefaults.standard.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
     @Published private(set) var historicalRecoveryPresentation: HistoricalRecoveryPresentation = .idle
     @Published var deviceName: String = "—"
@@ -22681,6 +22686,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.set("did_connect", forKey: LinkDefaults.lastReason)
         defaults.set("none", forKey: LinkDefaults.lastError)
         persistOfficialAppCoexistenceRisk(.cleared, reason: "atria_connected")
+        if bluetoothStackWedgeSuspected {
+            // A wedged stack drops every link within ~40 s; one that holds for
+            // two minutes means the restart (or the stack) recovered.
+            bluetoothWedgeClearTask?.cancel()
+            let epoch = connectedAt
+            bluetoothWedgeClearTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(
+                    for: .seconds(AtriaBluetoothWedgeDetector.healthyConnectionSeconds)
+                )
+                guard !Task.isCancelled, let self,
+                      self.status == .connected, self.connectedAt == epoch else { return }
+                self.bluetoothWedgeDetector.recordHealthyConnection()
+                self.assignIfChanged(\.bluetoothStackWedgeSuspected, false)
+                AtriaDebugLog("ATRIADBG bluetooth_wedge status=cleared reason=connection_held")
+            }
+        }
         AtriaDebugLog("ATRIADBG ble_link status=connected successes=%d attempts=%d disconnects=%d failures=%d mtu=%d name=%@",
               successes,
               defaults.integer(forKey: LinkDefaults.attempts),
@@ -54710,6 +54731,22 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             } else if !wasUserRequestedDisconnect && connectedDuration > 0 && connectedDuration < 90 {
                 persistOfficialAppCoexistenceRisk(.suspected, reason: "short_disconnect_after_connect")
             }
+            if !wasUserRequestedDisconnect, !atriaOwnedOfflineSyncDisconnect {
+                bluetoothWedgeClearTask?.cancel()
+                let wasSuspected = bluetoothStackWedgeSuspected
+                let suspected = bluetoothWedgeDetector.recordDisconnect(
+                    at: Date(),
+                    connectedFor: connectedDuration,
+                    timedOut: disconnectCause.hasSuffix("CBErrorDomain:6")
+                )
+                assignIfChanged(\.bluetoothStackWedgeSuspected, suspected)
+                if suspected, !wasSuspected {
+                    AtriaDebugLog(
+                        "ATRIADBG bluetooth_wedge status=suspected short_timeouts=%d action=advise_iphone_restart",
+                        bluetoothWedgeDetector.recentShortTimeouts.count
+                    )
+                }
+            }
             let activeExplicitWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
             let shouldPreserveLongWearSession = Self.shouldPreserveSessionOnUnexpectedDisconnect(
                 longWearEnabled: longWearModeEnabled,
@@ -57824,5 +57861,40 @@ enum AtriaMotionBankOffloadAdmissionDiag {
         guard let text = defaults.string(forKey: stateKey),
               let data = text.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(State.self, from: data)
+    }
+}
+
+/// 2026-10-03 device, after an overnight iOS update: every connection got
+/// ~8 s of data, then the strap stopped answering and CoreBluetooth timed
+/// out (CBError 6), every ~12 s, for hours — and only an iPhone restart
+/// fixed it. Re-pairing (the old advice) does not. Thresholds are time-based
+/// so they hold for any wearer: several short "answered, then timed out"
+/// links inside a few minutes is the stack, not distance.
+struct AtriaBluetoothWedgeDetector: Equatable {
+    static let window: TimeInterval = 180
+    static let threshold = 5
+    static let shortConnection: ClosedRange<TimeInterval> = 5...40
+    static let healthyConnectionSeconds: TimeInterval = 120
+
+    private(set) var recentShortTimeouts: [Date] = []
+    private(set) var suspected = false
+
+    mutating func recordDisconnect(at now: Date,
+                                   connectedFor: TimeInterval,
+                                   timedOut: Bool) -> Bool {
+        if timedOut, Self.shortConnection.contains(connectedFor) {
+            recentShortTimeouts.append(now)
+        } else if connectedFor > Self.shortConnection.upperBound {
+            // A link that held is not the wedge pattern; restart the streak.
+            recentShortTimeouts.removeAll()
+        }
+        recentShortTimeouts.removeAll { now.timeIntervalSince($0) > Self.window }
+        if recentShortTimeouts.count >= Self.threshold { suspected = true }
+        return suspected
+    }
+
+    mutating func recordHealthyConnection() {
+        recentShortTimeouts.removeAll()
+        suspected = false
     }
 }
