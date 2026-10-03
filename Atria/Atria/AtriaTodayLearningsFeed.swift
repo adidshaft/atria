@@ -66,24 +66,45 @@ struct AtriaTodayLearningsFeed: View {
         Set(dismissedRaw.split(separator: "\n").map(String.init))
     }
 
+    /// Wallet-style deck (owner 2026-10-03 sketch): the front card in full,
+    /// the next ones peeking above it as narrower coloured slivers. Tapping
+    /// the front card removes it and the next one comes forward.
+    static let peekStep: CGFloat = 9
+    static let maximumPeeking = 3
+
     var body: some View {
         let shown = Self.visible(items, dismissed: dismissed)
-        if !shown.isEmpty {
-            VStack(spacing: 8) {
-                ForEach(shown) { item in
-                    Button {
-                        withAnimation(reduceMotion ? nil : .snappy) {
-                            dismissedRaw = Self.remembering(item.dismissalKey, in: dismissedRaw)
-                        }
-                    } label: {
-                        card(item)
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
-                    .accessibilityElement(children: .combine)
-                    .accessibilityHint("Removes this card")
+        if let front = shown.first {
+            let behind = Array(shown.dropFirst().prefix(Self.maximumPeeking))
+            Button {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)) {
+                    dismissedRaw = Self.remembering(front.dismissalKey, in: dismissedRaw)
                 }
+            } label: {
+                card(front)
+                    .background(alignment: .top) {
+                        ZStack(alignment: .top) {
+                            ForEach(Array(behind.enumerated().reversed()), id: \.element.id) { index, item in
+                                let depth = CGFloat(index + 1)
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(item.tint.opacity(0.85))
+                                    .scaleEffect(x: 1 - 0.05 * depth, y: 1, anchor: .top)
+                                    .offset(y: -Self.peekStep * depth)
+                                    .transition(.opacity)
+                            }
+                        }
+                    }
+                    .id(front.id)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)),
+                        removal: .opacity.combined(with: .move(edge: .trailing))))
             }
+            .buttonStyle(.plain)
+            .padding(.top, Self.peekStep * CGFloat(behind.count))
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(front.headline). \(front.detail)")
+            .accessibilityHint(behind.isEmpty ? "Removes this card"
+                                              : "Removes this card and shows the next of \(shown.count)")
         }
     }
 
@@ -110,7 +131,10 @@ struct AtriaTodayLearningsFeed: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .contentShape(.rect(cornerRadius: 18))
-        .glassEffect(.regular.tint(item.tint.opacity(0.10)).interactive(),
+        // Opaque base so the peeking cards behind never show through.
+        .background(Color(uiColor: .secondarySystemBackground),
+                    in: .rect(cornerRadius: 18))
+        .glassEffect(.regular.tint(item.tint.opacity(0.12)).interactive(),
                      in: .rect(cornerRadius: 18))
     }
 }
