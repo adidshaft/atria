@@ -693,4 +693,26 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
         XCTAssertTrue(AtriaInsetCardModifier.drawsSurface(depth: 2, hueTinted: true),
                       "metric chips keep their identity surface")
     }
+
+    // A version-3 workout whose HR is gone is re-expressed exactly; an older
+    // curve version is not guessed at.
+    func testHRlessVersion3WorkoutStrainIsReexpressedExactly() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var v3 = UserConfirmedWorkout(id: "strength", createdAt: start, start: start,
+                                      end: start.addingTimeInterval(2940), label: "Strength",
+                                      source: "test", confidence: "high", sessions: 1,
+                                      samples: 0, avgHR: 129, peakHR: 175, p95HR: 160,
+                                      p99HR: 170, thresholdHR: 124, streamCoveragePercent: 100,
+                                      observedDuration: 2940, reason: "test",
+                                      strain: 6.27, zoneSeconds: [:])
+        v3.strainCalibrationVersion = 3
+        let migrated = SessionStore.reexpressedVersion3WorkoutStrain(v3)
+        XCTAssertEqual(migrated.strainCalibrationVersion, 4)
+        XCTAssertEqual(try XCTUnwrap(migrated.strain),
+                       AtriaStrainLoadModel.rescaledDisplayScore(6.27, fromLoadScale: 150, toLoadScale: 100),
+                       accuracy: 1e-9)
+        var v2 = v3
+        v2.strainCalibrationVersion = 2
+        XCTAssertEqual(SessionStore.reexpressedVersion3WorkoutStrain(v2).strain, 6.27)
+    }
 }

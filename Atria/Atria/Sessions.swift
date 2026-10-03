@@ -34851,6 +34851,25 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// A version-3 card whose HR is no longer resident still holds an exact
+    /// display of its load on the 150 curve, so it is re-expressed in closed
+    /// form (owner 2026-10-03 recalibration). Older versions used other
+    /// curves and stay eligible for a later HR re-integration.
+    nonisolated static func reexpressedVersion3WorkoutStrain(
+        _ workout: UserConfirmedWorkout
+    ) -> UserConfirmedWorkout {
+        guard workout.strainCalibrationVersion == 3,
+              AtriaAnalytics.Strain.displayCalibrationVersion == 4,
+              let strain = workout.strain else { return workout }
+        var next = workout
+        next.strain = AtriaStrainLoadModel.rescaledDisplayScore(
+            strain,
+            fromLoadScale: AtriaStrainLoadModel.previousDisplayLoadScale,
+            toLoadScale: AtriaStrainLoadModel.displayCalibration.loadScale)
+        next.strainCalibrationVersion = 4
+        return next
+    }
+
     /// Migrates only a persisted detail score whose original workout window can
     /// still be re-integrated from real strap HR.  A card saved without enough
     /// HR remains exactly as it was: the migration never derives strain from
@@ -34869,7 +34888,7 @@ final class SessionStore: ObservableObject {
         guard maxHR > rest else { return workouts }
         let targetVersion = AtriaAnalytics.Strain.displayCalibrationVersion
         let canonical = makeCanonicalSessions(from: sourceSessions)
-        guard !canonical.isEmpty else { return workouts }
+        guard !canonical.isEmpty else { return workouts.map(reexpressedVersion3WorkoutStrain) }
 
         return workouts.map { workout in
             guard workout.strain != nil,
@@ -34890,7 +34909,9 @@ final class SessionStore: ObservableObject {
                 samples,
                 excluding: workout.excludedIntervals
             )
-            guard segments.contains(where: { $0.count > 1 }) else { return workout }
+            guard segments.contains(where: { $0.count > 1 }) else {
+                return Self.reexpressedVersion3WorkoutStrain(workout)
+            }
 
             let trimp = confirmedWorkoutTRIMP(
                 segments: segments,
