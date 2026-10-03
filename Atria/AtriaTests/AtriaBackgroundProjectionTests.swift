@@ -3236,10 +3236,21 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         let restoreGuard = try XCTUnwrap(body.range(
             of: "guard !store.restoreInitializationBlocked else { return }"
         ))
-        let attendedEnd = try XCTUnwrap(body.range(
+        // 2026-10-03: the leaving-foreground work lives in one helper, run at
+        // once on background (or after the inactive grace), still ahead of
+        // the restore guard.
+        let leave = try XCTUnwrap(body.range(
+            of: "enterBackgroundedLifecycle(phase: .background)"
+        ))
+        XCTAssertLessThan(leave.lowerBound, restoreGuard.lowerBound)
+        let helperStart = try XCTUnwrap(source.range(
+            of: "private func enterBackgroundedLifecycle(phase: ScenePhase) {"
+        ))
+        let helper = String(source[helperStart.lowerBound...].prefix(2_400))
+        let attendedEnd = try XCTUnwrap(helper.range(
             of: "store.endBackgroundArchiveProjectionThrottle()"
         ))
-        let suspend = try XCTUnwrap(body.range(
+        let suspend = try XCTUnwrap(helper.range(
             of: "store.suspendRecoveredDataPublicationLeaseForBackground("
         ))
         let throttleEnd = try XCTUnwrap(body.range(
@@ -3253,19 +3264,18 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ))
 
         XCTAssertLessThan(attendedEnd.lowerBound, suspend.lowerBound)
-        XCTAssertLessThan(suspend.lowerBound, restoreGuard.lowerBound)
         XCTAssertLessThan(throttleEnd.lowerBound, invalidateBG.lowerBound)
         XCTAssertLessThan(invalidateBG.lowerBound, restoreGuard.lowerBound)
         XCTAssertGreaterThan(resume.lowerBound, restoreGuard.lowerBound)
         XCTAssertEqual(
-            body.components(separatedBy:
+            source.components(separatedBy:
                 "store.suspendRecoveredDataPublicationLeaseForBackground("
             ).count - 1,
             1
         )
-        XCTAssertTrue(body.contains(
+        XCTAssertTrue(helper.contains(
             "if releasedAttendedProjection {\n"
-                + "                            store.endBackgroundArchiveProjectionThrottle()"
+                + "            store.endBackgroundArchiveProjectionThrottle()"
         ), "ordinary backgrounding must preserve an independently leased BGProcessing ticket")
     }
 

@@ -65,4 +65,22 @@ final class AtriaRecoveredDataExecutionLeaseTests: XCTestCase {
         XCTAssertEqual(lease.identity.generation, 19)
         XCTAssertEqual(lease.identity.archiveRevision, 120)
     }
+
+    // 2026-10-02: a notification glance / Control Center made the scene
+    // inactive and threw away the ~70 s recovered fence. Inactive now counts
+    // as active for the fence; real background revokes at once, and an
+    // inactive spell only after a short grace.
+    func testInactiveGlanceDoesNotRevokeRecoveredWork() throws {
+        XCTAssertTrue(SessionStore.recoveredExecutionTreatsApplicationAsActive(.active))
+        XCTAssertTrue(SessionStore.recoveredExecutionTreatsApplicationAsActive(.inactive))
+        XCTAssertFalse(SessionStore.recoveredExecutionTreatsApplicationAsActive(.background))
+        XCTAssertGreaterThan(AtriaSceneInactiveGrace.seconds, 1)
+        XCTAssertLessThanOrEqual(AtriaSceneInactiveGrace.seconds, 5,
+                                 "a real departure must still stop work promptly")
+        let app = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
+        XCTAssertTrue(app.contains("enterBackgroundedLifecycle(phase: .background)"))
+        XCTAssertTrue(app.contains("for: .seconds(AtriaSceneInactiveGrace.seconds)"))
+    }
 }
