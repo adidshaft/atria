@@ -1241,4 +1241,30 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             startingDayStrain: 0
         )
     }
+
+    // 2026-10-02 device: Home rebuilt its saved aggregate 16 times in the
+    // 13 s after launch and 13 produced an identical result. An input whose
+    // arrays share storage with the retained last input, in the same minute,
+    // now skips the rebuild; any mutation gets new storage and rebuilds.
+    func testSavedAggregateSkipsOnlyWhenInputStorageIsUnchanged() throws {
+        let original = [1, 2, 3]
+        let copy = original
+        XCTAssertEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                       AtriaHomeModel.ArrayStorageIdentity(copy))
+        var mutated = original
+        mutated[0] = 9
+        XCTAssertNotEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                          AtriaHomeModel.ArrayStorageIdentity(mutated))
+        var appended = original
+        appended.append(4)
+        XCTAssertNotEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                          AtriaHomeModel.ArrayStorageIdentity(appended))
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("if identity == lastPublishedSavedAggregateIdentity {"))
+        XCTAssertTrue(source.contains("lastPublishedSavedAggregateInput = input"),
+                      "the last input must be retained so storage identity stays meaningful")
+    }
 }

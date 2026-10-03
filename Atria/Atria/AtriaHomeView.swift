@@ -9730,6 +9730,8 @@ final class AtriaHomeModel {
     private let storeRefreshSubject = PassthroughSubject<Void, Never>()
     private var deferredDetails: DeferredDetails?
     private var savedAggregate: SavedAggregate
+    private var lastPublishedSavedAggregateInput: SavedAggregateRefreshInput?
+    private var lastPublishedSavedAggregateIdentity: SavedAggregateInputIdentity?
     private var diagnosticsRequested = false
     private var diagnosticsPresentationIsDirty = false
     private var diagnosticsPresentationResumeScheduled = false
@@ -9802,6 +9804,52 @@ final class AtriaHomeModel {
         let confirmedWorkouts: Int
         let confirmedSleeps: Int
         let savedTodayObservedSeconds: TimeInterval
+    }
+
+    /// Constant-time "did anything change" for a refresh input. Arrays are
+    /// copy-on-write: an unmodified array shares its storage with the retained
+    /// last input, a modified one gets new storage. Time counts per minute.
+    struct ArrayStorageIdentity: Equatable {
+        let address: UInt?
+        let count: Int
+
+        init<Element>(_ array: [Element]) {
+            address = array.withUnsafeBufferPointer {
+                $0.baseAddress.map { UInt(bitPattern: $0) }
+            }
+            count = array.count
+        }
+    }
+
+    struct SavedAggregateInputIdentity: Equatable {
+        let arrays: [ArrayStorageIdentity]
+        let profile: AthleteProfile
+        let baselineDigest: Data
+        let liveRestingHeartRate: Int?
+        let activeSessionID: UUID?
+        let confirmedWorkouts: Int
+        let minute: Int
+    }
+
+    private static func savedAggregateInputIdentity(
+        _ input: SavedAggregateRefreshInput
+    ) -> SavedAggregateInputIdentity {
+        let source = input.source
+        return SavedAggregateInputIdentity(
+            arrays: [
+                ArrayStorageIdentity(source.canonicalSessions),
+                ArrayStorageIdentity(source.archiveHeartRatePoints),
+                ArrayStorageIdentity(source.confirmedSleeps),
+                ArrayStorageIdentity(source.confirmedWorkouts),
+                ArrayStorageIdentity(source.rawSessions)
+            ],
+            profile: source.profile,
+            baselineDigest: (try? JSONEncoder().encode(input.baseline)) ?? Data(),
+            liveRestingHeartRate: input.liveRestingHeartRate,
+            activeSessionID: input.activeSessionID,
+            confirmedWorkouts: input.confirmedWorkouts,
+            minute: Int((input.windowEnd.timeIntervalSince1970 / 60).rounded(.down))
+        )
     }
 
     private struct SavedAggregateRefreshInput: @unchecked Sendable {
@@ -11390,13 +11438,32 @@ final class AtriaHomeModel {
 
     private func startSavedAggregateRefresh(generation: UInt64, reason: String) {
         let input = savedAggregateRefreshInputSnapshot(now: Date())
+        let identity = Self.savedAggregateInputIdentity(input)
+        if identity == lastPublishedSavedAggregateIdentity {
+            // Launch fired 16 refreshes in 13 s and 13 rebuilt an identical
+            // aggregate (2026-10-02 device). Same inputs within the same
+            // minute cannot produce a different aggregate.
+            let unchanged = savedAggregate
+            DispatchQueue.main.async { [weak self] in
+                self?.finishSavedAggregateRefresh(
+                    generation: generation,
+                    result: unchanged,
+                    reason: reason,
+                    input: nil,
+                    identity: nil
+                )
+            }
+            return
+        }
         savedAggregateRefreshQueue.async { [weak self, input] in
             let result = Self.makeSavedAggregate(input: input)
             DispatchQueue.main.async { [weak self] in
                 self?.finishSavedAggregateRefresh(
                     generation: generation,
                     result: result,
-                    reason: reason
+                    reason: reason,
+                    input: input,
+                    identity: identity
                 )
             }
         }
@@ -11404,7 +11471,9 @@ final class AtriaHomeModel {
 
     private func finishSavedAggregateRefresh(generation: UInt64,
                                              result: SavedAggregate,
-                                             reason: String) {
+                                             reason: String,
+                                             input: SavedAggregateRefreshInput?,
+                                             identity: SavedAggregateInputIdentity?) {
         switch savedAggregateRefreshGate.complete(generation) {
         case .ignored:
             return
@@ -11414,6 +11483,12 @@ final class AtriaHomeModel {
                 reason: pendingSavedAggregateRefreshReason
             )
         case .publish:
+            if let identity, let input {
+                // Retaining the input keeps its array storage alive, so an
+                // equal storage identity later really means "not modified".
+                lastPublishedSavedAggregateInput = input
+                lastPublishedSavedAggregateIdentity = identity
+            }
             let changed = result != savedAggregate
             if changed {
                 savedAggregate = result
