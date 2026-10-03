@@ -10008,7 +10008,13 @@ enum HistoricalArchive {
                     : AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                 let preferLargeIdle = idleCap > AtriaCompactIMULiveDiagnostics.sittingIdleSmallChunkBytes
                 if reason == "overdue_idle" {
-                    let sealed = catalog.chunks.filter { $0.state == .sealed }
+                    let sealed = AtriaHistoricalShadowCompactionCoordinator
+                    .policySelectedSealedChunks(
+                        catalog.chunks,
+                        uncommittedCandidates: retention.uncommittedCandidates,
+                        shadowCommittedCandidateIDs:
+                            retention.shadowCommittedCandidateIDs
+                    )
                     let finishable = AtriaHistoricalShadowCompactionCoordinator
                         .sceneBackgroundRetirementCandidates(
                             sealed,
@@ -10072,7 +10078,13 @@ enum HistoricalArchive {
                     retirementCandidates = Array(isolated.prefix(1))
                 }
             } else {
-                let sealed = catalog.chunks.filter { $0.state == .sealed }
+                let sealed = AtriaHistoricalShadowCompactionCoordinator
+                    .policySelectedSealedChunks(
+                        catalog.chunks,
+                        uncommittedCandidates: retention.uncommittedCandidates,
+                        shadowCommittedCandidateIDs:
+                            retention.shadowCommittedCandidateIDs
+                    )
                 let finishable = AtriaHistoricalShadowCompactionCoordinator
                     .sceneBackgroundRetirementCandidates(
                         sealed,

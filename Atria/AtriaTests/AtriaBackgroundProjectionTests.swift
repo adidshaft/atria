@@ -3643,7 +3643,9 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                       "desk sitting prefers one isolated 33 MB JSONL; typing keeps small shards")
         XCTAssertTrue(body.contains("skippingOversizedTimeOverlaps("),
                       "a 126 KB shard that overlaps the 134 MB monolith must not burn the lease")
-        XCTAssertTrue(body.contains("catalog.chunks.filter { $0.state == .sealed }"),
+        // 2026-10-03: still a size-filtered SET (never the queue's 134 MB
+        // head), now limited to policy-selected chunks.
+        XCTAssertTrue(body.contains("policySelectedSealedChunks("),
                       "sitting idle must not stall on the policy queue's 134 MB row")
         XCTAssertTrue(body.contains("64 * 1024 * 1024"),
                       "only 72/134 MB legacy JSONL should isolate overlapping shards")
