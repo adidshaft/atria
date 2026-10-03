@@ -506,15 +506,6 @@ private struct AtriaHeartRateZoneRail: View, Equatable {
 }
 
 
-private struct AtriaHeroMetricItem: Identifiable, Equatable {
-    let title: String
-    let value: String
-    let detail: String
-    let tint: Color
-
-    var id: String { title }
-}
-
 
 private struct AtriaHeroNextActionRow: View, Equatable {
     let nextAction: String
@@ -880,6 +871,7 @@ private struct AtriaConnectionGuideSheet: View {
                     }
                     .buttonStyle(.plain)
                     .frame(width: 36, height: 36)
+                    .atriaMinimumHitTarget(width: 36, height: 36)
                     .background(Color(uiColor: .secondarySystemBackground), in: Circle())
                     .accessibilityLabel("Close")
                 }

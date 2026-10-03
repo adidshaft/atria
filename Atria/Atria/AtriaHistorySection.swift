@@ -99,8 +99,16 @@ struct AtriaHistoryModel: Equatable {
                       workouts: [UserConfirmedWorkout],
                       sleeps: [UserConfirmedSleep],
                       reviewCandidateDays: [AtriaHistoryReviewCandidateDay] = [],
-                      calendar: Calendar = .current) -> AtriaHistoryModel {
-        let rollupsByDay = Dictionary(grouping: rollups) {
+                      calendar: Calendar = .current,
+                      cycleStrainByDisplayDay: [Date: Double] = [:]) -> AtriaHistoryModel {
+        // Same overlay the strain chart, Trends card, and weekly/monthly
+        // reports use (2026-08-30 / 2026-09-03): a shifted sleeper's civil
+        // rollup shreds one wake-to-wake day across two rows. An empty map
+        // leaves every civil value untouched.
+        let aligned = WeeklyReport.applyingCycleStrain(rollups,
+                                                       cycleStrainByDisplayDay,
+                                                       calendar: calendar)
+        let rollupsByDay = Dictionary(grouping: aligned) {
             calendar.startOfDay(for: $0.day)
         }.compactMapValues(\.first)
         // Presentation gate (2026-07-31): accidental sub-minute live fragments
@@ -208,6 +216,23 @@ struct AtriaHistoryProjectionInput: @unchecked Sendable {
     let workouts: [UserConfirmedWorkout]
     let sleeps: [UserConfirmedSleep]
     let reviewCandidateDays: [AtriaHistoryReviewCandidateDay]
+    /// Closed-cycle strain keyed by predominant civil day. Applied so a
+    /// History row cannot disagree with the strain chart for the same date.
+    let cycleStrainByDisplayDay: [Date: Double]
+
+    init(key: AtriaHistoryRevisionKey,
+         rollups: [DailyRollupStoreEntry],
+         workouts: [UserConfirmedWorkout],
+         sleeps: [UserConfirmedSleep],
+         reviewCandidateDays: [AtriaHistoryReviewCandidateDay],
+         cycleStrainByDisplayDay: [Date: Double] = [:]) {
+        self.key = key
+        self.rollups = rollups
+        self.workouts = workouts
+        self.sleeps = sleeps
+        self.reviewCandidateDays = reviewCandidateDays
+        self.cycleStrainByDisplayDay = cycleStrainByDisplayDay
+    }
 }
 
 struct AtriaHistoryProjection: Equatable {
@@ -237,7 +262,8 @@ final class AtriaVitalsHistoryProjectionStore: ObservableObject {
             AtriaHistoryModel.make(rollups: input.rollups,
                                    workouts: input.workouts,
                                    sleeps: input.sleeps,
-                                   reviewCandidateDays: input.reviewCandidateDays)
+                                   reviewCandidateDays: input.reviewCandidateDays,
+                                   cycleStrainByDisplayDay: input.cycleStrainByDisplayDay)
         }
         let model = await withTaskCancellationHandler {
             await preparation.value
@@ -299,7 +325,10 @@ struct AtriaHistorySection: View, Equatable {
     var body: some View {
         VStack(spacing: 16) {
             historyHeroCard
-            if !model.detections.isEmpty {
+            // The detector's own event log ("Nap-shaped window 15h–16h, 60 min
+            // captured; stillness unvalidated…") is diagnostics, not product
+            // copy: Developer mode only (2026-09-27 workout-review rework).
+            if AtriaDeveloperMode.isEnabled, !model.detections.isEmpty {
                 detectionsCard
             }
             if model.days.isEmpty {
@@ -312,7 +341,10 @@ struct AtriaHistorySection: View, Equatable {
         .sheet(item: $selectedDay) { day in
             AtriaHistoryDayDetailSheet(day: day,
                                        medians: model.medianWindow(around: day),
-                                       nights: store.sleepHistorySnapshot.confirmedNights(on: day.date))
+                                       nights: store.sleepHistorySnapshot.confirmedNights(on: day.date),
+                                       allDays: model.days,
+                                       mediansForDay: { model.medianWindow(around: $0) },
+                                       nightsForDay: { store.sleepHistorySnapshot.confirmedNights(on: $0.date) })
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -327,20 +359,30 @@ struct AtriaHistorySection: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             // The big trailing number duplicated the Sessions chip directly
             // below it (UX audit 2026-07-07) -- the chip keeps the value.
-            AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
+            AtriaPanelSectionHeader(title: "History", subtitle: "")
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
-                Button {
-                    showAllDetections = true
-                } label: {
-                    AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                // The detector's event count is diagnostics (it read "20"
+                // beside 2 possible workouts): Developer mode only.
+                if AtriaDeveloperMode.isEnabled {
+                    Button {
+                        showAllDetections = true
+                    } label: {
+                        AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
+                    }
+                    .buttonStyle(AtriaPressableCardStyle())
+                    .accessibilityHint("Opens the full detections list")
                 }
-                .buttonStyle(.plain)
-                AtriaHistoryStatChip(label: "Baseline", value: "\(model.baselineReady)/\(model.baselineTarget)", tint: Metrics.electricGreen)
+                // Green is the achievement hue; "0/14" in green read as done
+                // (2026-09-02 Trends screenshot). The chip earns green only
+                // once the baseline is trusted, and stays neutral while it builds.
+                AtriaHistoryStatChip(label: "Baseline",
+                                     value: "\(model.baselineReady)/\(model.baselineTarget)",
+                                     tint: model.baselineReady >= model.baselineTarget ? Metrics.electricGreen : .secondary)
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var rhythmWindow: [AtriaHistoryDay] {
@@ -381,7 +423,7 @@ struct AtriaHistorySection: View, Equatable {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     /// Newest-first list of the last few detection events. Purely a read of
@@ -389,7 +431,7 @@ struct AtriaHistorySection: View, Equatable {
     /// zero effect on detection logic. Hidden entirely when the log is empty.
     private var detectionsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Detections", subtitle: "What the app detected and why")
+            AtriaPanelSectionHeader(title: "Detections", subtitle: "")
             VStack(spacing: 8) {
                 // 3-row preview (UX audit density): the full log lives one
                 // tap away behind "See all".
@@ -412,12 +454,15 @@ struct AtriaHistorySection: View, Equatable {
                             .foregroundStyle(.secondary)
                     }
                     .foregroundStyle(.primary)
+                    // Same chrome as the sibling card's footer one scroll away.
+                    .padding(12)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.secondary.opacity(0.08))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var recentRowsCard: some View {
@@ -434,7 +479,7 @@ struct AtriaHistorySection: View, Equatable {
                     } label: {
                         AtriaHistoryDayRow(day: day)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AtriaPressableCardStyle())
                 }
             }
             // Gate at the preview length: the old count > 14 threshold left
@@ -453,13 +498,13 @@ struct AtriaHistorySection: View, Equatable {
                     }
                     .foregroundStyle(.primary)
                     .padding(12)
-                    .atriaInsetCard(cornerRadius: 16, tint: Color.secondary.opacity(0.08))
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.secondary.opacity(0.08))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 
     private var emptyStateCard: some View {
@@ -472,7 +517,7 @@ struct AtriaHistorySection: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
     }
 }
 
@@ -488,13 +533,13 @@ private struct AtriaHistoryStatChip: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
     }
 }
 
@@ -563,9 +608,15 @@ struct AtriaHistoryDayRow: View, Equatable {
                 .foregroundStyle(day.strain != nil ? Metrics.electricStrain : .secondary)
                 .lineLimit(1)
                 .layoutPriority(1)
+
+            // Matches Activity's session rows exactly: a row that opens a
+            // sheet carries the disclosure chevron everywhere (2026-08-28).
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.tertiary)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
     }
 
     /// At most two chips render inline (UX audit 2026-07-07): an active day
@@ -643,7 +694,9 @@ struct AtriaDetectionRow: View, Equatable {
                 Text(DetectionReasonCopy.text(for: event))
                     .font(.caption.weight(.semibold))
                     .lineLimit(2)
-                Text(event.date.formatted(.relative(presentation: .named)))
+                Text((event.repeatCount ?? 1) > 1
+                     ? "\(event.date.formatted(.relative(presentation: .named))) \u{00b7} \u{00d7}\(event.repeatCount ?? 1)"
+                     : event.date.formatted(.relative(presentation: .named)))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -651,7 +704,7 @@ struct AtriaDetectionRow: View, Equatable {
             Spacer(minLength: 8)
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint.opacity(0.4))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint.opacity(0.4))
     }
 }
 
@@ -964,10 +1017,10 @@ struct AtriaDetectedActivitiesSection: View {
     var body: some View {
         if !state.isEmpty {
             VStack(alignment: .leading, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Detected activities",
-                                        subtitle: "Heart-rate windows Atria noticed but has not counted. Confirm what happened, or dismiss.")
+                AtriaPanelSectionHeader(title: "Possible workouts",
+                                        subtitle: "Raised heart rate Atria noticed. Nothing counts until you add it.")
                 if state.candidates.isEmpty {
-                    Text("No unconfirmed detections right now")
+                    Text("Nothing waiting right now")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -982,72 +1035,77 @@ struct AtriaDetectedActivitiesSection: View {
                 }
             }
             .padding(16)
-            .atriaCard(cornerRadius: 24, emphasis: .soft)
+            .atriaCard(emphasis: .soft)
         }
     }
 
+    /// Same words and actions as the Today card (rework 2026-09-27): what
+    /// was measured, a gap note only when heart rate is missing, and two
+    /// actions. An HR-only window stays a POSSIBLE workout until added.
     private func candidateRow(_ candidate: WorkoutReviewCandidate) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.cyan)
-                    .frame(width: 30, height: 30)
-                    .background(Color.cyan.opacity(0.12), in: Circle())
+                Image(systemName: "figure.mixed.cardio")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                    .frame(width: 32, height: 32)
+                    .background(Color.orange.opacity(0.14), in: Circle())
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Activity candidate")
+                    Text("Possible workout")
                         .font(.subheadline.weight(.semibold))
-                    Text("\(Self.timeRangeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap HR")
+                    Text("\(Self.dayAndTimeText(start: candidate.start, end: candidate.end)) · \(SleepHistorySnapshot.formatDuration(candidate.duration))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
             }
 
-            Text("Coverage \(candidate.streamCoveragePercent)% · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
+            Text("Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm")
+                .font(.caption.weight(.semibold).monospacedDigit())
 
-            if candidate.confidence == .medium {
-                Text("Medium confidence: sustained strap-HR evidence; confirm the activity type")
+            if candidate.missingMinutes >= 5 {
+                Label("Heart rate is missing for \(candidate.missingMinutes) min of this.",
+                      systemImage: "exclamationmark.circle")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            } else {
-                Text("Low confidence: \(Self.reasonText(candidate.reason))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 10) {
                 Button {
                     requestReview(candidate)
                 } label: {
-                    Text("Confirm type")
+                    Text("Add workout")
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 32)
                 }
-                .atriaCardAction(prominent: false, tint: .cyan)
+                .atriaCardAction(prominent: false, tint: .orange)
 
                 Button {
                     _ = store?.dismissWorkoutCandidate(start: candidate.start,
                                                        end: candidate.end)
                 } label: {
-                    Text("Dismiss")
+                    Text("Not a workout")
                         .font(.caption.weight(.semibold))
                         .frame(maxWidth: .infinity, minHeight: 32)
                 }
                 .atriaCardAction(prominent: false, tint: .secondary)
             }
         }
-        .accessibilityElement(children: .combine)
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: Color.cyan.opacity(0.4))
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: Color.orange.opacity(0.4))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Activity candidate, \(Self.timeRangeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)) from strap heart rate. Coverage \(candidate.streamCoveragePercent) percent, average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. Confirm the type before it counts.")
+        .accessibilityLabel("Possible workout, \(Self.dayAndTimeText(start: candidate.start, end: candidate.end)), \(SleepHistorySnapshot.formatDuration(candidate.duration)). Average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute. It counts only after you add it.")
+    }
+
+    /// "Today 3:10–4:02 PM" / "Sep 26 7:04–7:42 AM".
+    static func dayAndTimeText(start: Date, end: Date) -> String {
+        let day = Calendar.current.isDateInToday(start)
+            ? "Today"
+            : start.formatted(.dateTime.month(.abbreviated).day())
+        return "\(day) \(start.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))"
     }
 
     /// Visible, reversible dismissal (2026-07-17): an accidental dismiss no
@@ -1059,7 +1117,7 @@ struct AtriaDetectedActivitiesSection: View {
                 showDismissed.toggle()
             } label: {
                 HStack {
-                    Text("Dismissed detections (\(state.dismissedWindows.count))")
+                    Text("Not workouts (\(state.dismissedWindows.count))")
                         .font(.subheadline.weight(.semibold))
                     Spacer(minLength: 0)
                     Image(systemName: showDismissed ? "chevron.down" : "chevron.right")
@@ -1089,11 +1147,11 @@ struct AtriaDetectedActivitiesSection: View {
                                                                         end: window.end)
                         }
                         .font(.caption.weight(.semibold))
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                         .tint(.cyan)
                     }
                     .padding(10)
-                    .atriaInsetCard(cornerRadius: 14, tint: Color.secondary.opacity(0.2))
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: Color.secondary.opacity(0.2))
                 }
                 Text("Restoring lets Atria offer the window for review again. Nothing is saved until you confirm it.")
                     .font(.caption2)
@@ -1201,7 +1259,7 @@ struct AtriaHistoryFullScreen: View {
                             } label: {
                                 AtriaHistoryDayRow(day: day)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(AtriaPressableCardStyle())
                         }
                     } header: {
                         monthHeader(group.title)
@@ -1310,7 +1368,28 @@ private struct AtriaHistoryStatRow: View {
             }
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 16, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
+    }
+}
+
+/// Pure day-stepping over the History day list (2026-08-29, detail-sheet
+/// navigation): finds the day `offset` chronological steps away from `current`
+/// among the days that actually exist — the model only mints a day row when it
+/// has a rollup, saved activity, or review evidence, so stepping the array is
+/// exactly "skip days with no data". Order-agnostic on purpose: `model.days`
+/// is newest-first, but the helper must not silently invert if that changes.
+enum AtriaHistoryDayStepping {
+    /// `offset` is chronological: -1 = the nearest older day, +1 = the nearest
+    /// newer day. Returns nil at either end or when `current` is not listed.
+    static func adjacentDay(to current: Date,
+                            in days: [AtriaHistoryDay],
+                            offset: Int) -> AtriaHistoryDay? {
+        guard offset != 0 else { return nil }
+        let ordered = days.sorted { $0.date < $1.date }
+        guard let index = ordered.firstIndex(where: { $0.date == current }) else { return nil }
+        let target = index + offset
+        guard ordered.indices.contains(target) else { return nil }
+        return ordered[target]
     }
 }
 
@@ -1322,15 +1401,50 @@ struct AtriaHistoryDayDetailSheet: View {
     /// with entries, each row is tappable and opens the shared stage-timeline
     /// hypnogram for that sleep.
     var nights: [SleepHistorySnapshot.Night] = []
+    /// In-sheet day navigation (2026-08-29): with the full day list plus the
+    /// per-day medians/nights providers, the header grows prev/next chevrons so
+    /// past days are reachable without dismissing and re-picking. All three
+    /// default empty/nil so the sheet still renders a single fixed day.
+    var allDays: [AtriaHistoryDay] = []
+    var mediansForDay: ((AtriaHistoryDay) -> AtriaHistoryMedians)? = nil
+    var nightsForDay: ((AtriaHistoryDay) -> [SleepHistorySnapshot.Night])? = nil
     /// nil = default (first night open). The empty string is the explicit
     /// "everything collapsed" marker — night ids are never empty.
     @State private var expandedNightID: String?
+    /// The day the chevrons stepped to; nil until the user navigates.
+    @State private var steppedDay: AtriaHistoryDay?
+
+    private var displayedDay: AtriaHistoryDay { steppedDay ?? day }
+
+    private var displayedMedians: AtriaHistoryMedians {
+        guard let steppedDay, steppedDay.id != day.id else { return medians }
+        return mediansForDay?(steppedDay) ?? .empty
+    }
+
+    private var displayedNights: [SleepHistorySnapshot.Night] {
+        guard let steppedDay, steppedDay.id != day.id else { return nights }
+        return nightsForDay?(steppedDay) ?? []
+    }
+
+    private var canStepDays: Bool { allDays.count > 1 }
+
+    private func adjacentDay(offset: Int) -> AtriaHistoryDay? {
+        AtriaHistoryDayStepping.adjacentDay(to: displayedDay.date,
+                                            in: allDays,
+                                            offset: offset)
+    }
+
+    private func step(_ offset: Int) {
+        guard let next = adjacentDay(offset: offset) else { return }
+        steppedDay = next
+        // A different day's nights must not inherit the old expansion choice.
+        expandedNightID = nil
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                AtriaPanelSectionHeader(title: day.date.formatted(.dateTime.weekday(.wide).month().day()),
-                                        subtitle: "vs 14-day median")
+                headerRow
                 VStack(spacing: 10) {
                     recoveryRow
                     rhrRow
@@ -1344,17 +1458,52 @@ struct AtriaHistoryDayDetailSheet: View {
         }
     }
 
+    /// Header with the same chevron affordance the metric detail sheet's
+    /// period navigation uses (32pt hit targets, plain style, spoken labels);
+    /// chevrons disable at the ends of the available-day list.
+    private var headerRow: some View {
+        HStack(spacing: 12) {
+            AtriaPanelSectionHeader(title: displayedDay.date.formatted(.dateTime.weekday(.wide).month().day()),
+                                    subtitle: "vs 14-day median")
+            Spacer(minLength: 0)
+            if canStepDays {
+                HStack(spacing: 12) {
+                    Button {
+                        step(-1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 32, height: 32)
+                            .atriaMinimumHitTarget(width: 32, height: 32)
+                    }
+                    .disabled(adjacentDay(offset: -1) == nil)
+                    .accessibilityLabel("Previous day")
+
+                    Button {
+                        step(1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 32, height: 32)
+                            .atriaMinimumHitTarget(width: 32, height: 32)
+                    }
+                    .disabled(adjacentDay(offset: 1) == nil)
+                    .accessibilityLabel("Next day")
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     private var effectiveExpandedNightID: String? {
-        expandedNightID ?? nights.first?.id
+        expandedNightID ?? displayedNights.first?.id
     }
 
     @ViewBuilder
     private var sleepNightsSection: some View {
-        if !nights.isEmpty {
+        if !displayedNights.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Sleep this day")
                     .font(.subheadline.weight(.semibold))
-                ForEach(nights) { night in
+                ForEach(displayedNights) { night in
                     sleepNightEntry(night)
                 }
             }
@@ -1374,6 +1523,7 @@ struct AtriaHistoryDayDetailSheet: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(Metrics.electricSleep)
                         .frame(width: 24, height: 24)
+                        .atriaMinimumHitTarget(width: 24, height: 24)
                         .background(AtriaIconTileBackground(cornerRadius: 8, tint: Metrics.electricSleep))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(night.confirmationText)
@@ -1406,70 +1556,74 @@ struct AtriaHistoryDayDetailSheet: View {
     }
 
     private func nightWindowText(_ night: SleepHistorySnapshot.Night) -> String {
-        guard let start = night.start, let end = night.end else { return "Window building" }
-        let calendar = EventCivilTime.eventCalendar(timeZoneIdentifier: night.eventTimeZoneIdentifier,
-                                                    fallback: .current)
-        var style = Date.FormatStyle(date: .omitted, time: .shortened)
-        style.timeZone = calendar.timeZone
-        return "\(start.formatted(style)) – \(end.formatted(style))"
+        EventCivilTime.sleepWindowText(
+            start: night.start,
+            end: night.end,
+            wakeDay: night.day,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            timeSeparator: " – ",
+            fallback: "Window building"
+        )
     }
 
     private var recoveryRow: some View {
         AtriaHistoryStatRow(title: "Recovery",
-                            value: day.recovery.map { "\($0)%" } ?? "--",
-                            detail: medians.recovery.map { "Median \(Int($0.rounded()))%" } ?? "Building median",
-                            systemImage: "heart.fill",
-                            tint: day.recovery.map { Metrics.recoveryColor($0) } ?? .secondary,
-                            delta: AtriaHistoryDeltaGlyph(current: day.recovery.map(Double.init),
-                                                          median: medians.recovery,
+                            value: displayedDay.recovery.map { "\($0)%" } ?? "--",
+                            detail: displayedMedians.recovery.map { "Median \(Int($0.rounded()))%" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.recovery.systemImage,
+                            // Recovery is one of the two value-graded metrics
+                            // (`usesValueGradedTint`); its hue is its grade.
+                            tint: displayedDay.recovery.map { Metrics.recoveryColor($0) } ?? .secondary,
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.recovery.map(Double.init),
+                                                          median: displayedMedians.recovery,
                                                           goodDirection: .up,
                                                           formatMagnitude: { "\(Int($0.rounded()))%" }))
     }
 
     private var rhrRow: some View {
         AtriaHistoryStatRow(title: "Resting HR",
-                            value: day.rhrInt.map { "\($0) bpm" } ?? "--",
-                            detail: medians.rhr.map { "Median \(Int($0.rounded())) bpm" } ?? "Building median",
-                            systemImage: "heart.text.square.fill",
-                            tint: .cyan,
-                            delta: AtriaHistoryDeltaGlyph(current: day.rhrInt.map(Double.init),
-                                                          median: medians.rhr,
+                            value: displayedDay.rhrInt.map { "\($0) bpm" } ?? "--",
+                            detail: displayedMedians.rhr.map { "Median \(Int($0.rounded())) bpm" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.rhr.systemImage,
+                            tint: AtriaTodayMetric.rhr.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.rhrInt.map(Double.init),
+                                                          median: displayedMedians.rhr,
                                                           goodDirection: .down,
                                                           formatMagnitude: { "\(Int($0.rounded())) bpm" }))
     }
 
     private var hrvRow: some View {
         AtriaHistoryStatRow(title: "HRV",
-                            value: AtriaMetricFormat.hrv(day.hrvMs),
-                            detail: medians.hrvMs.map { "Median \(AtriaMetricFormat.hrv($0))" } ?? "Building median",
-                            systemImage: "waveform.path.ecg",
-                            tint: Metrics.electricGreen,
-                            delta: AtriaHistoryDeltaGlyph(current: day.hrvMs,
-                                                          median: medians.hrvMs,
+                            value: AtriaMetricFormat.hrv(displayedDay.hrvMs),
+                            detail: displayedMedians.hrvMs.map { "Median \(AtriaMetricFormat.hrv($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.hrv.systemImage,
+                            tint: AtriaTodayMetric.hrv.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.hrvMs,
+                                                          median: displayedMedians.hrvMs,
                                                           goodDirection: .up,
                                                           formatMagnitude: { "\(Int($0.rounded())) ms" }))
     }
 
     private var sleepRow: some View {
         AtriaHistoryStatRow(title: "Sleep",
-                            value: SleepHistorySnapshot.formatDuration(day.sleepSeconds ?? 0),
-                            detail: medians.sleepSeconds.map { "Median \(SleepHistorySnapshot.formatDuration($0))" } ?? "Building median",
-                            systemImage: "moon.fill",
-                            tint: Metrics.electricSleep,
-                            delta: AtriaHistoryDeltaGlyph(current: day.sleepSeconds,
-                                                          median: medians.sleepSeconds,
+                            value: SleepHistorySnapshot.formatDuration(displayedDay.sleepSeconds ?? 0),
+                            detail: displayedMedians.sleepSeconds.map { "Median \(SleepHistorySnapshot.formatDuration($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.sleep.systemImage,
+                            tint: AtriaTodayMetric.sleep.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.sleepSeconds,
+                                                          median: displayedMedians.sleepSeconds,
                                                           goodDirection: .up,
                                                           formatMagnitude: { SleepHistorySnapshot.formatDuration($0) }))
     }
 
     private var strainRow: some View {
         AtriaHistoryStatRow(title: "Strain",
-                            value: AtriaMetricFormat.strain(day.strain),
-                            detail: medians.strain.map { "Median \(AtriaMetricFormat.strain($0))" } ?? "Building median",
-                            systemImage: "bolt.fill",
-                            tint: Metrics.electricStrain,
-                            delta: AtriaHistoryDeltaGlyph(current: day.strain,
-                                                          median: medians.strain,
+                            value: AtriaMetricFormat.strain(displayedDay.strain),
+                            detail: displayedMedians.strain.map { "Median \(AtriaMetricFormat.strain($0))" } ?? "Building median",
+                            systemImage: AtriaTodayMetric.strain.systemImage,
+                            tint: AtriaTodayMetric.strain.identityTint(),
+                            delta: AtriaHistoryDeltaGlyph(current: displayedDay.strain,
+                                                          median: displayedMedians.strain,
                                                           goodDirection: .neutral,
                                                           formatMagnitude: { String(format: "%.1f", $0) }))
     }

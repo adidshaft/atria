@@ -17,8 +17,6 @@ enum AtriaSpO2Copy {
     /// Short app-limitation state for straps that carry the sensor. Waiting is
     /// not the blocker: Atria has not verified a decoder for the signal.
     static let decoderNotVerified = "Decoder not verified"
-    /// Short hardware state used only when the identified strap lacks SpO2.
-    static let notAvailableOnStrap = "Sensor unavailable on this strap"
     /// Headline state shown on the SpO2 card for every strap while no validated
     /// reading exists: blood oxygen is not available on this strap. Honest whether
     /// the strap lacks the sensor entirely or carries it but broadcasts no
@@ -51,6 +49,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     case vo2max
     case skinTemperature
     case bloodOxygen
+    case irregularRhythm
 
     var id: String { rawValue }
 
@@ -63,9 +62,26 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .restingHeartRate: return "Resting heart rate"
         case .respiration: return "Respiratory rate"
         case .sleep: return "Sleep"
-        case .vo2max: return "Body Age & VO₂max"
+        case .vo2max: return "Fitness age & VO₂max"
         case .skinTemperature: return "Skin temperature"
         case .bloodOxygen: return "Blood oxygen (SpO₂)"
+        case .irregularRhythm: return AtriaIrregularRhythmCopy.title
+        }
+    }
+
+    var drawsDailyBars: Bool {
+        switch self {
+        case .hrv, .recovery, .restingHeartRate, .respiration, .sleep:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var chartAnchorsAtZero: Bool {
+        switch self {
+        case .recovery, .sleep: return true
+        default: return false
         }
     }
 
@@ -80,6 +96,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max: return "figure.run"
         case .skinTemperature: return "thermometer.medium"
         case .bloodOxygen: return "lungs.fill"
+        case .irregularRhythm: return "heart.text.clipboard"
         }
     }
 
@@ -98,6 +115,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max: return Metrics.electricStrain
         case .skinTemperature: return .orange
         case .bloodOxygen: return .secondary
+        case .irregularRhythm: return .secondary
         }
     }
 
@@ -118,9 +136,11 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max:
             return "An estimate of your cardiorespiratory fitness (VO₂max) and how old your heart data reads versus your calendar age. It is a fitness signal from everyday wear, not a lab test."
         case .skinTemperature:
-            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria has not yet verified the Bluetooth decoder, so it does not currently publish a temperature value."
+            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria shows how tonight compares with your own recent nights, not an absolute temperature."
         case .bloodOxygen:
             return "Blood-oxygen saturation is the percentage of your hemoglobin carrying oxygen. It normally sits in the high 90s at rest."
+        case .irregularRhythm:
+            return AtriaIrregularRhythmCopy.educationalDefinition
         }
     }
 
@@ -128,12 +148,15 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     /// WHOOP 4 hardware carries an optical sensor; the blocker is the decoder,
     /// not the absence of hardware, so keep that distinction in the API name.
     var showsWhyBlank: Bool {
-        self == .bloodOxygen || self == .skinTemperature
+        self == .bloodOxygen
+            || (self == .skinTemperature && !AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     /// Section label above the middle card.
     var computeCardTitle: String {
-        showsWhyBlank ? "WHY IT'S BLANK" : "HOW ATRIA COMPUTES IT"
+        if showsWhyBlank { return "WHY IT'S BLANK" }
+        if self == .irregularRhythm { return "WHAT THE STRAP CAN SEE" }
+        return "HOW ATRIA COMPUTES IT"
     }
 
     /// Middle card body. For every computed metric this describes the REAL
@@ -175,11 +198,13 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // AtriaAnalytics.swift: 15.3 * maxHR/rest clamped 20–80 (Uth–Sørensen);
             // AtriaFitnessAge.swift: five factors → age offset clamped ±12; pace =
             // slope of the weekly offset.
-            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Body Age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
+            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Fitness age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
         case .skinTemperature:
-            return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
+            return "Atria averages the strap's skin-temperature field over the night and compares it with at least 3 of your prior nights on the same strap, giving a change in °C. The field's absolute scale is not verified against a thermometer, so Atria never shows a raw temperature, only the change against your own baseline."
         case .bloodOxygen:
             return AtriaSpO2Copy.whyBlank
+        case .irregularRhythm:
+            return "\(AtriaIrregularRhythmCopy.notECG) Atria can look at clean beat-to-beat pulse timing from the standard heart-rate stream. If that window is too short, gappy, mixed with unverified sources, or looks like ordinary breathing variation, it stays blank. A dense window whose successive differences look irregular — and not just discarded noise — can show irregular rhythm signs. That is research information, not a diagnosis, and it is never an ECG or an AFib result."
         }
     }
 
@@ -206,9 +231,11 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // states the real early/confident day thresholds instead.
             return "An estimate from heart data — not a medical measurement. It needs about 14 days before an early read appears and 28 for a confident baseline, and VO₂max stays \u{201c}preliminary\u{201d} until you've recorded a hard effort that measures your maximum heart rate."
         case .skinTemperature:
-            return "Decoder not verified. If enabled after validation, this remains a sleep-only relative signal — not core temperature or a fever check — kept on your device and never written to Health."
+            return "A sleep-only relative signal from the same strap: not core temperature, not a fever check, and not validated against a reference thermometer. Kept on your device and never written to Health."
         case .bloodOxygen:
             return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
+        case .irregularRhythm:
+            return "\(AtriaIrregularRhythmCopy.cannotDiagnose) \(AtriaIrregularRhythmCopy.talkToADoctor) Atria will not invent a rhythm finding from sparse heart-rate samples."
         }
     }
 }
@@ -246,14 +273,16 @@ struct AtriaAboutMetricTrend {
 
         func value(_ entry: DailyRollupStoreEntry) -> Double? {
             switch metric {
-            case .hrv: return entry.lnRMSSD.map { exp($0).rounded() }
+            case .hrv:
+                guard (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return entry.lnRMSSD.map { exp($0).rounded() }
             case .restingHeartRate: return entry.rhr.map(Double.init)
             case .recovery: return entry.recovery.map(Double.init)
             case .respiration: return entry.respiratoryRate
             case .sleep: return entry.sleepSeconds.flatMap { $0 > 0 ? $0 / 3_600 : nil }
             case .skinTemperature: return entry.skinTemperatureDeviationCelsius
             case .vo2max: return entry.fitnessAgeDelta.map(Double.init)
-            case .stress, .bloodOxygen: return nil
+            case .stress, .bloodOxygen, .irregularRhythm: return nil
             }
         }
 
@@ -345,7 +374,7 @@ struct AtriaAboutMetricTrend {
             return "\(signed(lo, decimals: 1)) to \(signed(hi, decimals: 1)) °C vs your baseline"
         case .vo2max:
             return "\(signed(lo, decimals: 0)) to \(signed(hi, decimals: 0)) yr vs calendar age"
-        case .stress, .bloodOxygen:
+        case .stress, .bloodOxygen, .irregularRhythm:
             return ""
         }
     }
@@ -362,6 +391,8 @@ struct AtriaMiniTrendCard: View {
     let title: String
     /// What the values are, for VoiceOver ("HRV", "Sleep efficiency").
     let subject: String
+    var drawsDailyBars: Bool = false
+    var anchorsAtZero: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
@@ -370,31 +401,41 @@ struct AtriaMiniTrendCard: View {
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
             Chart {
-                ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(subject, entry.point.value),
-                             series: .value("Run", "r\(entry.runID)"))
-                        .foregroundStyle(tint)
-                        .interpolationMethod(.monotone)
-                        .lineStyle(AtriaChartVisualGrammar.trendLine)
-                }
-                // A dot per real reading so single-day runs (no line segment)
-                // are still visible instead of silently disappearing.
-                ForEach(trend.points) { point in
-                    PointMark(x: .value("Day", point.day, unit: .day),
-                              y: .value(subject, point.value))
-                        .foregroundStyle(tint)
-                        .symbolSize(18)
+                if drawsDailyBars {
+                    ForEach(trend.points) { point in
+                        BarMark(x: .value("Day", point.day, unit: .day),
+                                y: .value(subject, point.value),
+                                width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
+                            .foregroundStyle(tint.gradient)
+                            .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
+                    }
+                } else {
+                    ForEach(trend.points.contiguousDayRuns(), id: \.point.day) { entry in
+                        LineMark(x: .value("Day", entry.point.day, unit: .day),
+                                 y: .value(subject, entry.point.value),
+                                 series: .value("Run", "r\(entry.runID)"))
+                            .foregroundStyle(tint)
+                            .interpolationMethod(.linear)
+                            .lineStyle(AtriaChartVisualGrammar.trendLine)
+                    }
+                    ForEach(trend.points) { point in
+                        PointMark(x: .value("Day", point.day, unit: .day),
+                                  y: .value(subject, point.value))
+                            .foregroundStyle(tint)
+                            .symbolSize(18)
+                    }
                 }
             }
-            .atriaGraphPlotSurface()
+            .atriaDailyChartPlotChrome()
             .chartXScale(domain: trend.window)
-            .chartYScale(domain: trend.yDomain)
+            .chartYScale(domain: AtriaChartVisualGrammar.plottedYDomain(
+                values: trend.yDomain,
+                drawsBars: drawsDailyBars,
+                anchorsAtZero: anchorsAtZero
+            ))
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 72)
-            // Full-bleed plot inside the card (2026-08-05 width audit): the
-            // axis-less sparkline needs no inset; title and caption keep it.
             .padding(.horizontal, -AtriaDesignTokens.Spacing.lg)
             Text(trend.caption)
                 .font(.caption2)
@@ -448,6 +489,9 @@ struct AtriaAboutMetricSheet: View {
     var sheetContent: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
             glyphTile
+            if AtriaAppReviewDemo.isActive {
+                AtriaSampleDataBadge(compact: true)
+            }
             Text(metric.title)
                 .font(.system(size: 24, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
@@ -456,12 +500,16 @@ struct AtriaAboutMetricSheet: View {
                 .foregroundStyle(.secondary)
                 .lineSpacing(8)
                 .fixedSize(horizontal: false, vertical: true)
+            AtriaSourcesLink(metricID: metric.rawValue)
 
             if let trend {
                 trendCard(trend)
             }
             computeCard
             honestyCard
+            if metric == .irregularRhythm {
+                AtriaIrregularRhythmNoteCard()
+            }
 
             Text("General guidance, not medical advice.")
                 .font(.caption2.weight(.semibold))
@@ -485,7 +533,9 @@ struct AtriaAboutMetricSheet: View {
         AtriaMiniTrendCard(trend: trend,
                            tint: metric.tint,
                            title: "YOUR LAST 30 DAYS",
-                           subject: metric.title)
+                           subject: metric.title,
+                           drawsDailyBars: metric.drawsDailyBars,
+                           anchorsAtZero: metric.chartAnchorsAtZero)
     }
 
     private var computeCard: some View {
@@ -510,7 +560,7 @@ struct AtriaAboutMetricSheet: View {
             Label("HONESTY NOTE", systemImage: "checkmark.shield.fill")
                 .font(.caption2.weight(.bold))
                 .tracking(0.6)
-                .foregroundStyle(metric.tint)
+                .foregroundStyle(.secondary)
             Text(metric.honestyNote)
                 .font(.footnote)
                 .foregroundStyle(.primary)

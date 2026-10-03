@@ -247,6 +247,62 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertEqual(downsampled.last, visible.last)
     }
 
+    func testPointsFromSessionsFillTheSixHourWindowWithoutInventingTheGap() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let morningStart = now.addingTimeInterval(-4 * 3_600)
+        let morning = SavedSession(
+            id: UUID(),
+            start: morningStart,
+            end: now.addingTimeInterval(-10 * 60),
+            label: "All-day wear",
+            points: stride(from: 0.0, through: 4 * 3_600 - 600, by: 60).map {
+                SavedSession.Point(t: $0, bpm: 72)
+            }
+        )
+        let live = [
+            AtriaHomeModel.HeartRateChartPoint(t: now.addingTimeInterval(-20), bpm: 80)
+        ]
+        let fromSessions = AtriaVitalsHeartRateTimeline.points(
+            fromSessions: [morning],
+            start: now.addingTimeInterval(-6 * 3_600),
+            end: now
+        )
+        XCTAssertGreaterThan(fromSessions.count, 200)
+        XCTAssertEqual(fromSessions.first?.t, morningStart)
+        XCTAssertTrue(fromSessions.allSatisfy { $0.bpm == 72 })
+
+        let merged = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(
+            live: live,
+            historical: fromSessions
+        )
+        let windowed = AtriaVitalsHeartRateTimeline.windowed(
+            merged,
+            window: .hour6,
+            displayBudget: 10_000
+        )
+        XCTAssertEqual(windowed.first?.t, morningStart)
+        XCTAssertEqual(windowed.last?.bpm, 80)
+        let gaps = zip(windowed, windowed.dropFirst()).map { $1.t.timeIntervalSince($0.t) }
+        XCTAssertTrue(gaps.contains { $0 > 8 * 60 },
+                      "the real 10-minute end-of-session hole must remain a hole")
+    }
+
+    func testLivePulsePreviewUnionsSavedSessionsIntoHistoricalRefresh() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(source.contains("fromSessions: source.sessions"),
+                      "the 6h preview must read saved-session HR, not only the archive tail")
+        XCTAssertTrue(source.contains("sessionsForTimeline: sessionsForTimeline"))
+        let health = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHealthScreen.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(health.contains("sessionsIncludingFreshActiveJournal()"),
+                      "Health Live monitor must pass saved sessions plus the open journal into the 6h preview")
+    }
+
     func testMergedKeepsFullResolution() {
         let end = Date(timeIntervalSince1970: 1_800_000_000)
         let historical = points(spanHours: 12, count: 720, endingAt: end.addingTimeInterval(-3600))

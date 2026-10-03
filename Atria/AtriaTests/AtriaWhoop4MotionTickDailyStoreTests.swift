@@ -1022,7 +1022,7 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
         XCTAssertEqual(
             presentation.detailText,
-            "Strap motion found · count still resolving"
+            "Steps found · count still resolving"
         )
     }
 

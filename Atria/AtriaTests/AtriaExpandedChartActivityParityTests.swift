@@ -154,27 +154,33 @@ final class AtriaExpandedChartActivityParityTests: XCTestCase {
     /// domain) while its day-bucketed mark rendered — the edit sheet then
     /// disabled the journal-events toggle claiming there was nothing to mark.
     func testEventLaneUsesDayBucketedMembershipInsideDomain() {
-        // Week of Mon 2026-08-10 ... Mon 2026-08-17 (exclusive upper edge).
+        // Trailing week ending on the reference day: Thu 2026-08-06 ...
+        // Thu 2026-08-13 (exclusive upper edge), so the last plotted day is
+        // Wed 2026-08-12. These fixtures used to describe a Mon-anchored
+        // calendar week; the window became trailing on 2026-09-03 so that
+        // every range ends at today, and the dates moved with it. What is
+        // pinned here — day-bucketed membership, and both edges excluded — is
+        // unchanged.
         let domain = AtriaMetricDetailSheet.chartPeriodXDomain(
             range: .week,
             referenceDate: date(2026, 8, 12),
             calendar: calendar
         )
-        XCTAssertEqual(domain.lowerBound, date(2026, 8, 10))
-        XCTAssertEqual(domain.upperBound, date(2026, 8, 17))
+        XCTAssertEqual(domain.lowerBound, date(2026, 8, 6))
+        XCTAssertEqual(domain.upperBound, date(2026, 8, 13))
 
         let lastDayEvening = AtriaChartEvent(id: "workout-late",
-                                             day: date(2026, 8, 16, 18, 30),
+                                             day: date(2026, 8, 12, 18, 30),
                                              label: "Run",
                                              systemImage: "flame.fill",
                                              tint: Metrics.electricStrain)
         let nextPeriodMidnight = AtriaChartEvent(id: "sleep-next",
-                                                 day: date(2026, 8, 17),
+                                                 day: date(2026, 8, 13),
                                                  label: "Sleep",
                                                  systemImage: "bed.double.fill",
                                                  tint: Metrics.electricSleep)
         let priorWeek = AtriaChartEvent(id: "sleep-prior",
-                                        day: date(2026, 8, 9, 23, 0),
+                                        day: date(2026, 8, 5, 23, 0),
                                         label: "Sleep",
                                         systemImage: "bed.double.fill",
                                         tint: Metrics.electricSleep)
@@ -197,7 +203,7 @@ final class AtriaExpandedChartActivityParityTests: XCTestCase {
         )
         let events = AtriaChartEvent.activityEvents(
             workouts: [],
-            sleepNights: [night(id: "n-today", day: date(2026, 8, 15), confirmed: true)]
+            sleepNights: [night(id: "n-today", day: date(2026, 8, 11), confirmed: true)]
         )
         let lane = AtriaExpandedChartView.eventLaneEvents(events,
                                                           xDomain: domain,
@@ -218,19 +224,22 @@ final class AtriaExpandedChartActivityParityTests: XCTestCase {
     /// the same event is inside the domain; without it (the legacy trend-card
     /// route) the derived window is preserved bit-for-bit.
     func testExpandedPreparedModelHonorsExplicitPeriodDomainAndKeepsLegacyDerivedDomain() {
+        // Points settle early in the window and stop; the activity lands on a
+        // later day of the same period. (Dates follow the trailing week
+        // 08-06 ... 08-13; the shape of the case is untouched.)
         let points = [
-            AtriaDetailChartPoint(day: date(2026, 8, 10), value: 62, tint: .green),
-            AtriaDetailChartPoint(day: date(2026, 8, 11), value: 64, tint: .green),
-            AtriaDetailChartPoint(day: date(2026, 8, 12), value: 61, tint: .green),
-            AtriaDetailChartPoint(day: date(2026, 8, 13), value: 66, tint: .green),
+            AtriaDetailChartPoint(day: date(2026, 8, 6), value: 62, tint: .green),
+            AtriaDetailChartPoint(day: date(2026, 8, 7), value: 64, tint: .green),
+            AtriaDetailChartPoint(day: date(2026, 8, 8), value: 61, tint: .green),
+            AtriaDetailChartPoint(day: date(2026, 8, 9), value: 66, tint: .green),
         ]
         let periodDomain = AtriaMetricDetailSheet.chartPeriodXDomain(
             range: .week,
             referenceDate: date(2026, 8, 12),
             calendar: calendar
         )
-        let saturdaySleep = AtriaChartEvent(id: "sleep-sat",
-                                            day: date(2026, 8, 15),
+        let latePeriodSleep = AtriaChartEvent(id: "sleep-late-in-period",
+                                              day: date(2026, 8, 11),
                                             label: "Sleep",
                                             systemImage: "bed.double.fill",
                                             tint: Metrics.electricSleep)
@@ -243,10 +252,10 @@ final class AtriaExpandedChartActivityParityTests: XCTestCase {
                                                             calendar: calendar)
         XCTAssertEqual(explicitModel.xDomain, periodDomain)
         XCTAssertEqual(explicitModel.spanDays, 7)
-        XCTAssertEqual(AtriaExpandedChartView.eventLaneEvents([saturdaySleep],
+        XCTAssertEqual(AtriaExpandedChartView.eventLaneEvents([latePeriodSleep],
                                                               xDomain: explicitModel.xDomain,
                                                               calendar: calendar).map(\.id),
-                       ["sleep-sat"],
+                       ["sleep-late-in-period"],
                        "activity on a period day without a settled metric point must render in the expanded chart")
 
         let derivedModel = AtriaExpandedChartPreparedModel(points: points,
@@ -256,10 +265,10 @@ final class AtriaExpandedChartActivityParityTests: XCTestCase {
                                                            explicitXDomain: nil,
                                                            calendar: calendar)
         XCTAssertEqual(derivedModel.xDomain,
-                       date(2026, 8, 10).addingTimeInterval(-43_200)...date(2026, 8, 13).addingTimeInterval(43_200),
+                       date(2026, 8, 6).addingTimeInterval(-43_200)...date(2026, 8, 9).addingTimeInterval(43_200),
                        "the trend-card route keeps its legacy data-derived window unchanged")
         XCTAssertEqual(derivedModel.spanDays, 3)
-        XCTAssertTrue(AtriaExpandedChartView.eventLaneEvents([saturdaySleep],
+        XCTAssertTrue(AtriaExpandedChartView.eventLaneEvents([latePeriodSleep],
                                                              xDomain: derivedModel.xDomain,
                                                              calendar: calendar).isEmpty,
                       "the derived window is exactly the clip the explicit period domain exists to fix")

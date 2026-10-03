@@ -57,7 +57,7 @@ struct AtriaSameDayMainSleepSheet: View {
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 6)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.glass)
 
                         Button("Keep the longer one automatically") {
                             onResolve(choice.recommendedPrimaryID)

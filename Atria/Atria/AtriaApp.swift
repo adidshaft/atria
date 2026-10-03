@@ -73,6 +73,8 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
                 policy: AtriaGeneratedArtifactRetention.portableWorkoutExports
             )
             AtriaStrapCalibrationArchive.shared.scheduleRetentionPrune()
+            _ = AtriaStrapCalibrationArchive.shared.importArchivedCompactIMUFileIfRequested()
+            _ = AtriaStrapCalibrationArchive.shared.materializeDecodedCompactIMUSamplesIfRequested()
         }
         return true
     }
@@ -108,6 +110,9 @@ private final class AtriaAppDependencies {
 
     init() {
         let store = SessionStore()
+#if DEBUG
+        store.prepareUITestFreshInstallIfRequested()
+#endif
         // A retained restore marker means canonical files may disagree. Do not
         // start any producer that could append new evidence until recovery can
         // resolve that transaction on a later launch.
@@ -117,7 +122,9 @@ private final class AtriaAppDependencies {
             AtriaPendingWorkoutIntentStore.shared.beginPreparing()
         }
         let ble = AtriaBLEManager(
-            startsBluetooth: !store.restoreInitializationBlocked && !AtriaAppReviewDemo.isActive
+            startsBluetooth: !store.restoreInitializationBlocked
+                && store.profile.hasCompletedOnboarding
+                && !AtriaAppReviewDemo.isActive
         )
         store.installRecoveredDataRecomputationDeferralProvider {
             [weak ble] isExactRecoveryPublication in
@@ -400,6 +407,7 @@ struct AtriaApp: App {
     @State private var dependencies: AtriaAppDependencies
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
+    @State private var sceneInactiveGraceTask: Task<Void, Never>?
     @State private var foregroundBLETransitionTask: Task<Void, Never>?
     @State private var foregroundBLETransitionAuthority =
         AtriaForegroundDeferredWorkAuthority()
@@ -413,6 +421,42 @@ struct AtriaApp: App {
         let dependencies = AtriaAppDependencies()
         _dependencies = State(initialValue: dependencies)
         Self.registerBackgroundTasks(store: dependencies.store, ble: dependencies.ble)
+    }
+
+    /// Everything the app does when the scene really leaves the foreground:
+    /// immediately on background, or after `AtriaSceneInactiveGrace` of
+    /// uninterrupted inactivity.
+    @MainActor
+    private func enterBackgroundedLifecycle(phase: ScenePhase) {
+        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+        foregroundBLETransitionTask?.cancel()
+        foregroundBLETransitionTask = nil
+        foregroundBLETransitionAuthority.cancel()
+        let recoveredLifecycleReason = phase == .background
+            ? "scene_background" : "scene_inactive"
+        // Revoke the advisory user-initiated review projection
+        // before any background maintenance can begin. The
+        // latest invalidation is coalesced for scene-active.
+        if phase == .background {
+            store.suspendSleepReviewProjectionForBackground(
+                reason: "scene_background"
+            )
+        }
+        // Retire the attended foreground BG-throttle lease
+        // before revoking recovered execution. This ordering
+        // still preserves a later, independently minted real
+        // BGProcessing lease, and it must run even when a
+        // retained restore marker blocks ordinary maintenance.
+        let releasedAttendedProjection = ble
+            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
+                reason: recoveredLifecycleReason
+            )
+        if releasedAttendedProjection {
+            store.endBackgroundArchiveProjectionThrottle()
+        }
+        store.suspendRecoveredDataPublicationLeaseForBackground(
+            reason: recoveredLifecycleReason
+        )
     }
 
     var body: some Scene {
@@ -480,36 +524,31 @@ struct AtriaApp: App {
                     // return so a blocked restore can never leave a
                     // backgrounded lane looking foregrounded.
                     switch phase {
+                    case .inactive:
+                        // A glance (banner, Control Center, app switcher) must
+                        // not cost in-flight recovered work; only an inactive
+                        // spell that outlasts the grace is treated as leaving.
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = Task { @MainActor in
+                            try? await Task.sleep(
+                                for: .seconds(AtriaSceneInactiveGrace.seconds)
+                            )
+                            guard !Task.isCancelled else { return }
+                            enterBackgroundedLifecycle(phase: .inactive)
+                        }
+                    case .background:
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = nil
+                        enterBackgroundedLifecycle(phase: .background)
+                    case .active:
+                        sceneInactiveGraceTask?.cancel()
+                        sceneInactiveGraceTask = nil
+                    @unknown default:
+                        break
+                    }
+                    switch phase {
                     case .background, .inactive:
-                        AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
-                        foregroundBLETransitionTask?.cancel()
-                        foregroundBLETransitionTask = nil
-                        foregroundBLETransitionAuthority.cancel()
-                        let recoveredLifecycleReason = phase == .background
-                            ? "scene_background" : "scene_inactive"
-                        // Revoke the advisory user-initiated review projection
-                        // before any background maintenance can begin. The
-                        // latest invalidation is coalesced for scene-active.
-                        if phase == .background {
-                            store.suspendSleepReviewProjectionForBackground(
-                                reason: "scene_background"
-                            )
-                        }
-                        // Retire the attended foreground BG-throttle lease
-                        // before revoking recovered execution. This ordering
-                        // still preserves a later, independently minted real
-                        // BGProcessing lease, and it must run even when a
-                        // retained restore marker blocks ordinary maintenance.
-                        let releasedAttendedProjection = ble
-                            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
-                                reason: recoveredLifecycleReason
-                            )
-                        if releasedAttendedProjection {
-                            store.endBackgroundArchiveProjectionThrottle()
-                        }
-                        store.suspendRecoveredDataPublicationLeaseForBackground(
-                            reason: recoveredLifecycleReason
-                        )
+                        break
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
                         NotificationCenter.default.post(
@@ -575,6 +614,10 @@ struct AtriaApp: App {
                             ) else { return }
                             ble.flushLifecycleRealtimeState(reason: "scene_inactive_deferred_checkpoint")
                             store.requestPersistenceFlush(reason: "scene_inactive_deferred")
+                            if SessionStore.archiveCompactionIsOverdue(),
+                               !ble.historicalRadioTransportOwnsLink {
+                                offerOverdueSceneBackgroundRetention()
+                            }
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
@@ -643,6 +686,17 @@ struct AtriaApp: App {
                     // The authority below prevents a second BLE/archive pass if
                     // the scene-started task is already running or complete.
                 }
+                .task(id: scenePhase) {
+                    // A long-lived `.task` captures the launch-time
+                    // AtriaApp value, which is often `.inactive`. Bind the
+                    // loop to the live phase so sitting Today can offer.
+                    guard scenePhase == .active else { return }
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(12))
+                        guard !Task.isCancelled else { return }
+                        offerOverdueIdleRetentionIfSafe()
+                    }
+                }
         }
     }
 
@@ -684,12 +738,37 @@ struct AtriaApp: App {
             }
             ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                            maxHR: store.profile.maxHR)
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket),
+                  AtriaForegroundDeferredWorkAuthority
+                    .environmentIsAuthorized(
+                        sceneIsActive: scenePhase == .active,
+                        applicationIsActive:
+                            UIApplication.shared.applicationState == .active,
+                        historicalProjectionIsBackgrounded:
+                            AtriaHistoricalProjectionForegroundGate.isBackgrounded
+                    ) else {
+                foregroundBLETransitionAuthority.deferForLostAuthority(ticket)
+                foregroundBLETransitionTask = nil
+                return
+            }
             _ = ble.offerConnectedRawCatchUpPublicationYieldIfNeeded(
                 reason: "scene_active_after_interactive_frame"
             )
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket) else {
+                return
+            }
             store.resumeDeferredForegroundArchiveWork(
                 reason: "scene_active_after_interactive_frame"
             )
+            await Task.yield()
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket) else {
+                return
+            }
             ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
                 reason: "scene_active_after_interactive_frame"
             )
@@ -724,6 +803,7 @@ struct AtriaApp: App {
         }
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
+        AtriaBackgroundTaskJournal.record("\(reason) started")
         let completion = AtriaBackgroundTaskCompletionGate()
         let recoveredProjectionOwner = AtriaBackgroundProjectionLeaseOwner()
         let work = Task { @MainActor in
@@ -890,6 +970,26 @@ struct AtriaApp: App {
                 _ = store.scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe(
                     reason: "bg_processing"
                 )
+                // A recovered night parked behind its foreground-only final
+                // steps finishes here, before generic projection, so nobody
+                // has to hold the phone open for it.
+                if !ble.historicalRadioTransportOwnsLink,
+                   ble.hasParkedTerminalPublication,
+                   let lease = store.beginExactRecoveryBackgroundWindowIfSafe(
+                    reason: reason
+                   ) {
+                    recoveredProjectionOwner.set(lease)
+                    AtriaBackgroundTaskJournal.record("\(reason) parked_night_window started")
+                    let finished = await ble.runParkedTerminalPublicationInBackgroundWindow(
+                        reason: reason,
+                        timeout: 240
+                    )
+                    AtriaBackgroundTaskJournal.record(
+                        "\(reason) parked_night_window \(finished ? "finished" : "unfinished")"
+                    )
+                    store.endExactRecoveryBackgroundWindow(lease)
+                    recoveredProjectionOwner.clear(lease)
+                }
                 let priorProjectionRevision = store.recoveredDataArchiveRevisionSnapshot
                 if let lease = store.requestBackgroundArchiveProjectionIfSafe(
                     reason: "bg_projection"
@@ -931,12 +1031,14 @@ struct AtriaApp: App {
                 reason: reason,
                 forceImmediateTimelineReload: true
             )
+            AtriaBackgroundTaskJournal.record("\(reason) completed")
             completion.complete(task,
                                 success: backupSucceeded
                                     && historicalRecoverySucceeded
                                     && recoveredPublicationSucceeded)
         }
         task.expirationHandler = {
+            AtriaBackgroundTaskJournal.record("\(reason) expired")
             work.cancel()
             if let lease = recoveredProjectionOwner.current() {
                 _ = AtriaBackgroundProjectionThrottle.shared.cancel(
@@ -1014,6 +1116,10 @@ struct AtriaApp: App {
             finishBackgroundTaskIfReady()
         }
         scheduleBackgroundMaintenance(reason: reason)
+        if SessionStore.archiveCompactionIsOverdue(),
+           !ble.historicalRadioTransportOwnsLink {
+            offerOverdueSceneBackgroundRetention()
+        }
         ble.flushLifecycleRealtimeState(reason: reason) {
             journalFlushFinished = true
             finishBackgroundTaskIfReady()
@@ -1021,6 +1127,114 @@ struct AtriaApp: App {
         AtriaDebugLog("ATRIADBG background_flush status=awaiting_durable_writes reason=%@ offline_sync_required=%d",
                       reason,
                       syncRequired ? 1 : 0)
+    }
+
+    /// 5.5 GB of sealed raw on 2026-09-15 with zero retired chunks: the
+    /// 7/30/90-day policy never ran because BGProcessing waited while the
+    /// app stayed foregrounded. An overdue scene-background lease is 25s —
+    /// enough for one verified ≤8 MB chunk — and revokes if the user comes
+    /// back. Desk sitting (compact IMU under 8 dps) uses the 180s idle
+    /// lease instead so isolated 24–48 MB shards can finish while locked;
+    /// bluetooth-central keeps the process after the system background
+    /// task expires.
+    private func offerOverdueSceneBackgroundRetention() {
+        let sittingDesk = AtriaCompactIMULiveDiagnostics
+            .shouldUseSittingIdleRetentionLease()
+        let reason = sittingDesk ? "overdue_idle" : "scene_background"
+        var retentionTask = UIBackgroundTaskIdentifier.invalid
+        retentionTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Atria overdue retention"
+        ) { [self] in
+            if !(sittingDesk
+                 && AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention()) {
+                store.invalidateArchiveCompactionBGProcessingLease(
+                    reason: "scene_background_expired"
+                )
+            }
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+        }
+        guard let lease = store.beginArchiveCompactionBGProcessingLeaseIfSafe(
+            reason: reason
+        ) else {
+            SessionStore.recordIdleRetentionSkip(reason: "lease_denied")
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+            return
+        }
+        store.compactHistoricalArchiveIfUseful(
+            reason: reason,
+            backgroundLease: lease
+        ) { [self] _ in
+            store.endArchiveCompactionBGProcessingLease(
+                lease,
+                reason: reason
+            )
+            if retentionTask != .invalid {
+                UIApplication.shared.endBackgroundTask(retentionTask)
+                retentionTask = .invalid
+            }
+        }
+    }
+
+    /// 5.5 GB / 0 retired on 2026-09-15 because Today stayed foregrounded.
+    /// Sitting compact IMU (~0.5 dps) is a safe signal that archive I/O will
+    /// not fight a walk. Skip >8 MB legacy JSONL via the same fast path as
+    /// lock retention; never start while history radio owns the link.
+    private func offerOverdueIdleRetentionIfSafe() {
+        guard !store.restoreInitializationBlocked else {
+            SessionStore.recordIdleRetentionSkip(reason: "restore_blocked")
+            return
+        }
+        guard scenePhase == .active
+                || UIApplication.shared.applicationState == .active else {
+            SessionStore.recordIdleRetentionSkip(reason: "scene_not_active")
+            return
+        }
+        guard SessionStore.archiveCompactionIsOverdue() else {
+            SessionStore.recordIdleRetentionSkip(reason: "not_overdue")
+            return
+        }
+        guard SessionStore.archiveCompactionAttemptIsStale() else {
+            SessionStore.recordIdleRetentionSkip(reason: "attempt_fresh")
+            return
+        }
+        guard AtriaCompactIMULiveDiagnostics.isSafeForOneChunkRetention() else {
+            SessionStore.recordIdleRetentionSkip(reason: "wrist_walking")
+            return
+        }
+        if store.hasCurrentArchiveCompactionLease()
+            || SessionStore.archiveCompactionWorkerIsInFlight() {
+            SessionStore.recordIdleRetentionSkip(reason: "already_running")
+            return
+        }
+        guard let lease = store.beginArchiveCompactionBGProcessingLeaseIfSafe(
+            reason: "overdue_idle"
+        ) else {
+            SessionStore.recordArchiveCompactionAttempt(
+                status: "lease_denied",
+                reason: "overdue_idle"
+            )
+            SessionStore.recordIdleRetentionSkip(reason: "lease_denied")
+            return
+        }
+        SessionStore.recordIdleRetentionSkip(reason: "offered")
+        AtriaDebugLog(
+            "ATRIADBG archive_retention status=overdue_idle_offered action=one_chunk_sitting_today"
+        )
+        store.compactHistoricalArchiveIfUseful(
+            reason: "overdue_idle",
+            backgroundLease: lease
+        ) { [self] _ in
+            store.endArchiveCompactionBGProcessingLease(
+                lease,
+                reason: "overdue_idle"
+            )
+        }
     }
 
     private static func scheduleBackgroundRefresh(reason: String) {
@@ -1057,6 +1271,8 @@ struct AtriaApp: App {
         let backlogPending =
             AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
             || SessionStore.automaticRecoveredDataBootstrapIntentIsPending
+            || SessionStore.archiveCompactionIsOverdue()
+            || AtriaBLEManager.parkedTerminalPublicationPendingOnDisk()
         request.earliestBeginDate = Date(
             timeIntervalSinceNow: backgroundProcessingEarliestDelay(
                 backlogPending: backlogPending
@@ -1277,6 +1493,7 @@ struct AtriaApp: App {
         arguments.contains { argument in
             guard argument.hasPrefix("--atria-") else { return false }
             return argument != "--atria-enable-debug-logs"
+                && !AtriaIMUDiagnosticTransport.isDiagnosticLaunchArgument(argument)
         }
     }
 
@@ -1426,4 +1643,30 @@ struct AtriaApp: App {
             AtriaDebugLog("ATRIADBG launch_exports_post_healthkit_gate_status status=completed")
         }
     }
+}
+
+/// Durable, bounded trail of background-task runs. Overnight there is no
+/// console, so whether iOS granted a window — and what the parked-night step
+/// did inside it — was unknowable from a morning pull (2026-10-03).
+enum AtriaBackgroundTaskJournal {
+    static let key = "atria.bgTask.journal.v1"
+    static let capacity = 60
+
+    static func record(_ event: String,
+                       now: Date = Date(),
+                       defaults: UserDefaults = .standard) {
+        let entry = "\(Int(now.timeIntervalSince1970)) \(event)"
+        defaults.set(appending(entry, to: defaults.stringArray(forKey: key) ?? []),
+                     forKey: key)
+    }
+
+    static func appending(_ entry: String, to entries: [String]) -> [String] {
+        Array((entries + [entry]).suffix(capacity))
+    }
+}
+
+/// How long the scene may stay inactive (banner, Control Center, app
+/// switcher) before the app treats it as leaving the foreground.
+enum AtriaSceneInactiveGrace {
+    static let seconds: TimeInterval = 2.5
 }

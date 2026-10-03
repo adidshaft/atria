@@ -1,7 +1,8 @@
 # Atria documentation
 
-Everything here is written against real device evidence. Where a document makes a
-claim it cannot prove, it says so.
+Start with the dated status summary. Protocol notes and session handoffs contain
+point-in-time experiments; implementation, source agreement and physical
+validation are different levels of evidence.
 
 ---
 
@@ -9,8 +10,9 @@ claim it cannot prove, it says so.
 
 | Document | What it is for |
 |---|---|
+| [**CURRENT_STATUS.md**](CURRENT_STATUS.md) | Product state, public versus local development, issue priorities and remaining proof (23 September 2026). |
 | [**SETUP.md**](SETUP.md) | Fresh Mac and iPhone: build, sign, run on device, common errors, and which logs are safe to share. |
-| [**WHOOP4_PROTOCOL_FINDINGS.md**](WHOOP4_PROTOCOL_FINDINGS.md) | The protocol reference. What is decoded, what is not, and the evidence behind each field. |
+| [**WHOOP4_PROTOCOL_FINDINGS.md**](WHOOP4_PROTOCOL_FINDINGS.md) | Dated protocol experiments and field evidence. New unpublished Mac findings are summarized in [current status](CURRENT_STATUS.md). |
 | [**16-metric-authority-and-confidence-policy.md**](16-metric-authority-and-confidence-policy.md) | The rule that governs the whole app: when a number may be shown, and what to show instead. |
 
 ## Protocol and hardware
@@ -45,24 +47,23 @@ claim it cannot prove, it says so.
 
 | Document | |
 |---|---|
-| [WHOOP_REMAINING_PRODUCT_GAPS.md](WHOOP_REMAINING_PRODUCT_GAPS.md) | The original full gap plan — mostly landed |
+| [WHOOP_REMAINING_PRODUCT_GAPS.md](WHOOP_REMAINING_PRODUCT_GAPS.md) | Historical gap plan; use current status and open issues for remaining acceptance |
 | [WHOOP_REPLACEMENT_ASSESSMENT.md](WHOOP_REPLACEMENT_ASSESSMENT.md) | What Atria does and does not replace |
-| [GOAL_strap_steps_drain.md](GOAL_strap_steps_drain.md) | The standing steps-drain goal, constraints, and proven root cause — see [#21](https://github.com/adidshaft/atria/issues/21) |
+| [GOAL_strap_steps_drain.md](GOAL_strap_steps_drain.md) | Historical steps-drain goal and constraints; the current Mac/iPhone split is tracked in current status — see [#21](https://github.com/adidshaft/atria/issues/21) |
 | [UI_DECLUTTER_PLAN_2026-08-20.md](UI_DECLUTTER_PLAN_2026-08-20.md) | UI reduction passes |
-| [CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md](CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md) | Release acceptance checklist |
+| [CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md](handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md) | Release acceptance checklist |
 
 ## Session handoffs — historical
 
-`CLAUDE_HANDOFF_6` … `CLAUDE_HANDOFF_13` and everything under
-[`handoff/`](handoff/) are point-in-time working records. They are kept because
+Everything under [`handoff/`](handoff/), including `CLAUDE_HANDOFF_6` … `CLAUDE_HANDOFF_13`, is point-in-time working records. They are kept because
 issue threads and commit messages cite them by path, and because they document
 *why* decisions were made — but they are **snapshots, not current truth**. When a
 handoff and the code disagree, the code is right.
 
 The most recent are
-[13 (motion + shifted sleep)](CLAUDE_HANDOFF_13_MOTION_AND_SHIFTED_SLEEP_CLOSURE.md)
+[13 (motion + shifted sleep)](handoff/CLAUDE_HANDOFF_13_MOTION_AND_SHIFTED_SLEEP_CLOSURE.md)
 and
-[12 (sleep, stress continuity, UI dedup)](CLAUDE_HANDOFF_12_CURRENT_SLEEP_STRESS_CONTINUITY_AND_UI_DEDUP.md).
+[12 (sleep, stress continuity, UI dedup)](handoff/CLAUDE_HANDOFF_12_CURRENT_SLEEP_STRESS_CONTINUITY_AND_UI_DEDUP.md).
 
 ---
 

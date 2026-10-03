@@ -78,6 +78,20 @@ final class AtriaStressSleepBandPresentationTests: XCTestCase {
                        "\(moderateScore) · Moderate")
     }
 
+    func testScoreOnlyScoreLineOverloadMatchesTheReadingAuthority() {
+        // Activity's day-chart scrub card carries only the recorded score and
+        // confirmed-sleep membership; its line must be byte-identical to what
+        // the full reading would produce (2026-08-29 shared scrub grammar).
+        let asleep = reading(minute: 0, score: 2.37, sleep: .asleep)
+        XCTAssertEqual(AtriaStressMinuteBand.scoreLine(score: 2.37, isAsleep: true),
+                       AtriaStressMinuteBand.scoreLine(asleep))
+        let awake = reading(minute: 1, score: 1.4, sleep: .awake)
+        XCTAssertEqual(AtriaStressMinuteBand.scoreLine(score: 1.4, isAsleep: false),
+                       AtriaStressMinuteBand.scoreLine(awake))
+        XCTAssertEqual(AtriaStressMinuteBand.scoreLine(score: 0.4, isAsleep: false),
+                       "\(0.4.formatted(.number.precision(.fractionLength(2)))) · Calm")
+    }
+
     // MARK: - Legend gating
 
     func testSleepLegendEntryGatesOnVisibleSleepMinutes() {

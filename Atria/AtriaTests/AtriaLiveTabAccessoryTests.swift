@@ -66,6 +66,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("scrollBottomSafeAreaInset"))
         XCTAssertFalse(source.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
                        "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
+        XCTAssertTrue(source.contains(".safeAreaPadding(.bottom, bottomContentMargin)"),
+                      "first-screen Today cards must rest above the glass tab, not only become reachable at the end of the scroll")
+        XCTAssertFalse(source.contains(".contentMargins(.bottom, bottomContentMargin, for: .scrollContent)"))
     }
 
     func testHomeTabBarUsesNativeScrollDrivenSingleButtonTreatment() throws {
@@ -133,8 +136,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                 encoding: .utf8)
 
         XCTAssertTrue(source.contains(".safeAreaInset(edge: .top, spacing: 0)"))
-        XCTAssertTrue(source.contains(".safeAreaPadding(.top, 8)"),
-                      "Pinned metrics must consume scene safe-area geometry instead of using a cutout-blind offset")
+        // 2026-09-27: the collapsed rings moved INTO the pinned top bar
+        // (which sits in the safe-area inset), so no floating overlay needs
+        // its own safe-area padding.
+        XCTAssertTrue(source.contains("AtriaTodayCompactRingChromeHost(store: compactRingStore)"),
+                      "Pinned metrics live in the safe-area top bar, not a cutout-blind overlay")
         XCTAssertTrue(source.contains("!prefersLiveActivityStatus"))
         XCTAssertTrue(source.contains("prefersLiveActivityStatus: workoutSession != nil"))
         XCTAssertTrue(source.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
@@ -152,7 +158,8 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(island.contains("if reduceMotion"))
         XCTAssertTrue(island.contains(".contentTransition(.numericText())"))
         XCTAssertTrue(island.contains(".animation(.snappy(duration: 0.22), value: value)"))
-        XCTAssertTrue(island.contains(".atriaLiveActivityValueTransition(isLive ? heartRate : -1)"))
+        XCTAssertTrue(island.contains(".atriaLiveActivityValueTransition(heartRate)"))
+        XCTAssertTrue(island.contains(".foregroundStyle(isLive ? .primary : .secondary)"))
         XCTAssertTrue(island.contains(".symbolEffect(.bounce, options: .nonRepeating, value: isPaused)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate"))
         XCTAssertFalse(island.contains("Timer."))
@@ -688,9 +695,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         XCTAssertEqual(menuActions.components(separatedBy: "Button(action:").count - 1, 2)
         XCTAssertTrue(menuActions.contains("Button(action: onStartActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Start Activity\", systemImage: \"figure.run\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Start workout\", systemImage: \"figure.run\")"))
         XCTAssertTrue(menuActions.contains("Button(action: onAddActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Add Activity\", systemImage: \"calendar.badge.plus\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Add workout\", systemImage: \"calendar.badge.plus\")"))
         XCTAssertTrue(chrome.contains("AtriaToolbarIcon(symbol: \"plus\")"))
         XCTAssertTrue(chrome.contains(".buttonStyle(AtriaHeaderActionButtonStyle())"))
         XCTAssertTrue(chrome.contains(".accessibilityLabel(\"Activity shortcuts\")"))
@@ -820,7 +827,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                 tint: .green,
                 fill: 0.41))
         }
-        XCTAssertEqual(marker("Limited confidence · sleep and HRV unavailable · from resting HR only"),
+        XCTAssertEqual(marker("From resting HR only · sleep and HRV unavailable"),
                        "estimate")
         XCTAssertEqual(marker("Still learning your typical day"), "learning")
         XCTAssertEqual(marker("≥ 9.1 lower bound"), "partial")

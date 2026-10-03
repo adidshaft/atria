@@ -27,9 +27,9 @@ struct AtriaMetricProvenanceCard: View {
                 // when it has no real grade -- colouring an ungraded number would
                 // assert a standing the app has not earned. Confidence carries
                 // how far the number can be trusted, which is green/amber only.
+                // No "Confidence" row (owner rule: no confidence labels).
+                // What limits a number is said in plain words below.
                 row("Value", provenance.displayValue, tint: provenance.valueStatusTint)
-                row("Confidence", provenance.level.displayName,
-                    tint: provenance.level.statusTint)
                 if let fraction = provenance.hrCoverageFraction {
                     row("HR coverage", "\(Int((fraction * 100).rounded()))%")
                 }
@@ -93,9 +93,7 @@ struct AtriaMetricProvenanceCard: View {
     private func note(title: String, body: String) -> some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
             Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+                .atriaEyebrow()
             Text(body)
                 .font(.caption)
                 .foregroundStyle(.primary)

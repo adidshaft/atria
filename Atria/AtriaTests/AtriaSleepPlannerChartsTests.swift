@@ -126,6 +126,22 @@ final class AtriaSleepPlannerChartsTests: XCTestCase {
         // Need per slot is the clamped base need the debt math scores against.
         XCTAssertEqual(slots.compactMap(\.needHours).count, 4)
         XCTAssertTrue(slots.compactMap(\.needHours).allSatisfy { abs($0 - 8) < 0.0001 })
+
+        // The axis is the seven-slot window even when three mornings are empty.
+        let domain = AtriaSleepDebtChartPresentation.weekXDomain(slots: slots, calendar: calendar)
+        XCTAssertEqual(domain?.lowerBound, calendar.date(byAdding: .hour, value: -12, to: slots[0].day))
+        XCTAssertEqual(domain?.upperBound, calendar.date(byAdding: .hour, value: 12, to: slots[6].day))
+        XCTAssertEqual(slots.count, 7)
+    }
+
+    func testHoursVsNeedChartBindsTheAxisToTheSlotWindow() throws {
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaSleepPlannerCharts.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains(".chartXScale(domain: AtriaSleepDebtChartPresentation.weekXDomain(slots: slots)"),
+                      "Hours vs. need must scale to the 7-slot week, never to whatever nights have a reading")
+        XCTAssertTrue(source.contains("AxisMarks(values: slots.map(\\.day))"),
+                      "ticks stay the seven mornings so empty slots stay empty")
     }
 
     func testDebtChartSlotsIgnoreNapsAndUnconfirmedNights() {

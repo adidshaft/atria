@@ -97,6 +97,38 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         XCTAssertEqual(shadow.openSpanSampleCountForTesting(), 0)
     }
 
+    func testSkippedSittingTimestampDoesNotCloseAWalkSpan() {
+        let shadow = AtriaGyroCadenceResearchShadow()
+        let walk = walkingMagnitudes(seconds: 12, cadenceHz: 1.14, level: 72, swing: 40)
+        var timestamp: UInt32 = 1_000
+        var index = 0
+        var skipped = false
+        while index < walk.count {
+            let end = min(index + 100, walk.count)
+            if !skipped, timestamp == 1_004 {
+                shadow.noteSkippedTimestamp(timestamp)
+                skipped = true
+                timestamp &+= 1
+                continue
+            }
+            shadow.ingest(
+                deviceTimestamp: timestamp,
+                rotationMagnitudes: Array(walk[index..<end]),
+                rotationLevelGate: AtriaGyroCadenceResearchPedometer.compactAssembledRotationLevelGate,
+                stepBandLoHz: AtriaGyroCadenceResearchPedometer.compactAssembledStepBandLoHz
+            ) { _ in }
+            timestamp &+= 1
+            index = end
+        }
+        let snapshot = shadow.closeOpenSpanSynchronously()
+        XCTAssertGreaterThan(
+            snapshot.totalSteps,
+            6,
+            "a one-second sitting skip must not DFT-starve the surrounding walk"
+        )
+        XCTAssertEqual(snapshot.closedSpans, 1)
+    }
+
     func testDuplicateStaleAndZeroTimestampFramesNeverExtendASpan() {
         let shadow = AtriaGyroCadenceResearchShadow()
         shadow.ingest(deviceTimestamp: 1_000,
@@ -154,6 +186,31 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         // remain resident.
         XCTAssertEqual(shadow.openSpanSampleCountForTesting(),
                        AtriaGyroCadenceResearchShadow.carrySamples + 100)
+    }
+
+    func testTenMinuteWalkingCadenceHundredSampleFramesScoresWalkScaleNotStarvedSlice() {
+        // 2026-09-08 gym walk: IMU duty was 8.8% (56 s of 10.6 min,
+        // 100-sample frames) and strapStepResearchCount landed at 45.
+        // Cadence math is not that field bug. A contiguous walking-cadence
+        // signal at the pre-walk frame shape must still score a walk-scale
+        // count, not tens of steps, and must not invent phone CMPedometer.
+        let shadow = AtriaGyroCadenceResearchShadow()
+        let cadence = 1.75
+        let walk = walkingMagnitudes(seconds: 600, cadenceHz: cadence)
+        XCTAssertEqual(walk.count % 100, 0,
+                       "pre-walk frame shape is 100 samples per second")
+        ingest(shadow, samples: walk, startTimestamp: 10_000)
+        let snapshot = shadow.closeOpenSpanSynchronously()
+        let batch = AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: walk
+        )
+        XCTAssertGreaterThan(batch, 500,
+                             "shipped cadence on a 10-minute 100-sample-frame walk is walk-scale")
+        XCTAssertGreaterThan(snapshot.totalSteps, 500,
+                             "a 10-minute walking-cadence capture is walk-scale, not ~45")
+        XCTAssertLessThan(snapshot.totalSteps, 1_500)
+        XCTAssertGreaterThan(snapshot.totalSteps, 45)
+        XCTAssertGreaterThan(batch, 45)
     }
 
     func testLongContiguousWalkScoresWithoutAnyGapEverArriving() {
@@ -262,7 +319,6 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             "AtriaShareCard.swift",
             "WidgetSnapshot.swift",
             "AtriaLiveActivityAttributes.swift",
-            "Sessions.swift",
             "DailyRollupStore.swift"
         ]
         for fileName in userFacingFiles {
@@ -270,6 +326,10 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             XCTAssertFalse(source.lowercased().contains("gyrocadence"),
                            "\(fileName) must never reference the gyro-cadence research shadow")
         }
+        let sessions = try productionSource("Sessions.swift")
+        XCTAssertTrue(sessions.contains("gyroCadenceResearchSteps"),
+                      "the named research field may persist on saved sessions")
+        XCTAssertFalse(sessions.contains("liveStrapStepResearchTodayCount = gyro"))
         let home = try productionSource("AtriaHomeView.swift")
         XCTAssertTrue(home.contains("strapGyroCadenceAmbulatoryV1"))
         XCTAssertFalse(home.contains("liveStrapStepResearchTodayCount = gyro"))
@@ -281,6 +341,8 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         let source = try productionSource("AtriaR10Motion.swift")
         XCTAssertTrue(source.contains("gyroCadenceState.ingest("),
                       "the shadow must consume accepted frames on the atomic R10 queue")
+        XCTAssertTrue(source.contains("compactAssembledStepBandLoHz"),
+                      "compact IMU walking must use the 1.1 Hz lock-screen stroll band")
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
             guard line.localizedCaseInsensitiveContains("gyroCadence") else { continue }
             for forbidden in ["dailySteps",

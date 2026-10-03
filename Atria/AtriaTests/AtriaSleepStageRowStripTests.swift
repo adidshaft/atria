@@ -243,6 +243,8 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
 
         XCTAssertTrue(sheet.contains("AtriaSleepStageRowStrip(segments: night.displayStageSegments"),
                       "the strip consumes only the honesty-gated display segments")
+        XCTAssertFalse(sheet.contains("AtriaSleepHypnogramCard("),
+                       "one stages surface: keep the row strip, drop the hypnogram")
         XCTAssertTrue(sheet.contains("isEstimated: night.isEstimatedStageDisplay"),
                       "the estimate co-render is driven by the night's own state")
         XCTAssertTrue(sheet.contains("confidenceTier: night.estimateConfidenceTier"),
@@ -251,6 +253,70 @@ final class AtriaSleepStageRowStripTests: XCTestCase {
                       "clock-edge labels render in the night's recorded zone (GAP-07)")
         XCTAssertFalse(sheet.contains("night.stageSegments"),
                        "raw engine segments never reach the review sheet's strip")
+    }
+
+    func testTodayDoesNotMountSleepStages() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let today = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaTodayScreen.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(today.contains("AtriaSleepStageCompactStrip"))
+        XCTAssertFalse(today.contains("AtriaTodaySleepStageStrip"))
+        XCTAssertFalse(today.contains("AtriaSleepStageRowStrip("))
+        XCTAssertFalse(today.contains("AtriaSleepHypnogramCard("))
+    }
+
+    func testActivityListsSleepWithoutInlineStages() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let activity = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(activity.range(of: "private func sleepRow(_ night: SleepHistorySnapshot.Night)"))
+        let end = try XCTUnwrap(activity.range(of: "private func workoutRow",
+                                               range: start.lowerBound..<activity.endIndex))
+        let sleepRow = String(activity[start.lowerBound..<end.lowerBound])
+        XCTAssertFalse(sleepRow.contains("AtriaSleepStageCompactStrip"))
+        XCTAssertFalse(sleepRow.contains("AtriaSleepStageRowStrip"))
+        XCTAssertFalse(sleepRow.contains("AtriaSleepHypnogramCard"))
+        XCTAssertTrue(sleepRow.contains("isNap ? \"Nap\" : \"Sleep\""))
+        let strip = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaSleepStageRows.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(strip.contains("struct AtriaSleepStageCompactStrip"))
+        XCTAssertTrue(strip.contains("AtriaSleepStageEstimateLabel.title"))
+        XCTAssertTrue(strip.contains("row.stage.symbolName"))
+    }
+
+    func testSleepMetricDetailMountsTheStageRowStripForLastNight() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let overview = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaOverviewSections.swift"),
+            encoding: .utf8
+        )
+        let detailTemplate = try XCTUnwrap(overview.range(of: "private var detailTemplate: some View"))
+        let start = try XCTUnwrap(
+            overview.range(of: "case .sleep:", range: detailTemplate.upperBound..<overview.endIndex)
+        )
+        let end = try XCTUnwrap(
+            overview.range(of: "case .strain:", range: start.upperBound..<overview.endIndex)
+        )
+        let sleepDetail = String(overview[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(sleepDetail.contains("AtriaSleepHypnogramCard(night: latest"))
+        XCTAssertTrue(sleepDetail.contains("AtriaSleepStageRowStrip("))
+        XCTAssertTrue(sleepDetail.contains("segments: latest.displayStageSegments"))
+        XCTAssertTrue(sleepDetail.contains("isEstimated: latest.isEstimatedStageDisplay"))
+        XCTAssertTrue(sleepDetail.contains("sleepHistory.latestMainSleep"))
     }
 
     // MARK: - Container pin: inset card + design tokens only

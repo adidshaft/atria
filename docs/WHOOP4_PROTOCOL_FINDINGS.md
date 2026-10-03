@@ -2,7 +2,12 @@
 
 This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol work. It records the wire protocol, physical strap behaviour, failed approaches, and the evidence behind conclusions. New experiments must be appended to the experiment log even when they fail.
 
-Last updated: 2026-07-31 (Asia/Kolkata)
+Last updated: 2026-09-20 (Asia/Kolkata)
+
+Compact IMU (`0x33`) vs type-43 R10 vs banked `0x69` is recorded at
+**2026-09-20 — compact IMU (`0x33`) vs type-43 vs banked `0x69`** near the
+end of this notebook. July type-43 failures remain true; they are a
+different pipe from all-day compact `0x33`.
 
 Raw physical captures stay local and are intentionally ignored because they
 can contain health and device identifiers. Historical `evidence/...` paths in
@@ -231,15 +236,16 @@ Atria's `encodeFrame(_:)` implements this exact layout.
 | `0x03` | 3 | Toggle realtime HR | `01` on, `00` off | **REFERENCE + PHYSICAL.** Standard live-HR arming. Combining it with `0x3F/01` did not keep the high-bandwidth motion stream alive on this link. |
 | `0x0A` | 10 | Set strap clock | firmware-dependent timestamp body | **REFERENCE + PHYSICAL history work.** Mutating; never use casually. |
 | `0x0B` | 11 | Get strap clock | read request | **REFERENCE + PHYSICAL history work.** |
-| `0x14` | 20 | Abort historical transmission | command-specific | **REFERENCE + PHYSICAL history work.** Stops an active history serve. |
+| `0x14` | 20 | Abort historical transmission | command-specific | **REFERENCE + PHYSICAL history work.** Stops an active history serve. September 2026 all-day compact recovery sent `14` *before* `6A` (inverted vs diagnostic `03 → 6A → 14`). Aborting again after the follow-up `6A` blocked historical IMU catch-up (device 210). |
 | `0x16` | 22 | Send historical data | cursor/range body | **REFERENCE + PHYSICAL history work.** Requests the strap's banked records. |
 | `0x17` | 23 | Historical data result/ack | result/cursor body | **REFERENCE + PHYSICAL history work.** History transaction acknowledgement. |
 | `0x1A` | 26 | Get battery level | read request | **REFERENCE + PHYSICAL.** |
 | `0x22` | 34 | Get data range | read request | **REFERENCE + PHYSICAL history work.** Reads available history bounds. |
 | `0x3F` | 63 | Send R10/R11 realtime | `01` on, `00` off | **REFERENCE + PHYSICAL.** Controls the heavy type-43 realtime stream. `STOP_RAW_DATA` does not stop this stream. |
-| `0x51` | 81 | Start raw data | `duration_ms:u32 LE` | **REFERENCE.** Original WHOOP 4 app/decompile research identifies this as a timed capture. The newer NOOP wrapper's `[01]` body is an outdated stub and is now retired in Atria. |
+| `0x51` | 81 | Start raw data | `duration_ms:u32 LE` | **REFERENCE + PHYSICAL FAIL on this iPhone.** Labs/DWL timed capture. On a live `2A37` link it ACK'd on stream-4, contributed to type-32 `"sleep mode for 30 seconds"`, and never produced compact `0x33`. Do not send on production all-day HR. The newer NOOP wrapper's `[01]` body is an outdated stub and is now retired in Atria. |
 | `0x52` | 82 | Stop raw data | `01` | **REFERENCE + PHYSICAL TRANSMISSION; behavior not independently isolated.** Atria physically sent it during bounded-lease teardown. It did not stop `0x3F`; `0x3F/00` remains the verified master switch for that stream. |
-| `0x6A` | 106 | Toggle IMU mode | `01` on, `00` off | **REFERENCE + PHYSICAL.** `0x6A/01` physically opens type-43 delivery. `0x6A/00` alone is not a proven master stop; it must not be treated as a successful production transport. |
+| `0x69` | 105 | Toggle IMU mode historical | `01` on, `00` off | **REFERENCE + PHYSICAL (two outcomes).** July 2026: `69/01` → `69/00` then `0x16` recovered dense **1 Hz type-47/v24** (93/93 seconds). OpenStrap/whoof: same opcode begins historical IMU dump **`0x34`**. September 2026 all-day catch-up: ACK data `03 00 00 00` and **no `0x34`**. Not compact `0x33`. Do not interleave with live `6A` until `0x33` is flowing. |
+| `0x6A` | 106 | Toggle IMU mode | `01` on, `00` off (Gen4 one-byte) | **REFERENCE + PHYSICAL; epoch-dependent.** July 2026 workout/lease: `0x6A/01` opened type-43 R10 and this iPhone hit `CBErrorDomain: 6`. `0x6A/00` did not stop that flood. September 2026 all-day `pure_hr_v10`: a type-24 echo of `6A` on `61080003` is **not** compact `0x33`. Compact-on is only a stream-5 `0x33` frame. |
 
 ## Streams and records
 
@@ -247,7 +253,26 @@ Atria's `encodeFrame(_:)` implements this exact layout.
 
 **PHYSICAL**
 
-The lightweight standard Heart Rate Service characteristic (`0x2A37`) can continue delivering accepted HR without a sustained type-43 raw-motion stream. Gate 1 proved automatic locked reconnect across three real out-of-range/return cycles.
+The lightweight standard Heart Rate Service characteristic (`0x2A37`) can continue delivering accepted HR without a sustained type-43 raw-motion stream **and without compact `0x33`**. Gate 1 proved automatic locked reconnect across three real out-of-range/return cycles. September 2026 build 228: HR age ~0.03 s, widget 63, Live Activity kit=1, compact IMU frozen ~12 h. **Live HR is not proof of live IMU.**
+
+### Compact IMU (`0x33`) on stream-5
+
+**PHYSICAL (2026-09-15 … 2026-09-19) + REFERENCE**
+
+- Packet type `0x33` on CHAR_DATA `61080005` is live 6-axis IMU (OpenStrap/whoof: `REALTIME_IMU_DATA_STREAM`, triggered by `TOGGLE_IMU_MODE 0x6A`).
+- Physical frames on this strap were **152-byte** Harvard packets: type `0x33` \| flags \| u32le device time \| reserved \| u16 accelCount \| u16 gyroCount \| planar int16 LE accel/gyro. Ten samples = one 100 Hz 0.1 s slice. Decoder: `AtriaWhoop4CompactIMUDecoder`.
+- Sitting arrives every ~30–60 s; walking assembles ~8–12 s. That cadence is not an IMU drop.
+- This stream **can stay up for hours without `CBErrorDomain: 6`** (build 192, ~13:27–15:15 IST 2026-09-19). It is not the July type-43 flood.
+- It died after `fresh_accepted_hr_ble_disconnect` ~15:22 IST 2026-09-19. Overnight recovery through build 228 ACK'd `6A` with stream-5 on as type-30/32 and never restarted `0x33`.
+- Live IMU CRC32 often does **not** match ISO-HDLC; the reassembler must admit an isolated complete 152-byte frame or `packetsThisConnection` stays 0 while `0x33` is flowing (2026-09-15).
+
+### Type 30 events and type 32 console logs
+
+**PHYSICAL + REFERENCE**
+
+- `0x30` EVENT belongs on stream-4 (`61080004`). Event `0x3F` / 63 is **extended battery**, not R10. Battery-event parsing that requires `frame[6]==0x03` will ignore these.
+- `0x32` CONSOLE_LOGS is firmware ASCII on stream-5. Proven strings: `"sleep mode for 30 seconds"` after leftover `6A/51` (device 192 15:34); `"T1 Quiet Mode"` / `"Disconnect reason"` (device 202/212). **Not IMU.** `proprietaryNotifyLooksLikeSleepModeLog` keys on type `0x32` plus the substring `sleep mode`.
+- Stream-5 callback count > 0 with last type 30/32 and `protocol_imu_frames=0` means the data mux is in event/log mode, not compact IMU (devices 202, 212, 227).
 
 ### Type 43 / R10-R11 realtime
 
@@ -4197,3 +4222,1777 @@ POSITIVE STILL REQUIRED**
   required before the value can be presented as exact.
 - Evidence:
   `evidence/2026-07-31-reconnect-motion-maintenance-physical/`.
+
+## 2026-09-20 — compact IMU (`0x33`) vs type-43 vs banked `0x69`
+
+**PHYSICAL + REFERENCE + CODE.** Last overnight evidence: Release **228**
+(`d31edb0a`) on CoreDevice `3803F5B6-1666-56D3-A71A-62F131F6CE3B`, official
+WHOOP not listed. This section does not reopen July type-43 leases.
+
+### Problem
+
+Atria already has live standard HR (`2A37`). Compact IMU is packet **`0x33` on
+stream-5**: 100 Hz accel+gyro used for sitting/walking, steps, widgets, Live
+Activity motion. That stream last assembled ~15:22 IST 2026-09-19, then stayed
+dead while HR stayed live. Historical catch-up finished **empty**, so the hole
+was not backfilled. Empty catch-up is honest: do not invent motion.
+
+### Three pipes (do not conflate)
+
+| Pipe | Packet | Starts with | Rate | This iPhone |
+|---|---|---|---|---|
+| Live compact | `0x33` on `61080005` | `6A/01` | 100 Hz slices, 152 B | Hours of live traffic Sep 15–19; dead after 15:22 disconnect through build 228 |
+| Heavy live R10 | `0x2B` type-43 | `3F/01` and/or `6A/01` in a **workout/lease** epoch | ~1.9 KB/s | Always `CBErrorDomain: 6` in ~6–8 s (July Gate 4) |
+| Banked 1 Hz | type-47 / v24 via `0x16` | `69/01` then `69/00`, then flash drain | 1 Hz accel | July PASS (93/93 seconds). Quality drop vs compact |
+| Historical IMU dump | `0x34` on stream-5 | `69` (OpenStrap/whoof) | same class as `0x33` | **Never observed** on this strap |
+
+Quality-preserving catch-up is `0x34`, not type-47. Type-47 is honest coarse
+motion.
+
+GATT: TX `61080002`, RX ACKs `61080003` (`0x24`), events `61080004` (`0x30`),
+data `61080005` (`0x2F` / `0x32` / `0x33` / `0x34`). Production all-day owner
+is `pure_hr_v10`. Mid-link stream-5 CCCD toggle disconnects this V4; only
+initial-discovery CCCD is safe.
+
+Harvard command response: `[0x24][respSeq][cmdEcho][requestSeq][data…]`.
+Successful `GET_CLOCK` data starts `0x01`. History result codes: `0=FAILURE`,
+`1=SUCCESS`, `2=PENDING`, `3=UNSUPPORTED`. Overnight IMU ACKs:
+
+- `6A` `aa0c00fc24126a0400010000e9de72b5` → data **`00 01 00 00`** (failure, or
+  enabled=0). Diagnosis treated any `6A` echo as compact-on.
+- `69` `…24ed690003000000…` → data **`03 00 00 00`** (looks unsupported).
+
+**HYPOTHESIS (unused signal):** those bodies are NAKs. Compact-on is only a
+stream-5 `0x33` (or `0x34`) frame.
+
+External: OpenStrap `cmd_toggle_imu` is one-byte `[01]`/`[00]` (matches Atria
+Gen4). Optical toggles are two-byte `[REVISION, enable]`; a single `[01]` is
+read as revision-only and **no data flows**. Maverick `6A` uses a longer body;
+that is the wrong generation. Official Strength Trainer sends `6A` and `0x33`
+flows **during a workout**, not proven 24/7. Official connect also does HELLO,
+feature flags, device config, `0x16` — all-day recovery does none of that.
+`SET_DP_TYPE` / `FORCE_DP_TYPE` (`0x34`/`0x35` as commands) were never sent.
+
+### July 2026 — Gate 4 live type-43 (still binding)
+
+Every high-rate live attempt failed the link. Workout HR was preserved; steps
+were not fabricated. Full write-ups remain in the 2026-07-26 experiment log
+above. Short table:
+
+| Experiment | Result |
+|---|---|
+| `3F/01 + 6A/01` | FAIL timeout |
+| `3F/01` only | FAIL no sustained R10 |
+| `51` + `6A` (wrong 1-byte 51, then duration-shaped 51) | FAIL `CBError 6` |
+| **`6A/01` isolated** (no 51, no 3F) | FAIL — 6A alone opened type-43 |
+| `6A/01` then `6A/00`; same + `3F/00` | FAIL — neither stop prevented timeout |
+| Official compact `03/01 → 6A/01 → 14/00` (utility and main queue) | FAIL ~3 s R10 then `CBError 6` |
+| NOOP keeper `3F/01 → 03/01` every 2 s | FAIL |
+| Command-free reconnect after timeout | FAIL — mode persists on the strap |
+| Passive R10 after gym, no new activate | 69 frames / 68 s then timeout |
+
+**Do not send `3F` / `51` / unguarded `03+6A+14` on a live `2A37` link.**
+
+`0x69` bank + `0x16` drain is the only physically sealed motion transport:
+97 type-47 rows, 93/93 unique seconds. Gate 4 live-lease remains FAIL; all-day
+tick authority was later withdrawn/reopened separately.
+
+### September 2026 — compact `0x33` existed, then died
+
+- 2026-09-15: CRC-valid 152-byte `0x33` on stream-5. Early bugs hid it:
+  counters gated on launch-args; live IMU CRC32 ≠ ISO-HDLC.
+- 2026-09-17–18: live IMU ~6–8 s with live HR; sitting 46 s must not 6A/51-storm;
+  walking assembled ~8.7 s must not use the 4 s dense gate.
+- Build **192** 2026-09-19 ~13:27–15:15: compact live for hours.
+- ~15:22: died after `fresh_accepted_hr_ble_disconnect`. Compact clock frozen.
+- 15:34: leftover **`6A/51`** → stream-5 type-32 `"sleep mode for 30 seconds"`.
+  Cover-live `51` is spent.
+- 15:56: stream-4 type-24 (6A ACKs) must not look like a live stream-5 pipe.
+
+`0x33` is a survivable stream (hours), distinct from July type-43 (seconds then
+death). Wrist-off / LED-off is **not** a firmware reboot. `REBOOT_STRAP 0x1D`
+was not used that night.
+
+### Overnight 2026-09-19–20 — app recovery ladder (builds 199–228)
+
+Each build fixed an app reason `6A`/`0x33` never got a fair chance. **227**
+took that chance: stream-5 CCCD on, this-connection `6A`, 68 stream-5 notifies
+that were type 30/32, compact still 15:22, catch-up empty.
+
+| Build | App bug | Physical after the fix |
+|---|---|---|
+| 199 | Labs `51` / stream-4 6A counted as IMU | 6A ACK, stream-5 = 0 |
+| 202 | `52/6A/14` restored stream-5 as type-32; history owned the pipe | Follow-up 6A only; still logs, no `0x33` |
+| 204 | 6A every 45 s napped the strap | One 6A after abort; no `0x33` |
+| 205–209 | wait-for-stream5 hung; 6A never went out | `14` then one 6A at 12 s; stream-5 still 0 |
+| 210–216 | abort retry blocked catch-up; launch-pending skipped 6A; mixed clocks; catch-up deferred | 6A ACK; `0x16` empty; 2A37 kept |
+| 217 | `didConnect` nil'd stream-5 profile ID while suppressed | 6A ACK, CCCD still off |
+| 218–219 | 6A before CCCD; subscribe status overwrite; `69` blocked 6A | subscribe without post-subscribe 6A |
+| 220–224 | persist-subscribe false CCCD; reconnect watchdog cancelled live `didConnect` | 224: stable epoch + live HR |
+| 225–226 | old `Live6AAfterSubscribeAt` / `69` retry blocked 6A | still missed 6A (confirm flag) |
+| **227** | this-epoch subscribe = CCCD-on | **6A ACK, 68× type 30/32, no `0x33`** |
+| **228** | 227 then 6A-stormed on 30/32 | no storm; HR live; compact stale; 6A stamped 1 s **before** subscribe |
+
+All-day recovery command order was `14` → wait 12 s → `6A` → kick `69`/`16` →
+another `6A`. That inverts July's `03 → 6A → 14` and interleaves a competing
+IMU mode. Evidence dirs: `evidence/2026-09-20-goal-220-imu` … `-228-hold`.
+GitHub #45 comments track the overnight; do not close #45/#21/#22/#5.
+
+### What 227/228 proved
+
+1. Live `2A37` ≠ live IMU.
+2. Type-43 cannot be sustained on this iPhone (July, unchanged).
+3. Compact `0x33` *can* run for hours without killing BLE (192).
+4. That stream died at the 15:22 disconnect and did not resume through 228.
+5. A type-24 `6A` echo is not `0x33`.
+6. Stream-5 can be live as 30/32 with compact dead.
+7. `0x16` catch-up after 6A finished empty.
+8. `51`/`3F` on this link → sleep-mode and/or controller timeout.
+9. Mid-link stream-5 CCCD toggle → disconnects.
+10. 1 Hz `69` bank works (July) and is not compact.
+
+Parser/accept bugs that **did** hide live `0x33` earlier (launch-arg counters,
+CRC-invalid isolated 152 B frames, history-phase gate on `0x33`) were already
+fixed and were **not** the 227 failure: compact recovery admits stream-5 while
+stale, and 68 sparse 30/32 frames are not a 10-packet sitting IMU burst.
+
+### Open hypotheses (still need a controlled test)
+
+- **H1** `6A`/`69` ACK data means IMU off / 69 unsupported.
+- **H2** `69` catch-up owns the IMU mux; need `69/00` before live `6A`.
+- **H3** IMU engine quiet/wedged since 15:22; needs `REBOOT_STRAP 0x1D`.
+- **H4** All-day `0x33` may be a leaked workout mode, not a 24/7 firmware mode.
+- **H5** `6A` in `pure_hr_v10` needs proprietary `03` — **unsafe** without a
+  kill-switch; July `03+6A+14` opened type-43.
+- **H6** CHAR_DATA DP type stuck on events/logs; `SET_DP_TYPE` untested.
+- **H7** 228 6A-before-subscribe is a real race and **not sufficient** (227
+  already 6A'd after CCCD).
+
+### Next experiments (one change per run)
+
+Success = stream-5 type `33`, `imu_frames` climbing, compact age < 60 s sitting,
+`2A37` still accepted, no `CBError 6`. Stop at the first pass.
+
+0. Instrument `0x24` data bytes and a type histogram (not last-notify-wins);
+   decode `0x32` ASCII.
+1. `69/00` → wait until stream-5 is idle of 30/32 → one `6A/01` **after**
+   this-epoch subscribe. No abort-first, no catch-up.
+2. `REBOOT_STRAP 0x1D` (after clearing persistent optical flags) then E1 on a
+   clean initial-discovery CCCD.
+3. Versioned two-byte `6A [01, 01]` only if ACK data still looks off.
+4. Isolated `SET_DP_TYPE` / `FORCE_DP_TYPE` only if CHAR_DATA stays on 30/32.
+5. Quality catch-up only after live is settled: look for `0x34`. If `69` ACK
+   stays `03…`, do not claim quality catch-up exists.
+6. Optional: official Strength Trainer as a **liveness probe** only, then kill
+   WHOOP. Keep it off unless that test is explicit.
+
+**Not in the series:** `51`, `3F`, unguarded `03+6A+14`, 6A storms, mid-link
+CCCD, `0x9A`.
+
+### Code pins (not a physical pass)
+
+`AtriaBLESchema.Cmd.officialGen4CompactMotionBodies` is `03/01, 6A/01, 14/00`
+and is diagnostic-only. All-day recovery is `allDayCompactIMURecoveryStep`:
+`14` then one `6A`, wait after this-CCCD 6A when stream-5 is type 30/32
+(`stream5IsLiveWithoutCompactIMU`). `shouldConfirmStream5FromCCCDState` is
+callbacks > 0 (device 199: `isNotifying` ≠ IMU). Tests:
+`AtriaBLERecoveryCadenceTests` device 192…228 pins.
+
+### How to read a future “it works”
+
+- **Live fix:** last stream-5 type `33`, `imu_frames` climbing, compact assembled
+  age < 60 s sitting, `2A37` still accepted, no `CBError 6`.
+- **Quality catch-up:** `0x34` covering the 15:22 hole, decoded by the compact
+  assembler.
+- **Not a fix:** another `6A` hex on `61080003`; stream-5 type 30/32; empty
+  `0x16`; type-47 1 Hz filling Today steps (useful, different product).
+
+### 2026-09-20 — isolated 6A, reboot+6A, and WHOOP probe (wired recheck)
+
+**PHYSICAL FAIL + UNVERIFIED official liveness**
+
+- Quiet 2A37 lease PASS (build 229). Isolated Gen4 `6A/01` (build 231) TX
+  `aa0800a823006a01776cd67b`, type-24 `aa0c00fc24976a00000100007cbddc9a`
+  status `00` (`other_00`), native `0x33`/`0x34`/`0x2B` = 0, HR continued.
+- Software reset `0x1D/00` (build 233) dropped the link (`CBErrorDomain:6`);
+  one post-reboot `6A/01` had no type-24 in the recorder and still zero
+  `0x33`. Unexpected writes 0.
+- On-air `61080007` type `08` this day: ASCII `hboylston` / `h17.2.2.0` /
+  `kharvard_r10` (step 4 JSONL, 14:15:42 IST). That is not the July
+  `i41.17.6.0` / `gharvard` enumeration. Post-reboot stream-7 was not
+  recaptured.
+- Official WHOOP is **not installed** on this iPhone (apps: Alter, Atria 233,
+  Fizz, Zook). Strength Trainer connect/start/stop/disconnect was not
+  captured. Operator has **no WHOOP subscription and will not purchase one**;
+  the official liveness probe is closed. PacketLogger.app 26.0.0 is present;
+  host-side `btlogger` on iOS 27 failed. July `03/01 → 6A/01 → 14/00` remains
+  blocked (type-43).
+- September `0x33` was an inherited mux, not a logged 6A start. 6A ± reboot
+  does not reproduce it. Stop command escalation. Evidence:
+  `evidence/2026-09-20-astra-usb-recheck/step5-whoop-probe/RESULTS.md` and
+  `SEP15-MATCHING-GEN.md` (inrange-36 type `0x31` at 01:29 IST → inrange-37/38
+  native 152-byte `0x33`; last prefs `6A` stamp 14 Jul; last `51` cover 8 Sep).
+- 20 Sep 15:41 IST **fresh wipe + strap off/on + quiet 240 s** (build 233 PID
+  26178): prefs deleted, no `6A`, stream-5 subscribed, **zero** stream-5 RX,
+  native `0x33` = 0, HR live. Stream-7 type `08` in one epoch: both
+  `hboylston`/`h17.2.2.0` **and** `gharvard`/`i41.17.6.0` (both
+  `kharvard_r10`). Evidence: `step5-fresh-reset/RESULTS.md`. Do not send
+  July `03+6A+14` from the second identity.
+
+### 2026-09-20 — leftover stream-5 `0x2B` does not become compact `0x33` while idle
+
+**PHYSICAL FAIL (passive, TX=0).** Build 239, ~14 min pulls 13:19–13:32Z.
+Last notify type stayed `2b` on `61080005` (9/9), `imuFrames=0`,
+`compactIMU.lastPacketAt` unset. Stream-5 callbacks climbed ~1345→12401 then
+`CBErrorDomain:6` (disconnects 2→5) and resumed as `2b`. 2A37 hrAge 0.4–1.3 s.
+15 Sep’s type-31→33 inheritance did **not** recur. Leftover R10 is not compact
+IMU. SET/FORCE_DP_TYPE remain unused-on-wire and **blocked**. Evidence:
+`evidence/2026-09-20-astra-usb-recheck/step5-passive-2b-watch/`.
+
+### 2026-09-20 — reassembled lastPacket 1924 is not a nested `0x33` (and is not on disk)
+
+**PHYSICAL FAIL (passive, TX=0).** Build 240 PID 27354. `lastPacketType=2b` **length 1924** is the reassembled R10 **payload count**, not the 244/228 B GATT notify in `lastNotifyCallbackHex` (capped at 256 B). House-arrest found **no 1924-byte buffer**. Diagnostic JSONL is stale (`native_33=0`). Three notify tails vs inrange-38 `AA 94 00 B5 33`: offset 4 = `E0` / `0E` / `00`. Inner `0x33` **no**. Evidence: `evidence/2026-09-20-imu-240-lastpacket-1924/`.
+
+### 2026-09-20 — build 241 lastPacketHex 1928 B is type `2B`, not nested `0x33`
+
+**PHYSICAL FAIL (passive, TX=0).** Build 241 PID 27574. House-arrest pulled full `lastPacketHex` (3856 hex chars / **1928 B**, prefs length 1920). Prefix `aa 84 07 f7 2b` is 16-bit LE length `0x0784`=1924 + checksum `F7` + type **`2B`**, not compact `AA 94 00 B5 33` (8-bit len `0x94`, 152 B). Zero `AA 94 00 B5` hits. `imuFrames=0`, `native_33=0`, `compactIMU.lastPacketAt` unset — `recordNativeCompactIMUFrame` did not run. Last notify still `2B` 228 B on `61080005`. 2A37 notifying (`standardHROnly`). Do **not** promote 2B. Evidence: `evidence/2026-09-20-imu-241-lastpacket-1924/`.
+
+### 2026-09-22 — Mac central can command this strap; 6A still does not start `0x33`
+
+**PHYSICAL FAIL for compact IMU. Command channel PASS.** iPhone app stopped. Strap advertises as `ADIDSHAFT'S WHO`. A direct Mac CoreBluetooth session, with notifications confirmed on before the first write, gets `didWrite` with a nil error in about 200 ms. Earlier “timeouts” were clients giving up before that callback.
+
+- Hello `0x23/00` type-24 is status `01` (accepted), 144-byte body.
+- `6A/01` type-24 is `24 .. 6a .. 00 01 00 00` (status `00`, `other_00`). Native `0x33` = 0. Same non-start as the iPhone fixture.
+- `03/01` type-24 status `02` (pending). Stream-5 then sends ~1 Hz type `0x28` (proprietary realtime heart), while `2A37` stays live. Not IMU.
+- `3F/01` type-24 status `02`, then stream-5 type `2B` (`aa8407f72b` / `aa88070b2b`). `3F/00` stops it. Compact `0x33` = 0. `2A37` stayed live (`005e`).
+- A single heart-rate CCCD off reads back `0000` and the samples stop. Stacking that off with another notify in the same turn is what the iPhone flush failed to confirm.
+- Do not treat type `0x28` or type `2B` as compact IMU.
+
+### 2026-09-22 — Mac: wait for HistoryComplete before 6A still yields no `0x33`
+
+**PHYSICAL FAIL for compact IMU.** Same Mac CoreBluetooth path (`tools/strap-mac/session.py`), `2A37` subscribed the whole run. Harvard init `23/00 → 4C/00 → 22/00 → 43/01 → 16/00`, ACK every history end (`0x17` + token from type-31 sub 2).
+
+- History ran ~180 s without `0x31` sub 3 (`HistoryComplete`). Observed subs: 80× sub 1, 79× sub 2. Stream-5 stayed on type-30/31/32 (`32` ≈ 5400). No stall; aborted with `14/00` at the 3-minute ceiling.
+- After abort, one `6A/01`. Full type-24: `aa0c00fc24746a56000100009d3bc71f` → status `00`, data `00 01 00 00`. Compact `0x33` = 0. No type `2B`.
+- Same link, one more legal try: `69/00` type-24 status `03` (`aa0c00fc2475695703000000eeae3311`), then `6A/01` again: `aa0c00fc24766a5800010000d5946837` (status `00`). Still zero `0x33`.
+- HR stayed live end-to-end (`hr_n` 221, last bpm 97). Holder restarted afterward (pid ownership of the single link).
+- **Interpretation:** Finishing (or aborting) the OpenStrap history gate before live IMU enable does not unlock compact `0x33` on this strap/epoch. `6A` remains `other_00`. Do not escalate to `0x9A` / SET_DP / FORCE_DP / reboot.
+
+### 2026-09-22 — Mac: `3F/01` then `6A/01` on first type-2B still yields no `0x33`
+
+**PHYSICAL FAIL for compact IMU.** Hypothesis: OpenStrap enables live IMU as `3F/01` then `6A/01` while the realtime pipe is open (prior Mac fails sent `6A` with that pipe closed). One Mac CoreBluetooth shot; `2A37` subscribed the whole run. No hello, no history drain, no `0x9A`, no SET/FORCE_DP.
+
+- Sent `3F/01` → type-24 `aa0c00fc24773f010200000023099453` (status `02`).
+- First stream-5 type `2B` (`aa8407f72b…`) arrived ~1.1 s later; immediately one `6A/01` (write with response).
+- `6A` type-24: `aa0c00fc24786a0200010000e238f415` → status `00`, data `00 01 00 00` (same `other_00` as closed-pipe `6A`).
+- Listen 12 s after `6A`: compact `0x33` = **0** (no `AA 94 00 B5 33`). Type `2B` = **26** (+ raw continuation chunks). Packet-type counts at listen_done: `2a37` 14, `24` 2, `2b` 26, `raw` 176.
+- Cleanup: `3F/00` + `6A/00` (yes). Last HR bpm **89**. Holder restarted (pid 32096).
+- **Interpretation:** Opening the R10/`2B` pipe before `6A` does not convert traffic to compact `0x33` on this strap/epoch. `6A` while `3F` is on still returns status `00` and leaves only `2B`. Do not escalate.
+
+### 2026-09-22 — Mac: no remaining published command starts compact `0x33`
+
+**SOURCE REVIEW + NO TX (deliberate).** OpenStrap dump
+`agent-tools/f16b82b7-b69f-4990-b039-1ccb1b54aec6.txt` vs Mac fails above.
+
+#### How OpenStrap starts “IMU” vs packet `0x33`
+
+| Concept | OpenStrap | Distinct from `SEND_R10` `0x3F`? |
+|---|---|---|
+| Live IMU enable | `enable_live_streams(imu=True)` → `SEND_R10_R11_REALTIME 0x3F/01` then `TOGGLE_IMU_MODE 0x6A/01` (one-byte `[01]`) | **No.** Compact and R10 share this pair. |
+| Packet `REALTIME_IMU_DATA_STREAM 0x33` | Decode-only (`parse_realtime_accel` / `imu_stream`) | Arrival type, not a separate start opcode. |
+| Packet `REALTIME_RAW_DATA 0x2B` / R10 | Same live-enable path; heavy stream | What this Mac link actually gets from `3F`/`6A`. |
+| Historical IMU `0x34` | `TOGGLE_IMU_MODE_HISTORICAL 0x69` | Different pipe (bank/`0x34`), not compact realtime. |
+| `SET_DP_TYPE 0x34` / `FORCE_DP_TYPE 0x35` | Opcodes only; **no** `cmd_*` helper, **no** published body | Not eligible without inventing a payload (hard ban). |
+| Two-byte optical toggles | `0x6B`/`0x6C`/`0x99`/`0x9A` = `[REVISION, enable]` in `TWO_BYTE_TOGGLES` | Optical / banned `0x9A`, not IMU mux. `0x6A` is **not** in that set. |
+
+OpenStrap never documents a command that selects stream-5 `0x33` instead of `0x2B`. The reference client treats `0x33` as something that may appear after the same `3F`/`6A` arming used for R10.
+
+#### Published IMU-adjacent payloads this Mac link already fired
+
+| Sequence | Result on this strap |
+|---|---|
+| `6A/01` alone / after hello | type-24 status `00` body `01 00 00`, zero `0x33` |
+| `03/01` then `6A` | proprietary `0x28` HR; `6A` status `00` |
+| `3F/01` then `6A` on first `2B` | `26×` type `2B`; `6A` status `00`; commit `33ba1af9` |
+| `69/00` then `6A` | `69` status `03` unsupported; `6A` status `00` |
+| History drain (never `0x31` sub 3) → abort `14/00` → `6A` | `6A` status `00`; commit `3094c45b` |
+
+Hard bans still apply: `0x9A`, `0x51`, `0x1D`, invented SET/FORCE_DP, `0x60`, and second copies of the rows above.
+
+#### Remaining published candidates considered and rejected
+
+- **`69/01`**: published, but OpenStrap/Atria map it to historical IMU / type-47 banking — not compact `0x33`. Not a compact-start command.
+- **`6A [01,01]`**: conjectured in earlier notes; **not** published for Harvard (`cmd_toggle_imu` is one-byte; `6A` ∉ `TWO_BYTE_TOGGLES`).
+- **`0x6B`/`0x6C`**: published optical payloads; do not claim IMU mux.
+- **SET/FORCE_DP**: opcode-only; body unpublished → blocked.
+
+#### Run decision
+
+**Sent: none.** No `6A` this turn (no type-24). Compact `0x33` count = **0** (no listen window opened). Latest `2A37` HR **84** bpm (holder pid 32393; samples 84–87 during reconnect).
+
+**Conclusion:** On Harvard firmware as published by OpenStrap, there is **no remaining known-payload command** that starts compact realtime `0x33` (`AA 94 00 B5 33`) short of (a) the official app’s workout/session path that has never been captured on this fixture, or (b) an **unpublished** `SET_DP_TYPE` / `FORCE_DP_TYPE` body. Do not shotgun further opcodes to fill the gap. Goal remains open; holder left on `2A37`.
+
+### 2026-09-22 — Mac: 6A refuse window, stream-7/4 console capture (no IMU reason)
+
+**PHYSICAL FAIL for compact IMU. Console silent on refuse.** Mac CoreBluetooth;
+`2A37` + `61080003/04/05/07` subscribed. Exactly one `6A/01` with-response per
+shot (no `0x9A` / `0x51` / `0x1D` / `0x60` / SET/FORCE_DP / `3F` / `69` / history).
+Full GATT payloads saved for every stream-7 and stream-4 notify; printable ASCII
+extracted (≥4 chars). Compact `0x33` = only `AA 94 00 B5 33` @ 152 B.
+
+#### Shot A (immediate 6A after CCCD)
+
+- TX `aa0800a823016a014006147a`
+- Type-24: `aa0c00fc247b6a0100010000af58bc63` → status `00`, data `00 01 00 00`
+- Listen 20 s: stream-7 = **0**, stream-4 = **0**, compact `0x33` = **0**
+- Counts: `2a37` 21, `24` 1. Last HR **85** bpm.
+
+#### Shot B (4 s passive pre-6A, then one 6A + 20 s)
+
+- Type-24: `aa0c00fc247c6a010001000021661ba6` → same status `00` / `00 01 00 00`
+- Pre-window + post-window: stream-7 = **0**, stream-4 = **0**, compact `0x33` = **0**
+- Counts: `2a37` 25, `24` 1. Last HR **80** bpm.
+
+#### Useful ASCII this refuse window
+
+**None.** No firmware console line arrived on stream-7 or stream-4 around the
+`6A` refusal, so there is no on-air string for sleep / wrist / dp-type /
+not-enabled / workout explaining why the IMU engine stayed off.
+
+#### Same-day prior stream-7 ASCII (not from this refuse window)
+
+Earlier Mac sessions today did dump stream-7 once (bootstrap / bond), including:
+
+- Identity: `hboylston`, `h17.2.…`, `gharvard`, `i41.17.…` (`/tmp/atria-ble/probe.jsonl`)
+- Bond console: `PM_EVT_BONDED_PEER_CONNECTED`, `PM_EVT_CONN_SEC_SUCCEEDED`,
+  `PM_EVT_CONN_SEC_FAILED|…|Procedure:BONDING|Error:00000001h`,
+  `FlashChanged:YES`, `delete_disconnected_bonds…` (`/tmp/atria-ble/hr-off-6a.jsonl`)
+
+Those lines are peer-manager / identity, **not** an IMU-mux deny reason. They
+did not recur on the refuse shots above (strap already settled on this Mac).
+
+#### Evidence search: TX that preceded live `AA 94 00 B5 33` (15–19 Sep)
+
+Searched `docs/`, `evidence/2026-09-15-goal-inrange-{36,37,38}/`, Sep-16 IMU
+proofs, and `/tmp/atria-ble`. Live compact frames are in inrange-37/38
+`lastNotifyCallbackHex` (`aa9400b533…`). Reconstruction
+`evidence/2026-09-20-astra-usb-recheck/step5-whoop-probe/SEP15-MATCHING-GEN.md`
+and prefs stamps: last `activation_6a01_sentAt` / official-compact IMU-on are
+**July**; last `51` cover **8 Sep**; **no** logged command hex in the
+01:29→01:36 IST window when type-31 became type-33. **No unreproduced TX byte
+sequence found** that preceded live `AA 94 00 B5 33`. Nothing new to replay;
+did not invent or send SET/FORCE_DP.
+
+**Conclusion:** When `6A/01` returns type-24 `other_00` (`00 01 00 00`), this
+strap does **not** emit a stream-7/4 console explanation in the following 20 s.
+IMU stay-off reason remains opaque on-air. Goal open. Holder left on `2A37`
+(pid 33375).
+
+### 2026-09-22 — Mac passive watch, iPhone Bluetooth OFF: stream-5 = 0
+
+**PHYSICAL FAIL for compact IMU (passive, TX=0).** Mac CoreBluetooth only.
+iPhone Bluetooth was **OFF**. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). One session: subscribe `2A37` +
+`61080005` (+ `04`/`07` for link health). **Zero commands** (no `6A`, `3F`,
+`03`, `16`, `9A`, `51`, `1D`).
+
+- Duration **902 s** (~15 min). Link stayed up; timer end (no disconnect).
+- Stream-5 (`61080005`) notify count = **0**. Stream-5 type counts = `{}`.
+- Compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**.
+- `2A37` HR: **936** samples, bpm **70–102** (last 75).
+- Early non-stream-5 only: a few stream-4 type `30` frames; not IMU; not
+  counted as stream-5.
+- **Interpretation:** With the phone radio off, a pure Mac central that only
+  CCCD-subscribes does **not** inherit or spontaneously receive compact
+  `0x33` (or any stream-5 type) on this strap/epoch. Passive listen alone is
+  insufficient. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — Mac GET_CLOCK / body-location / conditional SET_CLOCK+6A
+
+**PHYSICAL FAIL for compact IMU (clock repair did not unlock 0x33).** Mac
+CoreBluetooth; iPhone Bluetooth OFF. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). Subscribed `2A37` + `61080003` +
+`61080005`. No `9A` / `51` / `1D` / `60` / invented SET/FORCE_DP.
+
+1. **GET_CLOCK `0x0B` / payload `00`** (write with response). Type-24:
+   `aa140003247d0b0101ea9aeb01500d0000000000ca7c7d24` → Harvard body after
+   `[24][respSeq][0B][reqSeq]` is `01 ea9aeb01 500d0000 000000` (status
+   `01` = success). u32 LE after status = **32217834** →
+   **1971-01-08T21:23:54Z** (absurd; outside 2024–2027).
+2. **GET_BODY_LOCATION `0x54` / payload `00`** (OpenStrap published
+   `cmd_get_body_location`). Type-24:
+   `aa100057247e540200010000000000001d5ac8f4` → data `00 01 00 00 00 00 00 00`
+   (status `00`).
+3. **SET_CLOCK `0x0A`** sent because clock was absurd: body u32 epoch
+   `1790076300` + u32 pad `0` →
+   `aa10005723030a8c65b26a00000000009e16559c`. ACK type-24 data `01 00 00 00`
+   (status `01`).
+4. **One `6A/01`** after SET_CLOCK (required by this experiment). Type-24
+   `aa0c00fc24806a0400010000fcb925cd` → data `00 01 00 00` (same refuse /
+   `other_00` as prior Mac shots). Listen **15 s**: compact `0x33`
+   (`AA 94 00 B5 33` @ 152 B) = **0**. No type `2B` → no `3F/00`.
+5. Latest `2A37` after probe / holder reclaim: **81** bpm (probe window last
+   **71**; brief `0000` during SET_CLOCK/6A).
+
+**Conclusion:** Repairing an absurd strap RTC with published SET_CLOCK does
+**not** change the `6A/01` refuse body or start compact realtime IMU on this
+fixture. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — Mac decode 0x54 → skip 0x7B → 69/01 after valid clock
+
+**PHYSICAL FAIL for compact `0x33` and for historical IMU `0x34`.** Same Mac
+link / strap / UUID as the clock probe. iPhone BT OFF. Subscribed `2A37` +
+`61080003` + `61080005`. Did **not** re-send bare `0x54`, `6A` alone, `SET_CLOCK`,
+`69/00`, history drain, `9A`/`51`/`1D`/`60`, or invented SET_DP.
+
+**OpenStrap 0x54 decode (quoted).** OpenStrap names the opcode
+`GET_BODY_LOCATION_AND_STATUS = 0x54` and builds the request with
+`cmd_get_body_location` → payload `b"\x00"`. There is **no** dedicated
+`0x54` branch in `parse_command_response`. Placement field meanings come from
+the published SELECT_WRIST schema / enums, and on-wrist from realtime HR:
+
+```text
+class Wrist(IntEnum):
+    RIGHT = 1
+    LEFT = 2
+class BodyLimb(IntEnum):
+    BICEP = 1
+    WRIST = 2
+class BodySide(IntEnum):
+    INSIDE = 1
+    OUTSIDE = 2
+# body placement
+def cmd_select_wrist(side=Wrist.LEFT, limb=BodyLimb.WRIST, face=BodySide.OUTSIDE, seq=0):
+    return build_command(seq, Cmd.SELECT_WRIST, bytes([int(side), int(limb), int(face)]))
+# REALTIME_DATA … [18] off-wrist flag (0 = on-wrist) [19] body location.
+```
+
+Prior type-24 data `00 01 00 00 00 00 00 00` (status `00`), same status-first
+framing as GET_CLOCK: **status=`00`**, **side=`01` = RIGHT**, **limb=`00`
+unset**, **face=`00` unset**, tail `00 00 00 00`. Side is already set →
+**do not send `SELECT_WRIST 0x7B`** (would guess a different wrist).
+
+1. **Command sent:** one published `TOGGLE_IMU_MODE_HISTORICAL 69/01`
+   (`aa0800a82301690183553951`). Type-24 ACK
+   `aa0c00fc24816901030000004f8a5136` → data **`03 00 00 00`** (status `03`;
+   same refuse-class body seen on the September all-day `69/01` bank that
+   produced no `0x34`).
+2. Listen **20 s** (2A37 kept on):
+   - compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**
+   - historical IMU stream `0x34` = **0**
+   - type-47 = **0**
+   - `2B` = **0**
+   - other stream types = **none** → no `14/00` abort (abort only on non-34 flood)
+3. Latest `2A37` HR during probe: **100** bpm.
+
+**Conclusion:** With clock repaired and wrist **side already RIGHT**, post-clock
+`69/01` still does not open historical `0x34` or compact `0x33` on this Mac
+link. Goal remains open. Holder left on `2A37`.
+
+### 2026-09-22 — SET/FORCE_DP body still unpublished; product decoder already accepts `0x33`
+
+**Air path blocked (no TX this turn).** Exhaustive search of `agent-tools/*.txt`,
+`docs/`, and on-disk `evidence/` found **no** observed Harvard command frame
+`AA | len | crc8 | 23 | seq | opcode 0x34|0x35 | payload | crc32` for
+`SET_DP_TYPE` / `FORCE_DP_TYPE` — OpenStrap names the opcodes only and has no
+`cmd_*` helper. Invented DP bodies remain banned. Prior Mac facts still hold:
+post-clock `6A/01` type-24 status `00`, `69` unsupported/refused for quality
+catch-up, zero live `AA 94 00 B5 33`. **Product path OK:**
+`AtriaWhoop4CompactIMUDecoder` + `nativeCompactIMUDurableFrame` +
+`compactIMUSecond` → `ingestLiveMotionFrame` already admit the Sep 15–style
+152-byte fixture in `AtriaWhoop4CompactIMUTests` (planar 10+10, daily-step
+assembler); no decoder change. Goal remains open.
+
+### 2026-09-22 — Mac: IMU ACK `00 01 00 00` text search + bond-gated 6A
+
+**Two independent checks. Compact air success still only `AA 94 00 B5 33` @ 152 B.
+Goal remains open.** iPhone Bluetooth OFF. Strap `ADIDSHAFT'S WHO`
+(`837560C0-5B6C-C520-95EF-B1E713358D33`). No `9A` / `51` / `1D` / `60` / `69` /
+invented SET_DP/FORCE_DP / bare ungated `6A`.
+
+#### 1) Dump + docs: what does IMU toggle `00 01 00 00` / status `0x00` mean?
+
+Searched OpenStrap dump
+(`agent-tools/f16b82b7-b69f-4990-b039-1ccb1b54aec6.txt`) and local docs:
+
+- OpenStrap `parse_command_response` has **no** `TOGGLE_IMU_MODE` / `0x6A`
+  branch and **no** sentence that maps response body `00 01 00 00` or status
+  `0x00` to a follow-up command.
+- Docs/Harvard notes: overnight IMU ACK data `00 01 00 00` is glossed as
+  **(failure, or enabled=0)**; product `FirmwareStatus` names byte `0x00` as
+  `other_00` (fixture `toggleIMUModeOther00Fixture`). History-result codes
+  `0=FAILURE` are about `0x17`, not a named IMU recovery TX.
+- **No text names one follow-up command with an exact payload.** Per gate:
+  **sent nothing** from this search (no guessed follow-up, no `6A`).
+
+#### 2) Bond-gated reconnect (stream-7 ASCII → maybe one `6A/01`)
+
+Mac CoreBluetooth reconnect. Subscribed `61080007` + `2A37` + `61080003`
+(+ `61080005` only so compact/`2B` would be visible). **No TX during the first
+15 s.**
+
+- Stream-7 notify count = **0** for the full bond window (no ASCII, no
+  `PM_EVT_CONN_SEC_SUCCEEDED`, no `PM_EVT_CONN_SEC_FAILED` / BONDING error
+  line for this connection).
+- **Bond result:** `no_stream7_ascii` — `stream-7 silent for bond window`.
+- **`6A` sent:** **no** (gate requires this-connection
+  `PM_EVT_CONN_SEC_SUCCEEDED`; silent stream-7 is not success; prior iPhone
+  peer bond lines are not reused).
+- Listen for `0x33` after gated `6A`: **N/A** (no `6A`). Compact `0x33` count
+  = **0**. Type `2B` = 0 → no `3F/00`.
+- Probe-window latest `2A37` HR: **75** bpm (15 samples, ~75–78).
+
+**Conclusion:** Local text does not authorize a refusal follow-up payload, and
+this Mac reconnect did not emit a stream-7 security-success line, so `6A`
+stayed blocked. Compact IMU still off. Holder left on `2A37`.
+
+Overnight Mac recorder (TX=0): `tools/strap-mac/overnight_watch.py` → `/tmp/atria-ble/overnight.jsonl`.
+
+### 2026-09-23 — Mac overnight passive watch (TX=0): stream-5 = 0
+
+**PHYSICAL FAIL for compact IMU (overnight passive, TX=0).** Extends the
+15-minute passive result in commit `dbf6b473`. Read-only check of an already
+running Overnight Mac passive watch — **no radio re-run this turn.** iPhone
+Bluetooth **OFF**. Process pid **36721** still alive. Log
+`/tmp/atria-ble/overnight.jsonl` spanned ~**17h31m** (`t` **0→62795**).
+
+- Stream-5 (`61080005`) value notifies = **0** (type counts empty; only
+  `notify_state` lines).
+- Compact `0x33` (`AA 94 00 B5 33` @ 152 B) = **0**.
+- `2A37` HR: **2354** samples; latest **82** bpm.
+- **Interpretation:** Compact IMU did **not** free-run overnight on this Mac
+  link. Does **not** prove compact IMU will never return. Goal remains open.
+  Holder / overnight watch left running.
+
+### 2026-09-23 — CORRECTION: the "~17.5h" overnight watch was ~4h of real link
+
+The previous entry overstates the evidence. The Mac **slept overnight** and
+`pmset -g log` shows ~20 s DarkWake cycles (dasd) until the full wake at
+**10:51:48 IST**. During each sleep, CoreBluetooth reports `state 4`
+(poweredOff) to the recorder, which tears the link down without a
+`disconnected` event. Each DarkWake reconnects, subscribes, and loses the
+radio again ~4 s later (median subscribed span **3.8 s**, **1353** spans).
+
+Real subscribed-and-awake time (recorder start 17:25 IST 22 Sep; `t` is
+seconds since then):
+
+| Window (IST) | Length | 2A37 | stream-5 | compact 0x33 |
+|---|---|---|---|---|
+| 22 Sep 17:25–18:04 | 39.5 min | ~2340 samples | 0 | 0 |
+| 22 Sep 19:08–21:09 | 120 min | **0** (strap off-wrist) | 0 | 0 |
+| 23 Sep 10:51–11:03+ | 12 min+ | resumed ~11:00 | 0 | 0 |
+| DarkWake blips | ~1350 × ~4 s | — | 0 | 0 |
+
+- Stream-5 = 0 and compact `0x33` = 0 **still hold**, but only over ~**40 min
+  of on-wrist live link**, not 17.5 h. A 2 h window was off-wrist, which
+  means no motion and no HR. Treat it as not an IMU observation.
+- Stream-7 identity lines (`gharvard` / `hboylston`) repeated on reconnects;
+  no new text.
+- Fix applied: `caffeinate -s -i -w 36721` (process-scoped assertion, ends
+  with the recorder). The lid must stay open. Any future "N hours passive"
+  claim must subtract `state != 5` time first.
+
+### 2026-09-23 — Pairing mode (side light pulsing blue): no bond, 6A still refused
+
+**PHYSICAL FAIL for compact IMU in pairing mode.** Mac is the only central, and
+iPhone Bluetooth is OFF.
+
+- **Advert in pairing mode** (`tools/strap-mac/pairing_window.py`, 8 s scan):
+  **180D + 61080001** on 98/99 packets, 180D-only on 1. The advert is NOT
+  61080001-only. The normal-mode baseline (22 Sep) was 2191 × 180D-only and
+  1 × 180D+61080001, so pairing mode is visible as "61080001 now advertised",
+  and 180D stays.
+- **Passive connect + read-all (TX=0), 11:11:53:** services 61080001, 180D,
+  180A, 180F. Every readable characteristic read without an auth error: 2A29 =
+  "WHOOP Inc.", 2A19 = 0x64 (100%). No attribute needs encryption, so macOS
+  never bonds, and the strap sent no security request. Stream-7 identity:
+  `hboylston` / `h17.2.2.0` / `kharvard_r10`. Stream-5 = 0 over ~2 min idle.
+- **Hello + ONE 6A/01 (`tools/strap-mac/pairing_6a.py`, 11:13:50, user-approved):**
+  - hello `aa0800a8230123009ac2a82c` → type-24 status 01, accepted (144 B).
+  - 6A/01 `aa0800a823026a0119b85278` → `aa0c00fc24836a0200010000`. This is the
+    same refusal as outside pairing mode (status 00, body `01 00 00`).
+  - 60 s listen: 64 × 2A37 (strap back on wrist at ~77 bpm), 2 × 0x30 events,
+    **stream-5 = 0, compact 0x33 = 0**, no stream-7 security text.
+- **Interpretation:** Pairing mode does not change the 6A refusal from a Mac
+  central, and a passive Mac central cannot create a bond, because the strap
+  does not require one. The "fresh bond unlocks IMU" hypothesis is untested,
+  not refuted, because no bond happened.
+- **Tooling note:** CoreBluetooth scripts get SIGKILLed by TCC
+  (`NSBluetoothAlwaysUsageDescription`) when the responsible app is Terminal
+  or the `claude` CLI. They run from the Claude desktop terminal panel
+  (Claude.app declares Bluetooth) or Cursor. Recorder restarted 11:15 under
+  `caffeinate -s -i` from that panel.
+
+### 2026-09-23 — Re-read of Sep 15: a 3F/01 WWR activation DID precede the first `0x33`
+
+**EVIDENCE RE-READ (no TX).** User has declared the strap expendable and asked
+for the deepest fix available. Before any new command, the Sep 15 first-`0x33`
+window was re-read against the app code.
+
+- `SEP15-MATCHING-GEN.md` lists `atria.protectedR10.activationSentAt` =
+  **01:05:49 IST 15 Sep** (activation count **597 → 601** across the pulls),
+  plus a WWR flush at 01:05:49. First type `0x31` (history end, sub 2) is at
+  01:29:40, and the first native 152-byte `0x33` is at ~01:36.
+- In `AtriaBLEManager.sendProtectedR10ActivationNowIfReady` that key is
+  stamped by exactly one TX: `encodeFrame([0x23, seq, 0x3F, 0x01])`
+  (`Cmd.sendR10R11Realtime`), sent **write-WITHOUT-response**
+  (`writeProprietaryWithoutResponse`, reason `protected_r10_3f`). Preconditions:
+  standard-HR-only mode, stream-5 CCCD confirmed, 2A37 notifying.
+- So the earlier conclusion "no logged start command, inherited mux" is
+  incomplete. The logged 6A stamps were all July, but a **`3F/01` WWR** was
+  logged ~30 min before `0x33`, with a history serve (type `0x31`) between them.
+- Differences from every Mac `3F/01` attempt on 22 Sep: the Mac used
+  write-WITH-response, stopped `3F` with `3F/00` within ~12 s of the first
+  type `2B`, and never let a history serve finish while `3F` stayed on.
+- `0x3F` is named `SEND_R10_R11_REALTIME`. Every test so far has treated it as
+  R10 (`2B`) only. Whether the compact frame is the "R11" half is **untested**.
+  It is a hypothesis, not evidence.
+
+#### Sep 15 prefs diff, inrange-34 → 38 (all times IST, 15 Sep)
+
+Only changed keys are shown. Source: each pull's `preferences.plist`.
+
+| Pull | Stream-5 callbacks (this conn) | Event keys that changed |
+|---|---|---|
+| 34 | 0 | zombie stream-5 CCCD toggle + TX rediscover 00:37:18; `3F` count 591 |
+| 35 | 0 | `3F/01` WWR 00:43:39 (count 597) |
+| 36 | **6582**, last = type `0x31` 01:29:40 | **zombie CCCD toggle + TX rediscover 01:02:06**; `3F/01` WWR 01:05:49 (601) |
+| 37 | 8086, last = **152 B `0x33`** (~01:36) | `3F/01` WWR **01:30:29** (602) |
+| 38 | 327 (**new connection**), last = `0x33` 01:50:40 | `3F/01` WWR **01:49:43** (605); history `0x22` timed out → `preserve_realtime` |
+
+Read-out:
+
+- On the fresh connection in pull 38, `3F/01` WWR at 01:49:43 is followed by a
+  native `0x33` at 01:50:40, **57 s later**, with no `6A`.
+- By pull 37, the same opcode that gives type `2B` on the Mac (22 Sep) was
+  giving `0x33`. The switch happened between 01:05 and 01:36, in a window
+  that contains: a stream-5 CCCD off→on toggle (01:02:06), `3F/01` WWR
+  (01:05:49), a long history serve on stream-5 (type `0x31`/`0x32`, 6582
+  callbacks), then `3F/01` WWR again (01:30:29).
+- The Mac never tested `3F` **during or after** a history serve, never let
+  `3F` run longer than ~12 s, and never used WWR for `3F`.
+
+Next runs (Mac, strap expendable per user, one variable each):
+**A**: `3F/01` WWR on a fresh link, no stop, listen 5 min for a `2B`→`0x33`
+change. **B**: history `16/00` running, ACK every sub 2, then `3F/01` WWR
+mid-serve; listen and keep ACKing.
+
+#### 23 Sep 11:15–12:32 IST — clean on-wrist passive window (TX=0)
+
+The recorder was restarted under `caffeinate -s -i` from the Claude terminal
+panel. It stayed on **one connection for 4629 s (~77 min)**, with no Mac sleep
+and no disconnect. 2A37: **4813** samples, max gap 1.6 s, zero `0000`
+readings (on-wrist throughout). 61080004 type `0x30`: 27. 61080007: 2.
+**Stream-5 = 0, compact `0x33` = 0.** This window is the passive baseline for
+runs A/B. The recorder is stopped for run A (the single link is needed).
+New tool: `tools/strap-mac/r10r11_probe.py`. It can send only `3F/01`
+(WWR), `16/00`, `17/01`+token, and `3F/00` cleanup when no `0x33` was seen.
+
+#### Run A — 23 Sep 12:32 IST: `3F/01` write-WITHOUT-response on a fresh Mac link
+
+**PHYSICAL FAIL for compact `0x33`.** `r10r11_probe.py 3f_wwr`, log
+`/tmp/atria-ble/r10r11-A.jsonl`. Fresh link, advert 180D only, WWR MTU 244.
+
+- TX `aa0800a823013f0151afd8bd` (WWR). Type-24 `aa0c00fc24843f010200000067290206`:
+  data `02 00 00 00` (pending), same as the with-response `3F/01` on 22 Sep.
+- Type `2B` on stream-5 from +1.4 s: 1928/1932-byte frames (`aa8407f72b…` /
+  `aa88070b2b…`), **14 per 10 s**, each followed by an 8- or 4-byte tail chunk.
+  2A37 slowed to ~7–10 samples per 10 s (89–94 bpm).
+- **`CBErrorDomain 6` at +25.3 s.** The Mac link dies under the `2B` flood like
+  the July iPhone links. The 22 Sep Mac `3F` runs survived only because
+  `3F/00` stopped them at ~12 s.
+- Compact `0x33` = 0. The write type (WWR vs with-response) does not change
+  the `3F` outcome. No cleanup `3F/00` went out (the link was gone), so `3F`
+  may still be latched on the strap.
+
+#### Run A2 — 12:33 IST: passive reconnect (TX=0) after run A's drop
+
+- Advert after the `CBError 6` drop: **180D + 61080001** (as in pairing mode),
+  so 61080001 in the advert is not a pairing-mode-only marker.
+- With **zero TX**, type `2B` resumed at +3.4 s (16 per 10 s) and the link died
+  again with **`CBErrorDomain 6` at +21.9 s**. The `3F` latch survives
+  disconnects (same as July "mode persists on the strap"). Compact `0x33` = 0.
+- **R11 identified.** Type-`2B` frames alternate two sub-records, byte 5 after
+  the type: `2b 0a …` (1928 B = **R10**) and `2b 0b …` (1932 B = **R11**).
+  `SEND_R10_R11_REALTIME` therefore yields R10 and R11 both inside type `2B`.
+  The "compact `0x33` is the R11 half of `3F`" hypothesis is **refuted**. `2B`
+  is still not compact IMU and is not relabelled.
+
+#### Run B — 12:42 IST: history serve, then `3F/01` WWR mid-serve
+
+**PHYSICAL FAIL for compact `0x33`.** `r10r11_probe.py history_3f`, log
+`/tmp/atria-ble/r10r11-B.jsonl`. Starting state: `3F` stopped (`3F/00` at
+12:34, clean 32 s link with no `2B`).
+
+- `16/00` → type-24 data `02 0b 00 00` (pending). Stream-5 served history as
+  type `0x32` console records, ~280 per 10 s (ASCII "BLE: Nordic Conn Status",
+  "Total Conns: 1", "Whoop Conn idx: 0"), plus type `0x31`: 14 × sub 1 and
+  13 × sub 2. All 13 sub-2 ends were ACKed (`17/01`+token) → data
+  `01 00 00 00`. No sub 3 in 30 s.
+- `3F/01` WWR at +33 s → type-24 `02 00 00 00`. Within 1.5 s type `2B`
+  (R10 `0a` / R11 `0b`) **replaced** the history serve: `0x32` fell from
+  ~270 to 33 in that window, then to 0.
+- `2B` ran ~16–20 per 10 s with 2A37 at ~1 Hz, and the link lasted longer than
+  run A (46 s after `3F` vs 25 s). It still died with **`CBErrorDomain 6` at
+  +79 s**.
+- Totals: `0x32` 876, `0x31` 27, `0x30` 5, `2B` 75, type-24 15. **Compact
+  `0x33` = 0.** `3F` is latched again (no cleanup was possible).
+- **Conclusion:** `3F` does not take over a running history serve as `0x33`;
+  it pre-empts history with `2B`.
+
+#### Run C — 12:45 IST: Sep 15 "zombie" stream-5 CCCD toggle, then `3F/01` WWR
+
+**PHYSICAL FAIL for compact `0x33`; link-stability change observed.**
+`r10r11_probe.py cccd_3f`, log `/tmp/atria-ble/r10r11-C.jsonl`. Latch cleared
+first (`3F/00` at 12:44:38; two leftover `2B`, then silence). RSSI −53.
+
+- Stream-5 silent for 10 s (0 frames), then **stream-5 CCCD off → 400 ms → on**
+  with 2A37 untouched. This replays `kickZombieProprietaryStreamIfNeeded`.
+  Both CCCD writes confirmed; **the link did not drop**, contradicting the
+  Sep 20 note "mid-link stream-5 CCCD toggle disconnects this V4" on this
+  Mac link.
+- 20 s later, `3F/01` WWR → type-24 `02 00 00 00` → type `2B` (R10 `0a` /
+  R11 `0b`) at ~20–22 per 10 s.
+- **No `CBErrorDomain 6` for the full 270 s of `2B`** (560 frames, 2A37 312
+  samples ≈ 1 Hz). Runs A / A2 / B died at 25 / 22 / 79 s. RSSI was better
+  here (−53 vs −63/−65/−70), so the toggle is not proven as the cause.
+- Compact `0x33` = **0**. Cleanup `3F/00` ACKed; latch off.
+- **Sep 15 ingredients now all replayed on the Mac without `0x33`:** `3F/01`
+  WWR (A), latched reconnect (A2), `3F` with history (B), stream-5 CCCD
+  toggle then `3F` (C). Still not replayed: the ~45-min repetition (eight `3F`
+  activations across reconnects) and the iPhone as central.
+
+#### Evidence scan: the same `3F/01` WWR produced `0x33` for four days, then `2B`
+
+**EVIDENCE (no TX).** Prefs across ~230 iPhone pulls, 14–19 Sep
+(`evidence/2026-09-1[4-9]*/preferences.plist` + `pull-summary.txt`):
+
+| Period (IST) | `3F` activation count | Last stream-5 notify |
+|---|---|---|
+| ≤ 14 Sep 15:32 | …498 | R10 `2B` valid (`passiveR10LastValidAt` 14 Sep 15:32:53, 342,937 frames) |
+| 14 Sep 15:32 → 15 Sep 01:05 | 498 → 601 | **silent** (stream-5 callbacks 0; `qualified_silent_stream_refresh`) |
+| 15 Sep 01:30 → 19 Sep 15:22 | 602 → **2852** | **`aa9400b533…` (compact `0x33`) in nearly every pull** |
+| 19 Sep 15:22 → 20 Sep | 2852 → 3288 | type-24 / `0x30` / `0x32`; no `0x33` |
+
+- Build `d82b42e6` (Sep 15) increments that counter at three sites. Two send
+  exactly `[23, seq, 3F, 01]` write-without-response (protected activation,
+  and the "r10_watchdog repair" in `full_protocol`). The third (`6A/01` +
+  `51`, one-time) never ran: `responseEventDataSequenceSentV9 = False`.
+- So for four days the strap answered the **same** `3F/01` with compact `0x33`,
+  where it answered R10/R11 `2B` before 14 Sep 15:32 and answers `2B` again
+  today (runs A–C). **The deciding variable is state inside the strap, not the
+  command bytes, the write type, history ordering, or the CCCD toggle.**
+- Other TX the Sep 15 build could send (via `sendCommand`): `03/00→03/01`
+  (realtime-HR re-assert when RR went to zero), `0x22`, `0x16`/`0x17` history
+  (a full drain was running: cursor 14 Sep 10:51 → 12:40 during 14 Sep 23:36 →
+  15 Sep 01:29), `0x0B`, haptics, battery. `3F`+`03` was already tried in July
+  (NOOP keeper, FAIL).
+- The July 30 feature-flag raw frames were deleted in the 19 Aug cleanup. The
+  `0x80` GET layout is not in git, so a flag diff against July would need a
+  guessed request. July had no `0x33` either, so it would not identify the
+  Sep 15 state anyway.
+
+### 2026-09-23 — Feature-flag sweep (user-authorized; strap declared expendable)
+
+**PLAN.** The user chose a bounded persistent-config sweep over the 13 firmware
+feature flags, because the evidence above puts the `0x33`-vs-`2B` choice inside
+strap state. Tool: `tools/strap-mac/ff_sweep.py`.
+
+- Opcodes: `75/01` (start key exchange), `76/01` (next key), `0x80` GET value,
+  `0x78` SET value, `3F/01` (WWR stimulus, as in Sep 15–19), `3F/00`. Nothing
+  else.
+- `0x78` body is the physically proven Jul 30 layout: `01 | key ASCII padded
+  to 32 | value ASCII padded to 32`.
+- `0x80` body is **inferred** as `01 | key padded to 32`. It is validated
+  read-only against the Jul 30 values (`enable_false_step_detection`="2",
+  `enable_r19_v4_packets`="1") before any write.
+- Per flag, one connection: read v0 → write v1 (raw "1"↔"2") → read back →
+  `3F/01` WWR → listen 20 s for `0x33` vs `2B` → `3F/00` → write v0 → read back.
+  A journal (`/tmp/atria-ble/ff-journal.json`) is written before every `0x78`
+  and cleared only after a verified restore. A pending journal is restored
+  first on the next connection.
+- Success = any 152-byte `AA 94 00 B5 33` frame. The flag is then left at v1
+  and the sweep stops.
+
+#### Read pass — 13:04 IST (no writes)
+
+- `75/01` → revision 1, count 13; `76/01` ×13 returned the same 13 keys as Jul 30.
+- **Inferred `0x80` layout confirmed**: `80 | 01 | key padded to 32` → data
+  `01 | 01 | key[32] | value…`. The value field is the ASCII digit followed by
+  stale firmware memory (`"2\0Micron continuous read mode e"` on every key).
+  The tool reads only the first ASCII token after the key.
+- **All 13 values equal the Jul 30 snapshot**: raw `"1"` = `enable_r19_v4_packets`,
+  `enable_write_r24_packets`, `enable_write_r25_packets`; raw `"2"` = the other
+  ten. So no flag changed between July (no `0x33`) and today. A flag flip is
+  still a candidate trigger, but the flags did not record the Sep 15 state.
+
+#### Trials (each: set → read back → `3F/01` WWR → 15 s → `3F/00` → restore → read back)
+
+| Time | Flag | v0 → v1 | Read back | 15 s after `3F/01` | Restore |
+|---|---|---|---|---|---|
+| 13:04:53 | `sigproc_10_sec_dp` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:08:13 | `general_ab_test` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:08:36 | `enable_capsense_wear_detect` | 2 → 1 | 1 | `2B` ×29, `0x33` 0 | 2 ✓ |
+| 13:08:59 | `enable_false_step_detection` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:09:22 | `wear_detect_bias` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:09:46 | `enable_r19_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:09 | `enable_r19_v2_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:32 | `enable_r19_v3_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:10:55 | `enable_r19_v4_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+| 13:11:18 | `enable_r19_v5_packets` | 2 → 1 | 1 | `2B` ×29, `0x33` 0 | 2 ✓ |
+| 13:11:41 | `enable_r19_v6_packets` | 2 → 1 | 1 | `2B` ×30, `0x33` 0 | 2 ✓ |
+| 13:12:05 | `enable_write_r24_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+| 13:12:27 | `enable_write_r25_packets` | 1 → 2 | 2 | `2B` ×30, `0x33` 0 | 1 ✓ |
+
+**Sweep result: PHYSICAL FAIL for compact `0x33` (13/13 flags, live-applied).**
+Every flag accepted its `0x78` write (exact key/value echo) and read back
+changed. Under each one, `3F/01` still produced R10/R11 `2B` within the listen
+window, and no `AA 94 00 B5 33` appeared. All 13 were restored and
+read-verified, and the journal is clear. The strap config is identical to the
+13:04 read pass. **Untested:** whether any flag only applies after a reboot
+(`0x1D`), and values other than raw "1"/"2".
+
+Tooling: `tools/strap-mac/runner.sh` is one long-lived Claude-panel tab that
+runs queued commands from `/tmp/atria-ble/runner.queue`. It works around the
+panel's six-tab limit and the TCC Bluetooth kill for non-panel shells.
+
+### 2026-09-23 — Feature-flag **reboot pass** (user lifted the `0x1D` ban for this pass)
+
+The user approved rebooting so that boot-time-only flags take effect. Per flag:
+`setreboot KEY` (read v0 → journal → `0x78` v1 → read back → `1D/00`) → wait →
+`checkrestore` (read key after boot → `3F/01` WWR → 15 s → `3F/00` → `0x78` v0
+→ read back). The next flag's reboot applies the previous restore. One final
+`1D/00`, then a full read pass and `clock` (re-set only if outside 2025–2027).
+
+| Flag (reboot-applied) | v0 → v1 | After reboot | 15 s after `3F/01` | Restore |
+|---|---|---|---|---|
+| `sigproc_10_sec_dp` (13:15) | 2 → 1 | 1 (persisted) | `2B` ×28, `0x33` 0 | 2 ✓ |
+
+`1D/00` → type-24 data `01 00 00 00`, clean disconnect ~0.5 s later. The first
+post-boot response sequence was **`01`** (it was 0x80–0xB0 before), which
+confirms a real firmware restart. The strap re-advertised within 20 s.
+| `general_ab_test` (13:16) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_capsense_wear_detect` (13:17) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_false_step_detection` (13:18) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `wear_detect_bias` (13:18) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_packets` (13:19) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v2_packets` (13:20) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v3_packets` (13:21) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v4_packets` (13:21) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+| `enable_r19_v5_packets` (13:22) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_r19_v6_packets` (13:23) | 2 → 1 | 1 | `2B`, `0x33` 0 | 2 ✓ |
+| `enable_write_r24_packets` (13:24) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+| `enable_write_r25_packets` (13:25) | 1 → 2 | 2 | `2B`, `0x33` 0 | 1 ✓ |
+
+**Reboot-pass result: PHYSICAL FAIL for compact `0x33` (13/13 flags,
+boot-applied).** Every flag persisted across a real `1D/00` restart and was in
+effect at boot. `3F/01` still produced R10/R11 `2B` every time, and no
+`AA 94 00 B5 33` appeared. There were 14 reboots. The strap re-advertised
+within 20 s each time, with no watchdog timeouts and no stuck journal.
+
+Post-pass state (13:26 IST): final `1D/00`, then a full read. **All 13 values
+equal the pre-sweep snapshot.** `GET_CLOCK` = 1790150167 vs wall 1790150168
+(Δ 1 s), so a `1D` reboot does **not** reset the RTC and no `SET_CLOCK` was
+sent. `3F` is off.
+
+**Conclusion of the 23 Sep deep pass.** The same `3F/01` produced compact
+`0x33` from 15 to 19 Sep and produces `2B` now. That choice is not controlled
+by: write type, history ordering, stream-5 CCCD toggling, pairing mode, bond
+state, the RTC, any of the 13 exposed feature flags (live or boot-applied),
+or a firmware restart. The state that selected `0x33` is not reachable with any
+command whose payload is known. What remains is unpublished (`SET_DP_TYPE`
+`0x34` / `FORCE_DP_TYPE` `0x35` bodies), a strap that has no BLE DFU service,
+or the iPhone app/central from Sep 15 (build `d82b42e6`), which was not
+re-run. Goal remains open.
+
+### 2026-09-23 — Mac-only continuation: FIFO-empty hypothesis (test D)
+
+User preference: Mac↔strap only. **Hypothesis H-FIFO:** firmware admits live
+compact `0x33` only when the flash FIFO is caught up (`W == U`), while R10 `2B`
+is admitted regardless. It fits Sep 14–15: a full history drain was running,
+and `0x33` first appeared ~6 min after a history-end frame (01:29:40 →
+~01:36). **Test D:** `22/00` (W/U/capacity) → `0x19` trim (`FE×8 + 00`, Jul
+30 proven; strap history is expendable) → `22/00` verify `W == U` → `3F/01` WWR
+→ listen 60 s → `3F/00` if no `0x33`.
+
+#### Test D — 13:31 IST: result
+
+**PHYSICAL FAIL; H-FIFO refuted (immediate form).** Log `/tmp/atria-ble/testD.jsonl`.
+- Pre-trim `0x22`: W=882, U=122442, capacity 131072 → **9512 pending**
+  (wrapped ring), device time 1790150462 (correct).
+- `0x19` `FE×8+00` → data `01 00 00 00`. Post-trim: **W=U=883**, pending 0.
+- `3F/01` WWR on the empty FIFO → **`2B` ×124 in 60 s**, `0x33` 0. The link
+  held all 60 s. Cleanup `3F/00` sent. Strap history is now discarded (the
+  user declared it expendable).
+
+#### Battery hypothesis — refuted (evidence, no TX)
+
+`atria.battery.level` vs last stream-5 type across the 14–21 Sep pulls: compact
+`0x33` ran at **99 %** (15 Sep 04:07), at **11 %** (19 Sep 10:21), while
+charging (15 Sep 01:36–03:25, 51 → 99 %) and while not charging (17 Sep
+13:45). After 19 Sep 15:22 it was absent at 60–80 %. Battery level and
+charge state do not gate `0x33`.
+
+#### Bond / encryption state of the Mac link — unknown, not observable passively
+
+- `blueutil --paired` (run via the runner; the Bash tool has no Bluetooth
+  TCC) lists `<strap-bt-address> "ADIDSHAFT'S WHO"` as **paired**, but
+  `blueutil --info <strap-bt-address>` reports **not paired**. The Mac holds a
+  stale entry (July 30 or 22 Sep).
+- 22 Sep stream-7 console: `PM_EVT_CONN_SEC_FAILED|…BONDING|Error 00000001h`,
+  `delete_disconnected_bonds`, `FlashChanged:YES`. The strap deleted bonds.
+  Sep 15–19 `0x33` ran on a bonded iPhone link. No strap characteristic
+  requires encryption (all reads/notifies/writes succeed), so CoreBluetooth
+  never pairs on its own. **H-BOND** (compact IMU only on an encrypted link) is
+  untested.
+- **Tool trap:** in this zsh, bare `log` is a shell builtin, and `log show …`
+  silently prints nothing. Use `/usr/bin/log`. With the real binary, bluetoothd
+  persists only ~9 lines per 75 min at default level and nothing about LE
+  security, so encryption state cannot be read from the unified log without a
+  sudo `log config` change (not done).
+
+#### H-BOND attempt — 23 Sep 16:08 / 16:10 IST (pairing mode, after Mac-side unpair)
+
+- `blueutil --unpair <strap-bt-address>`: rc 0, `--info` "not paired", but
+  `--paired` still lists the strap. System Settings "Forget" also failed
+  (user report). `blueutil --pair` → **`0x04 Page Timeout`**: blueutil pages
+  over BR/EDR, and the strap is LE-only. There is no CLI LE pairing on macOS.
+- Two pairing-mode connects (`r10r11_probe.py hello_3f`). Stream-7 console,
+  verbatim tokens:
+  `PM_EVT_BONDED_PEER_CONNECTED|Conn:0|Peer:2` → `PM_EVT_CONN_SEC_START|…|Procedure:BONDING`
+  → `PM_EVT_CONN_SEC_PARAMS_REQ|…|Bond:NO|MITM:NO|LESC:YES` → `PM_EVT_CONN_SEC_CONFIG_REQ`
+  → **`PM_EVT_CONN_SEC_FAILED|Conn:0|Peer:2|Procedure:BONDING|Error:00000001h`** ~30 s
+  after connect. The first boot-log line was `Reset Reason, RESETREAS=0x0`.
+  The second run showed `delete_disconnected_bonds called 0 times`.
+- **The strap still holds a bond for this Mac (peer 2).** The Mac side dropped
+  its keys, so it starts fresh LESC pairing on every connect, and the strap
+  fails it. Nordic SoftDevice `BLE_GAP_SEC_STATUS_TIMEOUT = 0x01` matches the
+  ~30 s timing.
+- **While that security procedure is pending, the strap answers nothing on
+  the command channel**: hello `23/00` got no type-24, and `3F/01` produced
+  no ACK and no `2B` for 60 s. 2A37 HR continued at ~1 Hz and stream-4 `0x30`
+  still arrived. The Sep 14 15:32 → Sep 15 01:05 "silent `3F`" phase in the
+  iPhone prefs has the same signature.
+- Compact `0x33` = 0 in both runs.
+
+#### 16:12 IST — REGRESSION caused by the Mac-side unpair: Mac command channel dead
+
+- `late_hello` (outside pairing mode, advert 180D only): stream-7 again shows
+  `BONDED_PEER_CONNECTED|Peer:2` → `CONN_SEC_START|BONDING` →
+  **`CONN_SEC_FAILED|Error:00000001h`** at ~+41 s. Hello `23/00` sent at +43 s
+  and `3F/01` at +55 s got **no type-24 and no stream-5 traffic** in 50 s.
+  2A37 HR and stream-4 `0x30` still flow.
+- Interpretation: until the unpair, the Mac held the LTK for the strap's
+  peer-2 bond, so every Mac link today silently encrypted and commands worked.
+  With the Mac's keys gone, each connect triggers a fresh LESC pairing that the
+  strap does not complete, and the strap then ignores the command channel on
+  that link. The 22 Sep capture shows the same failure (as peer 65535) with an
+  unanswered `6A`. The Mac later became peer 2 by a path not recorded.
+- **H-BOND is refuted by today's own runs.** From 11:13 to 13:32 the Mac link
+  was bonded (peer 2, encrypted) and still got `2B` / `6A` status 00, with no
+  `0x33`.
+- **Open repair:** re-establish a Mac↔strap bond. The strap keeps peer 2
+  (`delete_disconnected_bonds called 0 times`, including in pairing mode), and
+  macOS offers no CLI LE pairing. No bond-clearing opcode is known.
+
+#### 16:15 IST — command channel restored by toggling Mac Bluetooth; fresh bond, still `2B`
+
+- `blueutil -p 0` → 4 s → `-p 1` (via the runner). Next connect (advert 180D,
+  not pairing mode) stream-7: `BONDED_PEER_CONNECTED|Peer:2` → `CONN_SEC_START|BONDING`
+  → `CONN_SEC_CONFIG_REQ` → **`PM_EVT_CONN_SEC_SUCCEEDED|Conn:0|Peer:2|Procedure:BONDING`**
+  → **`Client requested all bonds except requesting deleted`**.
+- The Mac is re-bonded, and **the strap deleted every other bond (including the
+  iPhone's)**. The iPhone must re-pair (pairing mode) before Atria on the phone
+  can command the strap again.
+- On the fresh bond: hello `23/00` → type-24 status 01. `3F/01` WWR →
+  `02 00 00 00` → **`2B` ×14 per 10 s, `0x33` 0**. H-BOND is refuted a second
+  time, on a freshly bonded, encrypted Mac link.
+- Recovery recipe for the stuck state (keys lost on the Mac, strap keeps the
+  peer): toggle Mac Bluetooth off/on and reconnect. The half-deleted bluetoothd
+  state was blocking LESC completion. Pairing mode was not needed.
+
+## 2026-09-23 — RE-SCOPE: native R10 IMU (`2B`/`0A`) on the Mac is live, decoded, and motion-validated
+
+The user asked whether `0x33` is the only IMU, and chose "unlock the full IMU".
+**It is not the only one.** Record `2B 0A` (R10), already decoded by
+`AtriaR10MotionDecoder` in `Atria/Atria/AtriaR10Motion.swift`, carries **100
+native 6-axis samples per frame**: accel planar int16 at payload 85/285/485
+(×1/4096 g), gyro at 688/888/1088 (×0.06103515625 °/s), device second u32
+@7, HR @17. It is started by `3F/01` and has flowed on every Mac `3F` today.
+July dismissed it because the **iPhone** link died within seconds under it.
+Compact `0x33` is not R10 and is still unrecovered. R10 is reported separately
+and is **not** relabelled as `0x33`.
+
+Tool: `tools/strap-mac/r10_capture.py` (Python port of the Swift decoder, CRC
+validation, auto-reconnect, per-frame decoded JSONL).
+
+### Motion-validated capture — 16:20:49–16:23:53 IST (stream-5 CCCD toggle, then `3F/01` WWR)
+
+| Phase (IST) | Accel magnitude SD (max per 5 s) | Mean gyro | 2A37 HR |
+|---|---|---|---|
+| Still 16:21:01–16:21:26 | 0.002–0.013 g | 0.7–5.7 °/s | 66–82 |
+| **Shake 16:21:36–16:22:01** | **0.76–1.85 g** | **351–587 °/s** | 67 → 122 |
+| Still 16:22:56–16:23:51 | 0.0025–0.008 g | 0.5–2.3 °/s | 73–85 |
+
+- **180 R10 frames = 18,000 six-axis samples, 179 R11 frames, corrupt 0,
+  disconnects 0** over 184 s (the Mac link held under `2B` the whole time).
+- **Frame counter found:** payload `[3:5]` u16le increments by exactly 1 per
+  R10 frame (46931 → 47110, all deltas 1) → exact missing-frame accounting;
+  missing = 0.
+- **Frame period 0.961 s** (device span 172 s / 179 frames; wall 0.9603 s) →
+  100 samples per 0.961 s ≈ **104 Hz**. Seven same-second pairs (every ~25 s)
+  are the period, not duplicates: consecutive payloads were never identical.
+  Device-time gaps: 172 × 1 s, 7 × 0 s, none > 1 s.
+- Decoded samples: `/tmp/atria-ble/r10-samples.jsonl` (raw int16 + scales).
+
+### R11 (`2B`/`0B`) decoded from zero: raw multi-channel PPG at ~52 Hz
+
+Capture `r10_capture.py --raw` (16:28 → , log `/tmp/atria-ble/r11-raw.jsonl`),
+analyzer `tools/strap-mac/r11_analyze.py`. Every R11 frame is 1924 B (payload)
+and pairs with the R10 frame that has the same counter/second.
+
+| Bytes | Meaning |
+|---|---|
+| 0–2 | `2B 0B 00` |
+| 3–4 | u16le frame counter = paired R10 counter |
+| 5–6 | `97 01` (constant, same as R10) |
+| 7–10 | u32le device second = paired R10 |
+| 11–12 | varying (sub-second tick candidate, unverified) |
+| **13 + 425·k** (k = 0..3) | **slot k header**, 25 B; header[1] = samples per channel (`0x32` = 50, `0` = empty) |
+| **38 + 425·k** | slot k data: ch0 = 50 × int32le, ch1 = next 50 × int32le |
+| 1713–1923 | zero padding (`00 01 00 00` then zeros) |
+
+Slot headers were constant across frames:
+- slot0 `00 32 04 98 08 05 98 08 01 98 08 04 20 00 00 00 40 06 05 20 00 00 00 20 03`
+- slot1 `00 00 04 00 00 03 b4 14 01 …` (empty)
+- slot2 `00 00 02 b4 14 03 …` (empty)
+- slot3 `00 32 02 c8 00 05 00 00 01 00 00 02 20 00 00 00 00 00 05 20 …`
+
+`0x0898` (2200) in slot 0 vs `0x00c8` (200) in slot 3 is a per-slot drive or
+gain candidate (unverified).
+
+**Physiological validation (still windows, detrended DFT 40–200 bpm, fs =
+50/0.961 s ≈ 52 Hz):**
+
+| Window | 2A37 HR | s0c0 | s0c1 | s3c0 | s3c1 |
+|---|---|---|---|---|---|
+| 16:28:36–16:29:26 | 77.7 | 77 | 77 | 76 | 76 |
+| 16:30:51–16:31:21 | 71.8 | 71 | 71 | 71 | 71 |
+
+All four active channels peak at the heart rate (±1 bpm) → **R11 is raw PPG**.
+- Slot 0: large pulsatile AC (SD 1.1–3.7k counts), baselines ≈ −32k…−46k and
+  115k…161k → primary HR optical pair (green-LED candidate).
+- Slot 3: high DC (≈96–111k, ≈8.5k), small AC (SD 45–150) → red/IR (SpO2-pair
+  candidate).
+
+LED/wavelength identity is **unverified** until the off-wrist contrast is in.
+The same capture also shows the first loss accounting in action: 1 corrupt + 1
+missing R10 frame at the start (counter 47404 → 47406), counted, not filled.
+
+#### R11 off-wrist / reseat (16:33–16:37 IST) — wear gate, AGC header, 20-bit ADC
+
+- **Firmware wear gate:** while the strap was off-wrist, R10/R11 **stopped being
+  produced** with the link up and no disconnect. The device-second gap between
+  consecutive R10 frames was **145 s**, but the u16 frame counter did not skip
+  (missing stayed 1). 2A37 went silent in the same window. Two different hole
+  types must therefore be reported: *lost in transit* (counter gap) vs
+  *not produced* (device-time gap with a contiguous counter).
+- **Slot header = live AGC/drive config.** Slot-0 headers seen:
+  `…32 04 98 08 05 98 08 01 98 08 04 20 00 00 00 40 06 05 20 00 00 00 20 03` (322×, on-wrist),
+  `…32 04 16 0d 05 16 0d 01 16 0d 04 20 00 00 00 20 03 05 …` (54×) and
+  `…60 09 05 20 00 00 00 60 09` (38×) around removal/reseat. Header[2] looks
+  like an entry count, followed by `(u16le level, id)` triplets with
+  ids 5/1/4 (0x0898 → 0x0D16 when off-wrist). Raw PPG levels are only
+  comparable within one header value.
+- **ADC range:** off-wrist ambient light pinned channels at **524287 = 2¹⁹−1**
+  → signed **20-bit** samples carried in int32.
+- Off-wrist frame (16:36:00): gravity (0.93, 0.01, 0.19) (strap flat), 2A37 = 0,
+  slot-0 DC jumped to ≈ +229k / +199k.
+- Post-reseat still (16:37:05 →, new header): s0c0/s0c1/s3c0/s3c1 dominant
+  63/62/62/62 bpm vs 2A37 mean 65.1 (falling). Still PPG-locked.
+
+### R10 beyond accel/gyro — byte map from the same capture
+
+Non-IMU bytes that vary across 463 R10 frames: 2–4, 7–8, 11–15, 17–22, 27–31,
+42–57, 59–74, 76, 78–80, 84, 687, 1293–1294, 1299, 1315, 1516–1915, 1917.
+
+| Bytes | Meaning | Evidence |
+|---|---|---|
+| 3–4 | u16le frame counter (paired with R11) | +1 per frame, 0 missing across 180 s |
+| 7–10 | u32le device second | matches wall clock ±0 s |
+| **17** | HR (bpm) | equals 2A37 ±1 |
+| **18** | **RR count** (1–2) | 1 or 2 per frame |
+| **19–20 (21–22)** | **RR interval(s), u16le ms** | 786–1231 ms at 67–70 bpm, consistent with HR |
+| 42–57, 59–74 | float32-like groups (≈ `[0.01, 0.04, 0.34, 0.96]`) | **UNRESOLVED**: \|v\| ranges 0.78–4.77 and does not track accel gravity (median error 28–41°), so it is **not** a clean orientation quaternion |
+| 1492–1515 | third optical slot header: `32 04 00 00 05 00 00 01 00 00 03 …`; drive levels **0** | same format as R11 slot headers |
+| **1516–1915** | 2 × 50 int32: **ambient (LEDs-off) optical candidate** | ≈ −5 / +9…39 on-wrist; **382 / 468** as the strap came off into room light (16:33:40) |
+
+Unresolved: bytes 2, 11–15, 27–31, 76–84, 687, 1293–1315, 1917 (flags,
+sub-second tick, temperature/status candidates).
+
+### Mac-side metrics from native R10 (`tools/strap-mac/strap_metrics.py`)
+
+**HRV — PASS (source agreement).** R10 RR (bytes 18/19…) is in **milliseconds**:
+its mean matches the strap's own bpm field (still windows: 76.9 vs 77.7 bpm,
+65.5 vs 65.6 bpm). The same beats arrive on 2A37 one notification later, with
+**R10_ms = 2A37_raw × 1.024** beat-for-beat. The spec reading (raw × 1000/1024)
+makes 2A37 RR ~4.6% short (implies 80.7 / 68.7 bpm vs 77.7 / 65.4 reported).
+With the empirical scale, the two sources agree over the 16:28–16:42 capture:
+R10 RMSSD **47.1 ms**, SDNN 78.6, mean RR 871.5 (471 beats) vs 2A37 RMSSD 47.0,
+SDNN 78.8, mean RR 870.8 (469 beats). Artifact filter 300–2000 ms, |Δ| ≤ 20 %.
+**App impact:** `AtriaBLEManager` 2A37 parse uses `(raw*1000+512)/1024`, so
+app RMSSD/SDNN read ~4.6 % low on this strap (flagged as a separate task).
+
+**Steps — port done, not yet validated.** An exact Python port of
+`AtriaGyroCadenceResearchPedometer` (4 s Hann DFT, 0.5 s hop, 1.3–3.0 Hz band,
+35 °/s gate, prominence 1.6, sway 1.4, ≥2 anchors, turn discount 0.6, 100 Hz
+parity). On the 16:28–16:42 capture it reported **128 steps with zero real
+walking**. The bouts sit on the deliberate wrist-shake phases (≈90–117 spm) and
+on strap removal/reseat. Rhythmic wrist shaking is a known false-positive class
+for a wrist gyro pedometer. A counted walk plus a typing/desk negative control
+are required before any step claim.
+
+### R10 unknown-field pass (item 3), 868 frames, 16:28–16:46 IST
+
+| Bytes | Result | Evidence |
+|---|---|---|
+| **11–12** | **u16le 32.768 kHz sub-second tick** (15-bit, wraps at 32768). **Frame time = device second (7–10) + tick/32768** | consecutive frames 0.96143 s ± 0.12 ms apart (min 0.9612, max 0.9614); tick drops by ~1264 (= 0.0386 s) per frame and wraps exactly when the second repeats |
+| — | **IMU rate = 100 samples / 0.96143 s = 104.01 Hz** (LSM6DS-class 104 Hz ODR fits) | from the above |
+| 82–84 / 685–687 | IMU block headers `03 01 n` (accel) / `05 01 n` (gyro); ids 03/05; n = 99–102 (101 ×614, 100 ×268, 99 ×3, 102 ×1). 84 and 687 are always equal | storage is always exactly 3 × 100 int16; **n is not the stored-sample count** (unverified meaning, e.g. FIFO words read). A fixed 100-sample decode stays correct |
+| **13 / 14** | **wear/contact candidates**: 128/84 on-wrist, **0/128** off-wrist | off-wrist frame 16:36:08 (2A37 = 0, gravity flat) |
+| **2** | status byte, 0x29 → **0x2B** (bit 1 set) at 16:38, ~1 min after the user put the charger on (~16:37) | **charging-flag candidate** |
+| 15, 1917, 1293–1294 | rise after the charger went on (15: 74 → 184 at ~+10/min; 1917: 85 → 147; u16@1293: 1413 → 1700 stepwise) | battery/charge/temperature candidates; needs a charger-off event to separate |
+| 76, 79–80 | fall after the charger went on (194 → 159; 49k → 42k) | same |
+| 27–31 | fast/irregular | unresolved |
+| 42–74 | float-like; not a quaternion | unresolved |
+
+#### Step validation 1 — counted slow indoor walk (16:49:05–16:50:40 IST, truth 100)
+
+| Detector (exact ports of the app's) | Walk (truth 100) | Desk-use control (0) | Still control (0) |
+|---|---|---|---|
+| Gyro-cadence (`AtriaGyroCadenceResearchPedometer`, 100 Hz parity) | **161** (bout 99.5 s, median cadence 116 spm) | **10.8** (one 8 s bout) | 0 |
+| Accel-peak (`AtriaStrapPedometer`, ×1.11 gain) | **159 raw / 176** | **0** | **0** |
+
+- Active rotation lasted 16:49:05 → 16:50:40. Accel-detected steps fall
+  16:49:13 → 16:50:33 (79 s), so 100 true steps = **~76 spm (slow, counted,
+  indoor, turns)**.
+- Gyro: per-window anchor cadence jumps 82–172 spm. The time-averaged
+  rotation spectrum has no clean line at the true step rate (~1.1–1.3 Hz), and
+  the 1.3–3.0 Hz search band starts above ~78 spm, so anchors lock onto
+  harmonics.
+- Accel: median inter-detection 0.413 s (145 spm) on a ~76 spm walk →
+  double peaks per step (heel strike + push-off) on slow gait.
+- **Verdict: FAIL at slow pace for both.** The July validation (2.6 % error) was
+  normal/brisk shuttle walking. A normal-pace counted walk is needed to tell a
+  slow-gait blind spot from a general bias. No retuning on a single walk
+  (overfitting risk).
+
+#### Step validation 2 — counted normal-pace walk (16:54:16–16:55:48 IST, truth 100)
+
+| Detector | Slow walk (100) | **Normal walk (100)** | Desk (0) | Still (0) |
+|---|---|---|---|---|
+| Gyro-cadence, 100 Hz parity | 161 (+61 %) | **112.7 (+12.7 %)** (bout 84.5 s, cadence 90.5 spm) | 10.8 | 0 |
+| Gyro-cadence, measured 104 Hz | 149.7 | 111.8 | — | — |
+| Accel-peak ×1.11 | 176.5 | 169.8 (raw 153; median interval 0.423 s → double peaks) | 0 | 0 |
+
+**Verdict:**
+- Native-R10 steps on the Mac with the app's gyro-cadence detector are
+  **≈ +13 % at normal pace** and **fail on slow deliberate gait (+61 %)**.
+- The accel-peak detector double-counts both walks and is not usable as a
+  count source here (it is clean on the negatives).
+- Two labelled walks are insufficient to retune without overfitting. A
+  multi-pace labelled set (slow / normal / brisk, ≥3 each) is the prerequisite
+  for a better detector.
+- HRV from R10 RR is the validated metric (see above). Steps stay "research".
+
+### R10 bytes 1293–1294 = **native firmware step counter**; bytes 2 / 15 / 1917 after charger removal
+
+**u16le @1293 (inside the `00 01 00 00 00 <u16> …` block at 1288) is a cumulative on-strap step count:**
+- Flat at rest and during desk use (16:45–16:48: 1700 → 1700). **Walk 1 +156
+  (1700 → 1856), walk 2 +158 (1856 → 2014).** Also +56 during deliberate wrist
+  shaking and +131 across strap removal/reseat (a wrist counter responds to
+  arm motion).
+- Each bout opens with a **+11 … +13 jump** (16:29:38/16:30:20/16:33:42/16:41:36/
+  16:49:17/16:54:15/16:54:37/16:56:34), i.e. retroactive credit after gait
+  confirmation, then +1…+3 per frame (≈ 2 per 0.961 s ≈ 125 spm).
+- Bytes 1299 / 1315 flip to 36 / 8 on single frames only during walking
+  (step-event / state flag candidates).
+- Truth reconciliation is pending: the user's counted 100 per walk vs
+  firmware ~157, app gyro 161 / 113, accel 176 / 170. Walk durations
+  (~80–95 s of continuous gait) imply ~125 spm if the firmware is right, or
+  ~70 spm if exactly 100 steps were taken. Asked the user whether uncounted
+  steps (e.g. walking back to the desk) are inside the window.
+
+**Charger-off (flag cleared 16:55:21):**
+- **Byte 2 bit 1 = charging** (confirmed both edges: set ~16:38 after plug-in,
+  clear 16:55 after unplug).
+- Bytes **15** (74 → 214 while charging, now → 104) and **1917** (85 → 156, now →
+  103) rise under charge and decay after it, in smooth steps → **temperature
+  candidates**. 1917 also dropped 84 → 81 when the strap left the skin (15 did
+  not) → **1917 = skin/device temperature**, **15 = battery/charger temperature**
+  (both unscaled; units not yet calibrated).
+
+**Truth reconciliation (user):** "probably just a couple uncounted steps,
+otherwise I tried to complete at 100" → truth ≈ **102** per walk.
+
+| Walk (truth ≈ 102) | Firmware counter @1293 | App gyro-cadence | App accel-peak ×1.11 |
+|---|---|---|---|
+| 1 (slower, ~76 spm) | 156 (+53 %) | 161 (+58 %) | 176 (+73 %) |
+| 2 (normal, ~70–82 spm by duration) | 158 (+55 %) | **113 (+11 %)** | 170 (+67 %) |
+
+- The WHOOP firmware's own counter overcounts this user's indoor gait by
+  ~1.5× (≈ 2 increments per real step-second). It is a native signal, not
+  ground truth.
+- Best available: the app's gyro-cadence detector at normal pace (+11 %). Every
+  detector fails on slow/deliberate gait. The next step for steps is a labelled
+  multi-pace dataset, not retuning on two walks.
+
+### R10 float block and temperatures — resolved (2316 frames, 16:28–17:13 IST)
+
+**Bytes 40–75:**
+
+| Bytes | Meaning | Evidence |
+|---|---|---|
+| **42–45** float32 | **motion intensity** (per-frame, g-like; ≈0.007 at rest, ≈0.06 walking) | r = 0.83 with mean \|Δa\| between consecutive samples, 0.68 with accel-magnitude SD; exact formula unresolved |
+| **46–57** 3 × float32 | **calibrated mean acceleration (gravity vector), g** | r = **1.000** per axis with the frame's raw accel mean; constant difference in every frame: **x −0.005127, y −0.029297, z +0.026855 g** (= −21, −120, +110 / 4096) |
+| 58–59 | `00 00` | constant |
+| 60–61 | int16, wide range, uncorrelated with motion | unresolved |
+| **62–73** 3 × float32 | exact copy of 46–57 | identical in every frame |
+
+→ **Accelerometer factory bias:** apply `raw/4096 + (−0.005127, −0.029297, +0.026855)`
+g to the 104 Hz samples for calibrated acceleration.
+
+**Temperatures (u16le, byte after each is part of the value):**
+
+| Field | Before charge | Off-wrist (16:36) | Charging peak | 18 min after unplug | Reading |
+|---|---|---|---|---|---|
+| **u16 @1917** | 340–341 | 337 | 412 | 350 | **≈ skin/device temperature, 0.1 °C** → 34.1 °C worn, 41.2 °C charging |
+| **u16 @15** | 330 (flat) | 330 | 460 | 340 | **≈ battery temperature, 0.1 °C with 1 °C steps** → 33 °C worn, 46 °C charging |
+
+The decidegree scaling is inferred from physiological plausibility and
+direction of change. **It is not verified against a thermometer.** Absolute
+°C remain provisional (the v24 skin ADC is a separate 11-bit channel with no
+established absolute transfer).
+
+**u16 @74 / 76 / 78 / 80 = capacitive wear-sense candidates.** Worn ≈ 657 / 706 /
+986 / 704. Off-wrist frame 591 / 703 / **592** / 658 (@78 falls most). All
+shift when the charger pack is clipped on. Consistent with the
+`enable_capsense_wear_detect` feature. Wear flags 13/14 (128/84 worn, 0/128 off)
+agree.
+
+### Step validation 3 — metronome-labelled walks (truth = click count)
+
+Tool: `tools/strap-mac/metronome_walk.py` (spoken cue, 5 s lead-in, one
+click per step, auto-logged start/stop) + `tools/strap-mac/score_walks.py`
+(window = start − 3 s … stop + 6 s). Counting in the head was replaced because
+the counted walks gave soft truth.
+
+| Walk | spm | Truth | Firmware @1293 | App gyro-cadence | Accel-peak ×1.11 |
+|---|---|---|---|---|---|
+| w1 | 100 | 75 | 72 (−4.0 %) | 69.5 (−7.3 %) | 65.5 (−12.7 %) |
+| w2 | 80 | 60 | 81 (**+35.0 %**) | 66.6 (+11.0 %) | 121.0 (+101.7 %) |
+| w3 | 120 | 90 | 84 (−6.7 %) | 84.0 (−6.7 %) | 30.0 (−66.7 %) |
+| w4 | 100 | 75 | 72 (−4.0 %) | 76.4 (+1.9 %) | 45.5 (−39.3 %) |
+| w5 | 80 | 60 | 57 (−5.0 %) | 63.8 (+6.3 %) | 117.7 (+96.2 %) |
+| w6 | 120 | 90 | 81 (−10.0 %) | 84.1 (−6.6 %) | 30.0 (−66.7 %) |
+| **mean \|err\|** | | | 10.8 % (max 35) | **6.6 % (max 11)** | 63.9 % |
+| mean signed | | | +0.9 % | **−0.2 %** | +2.1 % |
+
+**Verdict:**
+- **App gyro-cadence detector on native Mac R10 = the step source**: 6.6 %
+  mean absolute error, no bias, +6…11 % at 80 spm, −7 % at 120 spm.
+- The firmware counter is decent except one +35 % outlier at 80 spm.
+- Accel-peak double-counts slow gait and misses fast gait. Unusable.
+- The earlier "+55 %" counted-walk results are explained by soft truth
+  (self-counting at ~70 spm), not by the detectors.
+
+### Stability run (3 h, started 16:42) — status at 17:23
+
+- 2367 R10 + 2366 R11 frames; corrupt 1 (startup).
+- **One unstable episode, 16:58 → 17:09:30: 18 × `CBErrorDomain 6`
+  (supervision timeout) every ~35–60 s.** Auto-reconnect worked each time, and
+  every reconnect lost 10–12 frames (counter gap; 212 missing total). Stable
+  before and since (all six walks captured with 55–57 frames each). It started
+  ~3 min after the charger was removed. The cause is unexplained (not walking
+  distance).
+
+### Negative controls + arm-down orientation gate (17:21–17:25 IST)
+
+Guided controls (spoken cues, auto-labelled `/tmp/atria-ble/control-labels.jsonl`):
+
+| Control | Firmware | App gyro | Accel |
+|---|---|---|---|
+| Typing 120 s | 0 | 0 | 0 |
+| **Talking with hands 60 s** | **126** | **82.5** | **98.8** |
+| Hand-to-mouth 30 s | 0 | 0 | 0 |
+
+Animated gesturing is a false-step class for **every** wrist detector,
+including WHOOP's firmware counter.
+
+**Discriminator: the frame gravity vector (R10 floats @46).**
+
+| Segment | Gravity (x, y, z) mean ± SD |
+|---|---|
+| 6 walks | (+0.96…+1.01, +0.32…+0.35, ≈0) ± (0.02–0.03, 0.03–0.05, 0.05) — arm hanging, x along the forearm |
+| Hand-talk | (−0.42, +0.53, +0.42) ± (0.13, 0.26, 0.39) |
+| Typing | (+0.12, −0.02, +1.02) — wrist flat |
+| Hand-to-mouth | (−0.46, −0.23, +0.31) ± (0.11, 0.70, 0.34) |
+
+**Arm-down gate** (score gyro-cadence only over contiguous frames with gravity
+x ≥ thr): at thr = 0.5, 0.7 and 0.85 the walks are unchanged (mean |err| 6.6 %,
+max 11 %) and **hand-talk 82 → 0**; typing and hand-to-mouth stay 0.
+
+Limits: one subject, one wrist (x/y signs depend on wrist and side), one
+session. Not tested: hands in pockets, carrying objects, phone to the ear,
+treadmill handrails, stairs. These could fail the gate (under-count).
+Recommended default: gx ≥ 0.7 until more labelled data exists.
+
+### Step validation 4 — carrying/holding conditions, other wrist, and a fused rule (17:36–17:46 IST)
+
+Room walks with 180° turns every 10–12 steps (the user's real environment),
+100 spm metronome, truth 75. `/tmp/atria-ble/cond-labels.jsonl`.
+
+| Condition | Gyro | Gyro arm-down gated (gx ≥ 0.7) | Firmware @1293 | Accel | Gravity mean |
+|---|---|---|---|---|---|
+| Hands in pockets | 68.5 | 68.5 (−8.7 %) | 89 (+18.7 %) | 116.6 | (+0.89, +0.47, 0.01) |
+| Bag in strap hand | **27.9 (−63 %)** | 27.9 | **74 (−1.3 %)** | 51.1 | (+0.99, +0.17, 0.04) |
+| Phone in strap hand | **23.1 (−69 %)** | 0 | **65 (−13 %)** | 58.8 | (−0.23, +0.92, −0.23) |
+| **Other wrist** | **72.3 (−3.6 %)** | 0 (sign!) | 77 (+2.7 %) | 102.1 | **(−1.00, +0.23, −0.06)** |
+| Other wrist, hand-talk (truth 0) | 70.9 | 0 | **110** | 103.2 | (−0.20, +0.72, −0.11) |
+
+- The gyro-cadence detector needs arm swing. Carrying or holding something
+  breaks it; the firmware counter survives it.
+- On the other wrist gravity x flips sign, so the arm-down gate must be
+  **|gx| ≥ 0.7**.
+
+**Walking discriminator: accel-magnitude autocorrelation peak (lags 0.35–1.2 s).**
+All 11 walks score 0.295–0.626. Typing / hand-talk (both wrists) /
+hand-to-mouth score 0.027–0.111. A threshold of 0.2 separates them with margin.
+
+**Fused rule (candidate):** if accel periodicity < 0.2 → 0 steps; else if
+gyro ≥ 0.7 × firmware → gyro count; else firmware count.
+
+| All labelled segments | Result |
+|---|---|
+| 10 walks (80/100/120 spm, pockets, bag, phone, other wrist) | **mean \|err\| 6.7 %, max 13.3 % (phone)** |
+| 4 controls (typing, hand-to-mouth, hand-talk ×2 wrists) | **0 false steps** (firmware alone: 236) |
+
+**Caveat:** the rule was designed on the same segments (in-sample) and
+evaluated per whole segment. A production version must run on rolling windows
+(~10 s) and be re-validated on fresh labelled walks before any product use.
+
+### Fused step estimator — continuous (windowed) version, validated on the whole stream
+
+The segment-level fused rule was too optimistic. Run continuously (no labels),
+it scored **900 vs 750 (+20 %)**: in ~10 s windows, rhythmic hand-talk bursts
+passed the periodicity gate and fell back to the firmware counter (+97 during
+the other-wrist hand-talk).
+
+Per-window features (10 frames, inside labelled segments):
+
+| Feature | Walks (70 windows) | Gestures (18) | Typing / hand-to-mouth (27) |
+|---|---|---|---|
+| accel periodicity | 0.275–0.732 | 0.104–**0.284** | 0–0.194 |
+| **gravity-vector SD (orientation wobble)** | **0.040–0.107** | **0.262–0.532** | 0.013–0.744 |
+| accel bounce SD | 0.107–0.259 | 0.246–0.470 | 0.011–0.110 |
+
+Orientation wobble separates walking from gesturing with margin (physical: the
+forearm holds a steady angle while walking, even with a phone or bag).
+
+**Estimator (`tools/strap-mac/fused_steps.py`):** 10-frame windows, hop 5;
+WALKING = gravity SD ≤ 0.18 **and** periodicity ≥ 0.25; bouts = frames covered by
+walking windows; per bout gyro-cadence if ≥ 0.7 × firmware delta else firmware
+delta.
+
+| Whole capture 17:13:52–17:44:03 (rests, turns, all conditions) | Result |
+|---|---|
+| Total vs labelled truth | **722.5 vs 750 (−3.7 %)** |
+| Per walk | −15 % (pockets) … +4 % |
+| Typing, hand-to-mouth, hand-talk ×2 wrists | **0, 0, 0, 0 false steps** |
+
+n = 1 subject, one session; thresholds are physical and wrist-agnostic, but
+must be re-validated on more people (population rule).
+
+### Stairs (17:47:50–17:48:50 IST) — truth 88 (4 flights × 11 up + 4 × 11 down, stopwatch laps)
+
+- Motion burst 17:47:50–17:48:50 (rotation 120–258 °/s; the phone was in hand
+  pressing laps). **The Mac link dropped twice at the top of the stairs
+  (17:48:02–10, 17:48:19–28, ≈17 s lost)**: the stairs are at the edge of Mac
+  BLE range.
+- **Firmware step counter keeps counting while disconnected:** +23 and +27
+  across the two gaps (the value after reconnect includes the gap steps).
+  Useful for the app: bridge link gaps with the strap's own count (real,
+  not interpolated).
+- Scores are inconclusive because the window also holds uncounted approach/return
+  walking: fused 34.6 (gaps split the bout below window length and stair
+  orientation wobble exceeded the gate), gyro-only 93.3, firmware 147 over
+  17:47:30–17:49:09.
+- Design consequences:
+  1. Bridge BLE gaps using the firmware counter delta when the frames on both
+     sides of the gap are walking.
+  2. Stairs need their own labelled capture within range before any stair claim.
+
+### App port (offline, no device) — 2026-09-23
+
+- `Atria/Atria/AtriaWhoop4R10Record.swift`: `AtriaWhoop4R10Record` (frame
+  counter, 32.768 kHz sub-second time, HR, RR ms, motion intensity, calibrated
+  gravity, firmware step counter, provisional skin/battery temperatures,
+  charging/wear/capsense) and `AtriaWhoop4R11PPGRecord` (4 slots × 2 × int32).
+- `Atria/Atria/AtriaWhoop4FusedStepEstimator.swift`: exact port of
+  `tools/strap-mac/fused_steps.py`.
+- `Atria/AtriaTests/AtriaWhoop4R10RecordTests.swift`: 5 tests on real Mac-captured
+  payloads, all **passed** (iPhone 17 Pro sim). Swift matches the Python
+  reference within ±1 step (walk 73.6 vs truth 75; bag 74 via firmware counter;
+  hand-talk 0; typing 0). R11 decodes slots 0/3 active, within the 20-bit range.
+- The fixture `Atria/AtriaTests/Fixtures/whoop4-r10-r11-mac-2026-09-23.jsonl`
+  (688 KB) holds the owner's HR/RR/motion and is **left untracked** (the repo
+  has a GitHub remote). Tests skip when it is absent.
+- `test_handoff_static_checks.py`: 77 failures with and without these files
+  (identical sets): pre-existing, none introduced.
+- Not yet wired into the live BLE path. Production still blocks `3F`
+  (`protectedStandardHRAllowsR10RealtimeFlood == false`); enabling it needs the
+  iPhone link test.
+
+## 2026-09-23 — Disconnects: graceful, lossless flush (user requirement: out-of-range at a gym etc.)
+
+Tool: `tools/strap-mac/flush_probe.py` (controlled Mac disconnect = out-of-range
+stand-in; metronome walk during the gap). History rows are type `0x2F` (v24,
+104-byte frames), device second at inner [7:11], ~1 per second. 0x22 W/U are
+pages of ~10 rows.
+
+**What survives a disconnect:**
+- **Live R10/R11 raw: lost.** The frame counter keeps running (82 frames in
+  78 s) but frames are neither sent nor stored.
+- **Firmware step counter: keeps counting on the strap** (gap walks: +71 vs 60,
+  +48 vs 45, +57 vs 45 metronome steps; the stairs gaps also advanced).
+- **Flash history (1 Hz v24 rows with HR/motion): kept, drainable.**
+
+**Runs:**
+
+| Run | Setup | Result |
+|---|---|---|
+| flush1 | no trim, 75 s gap, 0x22 polled every 5 s during drain | 140 rows served in **9.2 s (14.6× realtime)**, then **stalled** (U +9 pages, then frozen for 110 s). Rows were the oldest (13:32) of a 1713-page / ~4.5 h backlog, oldest-first with no seek, so the gap was unreachable quickly |
+| flush2 | `0x19` trim first, 60 s gap, no polling | backlog after gap = 3 pages; drained to reconnect time in 2.2 s. **But rows started at 18:05:00, not the gap start 18:04:25 (~35 s lost)**: U had advanced 2624 → 2630 by itself |
+| trimwatch | after trim: live off 60 s, then live on 60 s | **live off: U follows W−1 every page with no data delivered (silently discarded)**; live on: U frozen, backlog +1 page per 10 s |
+| flush3 | no trim; pre-gap catch-up drain | catch-up 188 rows in 9.7 s (19× realtime), continuous 18:07:42–18:10:42 (0 holes). Post-gap drain aborted by a probe timer bug |
+| **flush4** | **no trim; catch-up drain → live → 60 s gap (walk 45) → reconnect → drain** | catch-up 185 rows / 18.9 s; **post-gap 129 rows / 7.3 s**, stopped at reconnect time; live resumed. **History covers 18:10:26–18:14:59 with 0 missing seconds; the 69-s disconnect covered 69/70 s** (the 70th is the first live frame). Firmware steps across gap 3562 → 3619 |
+
+**Conclusions → app design ("smart flush"):**
+1. **Never use `0x19` trim for ongoing management.** After a trim the strap
+   discards pages while connected with live off (data loss). Keep trim only
+   as an explicit one-time "start fresh" at pairing.
+2. **Live `3F` freezes the history read cursor**, so the backlog grows while
+   live. Keep it small with a **duty cycle**: every few minutes pause live
+   (`3F/00`), drain to the current time with ACKs (≈15–19× realtime, so a 5-min
+   backlog ≈ 20 s), `14/00`, resume live (`3F/01`). Stop by row timestamp, not
+   by polling (polling 0x22 mid-drain stalled the serve).
+3. **On reconnect:** credit gap steps immediately from the firmware counter
+   delta; pause live; drain the gap (seconds for minutes of gap); resume live.
+   Raw 104 Hz IMU/PPG for the gap is not recoverable; 1 Hz history + firmware
+   steps fill it honestly.
+4. Open: byte 17 of the v24 row is HR-like but one gap row read 3. The v24
+   layout is decoded elsewhere in the app; reuse that decoder rather than
+   guessing.
+
+### Skin temperature reference point (18:21 IST)
+
+User's home digital thermometer on wrist skin at the strap edge: **92.1 °F = 33.4 °C**.
+Room ≈ 29 °C (windows open; weather app). Strap at 18:20–18:22 (99 frames, worn,
+not charging): **u16@1917 = 327–330 → 32.9 °C**; u16@15 = 320 → 32.0 °C.
+→ u16@1917 is consistent with **skin temperature in 0.1 °C**, reading ~0.5 °C
+below a contact thermometer at one point. u16@15 (32.0) sits between skin
+and room, consistent with an internal/battery temperature. One point: scale
+and offset plausible, slope unverified. Per the population rule, the app
+should show temperature as a per-user baseline deviation, not absolute °C.
+
+### Overnight capture tool (`tools/strap-mac/night_capture.py`)
+
+Live R10/R11/2A37 stored whole; lossless duty-cycle drain every 300 s (3F/00 →
+16 + ACK → stop at row ≥ target → 14 → 3F/01); on reconnect the gap is drained
+and the firmware-counter steps are bridged. 4-min trial (drain every 60 s):
+4 drains all `caught_up` (381 rows / 19.4 s, then 64 / 4.6 s, 93 / 5.8 s),
+0 corrupt, 0 disconnects. R10 frames not sent during deliberate drain pauses
+are counted as `drain_paused_frames` (covered by history rows), separate from
+`missing`.
+
+### Overnight + gym plan (started 18:29:42 IST, 16 h)
+
+`night_capture.py --duration 57600 --drain-every 300 --drain-max 600` →
+`/tmp/atria-ble/night2.jsonl` (events) and `night2-raw.jsonl` (all payloads).
+The first capture (18:24–18:29, `night.jsonl`) had one periodic drain
+`caught_up` (467 rows / 22.6 s), 0 missing / corrupt / disconnects. It was
+restarted only to raise the drain cap to 10 min.
+
+**Real-world long-gap test:** the user wears the strap to the gym (out of
+range the whole session) while the Mac capture stays home. On return the
+capture must reconnect, bridge gym steps from the firmware counter, drain the
+entire session from flash history (~19× realtime), and resume live.
+Verification afterwards: 0 missing seconds across the session in the history
+rows. Raw 104 Hz IMU for the session is not recoverable (strap does not store
+it). Sleep ground truth: the user notes lights-off, wake time and wake-ups;
+plus a morning thermometer reading for a second temperature point.
+
+### App port: lossless flush planner (`Atria/Atria/AtriaWhoop4LiveFlushPlanner.swift`)
+
+A pure state machine (disconnected → awaitingFirstFrame → live ⇄ draining)
+encoding the Mac-validated flush design. It emits only `3F/01`, `3F/00`,
+`16/00`, `17/01+token`, `14/00`: no trim, no mid-drain `0x22`.
+- Periodic drain every 300 s while live. Target = device-now − 1 s (from the
+  R10 second + 32.768 kHz tick). Ends on a row ≥ target, sub-3 complete, or a
+  600-s timeout, then `14/00` + `3F/01`.
+- On reconnect: waits for the first latched live frame, logs `gapBridged`
+  (firmware-counter delta, u16-wrap-safe, frames not received), and drains the
+  gap before resuming. If no frame arrives within 5 s, retries `3F/01` once
+  (strap reboot / lost latch).
+- Accounting separates `missingFrames` (transit loss while live) from
+  `drainPausedFrames` (deliberate pause, covered by history rows).
+- `AtriaWhoop4LiveFlushPlannerTests`: 6 scenario tests **passed** with the
+  5 decoder/estimator tests (iPhone 17 Pro sim). **Not wired into
+  `AtriaBLEManager` yet**; that and the iPhone link test are the next step.
+
+Overnight capture status at 21:09 IST (`night2`, the same logic in Python):
+9431 R10 / 9431 R11 / 9905 HR samples, 33 drains all `caught_up`,
+0 timeouts, 1 disconnect (18 firmware steps bridged), 0 corrupt, 3 missing.
+
+### Evening incidents → two robustness fixes (night2, 21:05–22:28 IST)
+
+- **Recovery worked for every ordinary drop:** 21:07 / 21:13 / 21:23 / 21:30 /
+  21:37 / 21:59. Each ~12–15 s gap was drained in 10–22 s (`caught_up`) with
+  firmware steps bridged (0–19 per gap).
+- **Stalled drain (21:43):** after a burst of 8 rapid disconnects (21:42:23–21:43:06,
+  user moving) the reconnect drain received **0 rows for the full 600-s cap**. No
+  history was lost (the 21:55 periodic drain served 1011 rows in 41 s), but live
+  R10 was paused 21:43–21:53. **Fix:** a drain with no row for 20 s ends as
+  `stalled`, live resumes, and a retry drain runs 60 s later (`night_capture.py
+  --drain-stall`, and `AtriaWhoop4LiveFlushPlanner.drainStallTimeout` /
+  `stallRetryDelay`, test `testStalledDrainResumesLiveQuicklyAndRetries`).
+- **Hung connect (22:01–22:28):** after a restart the capture found no strap for
+  ~26 min although a scan-only check saw it advertising (93 adverts / 15 s,
+  −72 dBm). A CoreBluetooth connect request was pending forever. **Fix:**
+  20-s connect watchdog (cancel + rescan) and a `didFailToConnect` rescan.
+  Reconnected immediately at 22:28:20 (discovery RSSI −94 dBm, far).
+- Planner tests: 7/7 pass.
+
+### Power policy (`Atria/Atria/AtriaWhoop4PowerPolicy.swift`) wired into the flush planner
+
+Owner requirement: manage strap and phone battery. Deferring a flush is
+lossless (history waits in strap flash), so low battery delays data but never
+drops it. 2A37 HR always stays on.
+
+| Condition (first match wins) | Live R10/R11 | Flush |
+|---|---|---|
+| strap ≤ 5 % not charging | off | paused |
+| phone thermal critical | off | paused |
+| strap or phone charging | on unless the strap is low and not charging, or the phone is conserving | **asap** (drain every 60 s) |
+| strap < 20 % (resume 25 %) | off | **paused** |
+| phone < 20 % (resume 25 %) / Low Power Mode / thermal ≥ serious | off | every 30 min |
+| strap < 25 % (resume 30 %) | off | every 5 min |
+| otherwise | on | every 5 min + on reconnect |
+
+The 25 % live threshold reuses `AtriaBLEManager.lowBatteryWarningThreshold`
+(a 13 % strap dropped the link ~12 s after R10 started); the 5 % level reuses
+the broadcast shutoff. The planner never sends `3F/01` while live is
+disallowed, emits `3F/00` when policy turns live off mid-stream, and with live
+off drains immediately after a reconnect (no latched frames to wait for). With
+live off no post-gap firmware-counter reading exists, so gap steps are bridged
+when live next resumes.
+
+Tests: `AtriaWhoop4PowerPolicyTests` 8/8, `AtriaWhoop4LiveFlushPlannerTests`
+10/10, `AtriaWhoop4R10RecordTests` 5/5, all passed.
+
+**Sleep ground truth 2026-09-23:** lights off **22:49 IST** (user report). Wake time and a morning thermometer reading will follow. Capture: `night4` (started 22:28, `night4.jsonl` / `night4-raw.jsonl`).
+Bluetooth speaker (ACTON III) switched off by the user at ~23:35 IST (possible 2.4 GHz contention before this).
+
+### Night 2026-09-23/24 — coverage, first-read sleep timeline, ground truth
+
+**Coverage (lights-off 22:49 → 08:05):** 33,356 / 33,374 s covered (99.95 %);
+live 104 Hz R10 for 30,304 s (90.8 %), flash history filled the rest. The only
+hole was the undrained last 18 s (08:03:21–38). 138 drains: 126 `caught_up`,
+10 `stalled` (retried by the new stall logic, no loss), 0 timeouts.
+132 disconnects, clustered in the 05 h (38) and 07 h (85) hours (movement /
+arm under body); 9 before 05:00. The Bluetooth speaker was switched off at bedtime.
+
+**First-read timeline (10-min bins of R10 HR, motion-intensity float @42, RR
+RMSSD, firmware steps, skin u16@1917):** settling 22:49–23:40 → asleep ~23:40 →
+restless 00:30–01:50 → **up 02:00–02:25** (HR 92, ~950 firmware steps, skin
+34.6 → 28.7 °C) → deepest/steadiest 02:30–06:30 (HR 70 → 60, RMSSD 42–63 ms) →
+light sleep / quiet wake 06:40–08:05 (HR 57–64, RMSSD 54–80 ms).
+**User confirmed:** up around 2 am (correct); woke **08:01**.
+
+**Temperature reference, second point:** home thermometer 97.8 °F = 36.6 °C at
+~08:10 vs strap u16@1917 = 34.1–34.3 °C (−2.3 °C). The evening point was −0.5 °C.
+The strap moved +1.3 °C and the thermometer +3.2 °C between the points:
+inconsistent, as expected from a predictive fever thermometer used on skin.
+**A clinical thermometer cannot calibrate absolute skin temperature;** the
+strap field is trusted for relative change only (deviation-from-baseline
+policy stands).
+
+## 2026-09-24 — Night-timeline analyzer (deterministic, on-device) + morning "what was it?" prompts
+
+Decision (owner Q "train a small language model or do it statically?"):
+**deterministic on-device analysis**; any language model may only *phrase*
+structured findings, never compute or invent numbers.
+
+- Reference `tools/strap-mac/night_timeline.py`; app port
+  `Atria/Atria/AtriaNightTimelineAnalyzer.swift`. Input: per-minute HR,
+  motion-intensity float @42 (`nil` for history-only minutes), firmware steps,
+  RR ms, off-wrist.
+- Self-calibrating rules (population rule): still = motion ≤ 2.5 × the night's
+  10th-percentile motion with 0 steps; up = ≥ 2 consecutive minutes with steps
+  totalling ≥ 40 (roll-overs are isolated 12–55-step one-minute bursts, walking
+  runs many minutes); onset/final wake = first/last 20-min window ≥ 80 % still;
+  interruptions merge across ≤ 2-min still gaps and split into restless lead-in
+  / walking core / restless tail; "longest undisturbed stretch" between
+  interruptions. **No deep/REM staging is claimed.** Final wake has ~±10 min
+  uncertainty (lying still after waking reads as rest).
+- Golden night (owner-confirmed): asleep 23:41 (truth ~23:40), up 01:43–02:28
+  (~1,019 steps; truth "around 2 am"), restless 00:31–01:12 and 04:04, wake
+  08:09 (truth 08:01).
+- Morning prompt model (owner idea): `interruptionsToAsk` (all up episodes +
+  restless ≥ 5 min in the sleep window) and `AtriaNightInterruptionLabel`
+  (bathroom, water/food, child/pet, work/task, couldn't sleep, noise/partner,
+  intimacy, other). `isSensitive` (intimacy) keeps a label off every
+  off-device path by default. The morning card UI is pending (UI pass).
+- `AtriaNightTimelineAnalyzerTests` 7/7 **passed**: exact Python parity
+  (onset, wake, episode kinds), ground-truth tolerances, 3×-noisier-strap
+  invariance, isolated bursts ≠ up, sustained walking → up and asked,
+  off-wrist → not worn, no sustained rest → no sleep claimed. Fixture
+  `whoop4-night-2026-09-23-minutes.json` is untracked (private).
+
+### Personal baselines: ups and downs (2026-09-24)
+
+`Atria/Atria/AtriaNightBaseline.swift`. Each night becomes an
+`AtriaNightSummary`: onset, wake, asleep = window − restless/up/not-worn
+minutes, disturbed minutes, interruptions, ups, sleeping HR (median of
+still/unknown minutes), sleeping RMSSD (RR from still/unknown minutes, 20 %
+artefact filter, ≥ 20 beats) and coverage (data minutes / window minutes).
+
+`AtriaNightBaseline.compare(tonight:history:)` compares a night only with
+**the same person's** prior nights. The population rule applies: no fixed
+norms.
+
+- **Qualifying nights:** coverage ≥ 0.8. Uses the last 28. With fewer than
+  5 it returns `.learning(n, 5)`, not a guess.
+- **Robust centre and spread:** median and 1.4826·MAD. Bedtime and wake use
+  circular mean and circular MAD on the 24 h clock. Bedtimes around midnight
+  and afternoon sleepers (the owner sleeps ~13:15–19:15 on shifted days) work
+  without the noon-anchor split.
+- **Flag rule:** it needs both a z-score over the person's own spread (with a
+  per-metric floor) **and** a minimum absolute effect (bedtime/wake 45 min,
+  asleep 30 min, disturbed 20 min, HR 4 bpm, HRV 10 ms). |z| ≥ 1 is notable
+  and ≥ 2.5 is unusual. A very consistent person is not alarmed by a 2 bpm
+  wobble.
+- **Output:** templated sentences, e.g. "Sleeping heart rate 70 bpm,
+  10 unusually higher than usual." They say "unusual for you" and never give
+  a diagnosis. A language model may rephrase them but gets only these
+  structured fields.
+- **Tests:** `AtriaNightBaselineTests` passed 9/9. They cover the learning
+  state, the low-coverage exclusion, an all-typical night, the +10 bpm HR →
+  unusual/higher case, and minimum-effect gating. They also cover midnight
+  circular bedtime, afternoon sleeper typical versus late → unusual/later,
+  and circular helpers (bug found and fixed: the mean could return 1440
+  instead of 0). The golden-night summary is plausible: coverage > 0.95,
+  1 up, HR ~64. With one real night, the owner is in `.learning` until
+  5 qualifying nights exist.
+
+### First-run setup rework: deterministic, coded errors (2026-09-24)
+
+The owner asked to rework onboarding: "easier, deterministic, non sluggish,
+100% success rate or clear classified error".
+
+- **Flow:** four pages, in order: welcome → strap → about you → tonight.
+  - It is an explicit step switch, not a swipeable paged `TabView`. The paged
+    view mounted all 8 pages up front (slow first frame). It also let a swipe
+    skip strap setup, and the last page then bounced the user back.
+  - The nickname field moved onto the About you page.
+  - Rings, tracked behaviours and cycle tracking keep their defaults and stay
+    editable in Customize / Journal / Settings.
+- **Engine:** `Atria/Atria/AtriaStrapSetup.swift`, a pure model.
+  - `Tracker` records one attempt's timeline: radio wait, searching,
+    connecting, connected, secure-check run, drops, and classified errors.
+    Counters are relative to the attempt start, so a retry never inherits old
+    errors.
+  - `evaluate` returns a four-row checklist (Bluetooth / Find strap /
+    Secure pairing / Heart rate) and at most one coded problem.
+- **Ready rule:** this attempt's read-only `22/00` write-with-response is
+  confirmed. That proves the iOS bond and the protected command channel.
+  - Ready latches, so later link blips never un-verify setup.
+  - Heart rate is shown live but is **not** a gate. The wear gate pauses HR
+    while the strap is off-wrist; waiting for HR was the old "stuck waiting
+    for a fresh signal" failure.
+- **Budgets:** radio 8 s, find 30 s, connect 30 s, verify 75 s. Connect was raised from 20 s after the first iPhone run: the transport holds a stale state-restored "connecting" strap for its own 20 s watchdog before scanning. The "Tap Pair"
+  hint appears after 8 s of the secure check. ≥ 3 drops before verification
+  count as an unstable link.
+  - A unit test (`AtriaStrapSetupTests.testNoStateSpinsPastTheLongestBudget`)
+    enumerates radio × link × secure-check states. Every one resolves to ready
+    or a coded problem, so no state can spin without an explanation.
+  - Problems stay advisory while the scan keeps working: "not found" clears by
+    itself the moment the strap appears.
+- **Transport signals:** the BLE manager publishes `strapSetupSignals`:
+  - distinct WHOOP adverts seen;
+  - classified `didFailToConnect` / `didDisconnect` errors;
+  - the secure-check verdict, plus a run counter that stops a stale verdict
+    being read as the current one.
+- **Retry:** `retryOnboardingSecureCheck()` gives the current connection one
+  fresh check. Late callbacks from the abandoned check are fenced by
+  generation.
+- **Bootstrap:** completion now requires a verified secure check. Before, a
+  bare connection completed setup even after a declined pairing.
+  `isSetupComplete` binds to the current strap, else the saved one, so a
+  finished user is never bounced back into setup by a dropped link.
+
+| Code | Problem | Trigger | Action |
+|---|---|---|---|
+| AT-101 | Bluetooth is off | radio powered off | wait (resumes by itself) |
+| AT-102 | Atria can't use Bluetooth | permission denied | Open Settings |
+| AT-103 | No Bluetooth LE | radio unsupported | wait |
+| AT-104 | Bluetooth isn't responding | radio unknown/resetting > 8 s | Try again |
+| AT-201 | Strap not found | no connection within 30 s of searching | Try again (scan continues) |
+| AT-202 | Found, won't connect | connecting > 30 s | Try again |
+| AT-203 | Connection keeps dropping | ≥ 3 drops before verification | Try again |
+| AT-204 | Too many paired devices | CBError 16 | Try again |
+| AT-301 | Strap forgot this iPhone | CBError 14 (bond removed) | Forget in Settings, then Try again |
+| AT-302 | Pairing wasn't accepted | CBError 15 / ATT 0x05·0x0C·0x0F / secure check needs security | Try again, then tap Pair |
+| AT-303 | Pairing taking too long | connected > 75 s without verification | Try again |
+| AT-304 | Strap didn't answer | secure check failed (no TX / write error) | Try again |
+
+### First iPhone run of the new setup (2026-09-24, 13:28–13:40 IST)
+
+- **Order of events:**
+  - AT-101 while phone Bluetooth was off; it cleared by itself when Bluetooth
+    came on. Strap found in 0.3 s, connected 0.7 s later.
+  - AT-302 twice: "Encryption is insufficient", then "Authentication is
+    insufficient". That is the iPhone's stale key after the Mac bond test
+    wiped the strap's side.
+  - After re-pairing, the secure check was confirmed at 13:30:39 and setup was
+    recorded as complete.
+- **Two false or early verdicts, both fixed:**
+  - AT-203 fired on the transport's own central rebuild (radio briefly
+    unknown) while the user re-paired. Drops now count only when the radio is
+    on on both sides, and the limit is raised to 4.
+  - AT-304 appeared after Try again: TX had not yet been rediscovered after
+    that rebuild, so the 15 s wait ran out. `.failed` now gets the same quiet
+    automatic retry as `.interrupted`, and the verdict re-reads state after an
+    automatic retry so the replaced failure never flashes.
+  - The connect budget went from 20 s to 30 s, above the transport's 20 s
+    watchdog for a stale restored candidate.
+- **Connected and verified, but no 2A37 HR for about 9 minutes:**
+  - The Mac recorder's shutdown sent `3F/00` and then, from a drain timer in
+    the same second, `16/00`, and disconnected without `14/00`. A strap
+    serving history stops 2A37 (see 2026-07-28).
+  - Fixes:
+    - the recorder never starts a drain while finishing and sends `14/00` on
+      exit;
+    - the app sends one `14/00` per connection when the link has delivered no
+      HR for 20 s and the app owns no history transfer
+      (`shouldAbortOrphanedStrapHistory`).
+  - HR resumed on the next launch within 20 s, so the abort never fired. The
+    orphaned-transfer cause is **plausible, not proven**; a fit adjustment
+    happened at the same time.
+- **Data loss (not caused by the installs):**
+  - The app container was recreated between 13:23 (38 resident + 692 archived
+    sessions) and 13:28 (0), consistent with the app being deleted. The only
+    file afterwards was the 13:31 onboarding backup.
+  - A partial pull from 2026-09-20 22:21 exists at
+    `/private/tmp/atria-imu-240-nokill-pull`: sessions, rollups, metrics,
+    workouts, preferences and motion stores. It has no raw HR archive.

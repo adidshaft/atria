@@ -304,6 +304,64 @@ final class AtriaHistoricalSealedCatalogMaterializerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
     }
 
+    /// 2026-10-01: an oldest-first strap never sends HISTORY_COMPLETE, so raw
+    /// retirement had no completion record. The drain cursor attests the
+    /// archive start through itself, only once it clears the chunk's
+    /// consumer lookahead.
+    func testDrainCursorPastLookaheadRecordsDrainedThroughCompletion() async throws {
+        let root = try temporaryDirectory()
+        let ids = IdentifierSource(["active-a", "active-b"])
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            maximumActiveBytes: 1,
+            makeIdentifier: ids.next
+        )
+        let created = Date(timeIntervalSince1970: 2_000)
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: created)
+        let source = try store.writableChunkURL(now: created)
+        try write([record(unix: 1_800_000_000)], to: source)
+        try store.recordAppendCompleted(at: source)
+        _ = try store.writableChunkURL(now: created.addingTimeInterval(1))
+        _ = try await Task.detached {
+            try AtriaHistoricalSealedCatalogMaterializer.materializeNext(
+                catalogStore: store,
+                archiveRoot: root,
+                aggregateDirectoryURL: root.appendingPathComponent("aggregates-v2"),
+                manifestDirectoryURL: root.appendingPathComponent("retention-manifests-v2"),
+                now: Date(timeIntervalSince1970: 99_000)
+            )
+        }.value
+        let chunkEnd: TimeInterval = 1_800_000_000
+        let lookahead = HistoricalArchive.drainedThroughCompletionLookahead
+        let completions = AtriaHistoricalDrainCompletionGenerationStore(
+            directoryURL: root.appendingPathComponent("drain-completions-v1")
+        )
+
+        let early = chunkEnd + lookahead - 60
+        XCTAssertFalse(try HistoricalArchive.recordDrainedThroughCompletionIfNeeded(
+            chunkID: "active-a", catalogStore: store, drainCursorUnix: early,
+            archiveRoot: root, now: Date(timeIntervalSince1970: early + 60)))
+        XCTAssertThrowsError(try completions.loadLatest(),
+                             "a cursor inside the lookahead attests nothing")
+
+        let past = chunkEnd + lookahead + 60
+        let now = Date(timeIntervalSince1970: past + 60)
+        XCTAssertTrue(try HistoricalArchive.recordDrainedThroughCompletionIfNeeded(
+            chunkID: "active-a", catalogStore: store, drainCursorUnix: past,
+            archiveRoot: root, now: now))
+        let record = try completions.loadLatest()
+        XCTAssertEqual(record.requestedEnd.timeIntervalSince1970, past, accuracy: 0.001)
+        XCTAssertEqual(record.catalogGeneration, try store.snapshot().generation)
+        XCTAssertLessThanOrEqual(record.requestedStart.timeIntervalSince1970, chunkEnd)
+
+        XCTAssertFalse(try HistoricalArchive.recordDrainedThroughCompletionIfNeeded(
+            chunkID: "active-a", catalogStore: store, drainCursorUnix: past,
+            archiveRoot: root, now: now), "an unchanged catalog reuses the record")
+        XCTAssertFalse(try HistoricalArchive.recordDrainedThroughCompletionIfNeeded(
+            chunkID: "active-b", catalogStore: store, drainCursorUnix: past,
+            archiveRoot: root, now: now), "the active chunk is never attested")
+    }
+
     func testCompressedLogicalRawSourceMaterializesAndRemainsAuthoritative() async throws {
         let fixture = try legacyFixture(
             rowsBySource: [[

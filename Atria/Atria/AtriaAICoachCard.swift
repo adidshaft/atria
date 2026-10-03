@@ -37,10 +37,10 @@ struct AtriaAICoachCard: View, Equatable {
 
                 Text(modeLabel)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.indigo)
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(.indigo.opacity(0.12), in: Capsule())
+                    .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -49,7 +49,7 @@ struct AtriaAICoachCard: View, Equatable {
                 Text(displayDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
                 HStack(spacing: 12) {
                     if let payload {
                         Button {

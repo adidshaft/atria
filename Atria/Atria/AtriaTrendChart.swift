@@ -126,8 +126,10 @@ struct AtriaTrendChartCard: View {
                 AtriaTextSelector(items: AtriaTrendMetric.allCases,
                                   title: { $0.shortLabel },
                                   selection: $metric)
+                // Full words like every other range picker ("Week", not "W"):
+                // this card offers only two ranges, so there is room.
                 AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,
-                                  title: { $0.segmentedLabel },
+                                  title: { $0.menuLabel },
                                   selection: $range)
             }
 
@@ -163,6 +165,12 @@ struct AtriaTrendChartCard: View {
                 if prepared.series.count >= 2, priorComparisonIsAvailable {
                     priorComparisonControl
                 }
+            }
+
+            if let coverageText {
+                Text(coverageText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             if prepared.series.count >= 2 {
@@ -208,7 +216,7 @@ struct AtriaTrendChartCard: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(12)
-                    .atriaInsetCard(cornerRadius: 18, tint: metric.tint)
+                    .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: metric.tint)
                 }
 
                 if let summary = prepared.summary {
@@ -218,7 +226,7 @@ struct AtriaTrendChartCard: View {
         }
         .padding(16)
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showMoreInsights)
-        .atriaCard(cornerRadius: 24, emphasis: .soft)
+        .atriaCard(emphasis: .soft)
         // Metric/range controls already animate their own selection chrome. A
         // broad implicit animation here also animated every Chart mark and the
         // full report subtree, making data switches noticeably more expensive.
@@ -239,8 +247,10 @@ struct AtriaTrendChartCard: View {
                                    tint: metric.tint,
                                    points: expandedChartPoints,
                                    events: events,
+                                   coverageNoun: metric.coverageNoun,
                                    // Open in the form the user just tapped.
                                    defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
+                                   anchorsAtZero: metric.chartAnchorsAtZero,
                                    onDismiss: { showExpandedChart = false })
         }
     }
@@ -316,8 +326,14 @@ struct AtriaTrendChartCard: View {
                                       range: AtriaTrendRange,
                                       now: Date) -> AtriaTrendPreparedSeries {
         let cutoff = range.cutoffDate(now: now)
+        let calendar = Calendar.current
+        // The plotted window: the same trailing span the samples below are
+        // filtered to, ending at the close of today so a point recorded this
+        // morning is not clipped by an axis that stops at "now".
+        let windowEnd = calendar.date(byAdding: .day, value: 1,
+                                      to: calendar.startOfDay(for: now)) ?? now
         let previousCutoff = range.hasPriorPeriod
-            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            ? range.priorPeriodCutoff(before: cutoff)
             : .distantFuture
         var samples: [AtriaTrendPoint.Sample] = []
         samples.reserveCapacity(points.count)
@@ -360,6 +376,10 @@ struct AtriaTrendChartCard: View {
         let qualifiedPreviousSamples = hasQualifiedComparison ? previousSamples : []
         let currentValues = samples.map(\.value)
         let priorValues = ghost.map(\.value)
+        // `.all` has no trailing cutoff, so its window is the recorded span.
+        let plottedStart = range == .all
+            ? (samples.first?.date ?? cutoff)
+            : cutoff
         return AtriaTrendPreparedSeries(series: samples,
                                         previousSeries: ghost,
                                         summary: AtriaTrendRangeSummary(series: samples,
@@ -381,7 +401,9 @@ struct AtriaTrendChartCard: View {
                                             currentValues: currentValues,
                                             priorValues: priorValues,
                                             includesPrior: true
-                                        ))
+                                        ),
+                                        windowStart: plottedStart,
+                                        windowEnd: windowEnd)
     }
 
     private static func preparePeriodReadout(points: [AtriaTrendPoint],
@@ -389,7 +411,7 @@ struct AtriaTrendChartCard: View {
                                              now: Date) -> AtriaTrendPeriodReadout {
         let cutoff = range.cutoffDate(now: now)
         let previousCutoff = range.hasPriorPeriod
-            ? cutoff.addingTimeInterval(-Double(range.days) * 86_400)
+            ? range.priorPeriodCutoff(before: cutoff)
             : .distantFuture
         var currentHRV: [Double] = []
         var priorHRV: [Double] = []
@@ -461,10 +483,6 @@ struct AtriaTrendChartCard: View {
         return indices.sorted().map { ordered[$0] }
     }
 
-    private var chartXAxisDates: [Date] {
-        Self.compactXAxisDates(prepared.series.map(\.date))
-    }
-
     /// Visible text for each compact tick, deduped so two ticks that format to
     /// the same string can never render as side-by-side identical labels — the
     /// duplicated-axis-label defect from the 2026-07-31 History audit. A date
@@ -479,10 +497,6 @@ struct AtriaTrendChartCard: View {
             previous = label
         }
         return output
-    }
-
-    private var chartXAxisLabels: [Date: String] {
-        Self.compactXAxisLabelTexts(chartXAxisDates)
     }
 
     private var chart: some View {
@@ -527,16 +541,18 @@ struct AtriaTrendChartCard: View {
         AtriaTrendSparseGrammar.chartHeight(observedCount: prepared.series.count)
     }
 
-    /// A bar states "this much, measured from zero". The line domains pad
-    /// around min...max, which is right for a level but would render every bar
-    /// as a truncated stub and exaggerate small day-to-day differences — a
-    /// chart that lies. Anchor bar metrics at zero; leave levels padded.
+    /// A bar states "this much, measured from zero" only when zero is a
+    /// real floor. Level metrics keep the padded domain so a 4 ms HRV move
+    /// is not crushed into the top sliver of a 0-based column.
     private var trendYDomain: ClosedRange<Double> {
         let base = showsPriorComparison
             ? prepared.comparisonYDomain
             : prepared.currentYDomain
-        guard metric.rendersAsDailyBar else { return base }
-        return 0...max(base.upperBound, 1)
+        return AtriaChartVisualGrammar.plottedYDomain(
+            values: base,
+            drawsBars: metric.rendersAsDailyBar,
+            anchorsAtZero: metric.chartAnchorsAtZero
+        )
     }
 
     private var coreChart: some View {
@@ -573,11 +589,12 @@ struct AtriaTrendChartCard: View {
                     // across days the strap never measured. A bar needs one
                     // datum, and a missing day simply draws nothing.
                     BarMark(
-                        x: .value("Date", sample.date),
-                        y: .value(metric.shortLabel, sample.value)
+                        x: .value("Date", sample.date, unit: .day),
+                        y: .value(metric.shortLabel, sample.value),
+                        width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio)
                     )
                     .foregroundStyle(metric.tint.gradient)
-                    .cornerRadius(3)
+                    .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                 } else if trendAreaAllowed {
                     AreaMark(
                         x: .value("Date", sample.date),
@@ -660,39 +677,17 @@ struct AtriaTrendChartCard: View {
                 }
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartXSelection(value: $scrubDate)
-        // Keep the first and last observed dates inside the plot instead of
-        // pinning their labels to its clipped edges. Swift Charts otherwise
-        // suppresses the trailing label on a real two-day series even when
-        // both distinct dates are supplied explicitly.
-        .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
-        // Hidden prior data must not flatten the current trace. The wider
-        // comparison domain is selected only while that data is visibly drawn.
+        // The trailing window is the axis, not the extent of the data. Edge
+        // date labels sit inside the plot via the shared overnight x-axis.
+        .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: trendYDomain)
-        .chartXAxis {
-            // Labels ride the SAME axis marks as the gridlines (2026-08-01):
-            // the previous parallel Spacer-based HStack guessed a 34pt leading
-            // inset and spread labels evenly regardless of where the gridlines
-            // actually fell, so gappy/short series rendered duplicated or
-            // misaligned date labels under true-position gridlines.
-            AxisMarks(preset: .aligned, values: chartXAxisDates) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                if let date = value.as(Date.self), let label = chartXAxisLabels[date] {
-                    AxisValueLabel(anchor: .top) {
-                        Text(label)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                AxisValueLabel().font(.caption2)
-            }
-        }
+        .atriaOvernightChartXAxis(
+            recordedDays: prepared.series.map(\.date),
+            domain: prepared.xDomain
+        )
+        .atriaDailyQuantityYAxis()
 
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(chartAccessibilityLabel)
@@ -708,6 +703,19 @@ struct AtriaTrendChartCard: View {
 
     /// Availability and visibility are deliberately separate. Having enough
     /// data enables the control; only the user's selection enables the line.
+    /// How much of the plotted window actually holds a reading. Sparse data
+    /// used to look like a broken chart (owner report 2026-09-02: "incomplete
+    /// insights … dates are not matching"); the count says plainly that the
+    /// gaps are missing days, not a drawing fault. Silent when the window is
+    /// full, and silent for `.all`, whose window has no fixed length.
+    private var coverageText: String? {
+        guard range != .all, !prepared.series.isEmpty else { return nil }
+        let recorded = prepared.series.count
+        let window = range.days
+        guard recorded < window else { return nil }
+        return "\(recorded) of \(window) \(metric.coverageNoun) recorded"
+    }
+
     private var showsPriorComparison: Bool {
         showsPriorPeriod && priorComparisonIsAvailable
     }
@@ -855,9 +863,9 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         let hrvScore = readout.hrv.directionScore(positiveDeltaIsGood: true) ?? 0.5
         let rhrScore = readout.restingHR.directionScore(positiveDeltaIsGood: false) ?? 0.5
         if hrvScore >= rhrScore {
-            return ("Best signal", readout.hrv.deltaText, .cyan, "waveform.path.ecg")
+            return ("Best signal", readout.hrv.deltaText, Metrics.electricHRV, "waveform.path.ecg")
         }
-        return ("Best signal", readout.restingHR.deltaText, .pink, "heart.text.square")
+        return ("Best signal", readout.restingHR.deltaText, Metrics.electricRHR, "heart.text.square")
     }
 
     private var pressureSignal: (title: String, value: String, tint: Color, symbol: String) {
@@ -905,7 +913,7 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
             // balance map below is the single owner of that pair.
         }
         .padding(12)
-        .atriaInsetCard(cornerRadius: 20, tint: readout.tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: readout.tint)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Trend range report. Best signal \(strongestSignal.value). Pressure \(pressureSignal.value). Next \(nextStep.value).")
     }
@@ -929,33 +937,13 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(item.tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(item.tint.opacity(0.12), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 
-    private func reportBar(label: String, value: Double, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .leading)
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.76))
-                        .frame(width: max(8, width * min(max(value, 0), 1)))
-                }
-            }
-            .frame(height: 7)
-        }
-        .frame(maxWidth: .infinity)
-    }
 }
 
 
@@ -1003,7 +991,7 @@ private struct AtriaTrendRangeDock: View, Equatable {
             }
         }
         .padding(9)
-        .atriaInsetCard(cornerRadius: 18, tint: tint)
+        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.inset, tint: tint)
         .accessibilityElement(children: .contain)
     }
 
@@ -1318,10 +1306,10 @@ private struct AtriaTrendRangeLens: View, Equatable {
             // this lens keeps its coverage role only.
         }
         .padding(12)
-        .background(metric.tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(metric.tint.opacity(0.12), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Trend period rail. \(range.menuLabel), \(coverageLabel), latest \(metric.shortLabel) \(summary?.latestText ?? "not ready").")
@@ -1450,6 +1438,19 @@ private struct AtriaTrendPreparedSeries {
     let action: AtriaTrendActionReadout?
     let currentYDomain: ClosedRange<Double>
     let comparisonYDomain: ClosedRange<Double>
+    /// Owner report 2026-09-02 ("dates are not matching"): the card filtered
+    /// its samples to a trailing window but gave the chart no x-domain, so
+    /// Swift Charts sized the axis to the DATA. Two recorded days out of
+    /// thirty stretched edge to edge and read as a full month; one recorded
+    /// day sat alone in the middle of the plot. The window the samples were
+    /// filtered to now travels with them and becomes the axis.
+    let windowStart: Date
+    let windowEnd: Date
+
+    var xDomain: ClosedRange<Date> {
+        windowStart < windowEnd ? windowStart...windowEnd
+            : windowStart...windowStart.addingTimeInterval(86_400)
+    }
 
     static let empty = AtriaTrendPreparedSeries(series: [],
                                                 previousSeries: [],
@@ -1457,7 +1458,9 @@ private struct AtriaTrendPreparedSeries {
                                                 assessment: nil,
                                                 action: nil,
                                                 currentYDomain: 0...1,
-                                                comparisonYDomain: 0...1)
+                                                comparisonYDomain: 0...1,
+                                                windowStart: .distantPast,
+                                                windowEnd: .distantPast)
 }
 
 
@@ -1498,10 +1501,10 @@ private struct AtriaTrendRangeSummaryStrip: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 }
@@ -1708,6 +1711,10 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
     /// selector stays a segmented control, never a Menu, per the readability guard).
     static let primarySegments: [AtriaTrendRange] = [.day, .week, .month]
 
+    init?(deepLinkToken: String) {
+        self.init(rawValue: deepLinkToken.lowercased())
+    }
+
     /// The Trends card aggregates to one point per civil day, so `.day` can
     /// never form a line there (its chart requires ≥2 points). Day stays in
     /// `primarySegments` for the calendar-period metric-detail surfaces,
@@ -1804,21 +1811,34 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Start of the equally long period before `cutoff`, in calendar days so
+    /// a clock change inside it cannot shift the boundary by an hour.
+    func priorPeriodCutoff(before cutoff: Date, calendar: Calendar = .current) -> Date {
+        calendar.date(byAdding: .day, value: -days, to: cutoff)
+            ?? cutoff.addingTimeInterval(-Double(days) * 86_400)
+    }
+
     func cutoffDate(now: Date = Date(), calendar: Calendar = .current) -> Date {
         switch self {
         case .day:
             return calendar.startOfDay(for: now)
         case .week, .month, .quarter, .sixMonths, .year:
-            return calendar.startOfDay(for: now.addingTimeInterval(-Double(days) * 86_400))
+            // Calendar days, not 86,400 s multiples (2026-09-24 code review):
+            // across a clock change `now - days * 86,400` lands an hour off,
+            // and just after midnight that picks the wrong start day.
+            let today = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: .day, value: -days, to: today)
+                ?? calendar.startOfDay(for: now.addingTimeInterval(-Double(days) * 86_400))
         case .all:
             return .distantPast
         }
     }
 
-    /// Calendar-aligned period used by metric detail navigation. This is
-    /// deliberately separate from the legacy rolling `cutoffDate` contract:
-    /// choosing Week or Month in a navigable sheet means an inspectable
-    /// calendar week/month, not an unlabelled trailing number of seconds.
+    /// The navigable period used by metric detail. Day is one calendar day;
+    /// Week and Month are trailing windows ending on the anchor day, matching
+    /// the "7 days" and "30 days" the segments promise (owner report
+    /// 2026-09-02: the calendar week and month containing an anchor held two
+    /// days each on a Wednesday, and excluded today's own point).
     func periodInterval(
         containing anchor: Date,
         calendar: Calendar = .current
@@ -1831,18 +1851,19 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
                 end: calendar.date(byAdding: .day, value: 1, to: start)
                     ?? start.addingTimeInterval(86_400)
             )
-        case .week:
-            return calendar.dateInterval(of: .weekOfYear, for: anchor)
-                ?? DateInterval(
-                    start: calendar.startOfDay(for: anchor),
-                    duration: 7 * 86_400
-                )
-        case .month:
-            return calendar.dateInterval(of: .month, for: anchor)
-                ?? DateInterval(
-                    start: calendar.startOfDay(for: anchor),
-                    duration: 30 * 86_400
-                )
+        case .week, .month:
+            // Owner 2026-09-02: Week and Month were the calendar week and
+            // calendar month containing the anchor, so on Wednesday the 2nd
+            // the Week chart held two days and the Month chart two days,
+            // with twenty days of wear on the phone. The segment labels
+            // promise "7 days" and "30 days": trailing windows ending on
+            // the anchor day, like the longer ranges already were.
+            let dayStart = calendar.startOfDay(for: anchor)
+            let end = calendar.date(byAdding: .day, value: 1, to: dayStart)
+                ?? dayStart.addingTimeInterval(86_400)
+            let start = calendar.date(byAdding: .day, value: -(days - 1), to: dayStart)
+                ?? dayStart.addingTimeInterval(-Double(days - 1) * 86_400)
+            return DateInterval(start: start, end: end)
         case .quarter, .sixMonths, .year, .all:
             let start = cutoffDate(now: anchor, calendar: calendar)
             let end = calendar.date(byAdding: .day, value: 1,
@@ -1860,8 +1881,10 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         let component: Calendar.Component
         switch self {
         case .day: component = .day
-        case .week: component = .weekOfYear
-        case .month: component = .month
+        // Trailing windows step by their own length (2026-09-02).
+        case .week, .month:
+            return calendar.date(byAdding: .day, value: offset * days, to: anchor)
+                ?? anchor
         case .quarter: component = .quarter
         case .sixMonths: component = .month
         case .year: component = .year
@@ -1880,23 +1903,29 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
+        formatter.locale = calendar.locale
         switch self {
         case .day:
             formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
             return formatter.string(from: interval.start)
-        case .week:
+        case .week, .month:
+            // A trailing window is a date range, never a month name.
+            // Device 2026-09-18 Recovery Week: start template "d" plus end
+            // "d MMM" localized to US order as "12–Sep 18". Month belongs on
+            // the start so a same-month week reads "Sep 12–18".
             let end = interval.end.addingTimeInterval(-1)
             let startMonth = calendar.component(.month, from: interval.start)
             let endMonth = calendar.component(.month, from: end)
-            formatter.setLocalizedDateFormatFromTemplate(
-                startMonth == endMonth ? "d" : "d MMM"
-            )
+            let startYear = calendar.component(.year, from: interval.start)
+            let endYear = calendar.component(.year, from: end)
+            let sameMonth = startMonth == endMonth && startYear == endYear
+            formatter.setLocalizedDateFormatFromTemplate("MMM d")
             let startText = formatter.string(from: interval.start)
-            formatter.setLocalizedDateFormatFromTemplate("d MMM")
+            if sameMonth {
+                formatter.setLocalizedDateFormatFromTemplate("d")
+                return "\(startText)–\(formatter.string(from: end))"
+            }
             return "\(startText)–\(formatter.string(from: end))"
-        case .month:
-            formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
-            return formatter.string(from: interval.start)
         default:
             formatter.setLocalizedDateFormatFromTemplate("d MMM yyyy")
             return formatter.string(from: interval.start)
@@ -1909,21 +1938,33 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     case strain
     case hrv
 
+
     var id: String { rawValue }
 
-    /// Owner direction 2026-08-25: a metric that produces ONE value per day
-    /// and ACCUMULATES from zero is a bar; a per-day LEVEL is a line.
-    ///
-    /// Strain accumulates from 0 every physiological day, so zero is both
-    /// meaningful and routinely observed (a rest day really is ~0) and a bar's
-    /// "magnitude from zero" reading is literally true. Resting HR (~50-60) and
-    /// HRV (~40-70) are levels whose zero is never observed — bars from zero
-    /// would push the real 3-4 bpm signal into the top few percent of every
-    /// column and hide it, so those stay lines against their own baseline.
+    /// Once-a-day values are bars, matching the metric-detail tiles.
+    /// Levels still refuse a zero floor so a 4 bpm / 4 ms move stays visible.
+    /// Strain is a magnitude (bars from zero); HRV and resting HR are levels
+    /// drawn as dots on a line, same as their detail sheets (2026-10-01).
     var rendersAsDailyBar: Bool {
         switch self {
         case .strain: return true
         case .restingHR, .hrv: return false
+        }
+    }
+
+    var chartAnchorsAtZero: Bool {
+        switch self {
+        case .strain: return true
+        case .restingHR, .hrv: return false
+        }
+    }
+
+    /// Resting HR and HRV are read from overnight wear, so their coverage is
+    /// counted in nights; strain accumulates across a waking day.
+    var coverageNoun: String {
+        switch self {
+        case .restingHR, .hrv: return "nights"
+        case .strain: return "days"
         }
     }
 
@@ -1948,9 +1989,11 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
     var tint: Color {
         switch self {
-        case .restingHR: return .pink
+        // HRV rose, RHR blue. These two were swapped here: RHR wore HRV's
+        // pink and HRV wore RHR's cyan (2026-08-28).
+        case .restingHR: return Metrics.electricRHR
         case .strain: return Metrics.electricStrain
-        case .hrv: return .cyan
+        case .hrv: return Metrics.electricHRV
         }
     }
 
@@ -2016,7 +2059,7 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     var trendExplainer: String {
         switch self {
         case .restingHR:
-            return "A lower resting heart rate over weeks usually means better cardiovascular fitness or good recovery. A sustained rise can flag fatigue, illness, or poor sleep. Read the trend against your own baseline — not any single day."
+            return "A lower resting heart rate over weeks usually means better cardiovascular fitness or good recovery. A sustained rise often goes with fatigue, stress, or poor sleep. Read the trend against your own baseline — not any single day."
         case .strain:
             return "Strain is your daily cardiovascular load on a 0–21 scale, built from time spent in each heart-rate zone. Rising strain means harder days; healthy progress balances it with recovery rather than climbing every day."
         case .hrv:
@@ -2027,6 +2070,31 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
 /// One day's trend-relevant values, prepared on the main-actor store side so
 /// the chart view stays cheap and Equatable.
+extension Array where Element == AtriaTrendPoint {
+    /// Cycle-truth strain, matching the detail sheet (2026-08-30 rule).
+    /// `makeOverviewTrendPoints` buckets TRIMP by CIVIL day, while the strain
+    /// detail sheet plots the physiological cycle — so the same date could
+    /// read one number on this card and another one tap away. The gap is
+    /// widest for a shifted sleeper, whose evening work falls in the next
+    /// civil day but the same cycle (2026-09-03).
+    ///
+    /// Only strain moves: resting HR and HRV are overnight readings already
+    /// keyed to the night they came from.
+    func applyingCycleStrain(_ byDisplayDay: [Date: Double],
+                             calendar: Calendar = .current) -> [AtriaTrendPoint] {
+        guard !byDisplayDay.isEmpty else { return self }
+        return map { point in
+            guard let cycleStrain = byDisplayDay[calendar.startOfDay(for: point.date)],
+                  cycleStrain != point.strain else { return point }
+            return AtriaTrendPoint(id: point.id,
+                                   date: point.date,
+                                   restingHR: point.restingHR,
+                                   strain: cycleStrain,
+                                   hrv: point.hrv)
+        }
+    }
+}
+
 struct AtriaTrendPoint: Equatable, Identifiable {
     let id: UUID
     let date: Date

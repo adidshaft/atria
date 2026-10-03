@@ -167,9 +167,7 @@ struct AtriaSmartWakeSheet: View {
         return VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Tonight's window")
-                    .font(.caption2.weight(.semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer(minLength: 0)
                 Text("wake by \(plan.displayTime)")
                     .font(.caption2.weight(.semibold).monospacedDigit())
@@ -205,7 +203,7 @@ struct AtriaSmartWakeSheet: View {
             GeometryReader { proxy in
                 ForEach(Array(ticks.enumerated()), id: \.offset) { _, tick in
                     Text(tick.label)
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .font(.caption2.weight(.medium).monospacedDigit())
                         .foregroundStyle(.tertiary)
                         .fixedSize()
                         .position(x: min(max(proxy.size.width * tick.fraction, 12),
@@ -232,9 +230,7 @@ struct AtriaSmartWakeSheet: View {
     private var modeCard: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
             Text("Alarm mode")
-                .font(.caption2.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
             ForEach(AtriaSmartWakePresentation.modeRowOrder, id: \.rawValue) { mode in
                 modeRow(mode)
             }
@@ -287,9 +283,7 @@ struct AtriaSmartWakeSheet: View {
     private var wakeByCard: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
             Text("Wake-by")
-                .font(.caption2.weight(.semibold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
             Stepper(value: $wakeByMinutes, in: 0...(23 * 60 + 59), step: 5) {
                 Text("Wake by \(plan.displayTime)")
                     .font(.subheadline.weight(.semibold))

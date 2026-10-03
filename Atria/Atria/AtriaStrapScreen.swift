@@ -80,7 +80,11 @@ struct AtriaStrapScreen: View {
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
             }
 
-            rawExportRow
+                    if !AtriaAppReviewDemo.isActive {
+                        rawExportRow
+                    } else {
+                        AtriaSampleDataBadge(compact: true)
+                    }
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -96,6 +100,11 @@ struct AtriaStrapScreen: View {
     /// how every other empty state on this screen reads.
     private var capturedSamplesText: String {
         let captured = collectionLiveStore.state.capturedRows
+        // Beside a "Live · HR 70 bpm" hero, "No samples yet" read as "no data"
+        // (device audit 2026-09-30); this tile is about workout recording.
+        guard collectionLiveStore.state.isRecording || captured > 0 else {
+            return "No workout recording"
+        }
         guard captured > 0 else { return "No samples yet" }
         return captured == 1 ? "1 sample" : "\(captured) samples"
     }
@@ -232,7 +241,8 @@ struct AtriaStrapScreen: View {
         case .strapMG: return "WHOOP MG · \(identity)"
         case .strap5: return "WHOOP 5.0 · \(identity)"
         case .strap4: return "WHOOP 4.0 · \(identity)"
-        case .strap4Class: return "WHOOP-class strap · \(identity)"
+        // The generic "Strap" identity adds nothing ("WHOOP-class strap · Strap").
+        case .strap4Class: return identity == "Strap" ? "WHOOP-class strap" : "WHOOP-class strap · \(identity)"
         case .strap3: return "WHOOP 3.0 · \(identity)"
         case .unknown: return identity
         }
@@ -258,7 +268,7 @@ private struct AtriaStrapConnectionHero: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(primaryState)
                         .font(.headline.weight(.bold))
-                        .foregroundStyle(Metrics.electricGreen)
+                        .foregroundStyle(.primary)
                     Text(connectionDetail)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -314,7 +324,7 @@ private struct AtriaStrapConnectionHero: View {
                         .font(.subheadline.weight(.bold))
                         .frame(maxWidth: .infinity, minHeight: 34)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.glass)
                 if let onShowConnectionGuide {
                     Button("Connection guide") {
                         onShowConnectionGuide()
@@ -335,18 +345,34 @@ private struct AtriaStrapConnectionHero: View {
             .font(.title3.weight(.bold))
             .foregroundStyle(tint)
             .frame(width: 44, height: 44)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private var primaryState: String {
         guard displayStatus == .connected else { return "Finding" }
+        // This screen promoted its status to .connected BECAUSE a pulse
+        // exists, then read a label that could say "No signal" — one view
+        // contradicting itself (owner UI-uniformity pass 2026-08-28). It now
+        // applies the same shared override the Home pill does.
+        if AtriaLiveSignalTruth.freshPulseOverridesLaggingStream(
+            hasPulseSignal: hasPulseSignal,
+            streamState: coreLiveStore.state.strapStreamState
+        ) {
+            return "Live"
+        }
         return coreLiveStore.state.strapStreamConnectionLabel
     }
 
     private var connectionDetail: String {
         if displayStatus == .connected {
-            if coreLiveStore.state.strapStreamState == .live,
-               pulseLiveStore.state.hasPulseSignal {
+            // Must follow `primaryState`: when the shared override resolves the
+            // label to "Live", the detail below it cannot read "Connected — no
+            // live HR". Both now key off the same rule.
+            if pulseLiveStore.state.hasPulseSignal,
+               coreLiveStore.state.strapStreamState == .live
+                || AtriaLiveSignalTruth.freshPulseOverridesLaggingStream(
+                    hasPulseSignal: hasPulseSignal,
+                    streamState: coreLiveStore.state.strapStreamState) {
                 return "HR \(pulseLiveStore.state.heartRateText) bpm"
             }
             return coreLiveStore.state.strapStreamConnectionDetail
@@ -442,7 +468,7 @@ private struct AtriaStrapStatusRow: View, Equatable {
                     .font(.caption.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 26, height: 26)
-                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 Text(title)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
@@ -460,7 +486,7 @@ private struct AtriaStrapStatusRow: View, Equatable {
                 Text(detail)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.8)
             }
         }

@@ -318,7 +318,12 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(result, expected)
     }
 
-    func testStaleCachedNapDoesNotSurviveActiveLowHRWithoutValidatedMotion() throws {
+    func testCachedNapWithFreshLowHRButNoMotionStaysReviewNeeded() throws {
+        // 2026-08-29 clock-agnostic nap fix: a fresh HR-only pass above the
+        // stricter nap review bar (avg <= rest+12, P90 <= rest+30, >= 30 min)
+        // legitimately re-proposes the nap for wearer review instead of
+        // erasing it on lagging motion offload. The surfaced night must stay
+        // an unconfirmed review-needed nap — never a confident sleep.
         let cachedNap = napReviewNight()
         let snapshot = SleepHistorySnapshot(nights: [cachedNap], confirmedCount: 0, candidateCount: 1)
         let activeLowHR = daytimeLowHRSession(start: try XCTUnwrap(cachedNap.start),
@@ -333,8 +338,13 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             calendar: calendar
         )
 
-        XCTAssertNil(result,
-                     "a stale cached nap must not outlive a fresh active/low-HR pass without strap motion proof")
+        let night = try XCTUnwrap(result,
+                                  "a fresh HR-only pass above the nap review bar re-proposes the nap for review")
+        XCTAssertEqual(night.source, "nap_candidate")
+        XCTAssertEqual(night.confidence, "review_needed")
+        XCTAssertFalse(night.confirmed, "an HR-only nap must never surface as confirmed")
+        XCTAssertNotEqual(night.motionValidated, true,
+                          "no strap motion proof exists; the night must not claim it")
     }
 
     func testCachedNapSurvivesFreshOverlappingValidatedMotionEvidence() throws {
@@ -543,6 +553,107 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             with: [unrelated],
             calendar: calendar
         ))
+    }
+
+    func testSustainedAwakeBetweenSleepBinsSplitsTheOvernightClock() {
+        let sleepStart = Date(timeIntervalSince1970: 1_789_000_000)
+        let bin: TimeInterval = 5 * 60
+        let lastSleepBin = sleepStart.addingTimeInterval(8 * 3_600)
+        let awakeStart = lastSleepBin.addingTimeInterval(bin)
+        let awakeBins = stride(from: 0, to: 6, by: 1).map {
+            awakeStart.addingTimeInterval(Double($0) * bin)
+        }
+        let quietSitting = awakeStart.addingTimeInterval(40 * 60)
+        XCTAssertTrue(
+            SessionStore.shouldSplitSleepEpisodeForInterveningAwake(
+                previousSleepBinStart: lastSleepBin,
+                nextSleepBinStart: quietSitting,
+                awakeBinStarts: awakeBins,
+                binSeconds: bin
+            ),
+            "device 2026-09-11: quiet sitting after wake must not keep the sleep clock running"
+        )
+        XCTAssertFalse(
+            SessionStore.shouldSplitSleepEpisodeForInterveningAwake(
+                previousSleepBinStart: lastSleepBin,
+                nextSleepBinStart: lastSleepBin.addingTimeInterval(bin),
+                awakeBinStarts: awakeBins,
+                binSeconds: bin
+            )
+        )
+    }
+
+    func testPreferredGrowingSleepReviewTrimsARunawayWakeBeforeQuietSitting() {
+        let current = reviewNight(id: "overnight")
+        let currentEnd = try! XCTUnwrap(current.end)
+        let wake = currentEnd.addingTimeInterval(-90 * 60)
+        func night(id: String, start: Date, end: Date) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(
+                id: id,
+                day: current.day,
+                start: start,
+                end: end,
+                duration: end.timeIntervalSince(start),
+                restingHR: 55,
+                hrv: nil,
+                respiratoryRate: nil,
+                sleepEfficiency: 1,
+                confidence: "review_needed",
+                source: "physiological_sleep",
+                confirmed: false,
+                stageSegments: []
+            )
+        }
+        let trimmed = night(id: "wake-trimmed", start: try! XCTUnwrap(current.start), end: wake)
+        let sitting = night(
+            id: "quiet-sitting",
+            start: wake.addingTimeInterval(40 * 60),
+            end: wake.addingTimeInterval(2 * 60 * 60)
+        )
+        let preferred = SessionStore.preferredGrowingSleepReview(
+            replacing: current,
+            with: [trimmed, sitting],
+            calendar: calendar
+        )
+        XCTAssertEqual(
+            preferred?.id,
+            "wake-trimmed",
+            "device 2026-09-11: the overnight clock must freeze at wake, not keep the later sitting bout"
+        )
+    }
+
+    func testSustainedAwakeFreezesTheReviewClockWithoutAConfirmTap() throws {
+        let start = date(day: 10, hour: 22)
+        let wake = date(day: 11, hour: 7)
+        let sittingEnd = date(day: 11, hour: 9)
+        let duration = sittingEnd.timeIntervalSince(start)
+        let points = stride(from: 0.0, through: duration, by: 60).map { offset -> SavedSession.Point in
+            let instant = start.addingTimeInterval(offset)
+            let bpm = (instant >= wake && instant < wake.addingTimeInterval(30 * 60)) ? 80 : 58
+            return SavedSession.Point(t: offset, bpm: bpm)
+        }
+        let session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: sittingEnd,
+            label: "Open journal after wake",
+            points: points
+        )
+        let result = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: [session],
+            confirmedSleeps: [],
+            rest: 55,
+            maxHR: 190,
+            calendar: calendar
+        ))
+        let end = try XCTUnwrap(result.end)
+        XCTAssertLessThan(
+            end,
+            wake.addingTimeInterval(15 * 60),
+            "device 2026-09-11: quiet sitting after wake must not keep the sleep clock running"
+        )
+        XCTAssertGreaterThanOrEqual(end, wake.addingTimeInterval(-10 * 60))
     }
 
     func testFragmentedSubThreeHourHROnlySnapshotDoesNotClaimSleep() {

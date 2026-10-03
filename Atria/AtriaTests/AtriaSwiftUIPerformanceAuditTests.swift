@@ -398,14 +398,15 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutRouteMetricsHost: View"))
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutStrainGuidanceHost: View"))
-        // 2026-07-17: pin migrated 2 -> 3. The strap-motion transport status
-        // indicator ships as its own narrow leaf host (see the dated comment on
-        // AtriaLiveWorkoutMotionStatusHost), which is exactly the isolation this
-        // audit enforces — the root still never observes the store.
+        // Pin migrated 3 -> 5. Backdrop and the heart block are additional
+        // narrow leaves so strap HR/zone publications do not rebuild the
+        // workout root. The root still never observes the store.
         XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutMotionStatusHost: View"))
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutBackdrop: View"))
+        XCTAssertTrue(workout.contains("private struct AtriaLiveWorkoutHeartBlock: View"))
         XCTAssertEqual(workout.components(separatedBy: "@ObservedObject var metricStore: AtriaLiveWorkoutMetricStore").count - 1,
-                       3,
-                       "Exactly the route HUD, stationary guidance, and motion status hosts should observe rapid metrics")
+                       5,
+                       "Exactly the backdrop, route HUD, heart block, stationary guidance, and motion status hosts should observe rapid metrics")
     }
 
     func testHealthMonitorLiveMetricsUseDeduplicatedLeafProjection() throws {
@@ -689,6 +690,8 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         )
         XCTAssertTrue(cadence.contains("ble.$sessionSampleCount"))
         XCTAssertTrue(cadence.contains("self?.publishCoreLive()"))
+        XCTAssertTrue(cadence.contains("self?.publishDiagnosisReport(reason: \"core_live\")"),
+                      "inactive CoreLive presentation must still refresh the pullable diagnosis file")
         XCTAssertFalse(mergedInputs.contains("ble.$historicalRecoveryPresentation"),
                        "history progress must not join unrelated BLE CoreLive churn")
         XCTAssertTrue(cadence.contains(
@@ -1212,6 +1215,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             workoutSteps: nil,
             workoutStepsAreEstimated: nil,
             workoutStepsCapturedAt: nil,
+            segments: nil,
             profile: profile,
             eventTimeZoneIdentifier: "UTC"
         )
@@ -1236,5 +1240,31 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             startingStepCount: 0,
             startingDayStrain: 0
         )
+    }
+
+    // 2026-10-02 device: Home rebuilt its saved aggregate 16 times in the
+    // 13 s after launch and 13 produced an identical result. An input whose
+    // arrays share storage with the retained last input, in the same minute,
+    // now skips the rebuild; any mutation gets new storage and rebuilds.
+    func testSavedAggregateSkipsOnlyWhenInputStorageIsUnchanged() throws {
+        let original = [1, 2, 3]
+        let copy = original
+        XCTAssertEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                       AtriaHomeModel.ArrayStorageIdentity(copy))
+        var mutated = original
+        mutated[0] = 9
+        XCTAssertNotEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                          AtriaHomeModel.ArrayStorageIdentity(mutated))
+        var appended = original
+        appended.append(4)
+        XCTAssertNotEqual(AtriaHomeModel.ArrayStorageIdentity(original),
+                          AtriaHomeModel.ArrayStorageIdentity(appended))
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("if identity == lastPublishedSavedAggregateIdentity {"))
+        XCTAssertTrue(source.contains("lastPublishedSavedAggregateInput = input"),
+                      "the last input must be retained so storage identity stays meaningful")
     }
 }

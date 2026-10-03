@@ -109,4 +109,83 @@ final class AtriaDayCentreMarkTests: XCTestCase {
             XCTAssertTrue(range.contains(mark), "a mark outside the domain is not drawn")
         }
     }
+
+    func testOvernightBarLabelsSitOnRecordedNightsNotEmptyDomainDays() {
+        // Device 2026-09-18 Recovery Week: domain Sep 12–18, bars on
+        // 13/15/16/18. Domain-wide dayCentreMarks printed 12, 14, 16, 18.
+        let nights = [day(1), day(3), day(4), day(6)]
+        let marks = AtriaChartVisualGrammar.nightBarAxisMarks(
+            days: nights,
+            targetCount: 4,
+            calendar: calendar
+        )
+        XCTAssertEqual(marks, nights.compactMap {
+            calendar.date(byAdding: .hour, value: 12, to: $0)
+        })
+        let domainMarks = AtriaChartVisualGrammar.dayCentreMarks(
+            in: domain(days: 7),
+            targetCount: 4,
+            calendar: calendar
+        )
+        XCTAssertNotEqual(marks, domainMarks)
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightBarAxisMarks(
+                days: nights,
+                targetCount: 2,
+                calendar: calendar
+            ).last,
+            calendar.date(byAdding: .hour, value: 12, to: day(6)),
+            "week-last must stay labeled so it can match the hero"
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightBarAxisMarks(
+                days: nights,
+                targetCount: 4,
+                calendar: calendar,
+                domain: domain(days: 7)
+            ),
+            nights.compactMap { calendar.date(byAdding: .hour, value: 12, to: $0) },
+            "a 7-day window still names adjacent recorded nights"
+        )
+    }
+
+    func testClusteredNightsOnAMonthWindowStayReadableAndKeepWeekLast() {
+        // Device 2026-09-18 16:40 HRV Month: 15/16/18 on Aug 20–Sep 18
+        // stacked into "S S…". Label the ends of the cluster, not every night.
+        let nights = [day(26), day(27), day(29)]
+        let marks = AtriaChartVisualGrammar.nightBarAxisMarks(
+            days: nights,
+            targetCount: 4,
+            calendar: calendar,
+            domain: domain(days: 30)
+        )
+        XCTAssertEqual(marks.count, 1)
+        XCTAssertEqual(marks.last, calendar.date(byAdding: .hour, value: 12, to: day(29)),
+                       "month-last must stay labeled so it can match the hero")
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(29),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .topTrailing,
+            "the last night of a month window must draw its label left of the tick"
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(0),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .topLeading
+        )
+        XCTAssertEqual(
+            AtriaChartVisualGrammar.nightAxisLabelAnchor(
+                for: day(15),
+                domain: domain(days: 30),
+                calendar: calendar
+            ),
+            .top
+        )
+    }
 }

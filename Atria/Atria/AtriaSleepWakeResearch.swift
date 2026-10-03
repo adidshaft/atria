@@ -415,6 +415,7 @@ enum AtriaSleepWakeResearch {
         guard try heartRateEvidenceIsDense(sorted,
                                            start: start,
                                            end: end,
+                                           allowInteriorGaps: allowHROnlyEstimate,
                                            workCounter: workCounter,
                                            cooperativeDeadline: cooperativeDeadline) else {
             return []
@@ -486,7 +487,15 @@ enum AtriaSleepWakeResearch {
         }
 
         guard staged.count >= max(8, epochCount / 3) else { return [] }
-        let merged = try merge(staged,
+        // HR-only ESTIMATE lane only: a live 2A37 pause (idle-window drain)
+        // can punch a hole in an otherwise dense night. Fill interior holes
+        // with the neighboring non-awake stage so the labeled hypnogram can
+        // render. Never expand before the first or after the last real epoch
+        // — a first-hour fragment must still fail closed.
+        let estimateStaged = allowHROnlyEstimate
+            ? fillInteriorEstimateEpochs(staged)
+            : staged
+        let merged = try merge(estimateStaged,
                                motionBacked: motionBacked,
                                qualifiedRRCoverageFraction: qualifiedRRCoverageFraction,
                                cooperativeDeadline: cooperativeDeadline)
@@ -882,6 +891,7 @@ enum AtriaSleepWakeResearch {
         _ samples: [HeartSample],
         start: Date,
         end: Date,
+        allowInteriorGaps: Bool = false,
         workCounter: StageWorkCounter?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> Bool {
@@ -898,6 +908,9 @@ enum AtriaSleepWakeResearch {
               end.timeIntervalSince(last.t) <= maximumHeartRateGap else {
             return false
         }
+        // Estimate lane: interior holes are filled after staging. Motion-
+        // validated nights still require a contiguous 90 s HR timeline.
+        if allowInteriorGaps { return true }
         for index in 1..<samples.count {
             if index.isMultiple(of: 256) {
                 try cooperativeDeadline?.checkpoint()
@@ -908,6 +921,27 @@ enum AtriaSleepWakeResearch {
             }
         }
         return true
+    }
+
+    /// Insert estimated sleep across holes between real staged epochs. Does
+    /// not extend the timeline past the first or last measured epoch.
+    private static func fillInteriorEstimateEpochs(
+        _ staged: [(start: Date, end: Date, stage: SleepStageKind)]
+    ) -> [(start: Date, end: Date, stage: SleepStageKind)] {
+        guard staged.count >= 2 else { return staged }
+        var filled: [(start: Date, end: Date, stage: SleepStageKind)] = []
+        filled.reserveCapacity(staged.count)
+        for (index, item) in staged.enumerated() {
+            if index > 0 {
+                let previous = staged[index - 1]
+                if item.start.timeIntervalSince(previous.end) > 1 {
+                    let fillStage = previous.stage == .awake ? .light : previous.stage
+                    filled.append((previous.end, item.start, fillStage))
+                }
+            }
+            filled.append(item)
+        }
+        return filled
     }
 
     private static func motionContext(

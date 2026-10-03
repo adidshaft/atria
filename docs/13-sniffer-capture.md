@@ -4,6 +4,12 @@ Goal: capture the official WHOOP app driving **this** strap, so we learn the two
 things our app doesn't know: the command sequence that makes RR continuous, and/or
 the historical-transfer request that yields `0x2f` data frames.
 
+A later IMU question (2026-09-20): official Strength Trainer sends `TOGGLE_IMU_MODE
+0x6A` and compact `0x33` flows during that workout. That is a **firmware liveness
+probe**, not an all-day Atria path, and it is not this sniffer plan’s job. Keep
+official WHOOP off unless that probe is explicit. Type-43 / `0x3F` / `0x51` still
+kill this iPhone’s BLE link. Ledger: `WHOOP4_PROTOCOL_FINDINGS.md` (2026-09-20).
+
 Analyzer is ready: `tools/analyze_sniffer.py` (decodes the trace with `whoop_codec`).
 
 ---

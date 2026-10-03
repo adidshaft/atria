@@ -21,7 +21,7 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
                         in: shape
                     )
                     .overlay {
-                        shape.stroke(selected ? tint.opacity(0.58)
+                        shape.stroke(selected ? Color.primary.opacity(0.4)
                                               : (colorScheme == .dark
                                                  ? Color.white.opacity(0.14)
                                                  : Color.black.opacity(0.14)),
@@ -31,10 +31,11 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
                 // Selected: a real tinted Liquid Glass capsule, not an opaque fill.
                 configuration.label
                     .foregroundStyle(Color.primary.opacity(colorScheme == .dark ? 0.98 : 0.96))
-                    .glassEffect(.regular.tint(tint.opacity(colorScheme == .dark ? 0.42 : 0.26)).interactive(),
-                                 in: shape)
+                    // Neutral like a system segmented control (owner
+                    // 2026-10-03: colour only for data and state).
+                    .glassEffect(.regular.interactive(), in: shape)
                     .overlay {
-                        shape.stroke(tint.opacity(colorScheme == .dark ? 0.55 : 0.45), lineWidth: 1)
+                        shape.stroke(Color.primary.opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 1)
                     }
             } else {
                 // Unselected: a calm, clearly-tappable chip — distinct from selected.
@@ -58,27 +59,64 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     }
 }
 
+/// Pressed feedback for tappable CARDS — glance tiles, metric tiles, and any
+/// card whose whole surface is the button. `.plain` renders the label
+/// untouched but gives the finger nothing back; a card that opens a sheet
+/// should acknowledge the press the way the segment and icon buttons above
+/// already do. Scale is gentler than theirs (a large surface at 0.94 lurches).
+struct AtriaPressableCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick),
+                       value: configuration.isPressed)
+    }
+}
+
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
     // `size` is the visual glass diameter. The outer interaction frame remains
     // at least 44pt, so compact 28–38pt chrome does not create undersized taps.
     var size: CGFloat = 44
+
+    // No @Environment here (2026-09-28): AtriaHeaderActionButtonStyle calls
+    // this makeBody directly, so a style-level Environment is never installed
+    // and SwiftUI warned "Accessing Environment<Bool>'s value outside of being
+    // installed on a View" at every launch. The body view reads Reduce Motion.
+    func makeBody(configuration: Configuration) -> some View {
+        AtriaGlassIconButtonBody(label: configuration.label,
+                                 isPressed: configuration.isPressed,
+                                 tint: tint,
+                                 size: size)
+    }
+}
+
+/// The glass icon button's rendering, as a real View so its environment
+/// reads are always installed, however the style is invoked.
+struct AtriaGlassIconButtonBody<Label: View>: View {
+    let label: Label
+    let isPressed: Bool
+    let tint: Color
+    let size: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    func makeBody(configuration: Configuration) -> some View {
+    var body: some View {
         let hitSize = max(size, 44)
         // Native Liquid Glass: a real translucent glass circle with a clearly
         // legible icon. No opaque white fill underneath — that turned the glass into
         // a flat white disc and hid the icon entirely.
-        configuration.label
+        label
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(foreground)
             .frame(width: size, height: size)
             .glassEffect(.regular.interactive(), in: .circle)
             .frame(width: hitSize, height: hitSize)
             .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
-            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: configuration.isPressed)
+            .scaleEffect(isPressed ? 0.94 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick), value: isPressed)
     }
 
     private var foreground: Color {
@@ -99,8 +137,9 @@ private struct AtriaCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -160,8 +199,9 @@ private struct AtriaRaisedCardBackground: View {
             .overlay(strokeShape)
             // Light-mode cards are opaque white on a near-white canvas — without a
             // soft drop shadow they read as washed-out. A subtle elevation lifts them
-            // off the background. Dark mode separates by value, so no shadow there.
-            .shadow(color: colorScheme == .dark ? .clear : .black.opacity(0.06),
+            // off the background; the shadow is navy-tinted, not black, so it stays
+            // in the palette. Dark mode separates by value, so no shadow there.
+            .shadow(color: AtriaDesignTokens.Surface.elevationShadow(isDark: colorScheme == .dark),
                     radius: 10, x: 0, y: 4)
     }
 
@@ -178,27 +218,64 @@ private struct AtriaRaisedCardBackground: View {
     }
 }
 
+extension EnvironmentValues {
+    /// How many inset cards enclose this view.
+    @Entry var atriaCardNestingDepth: Int = 0
+}
+
+/// Owner 2026-10-03: "a lot of UI space is taken by nested cards". An inset
+/// card inside another card draws no surface of its own — its content flows
+/// in the parent. Hue-tinted metric chips keep their identity surface.
+struct AtriaInsetCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+    let hueTinted: Bool
+    @Environment(\.atriaCardNestingDepth) private var depth
+
+    static func drawsSurface(depth: Int, hueTinted: Bool) -> Bool {
+        depth == 0 || hueTinted
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.atriaCardNestingDepth, depth + 1)
+            .background {
+                if Self.drawsSurface(depth: depth, hueTinted: hueTinted) {
+                    AtriaInsetCardBackground(cornerRadius: cornerRadius,
+                                             tint: tint,
+                                             hueTinted: hueTinted)
+                }
+            }
+    }
+}
+
 private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
-    /// Opt-in identity-forward chip surface. When true, the card carries a
-    /// visible wash + border in its metric hue (design-handoff "metric chip"
-    /// look — one identity hue per metric, on the surface itself, not just the
-    /// icon). Off by default so the ~100 existing neutral inset cards keep the
-    /// deliberately-subtle gray surface. Kept restrained (well under the
-    /// handoff's 0.12/0.25) to honor Atria's "Liquid Glass stays quiet" rule.
+    /// Kept for call-site compatibility; it only decides whether a nested
+    /// card still draws a surface. It no longer washes the card in its hue.
     var hueTinted: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(baseFill)
-            .overlay(tintWash)
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(strokeColor, lineWidth: 1)
-            )
+        // Owner 2026-10-03: colour is for data and state only. Every card is
+        // the same neutral Liquid Glass; `tint` and `hueTinted` no longer
+        // colour the surface (the metric hue lives on the ring, chart or
+        // icon inside the card instead).
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            shape
+                .fill(baseFill)
+                .overlay(shape.stroke(strokeColor, lineWidth: 1))
+        } else {
+            shape
+                .fill(Color.clear)
+                .glassEffect(.regular, in: shape)
+                .overlay(shape.stroke(strokeColor, lineWidth: 1))
+        }
     }
 
     private var baseFill: AnyShapeStyle {
@@ -206,40 +283,8 @@ private struct AtriaInsetCardBackground: View {
     }
 
     private var strokeColor: Color {
-        if hueTinted {
-            // Identity-hue hairline, matching the handoff's tinted-border chips.
-            return colorScheme == .dark ? tint.opacity(0.22) : tint.opacity(0.28)
-        }
-        return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
     }
-
-    @ViewBuilder
-    private var tintWash: some View {
-        if hueTinted {
-            // A gentle top-lit hue wash so the chip reads as its metric's color
-            // at a glance, without the flat saturated block the raw handoff uses.
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        tint.opacity(colorScheme == .dark ? 0.14 : 0.10),
-                        tint.opacity(colorScheme == .dark ? 0.05 : 0.03)
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        } else if colorScheme == .dark {
-            // ~3% tint is invisible on the dark UI; skip the extra rounded-rect
-            // layer so scrolling cards have less overdraw.
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        tint.opacity(0.045),
-                        Color.white.opacity(0.02)
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        }
-    }
-
 }
 
 struct AtriaIconTileBackground: View {
@@ -272,22 +317,6 @@ struct AtriaIconTileBackground: View {
         }
     }
 
-}
-
-struct AtriaChecklistBadgeBackground: View {
-    let tint: Color
-
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Circle()
-            .fill(
-                LinearGradient(colors: [
-                    colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.80),
-                    colorScheme == .dark ? tint.opacity(0.16) : tint.opacity(0.10)
-                ], startPoint: .topLeading, endPoint: .bottomTrailing)
-            )
-    }
 }
 
 extension View {
@@ -339,19 +368,24 @@ extension View {
     func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset,
                         tint: Color,
                         hueTinted: Bool = false) -> some View {
-        self
-            .background {
-                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint, hueTinted: hueTinted)
-            }
+        modifier(AtriaInsetCardModifier(cornerRadius: cornerRadius,
+                                        tint: tint,
+                                        hueTinted: hueTinted))
+    }
+
+    /// Sheets inherit the presenter's environment; a sheet opened from inside
+    /// a card starts its own card hierarchy.
+    func atriaCardHierarchyRoot() -> some View {
+        environment(\.atriaCardNestingDepth, 0)
     }
 
     @ViewBuilder
     func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View {
-        // Standard native iOS 26 Liquid Glass: .glassProminent for the one primary
-        // action, .glass for secondary actions. The system handles translucency,
-        // press highlight, and shape — no hand-rolled fill-under-glass.
+        // Native iOS 26 Liquid Glass (owner 2026-10-03: clear glass, not
+        // solid colour slabs). Primary actions are the same clear glass with a
+        // bold tinted label; secondary actions keep a regular-weight label.
         if prominent {
-            self.tint(tint).buttonStyle(.glassProminent)
+            self.fontWeight(.semibold).tint(tint).buttonStyle(.glass)
         } else {
             self.tint(tint).buttonStyle(.glass)
         }
@@ -359,6 +393,17 @@ extension View {
 
     func atriaGlassIconAction(tint: Color = .blue, size: CGFloat = 44) -> some View {
         self.buttonStyle(AtriaGlassIconButtonStyle(tint: tint, size: size))
+    }
+
+    /// The small uppercase label that heads a card section. One font, one
+    /// tracking, one color, so every eyebrow in the app is the same element
+    /// (see `AtriaDesignTokens.Typography.eyebrow`).
+    func atriaEyebrow() -> some View {
+        self
+            .font(AtriaDesignTokens.Typography.eyebrow)
+            .tracking(AtriaDesignTokens.Typography.eyebrowTracking)
+            .textCase(.uppercase)
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -397,5 +442,19 @@ private struct AtriaIconChromeBackground: View {
     private var stroke: some View {
         Circle()
             .stroke(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.12), lineWidth: 1)
+    }
+}
+
+
+extension View {
+    /// Owner 2026-10-03: every tappable control answers a 44×44 pt touch
+    /// without changing how it is drawn or laid out — the hit shape extends
+    /// past a smaller visual control.
+    func atriaMinimumHitTarget(width: CGFloat, height: CGFloat) -> some View {
+        let dx = max(0, (44 - width) / 2)
+        let dy = max(0, (44 - height) / 2)
+        return contentShape(.rect.inset(by: 0)
+            .size(width: width + 2 * dx, height: height + 2 * dy)
+            .offset(x: -dx, y: -dy))
     }
 }

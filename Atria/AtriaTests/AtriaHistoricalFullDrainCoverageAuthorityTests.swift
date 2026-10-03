@@ -14,7 +14,7 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
         roots.removeAll()
     }
 
-    func testExactRecoveryAuthorityOwnsProjectionPriorityUntilGapResolution() throws {
+    func testDrainingAuthorityDoesNotOwnProjectionPriority() throws {
         let archiveRoot = try temporaryRoot()
         let store = Store(
             directoryURL: archiveRoot.appendingPathComponent(
@@ -29,9 +29,9 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
 
         _ = try store.arm(gap: gap(), attempt: attempt(), now: date(102))
 
-        XCTAssertTrue(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+        XCTAssertFalse(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
             archiveRoot: archiveRoot
-        ))
+        ), "a draining authority has nothing to publish and may never finish on an oldest-first strap")
     }
 
     func testOnlyRecoveredHistoryProjectionBypassesExactRecoveryPriority() {
@@ -505,6 +505,60 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
             )
         )
         XCTAssertEqual(try proven.load()?.status, .coverageProven)
+    }
+
+    /// 2026-10-02: a coverageProven record waited all night for the
+    /// foreground-only publication and refused every background compaction
+    /// and recovered projection. It owns the lane only while foreground.
+    func testTerminalAuthorityOwnsTheArchiveLaneOnlyInTheForeground() throws {
+        let root = try temporaryRoot()
+        let proven = Store(directoryURL: root.appendingPathComponent("full-drain-authority-v1",
+                                                                    isDirectory: true),
+                           makeIdentifier: { "authority-a" })
+        _ = try proven.arm(gap: gap(), attempt: attempt(), now: date(102))
+        let stores = durableStores(sequence: 1, fsyncedAt: start + 104)
+        let permit = try proven.recordHistoryEndFsynced(
+            identity: identity(),
+            boundaryIdentifier: "end-proven",
+            historyEndPayload: Data([0x31]),
+            expectedACKPayload: Data([0x01]),
+            stores: stores,
+            fsyncedAt: date(104)
+        )
+        _ = try proven.recordMatchingACK(
+            identity: identity(),
+            permit: permit,
+            actualACKPayload: Data([0x01]),
+            ackAttempt: 1,
+            completedAt: date(105)
+        )
+        _ = try proven.recordHistoryComplete(
+            identity: identity(),
+            completionIdentifier: "complete-proven",
+            notificationPayload: Data([0x30]),
+            stores: stores,
+            receivedAt: date(106)
+        )
+        let proof = try Policy.evaluate(
+            gapIdentifier: "gap-a",
+            gapStartUnix: start,
+            gapEndUnix: start + 100,
+            attemptIdentifier: "attempt-a",
+            transportNonce: "nonce-a",
+            transportGeneration: 7,
+            stores: stores,
+            decoderIdentifier: "decoder",
+            decoderVersion: 1,
+            metricTimestampsUnix: denseTimestamps()
+        )
+        _ = try proven.recordCoverageProof(identity: identity(), proof: proof)
+        XCTAssertEqual(try proven.load()?.status, .coverageProven)
+
+        XCTAssertTrue(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+            archiveRoot: root, applicationIsForeground: true))
+        XCTAssertFalse(HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(
+            archiveRoot: root, applicationIsForeground: false),
+                       "publication cannot run in the background, so it must not hold the lane there")
     }
 
     func testNoLongerPendingDrainingAuthorityClearsOnlyForExactIdentifier() throws {

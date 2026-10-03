@@ -361,7 +361,7 @@ struct AtriaMorningCheckInCard: View {
                 Spacer(minLength: 0)
 
                 Button(model.record == nil ? "Check in" : "Edit") { showsSheet = true }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .tint(.pink)
             }
             .padding(12)
@@ -453,7 +453,7 @@ private struct AtriaMorningCheckInSheet: View {
                                       systemImage: draft.interruptionTags.contains(tag) ? "checkmark.circle.fill" : "circle")
                                     .font(.caption.weight(.semibold))
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.glass)
                             .tint(draft.interruptionTags.contains(tag) ? .pink : .secondary)
                         }
                     }

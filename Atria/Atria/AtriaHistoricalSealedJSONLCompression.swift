@@ -429,6 +429,7 @@ struct AtriaHistoricalSealedJSONLCompression {
         while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
             hasher.update(data: chunk)
             bytes &+= UInt64(chunk.count)
+            AtriaBackgroundWorkPacer.checkpoint()
         }
         return (bytes, hasher.finalize().hexString)
     }
@@ -491,17 +492,25 @@ struct AtriaHistoricalSealedJSONLCompression {
 /// Shared raw-input seam. Plain JSONL remains seekable elsewhere; compressed
 /// sealed sources are immutable and are always decoded from byte zero.
 enum AtriaHistoricalJSONLInput {
-    enum InputError: Error, Equatable { case corruptCompressedStream }
+    enum InputError: Error, Equatable {
+        case corruptCompressedStream
+        case maintenanceAuthorityRevoked
+    }
 
     struct Identity: Equatable {
         let byteCount: UInt64
         let sha256: String
     }
 
-    static func identity(at url: URL, chunkSize: Int = 64 * 1024) throws -> Identity {
+    static func identity(
+        at url: URL,
+        chunkSize: Int = 64 * 1024,
+        shouldContinue: () -> Bool = { true }
+    ) throws -> Identity {
         var hasher = SHA256()
         var byteCount: UInt64 = 0
         try forEachChunk(at: url, chunkSize: chunkSize) { chunk in
+            guard shouldContinue() else { throw InputError.maintenanceAuthorityRevoked }
             hasher.update(data: chunk)
             byteCount &+= UInt64(chunk.count)
         }
@@ -517,6 +526,7 @@ enum AtriaHistoricalJSONLInput {
             defer { try? handle.close() }
             while let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty {
                 try consume(chunk)
+                AtriaBackgroundWorkPacer.checkpoint()
             }
             return
         }
@@ -563,6 +573,7 @@ enum AtriaHistoricalJSONLInput {
         defer { output.deallocate() }
         var reachedEnd = false
         while let input = try handle.read(upToCount: chunkSize), !input.isEmpty {
+            AtriaBackgroundWorkPacer.checkpoint()
             try input.withUnsafeBytes { raw in
                 stream.next_in = UnsafeMutablePointer<Bytef>(mutating: raw.bindMemory(to: UInt8.self).baseAddress)
                 stream.avail_in = uInt(input.count)

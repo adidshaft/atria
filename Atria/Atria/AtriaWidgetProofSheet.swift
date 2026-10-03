@@ -17,19 +17,46 @@ struct AtriaWidgetProofDiagnostics: Equatable {
     let configuredOrderText: String
     let ringCenterText: String
     let legendStyleText: String
+    /// nil only when neither a payload nor a live probe could answer.
+    let appGroupAvailable: Bool?
 
-    init(snapshot: WidgetSnapshot?, layoutConfig: AtriaHomeLayoutConfig) {
+    /// Why there is no payload, in terms the reader can act on. The old copy
+    /// told them to open the app once — advice that can only ever be read from
+    /// inside the app, by someone who has already done exactly that
+    /// (2026-09-03 render). nil once a payload exists.
+    var missingPayloadDetail: String? {
+        guard !hasSnapshot else { return nil }
+        switch appGroupAvailable {
+        case false:
+            return "This build cannot reach the shared app group, so no payload can be written and the widgets stay unavailable."
+        case true:
+            return "The shared app group is reachable and nothing has been published yet. Atria publishes when today's numbers change; the widgets stay blank until that first delivery lands."
+        case nil:
+            return "No shared payload has been written, and the app group could not be checked from here. The widgets stay unavailable until a delivery succeeds."
+        }
+    }
+
+    /// The snapshot answers for the payload that exists; a live probe answers
+    /// for the surfaces themselves, which the app can check whether or not it
+    /// has ever published. Reading only the snapshot reported three
+    /// "Unknown"s on exactly the screen opened to find out (2026-09-03).
+    init(snapshot: WidgetSnapshot?,
+         layoutConfig: AtriaHomeLayoutConfig,
+         live: WidgetSnapshotPublisher.Diagnostics? = nil) {
         let layout = layoutConfig.validated()
         hasSnapshot = snapshot != nil
         snapshotWrittenAt = snapshot?.createdAt
         schemaText = snapshot.map { String($0.schema) } ?? "--"
-        storageText = snapshot?.storage ?? "No shared payload"
-        appGroupText = Self.availabilityText(snapshot?.appGroupEnabled)
+        appGroupAvailable = snapshot?.appGroupEnabled ?? live?.appGroupEnabled
+        storageText = snapshot?.storage
+            ?? live.map { $0.appGroupEnabled ? "Ready · nothing published yet" : "App group unavailable" }
+            ?? "No shared payload"
+        appGroupText = Self.availabilityText(appGroupAvailable)
         homeScreenTargetText = Self.availabilityText(
-            snapshot?.widgetTargetPresent
+            snapshot?.widgetTargetPresent ?? live?.widgetTargetPresent
         )
         lockScreenTargetText = Self.availabilityText(
-            snapshot?.complicationTargetPresent
+            snapshot?.complicationTargetPresent ?? live?.complicationTargetPresent
         )
         configuredOrderText = (
             snapshot?.layoutGlanceMetrics ?? layout.glanceMetrics
@@ -49,50 +76,80 @@ struct AtriaWidgetProofDiagnostics: Equatable {
     }
 }
 
+/// Opens from a Home Screen widget tap (`atria://widget-proof`). Everyday
+/// readers only need one honest fact — "is my widget current" — never a
+/// second renderer of Recovery/Strain/HRV numbers that could quietly
+/// disagree with the one WidgetKit is actually showing on the Home Screen
+/// (see the type-level note on `AtriaWidgetProofDiagnostics`). The full
+/// technical breakdown (schema, storage key, layout config) stays one tap
+/// away, but only in developer mode.
 struct AtriaWidgetProofSheet: View {
     let snapshot: WidgetSnapshot?
     let layoutConfig: AtriaHomeLayoutConfig
 
     @Environment(\.dismiss) private var dismiss
+    @State private var showDeveloperDiagnostics = false
 
     private var diagnostics: AtriaWidgetProofDiagnostics {
         AtriaWidgetProofDiagnostics(
             snapshot: snapshot,
-            layoutConfig: layoutConfig
+            layoutConfig: layoutConfig,
+            live: WidgetSnapshotPublisher.diagnostics
         )
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    AtriaWidgetDiagnosticHeader(
-                        hasSnapshot: diagnostics.hasSnapshot
-                    )
-                    AtriaWidgetDiagnosticScopeCard()
-                    AtriaWidgetTargetDiagnosticsCard(
-                        homeScreenTargetText:
-                            diagnostics.homeScreenTargetText,
-                        lockScreenTargetText:
-                            diagnostics.lockScreenTargetText,
-                        appGroupText: diagnostics.appGroupText
-                    )
-                    AtriaWidgetPayloadDiagnosticsCard(
-                        diagnostics: diagnostics
-                    )
+            VStack(spacing: 22) {
+                Spacer(minLength: 0)
+
+                Image(systemName: diagnostics.hasSnapshot
+                      ? "square.grid.2x2.fill"
+                      : "square.grid.2x2")
+                    .font(.system(size: 46, weight: .semibold))
+                    .foregroundStyle(diagnostics.hasSnapshot ? .green : .secondary)
+
+                VStack(spacing: 8) {
+                    Text(diagnostics.hasSnapshot
+                         ? "Your widgets are current"
+                         : "No widget yet")
+                        .font(.title3.weight(.semibold))
+                    Text(diagnostics.hasSnapshot
+                         ? "Home Screen and Lock Screen widgets are showing today's numbers."
+                         : "Add an Atria widget to your Home Screen or Lock Screen to see your numbers there.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .padding(18)
+                .padding(.horizontal, 28)
+
+                Spacer(minLength: 0)
+
+                if AtriaDeveloperMode.isEnabled {
+                    Button {
+                        showDeveloperDiagnostics = true
+                    } label: {
+                        Label("Developer diagnostics", systemImage: "wrench.and.screwdriver")
+                            .font(.footnote.weight(.semibold))
+                    }
+                    .buttonStyle(.glass)
+                    .padding(.bottom, 8)
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(.systemGroupedBackground))
-            .navigationTitle("Widget diagnostics")
+            .navigationTitle("Your widgets")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                 }
             }
+            .navigationDestination(isPresented: $showDeveloperDiagnostics) {
+                AtriaWidgetRawDiagnosticsView(diagnostics: diagnostics)
+            }
         }
-        .presentationDetents([.large])
+        .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         // Retain the established identifier for existing UI automation while
         // the visible surface is honestly renamed from proof to diagnostics.
@@ -100,8 +157,42 @@ struct AtriaWidgetProofSheet: View {
     }
 }
 
+/// The raw delivery-metadata breakdown this screen used to show by default.
+/// Kept intact for developer mode: technical readers (schema, storage key,
+/// configured layout) still need it; everyday readers do not.
+private struct AtriaWidgetRawDiagnosticsView: View {
+    let diagnostics: AtriaWidgetProofDiagnostics
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                AtriaWidgetDiagnosticHeader(
+                    hasSnapshot: diagnostics.hasSnapshot,
+                    missingPayloadDetail: diagnostics.missingPayloadDetail
+                )
+                AtriaWidgetDiagnosticScopeCard()
+                AtriaWidgetTargetDiagnosticsCard(
+                    homeScreenTargetText:
+                        diagnostics.homeScreenTargetText,
+                    lockScreenTargetText:
+                        diagnostics.lockScreenTargetText,
+                    appGroupText: diagnostics.appGroupText
+                )
+                AtriaWidgetPayloadDiagnosticsCard(
+                    diagnostics: diagnostics
+                )
+            }
+            .padding(18)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("Widget diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 private struct AtriaWidgetDiagnosticHeader: View {
     let hasSnapshot: Bool
+    let missingPayloadDetail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -116,9 +207,8 @@ private struct AtriaWidgetDiagnosticHeader: View {
             .font(.headline.weight(.semibold))
             .foregroundStyle(hasSnapshot ? .green : .orange)
 
-            Text(hasSnapshot
-                 ? "Atria can inspect delivery metadata here. Verify values and rings on the installed widgets, where WidgetKit applies their real freshness and expiry rules."
-                 : "Open Atria once to publish a shared payload. Widgets remain unavailable until that delivery succeeds.")
+            Text(missingPayloadDetail
+                 ?? "Atria can inspect delivery metadata here. Verify values and rings on the installed widgets, where WidgetKit applies their real freshness and expiry rules.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

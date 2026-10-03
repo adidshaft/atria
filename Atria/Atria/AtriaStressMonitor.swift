@@ -698,11 +698,14 @@ struct AtriaStressHistoryArchive: Codable, Equatable, Sendable {
     }
 
     static let currentSchemaVersion = 3
-    /// Two local days lets Activity restore today or yesterday without growing
-    /// into long-term health storage. At the store's one-minute cadence this is
-    /// bounded exactly by `maximumPointCount`.
-    static let retentionWindow: TimeInterval = 48 * 60 * 60
-    static let maximumPointCount = 2_880
+    /// Seven local days (2026-08-29 owner request: date-navigate previous
+    /// 24-hour HR/Stress charts) without growing into long-term health
+    /// storage: at the store's one-minute cadence this is bounded exactly by
+    /// `maximumPointCount` (10,080 minutes ≈ 4.8 MiB of hour shards at the
+    /// measured worst-field encoding). Expiry still prunes on every
+    /// load/checkpoint, so the window is a hard cap, not a growth path.
+    static let retentionWindow: TimeInterval = 7 * 24 * 60 * 60
+    static let maximumPointCount = 10_080
     /// Local sample clocks should track wall time. A larger future jump signals
     /// a corrupt archive or clock discontinuity and is rejected rather than
     /// displayed as measured evidence.
@@ -769,7 +772,8 @@ enum AtriaStressHistoryLoadState: Equatable, Sendable {
 /// Reads and JSON encoding/writes stay off MainActor. Hour shards bound routine
 /// rewrite amplification: a live checkpoint atomically replaces only the
 /// current and immediately previous hour (the latter closes rollover tails),
-/// while load merges/prunes at most 48 hours of small files.
+/// while load merges/prunes at most one retention window (7 days) of small
+/// files.
 final class AtriaStressHistoryPersistence: @unchecked Sendable {
     enum LoadResult: Equatable, Sendable {
         case loaded(AtriaStressHistoryArchive)
@@ -802,7 +806,10 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
     /// at two shards per five-minute checkpoint (normally substantially less).
     static let maximumEncodedBytesPerShard = 64 * 1_024
     private static let secondsPerShard: TimeInterval = 60 * 60
-    private static let maximumRelevantShardCount = 50
+    /// 7 days ≈ 168 hourly shards; the slack absorbs the boundary shard plus
+    /// clock jitter. More recognized in-window shards than this is corruption,
+    /// not data (2026-08-29, was 50 for the 48-hour window).
+    private static let maximumRelevantShardCount = 180
     static let filenamePrefix = "stress-minute-v3-"
     private static let filenameSuffix = ".json"
     static let productionDirectoryName = "Atria/stress-history-v3"
@@ -856,7 +863,7 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
         }
     }
 
-    /// Test/support seam for pre-seeding a complete 48-hour relaunch fixture.
+    /// Test/support seam for pre-seeding a complete full-retention relaunch fixture.
     /// Production routine checkpoints use `enqueueCheckpoint` and therefore
     /// rewrite only two hour shards.
     func save(_ archive: AtriaStressHistoryArchive, now: Date = Date()) async -> Bool {
@@ -1273,6 +1280,18 @@ enum AtriaHistoricalStressReplay {
     static let maximumContextSourceCount = 2_048
     static let maximumContextIntervalCount = 20_000
     static let maximumManagedRangeCount = 8
+    /// How far back replay re-derives minute facts from raw HR/RR sessions.
+    /// Deliberately DECOUPLED from `AtriaStressHistoryArchive.retentionWindow`
+    /// when retention grew to 7 days (2026-08-29): at ~1 Hz, 48 h is already
+    /// ~173k HR rows against the 250k fail-closed snapshot cap — a 7-day
+    /// source window (~605k rows) would make `snapshot(...)` return nil
+    /// forever and silently kill replay (this repo's recovery-state defect
+    /// class). The managed destructive-authority range MUST stay equal to this
+    /// source span, never to retention, or replay would erase retained
+    /// archive-restored facts it can no longer re-derive. Days 3–7 therefore
+    /// render only what was scored (live or replayed) while they were recent —
+    /// older gaps stay honest gaps.
+    static let replaySourceWindow: TimeInterval = 48 * 60 * 60
 
     /// Swift's `Hasher` is intentionally process-randomized. Replay authority
     /// survives relaunch, so use a tiny deterministic FNV-1a builder over only
@@ -1586,7 +1605,7 @@ enum AtriaHistoricalStressReplay {
                          now: Date) -> StorageSnapshot? {
         guard now.timeIntervalSinceReferenceDate.isFinite else { return nil }
         let sourceCutoff = now.addingTimeInterval(
-            -AtriaStressHistoryArchive.retentionWindow
+            -replaySourceWindow
                 - AtriaPhysiologicalStressModel.windowDuration
         )
         let futureLimit = now.addingTimeInterval(
@@ -1652,7 +1671,7 @@ enum AtriaHistoricalStressReplay {
             return nil
         }
         let sourceCutoff = source.now.addingTimeInterval(
-            -AtriaStressHistoryArchive.retentionWindow
+            -replaySourceWindow
                 - AtriaPhysiologicalStressModel.windowDuration
         )
         let futureLimit = source.now.addingTimeInterval(
@@ -1773,6 +1792,105 @@ enum AtriaHistoricalStressReplay {
     static func evaluate(_ source: StorageSnapshot) -> Result {
         guard let snapshot = materialize(source) else { return .empty }
         return evaluate(snapshot)
+    }
+
+    /// Same replay with drained strap history filling live-HR holes.
+    static func evaluate(_ source: StorageSnapshot,
+                         archiveHeartRates: [HeartRateRow]) -> Result {
+        guard let snapshot = materialize(source) else { return .empty }
+        return evaluate(fillingHeartRateHoles(in: snapshot, from: archiveHeartRates))
+    }
+
+    /// Live HR pauses while the strap serves history (a ~2 min drain slice
+    /// every ~10 min, device 2026-09-30), and each pause cost the next five
+    /// minutes of stress: the kernel needs a gap-free 5-minute window. The
+    /// drained history rows carry that HR, so they fill the holes — never a
+    /// minute that already has live HR. A hole inside a live session goes
+    /// into that session (replay drops rows that arrive out of order across
+    /// sessions); a hole between sessions becomes its own archive session.
+    static let archiveHoleMinimum: TimeInterval = 20
+
+    static func fillingHeartRateHoles(in snapshot: Snapshot,
+                                      from archive: [HeartRateRow]) -> Snapshot {
+        guard !archive.isEmpty,
+              let ordered = chronologicallyOrderedSessions(snapshot.sessions) else {
+            return snapshot
+        }
+        let descending = ordered.first?.id != snapshot.sessions.first?.id
+            && snapshot.sessions.count > 1
+        let cutoff = snapshot.now.addingTimeInterval(
+            -replaySourceWindow - AtriaPhysiologicalStressModel.windowDuration
+        )
+        var timeline = ordered.flatMap { $0.heartRates.map(\.date) }
+        timeline.sort()
+        func insideHole(_ date: Date) -> Bool {
+            guard date >= cutoff, date <= snapshot.now else { return false }
+            var lo = 0, hi = timeline.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if timeline[mid] < date { lo = mid + 1 } else { hi = mid }
+            }
+            if lo < timeline.count, timeline[lo] == date { return false }
+            let before = lo > 0 ? timeline[lo - 1] : cutoff
+            guard lo < timeline.count else { return false }
+            return timeline[lo].timeIntervalSince(before) > archiveHoleMinimum
+        }
+        let fills = archive.filter { insideHole($0.date) }.sorted { $0.date < $1.date }
+        guard !fills.isEmpty else { return snapshot }
+
+        var hosted = Array(repeating: [HeartRateRow](), count: ordered.count)
+        var between = Array(repeating: [HeartRateRow](), count: ordered.count + 1)
+        for row in fills {
+            if let host = ordered.firstIndex(where: { session in
+                guard let first = session.heartRates.first?.date,
+                      let last = session.heartRates.last?.date else { return false }
+                return first < row.date && row.date < last
+            }) {
+                hosted[host].append(row)
+            } else {
+                let slot = ordered.firstIndex(where: {
+                    ($0.heartRates.first?.date ?? $0.start) > row.date
+                }) ?? ordered.count
+                between[slot].append(row)
+            }
+        }
+        var sessions: [Session] = []
+        func appendArchiveSession(_ rows: [HeartRateRow]) {
+            guard let first = rows.first, let last = rows.last, rows.count >= 2 else { return }
+            sessions.append(Session(id: archiveSessionID(start: first.date),
+                                    start: first.date,
+                                    end: last.date,
+                                    heartRates: rows,
+                                    rrIntervals: []))
+        }
+        for (index, session) in ordered.enumerated() {
+            appendArchiveSession(between[index])
+            guard !hosted[index].isEmpty else {
+                sessions.append(session)
+                continue
+            }
+            let merged = (session.heartRates + hosted[index]).sorted { $0.date < $1.date }
+            sessions.append(Session(id: session.id,
+                                    start: session.start,
+                                    end: session.end,
+                                    heartRates: merged,
+                                    rrIntervals: session.rrIntervals))
+        }
+        appendArchiveSession(between[ordered.count])
+        return Snapshot(sessions: descending ? sessions.reversed() : sessions,
+                        activityContexts: snapshot.activityContexts,
+                        sleepContexts: snapshot.sleepContexts,
+                        personalization: snapshot.personalization,
+                        now: snapshot.now)
+    }
+
+    /// Stable across relaunches so replay authority does not churn.
+    private static func archiveSessionID(start: Date) -> UUID {
+        let bits = start.timeIntervalSinceReferenceDate.bitPattern
+        var bytes = [UInt8](repeating: 0xA7, count: 16)
+        for index in 0..<8 { bytes[8 + index] = UInt8(truncatingIfNeeded: bits >> (8 * index)) }
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
     /// Handoff-12 CP2: bounded per-minute classification of recent Stress
@@ -2033,9 +2151,7 @@ enum AtriaHistoricalStressReplay {
             return .empty
         }
         let managedRanges = [ManagedRange(
-            start: snapshot.now.addingTimeInterval(
-                -AtriaStressHistoryArchive.retentionWindow
-            ),
+            start: snapshot.now.addingTimeInterval(-replaySourceWindow),
             end: snapshot.now
         )]
         var heartRates: [HeartRateRow] = []
@@ -2085,9 +2201,7 @@ enum AtriaHistoricalStressReplay {
                           managedRanges: managedRanges,
                           sleepContextAuthority: snapshot.sleepContexts)
         }
-        let retainedStart = snapshot.now.addingTimeInterval(
-            -AtriaStressHistoryArchive.retentionWindow
-        )
+        let retainedStart = snapshot.now.addingTimeInterval(-replaySourceWindow)
         let firstEnd = minuteCeiling(max(retainedStart, firstHeartRateDate))
         let lastEnd = minuteFloor(min(snapshot.now, lastHeartRateDate))
         guard firstEnd <= lastEnd else {
@@ -2791,8 +2905,9 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Clock of the most recent scored evaluation. Presentation surfaces use
     /// this source clock; merely opening a screen must never renew freshness.
     @Published private(set) var lastMeasuredAt: Date?
-    /// Scored readings emitted once per minute and bounded to 48 hours / 2,880
-    /// points. The production store restores a local display-only checkpoint;
+    /// Scored readings emitted once per minute and bounded to the archive's
+    /// 7-day / 10,080-point retention.
+    /// The production store restores a local display-only checkpoint;
     /// isolated stores remain memory-only unless persistence is injected. Real
     /// sample timestamps survive relaunch, so missing strap intervals remain
     /// gaps and are never interpolated.
@@ -3992,7 +4107,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         advanceHistoryRevision()
         guard historyChanged, let historyPersistence else { return }
         guard mergedFactsChanged else {
-            // Sleep re-context changed labels only. A full 48-hour save would
+            // Sleep re-context changed labels only. A full-retention save would
             // rewrite every shard for a metadata relabel; the bounded
             // checkpoint drain instead rewrites exactly the hours whose
             // minutes changed, two atomic shard replacements per hop, through

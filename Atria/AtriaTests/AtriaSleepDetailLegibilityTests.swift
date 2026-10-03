@@ -34,7 +34,9 @@ final class AtriaSleepDetailLegibilityTests: XCTestCase {
                                                               todayTRIMP: nil,
                                                               todayStrainFallback: nil)
         let hardDay = snapshot.tonightProjectedNeedComponents(baseNeedHours: 8.0,
-                                                              todayTRIMP: 187.9,
+                                                              // Load that reads as display strain 15.
+                                                              todayTRIMP: -AtriaStrainLoadModel.displayCalibration.loadScale
+                                                                * log(1.0 - 15.0 / 21.0),
                                                               todayStrainFallback: nil)
         XCTAssertGreaterThan(hardDay.totalHours, restDay.totalHours,
                              "today's accruing TRIMP must raise tonight's projection")

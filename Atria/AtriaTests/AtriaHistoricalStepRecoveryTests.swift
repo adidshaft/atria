@@ -18,6 +18,18 @@ final class AtriaHistoricalStepRecoveryTests: XCTestCase {
         XCTAssertEqual(result.reason, .historicalGravityNotStepCapable)
         XCTAssertEqual(result.provenance, [.whoop4HistoricalGravity1Hz])
         XCTAssertEqual(result.missingCoverageSeconds, 1_800)
+        XCTAssertEqual(
+            AtriaStrapMotionProductRoute.resolve(
+                validationState: AtriaHistoricalStepRecovery.Provenance.whoop4HistoricalGravity1Hz.rawValue
+            ),
+            .historicalGravity1Hz
+        )
+        XCTAssertNotEqual(
+            AtriaStrapMotionProductRoute.resolve(
+                validationState: "r10_live_validated"
+            ),
+            .compactLive
+        )
     }
 
     func testValidatedNativeCounterCanRecoverExactMatchingGap() {

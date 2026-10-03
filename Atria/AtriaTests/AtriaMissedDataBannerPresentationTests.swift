@@ -321,6 +321,47 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
         XCTAssertFalse(yesterday.title.contains("saved"))
     }
 
+    /// 2026-09-27 owner: "user should be always aware where the catching up
+    /// is". With a strap-confirmed fill cursor the notice says how far behind.
+    func testCatchUpSaysHowFarBehindFromTheFillCursor() {
+        let now = date(day: 9, hour: 19, minute: 0)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 271,
+            drainedThroughUnix: date(day: 9, hour: 18, minute: 0).timeIntervalSince1970,
+            now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: date(day: 8, hour: 12, minute: 0).timeIntervalSince1970)
+        XCTAssertEqual(copy.title, "Strap history · 31 h behind") // copy 2026-09-30
+        XCTAssertEqual(copy.compactTitle, "History · 31 h behind")
+        XCTAssertTrue(copy.accessibilityLabel.contains("live heart rate is current"))
+        XCTAssertEqual(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(-40 * 60).timeIntervalSince1970, now: now), "40 min")
+        XCTAssertEqual(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(-3 * 86_400).timeIntervalSince1970, now: now), "3 days")
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.behindText(
+            fillThroughUnix: now.addingTimeInterval(60).timeIntervalSince1970, now: now), "future cursor")
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.behindText(fillThroughUnix: nil, now: now))
+    }
+
+    /// Device 2026-09-27: cursor 68 h old, strap holding 26,529 records
+    /// (~1 per worn second). What is left is ~7 h, not 68 h.
+    func testCatchUpSaysHowMuchDataIsLeftFromTheStrapCount() {
+        let now = date(day: 9, hour: 19, minute: 0)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 950,
+            drainedThroughUnix: nil,
+            now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: now.addingTimeInterval(-68 * 3_600).timeIntervalSince1970,
+            strapPendingRecords: 26_529)
+        XCTAssertEqual(copy.compactTitle, "History · 7 h to sync")
+        XCTAssertEqual(copy.title, "Strap history · 7 h to sync")
+        let tiny = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 0, drainedThroughUnix: nil, now: now, calendar: calendar, locale: locale,
+            drainCursorUnix: now.addingTimeInterval(-31 * 3_600).timeIntervalSince1970,
+            strapPendingRecords: 30)
+        XCTAssertEqual(tiny.compactTitle, "History · 31 h behind",
+                       "under 2 min left falls back to the cursor")
+    }
+
     func testStrapCaughtUpReportAcceptsOnlyFreshCaughtUpLevel() {
         let now = date(day: 20, hour: 9, minute: 0).timeIntervalSince1970
         XCTAssertTrue(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
@@ -418,9 +459,9 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
         XCTAssertNotNil(f)
         // "old", not "behind": the number is now - frontier, i.e. the AGE of
-        // the newest record, not the size of the backlog behind it.
+        // the fill cursor, not the size of the backlog behind it.
         XCTAssertTrue(f!.detail.contains("old"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("History fill last reached"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {
@@ -430,13 +471,13 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         // R17: the visible detail is numbers-first; the reassurance
         // clauses are relocated to the accessibility sentence, not deleted.
         XCTAssertTrue(f!.detail.contains("19h 0m old"))
-        XCTAssertTrue(f!.detail.contains("Newest"))
+        XCTAssertFalse(f!.detail.contains("Newest"))
         XCTAssertFalse(f!.detail.contains("live HR current"))
         XCTAssertFalse(f!.detail.contains("catching up now"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 19h 0m old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("19h 0m old"))
         XCTAssertTrue(f!.accessibilityDetail.contains("live HR current"))
         XCTAssertTrue(f!.accessibilityDetail.contains("catching up now"))
-        XCTAssertTrue(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
         XCTAssertTrue(f!.headline.contains("yesterday"),
                       "a 19h-old frontier at 5 AM lands yesterday morning")
     }
@@ -470,6 +511,215 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertFalse(f!.headline.contains("yesterday"))
         XCTAssertFalse(f!.detail.contains("yesterday"))
         XCTAssertTrue(f!.detail.contains("30m old"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 30m old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("30m old"))
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+    }
+
+    /// Device 2026-09-05: Start fresh stamped drainedThrough AND abandonedThrough
+    /// at 09:19. That is not a newest record. Show the oldest-first fill cursor.
+    func testStartFreshWatermarkIsNotNewestRecord() {
+        let abandoned = now.addingTimeInterval(-5 * 3600)
+        let cursor = now.addingTimeInterval(-29 * 3600)
+        XCTAssertTrue(AtriaHomeRecoverySyncPresentation.isSyntheticStartFreshFrontier(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970
+        ))
+        XCTAssertNil(AtriaHomeRecoverySyncPresentation.newestSavedRecordUnix(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970
+        ))
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("yesterday"),
+                      "the fill cursor is yesterday 9:44, not this morning's watermark")
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active, "zero-row drains are not catching up")
+    }
+
+    /// Device 2026-09-08: the ribbon the user read as "Last till 9:44AM Friday"
+    /// is the oldest-first fill cursor, not a live-HR outage and not the
+    /// Start-fresh 09:19 Saturday watermark.
+    func testDeviceFriday944FillCursorIsHonestLastFill() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let friday944: TimeInterval = 1_788_495_274
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let now = Date(timeIntervalSince1970: 1_788_850_000) // 2026-09-08 ~13:16 IST
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: friday944,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("9:44"),
+                      "fill time is Friday 9:44, not the 9:19 Start-fresh stamp")
+        XCTAssertTrue(f!.headline.contains("Fri"))
+        XCTAssertFalse(f!.headline.contains("9:19"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active)
+        XCTAssertEqual(
+            AtriaHomeRecoverySyncPresentation.fillThroughUnix(
+                drainCursorUnix: friday944,
+                drainedThroughUnix: startFreshWatermark,
+                abandonedThroughUnix: startFreshWatermark
+            ),
+            friday944
+        )
+    }
+
+    func testSkipAheadSeekIsStillALastFillNotANewestRecord() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let friday944: TimeInterval = 1_788_495_274
+        let seek = friday944 + AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let now = Date(timeIntervalSince1970: 1_788_850_000)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: seek,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.headline.contains("9:44"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+    }
+
+    func testCoverLiveSeekIsStillALastFillNotANewestRecord() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        let startFreshWatermark: TimeInterval = 1_788_580_144
+        let nowUnix: TimeInterval = 1_788_850_000
+        let now = Date(timeIntervalSince1970: nowUnix)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: startFreshWatermark,
+            backlogPending: true,
+            debtRecords: 11,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: false,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: startFreshWatermark,
+            drainCursorUnix: nowUnix,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertFalse(f!.headline.contains("Newest strap record"))
+        XCTAssertTrue(f!.detail.contains("aren't on the strap"))
+    }
+
+    func testFailedDrainWithoutFreshCaughtUpDoesNotClaimStrapEmpty() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let abandoned = now.addingTimeInterval(-6 * 24 * 3_600)
+        let cursor = now.addingTimeInterval(-13 * 3_600)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 807,
+            debtObservedAgeSeconds: 6 * 24 * 3_600,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(
+            f!.detail.contains("old"),
+            "device 2026-09-11: a zero-row drain with stale debt is behind, not empty"
+        )
+        XCTAssertFalse(f!.detail.contains("aren't on the strap"))
+        XCTAssertFalse(f!.active)
+    }
+
+    func testFreshPendingFillSaysHowMuchIsStillOnTheStrap() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let abandoned = now.addingTimeInterval(-6 * 24 * 3_600)
+        let cursor = now.addingTimeInterval(-13 * 3_600)
+        let f = AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: abandoned.timeIntervalSince1970,
+            backlogPending: true,
+            debtRecords: 807,
+            debtObservedAgeSeconds: 30,
+            secondsSinceLastFlush: 60,
+            backgroundLeaseActive: true,
+            liveHeartRateIsCurrent: true,
+            now: now,
+            calendar: calendar,
+            abandonedThroughUnix: abandoned.timeIntervalSince1970,
+            drainCursorUnix: cursor.timeIntervalSince1970,
+            lastDrainYieldedRows: false
+        )
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.headline.hasPrefix("Last fill"))
+        XCTAssertTrue(f!.detail.contains("still on the strap"))
+        XCTAssertFalse(f!.detail.contains("aren't on the strap"))
+    }
+
+    /// Device 2026-09-02: the pre-Atria backlog banner recommended "Start
+    /// fresh" while offering only a sync glyph and a snooze, and its sentence
+    /// was cut at one line. A decision shows its whole sentence and both
+    /// labeled actions; a status row is unchanged.
+    func testOversizedBacklogIsADecisionWithBothActionsAndAFullSentence() throws {
+        let plain = AtriaMissedDataBannerPresentation.Copy(title: "t", subtitle: "s", offersRecovery: true)
+        XCTAssertFalse(plain.isDecision, "status rows default to the compact form")
+
+        let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("offersRecovery: true,\n                isDecision: true"))
+        XCTAssertTrue(source.contains("Button(\"Start fresh\", action: onStartFresh)"))
+        XCTAssertTrue(source.contains("Button(\"Sync all\", action: handleSyncTap)"))
+        XCTAssertTrue(source.contains(".lineLimit(bannerCopy.isDecision ? 4 : 1)"))
+        XCTAssertTrue(source.contains("if !bannerCopy.isDecision {\n                    compactState"),
+                      "the status glyph yields to the labeled actions in decision mode")
     }
 }

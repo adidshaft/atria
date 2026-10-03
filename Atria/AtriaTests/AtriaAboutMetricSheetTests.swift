@@ -65,8 +65,8 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
     func testCanonicalSpO2ConstantsUseAppLimitationFraming() {
         XCTAssertEqual(AtriaSpO2Copy.wontFakeAPercentage, "Atria won't fake a percentage.")
         XCTAssertEqual(AtriaSpO2Copy.decoderNotVerified, "Decoder not verified")
-        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap,
-                       "Sensor unavailable on this strap")
+        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnThisStrap,
+                       "Not available on this strap")
         XCTAssertEqual(AtriaSpO2Copy.longUnavailable,
                        "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why.")
         // The supported-strap state names the app limitation and does not imply
@@ -91,14 +91,40 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
 
     func testOnlyUnverifiedExperimentalSignalsUseWhyBlankEducation() {
         XCTAssertTrue(AtriaAboutMetric.bloodOxygen.showsWhyBlank)
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.showsWhyBlank)
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.computeCardBody.contains("has not verified"))
-        XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("Decoder not verified"))
+        // Relative skin temperature ships (2026-09-27), so it is computed,
+        // not blank; its copy must say relative-only and never degrees.
+        XCTAssertEqual(AtriaAboutMetric.skinTemperature.showsWhyBlank,
+                       !AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.computeCardBody.contains("never shows a raw temperature"))
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("not a fever check"))
 
         for metric in AtriaAboutMetric.allCases
-            where metric != .bloodOxygen && metric != .skinTemperature {
+            where metric != .bloodOxygen && metric != .skinTemperature && metric != .irregularRhythm {
             XCTAssertFalse(metric.showsWhyBlank, "\(metric) should be a computed metric")
             XCTAssertEqual(metric.computeCardTitle, "HOW ATRIA COMPUTES IT")
         }
+        XCTAssertFalse(AtriaAboutMetric.irregularRhythm.showsWhyBlank)
+        XCTAssertEqual(AtriaAboutMetric.irregularRhythm.computeCardTitle, "WHAT THE STRAP CAN SEE")
+    }
+
+    func testIrregularRhythmCopyNeverClaimsDiagnosisOrECG() {
+        let metric = AtriaAboutMetric.irregularRhythm
+        let corpus = [
+            metric.title,
+            metric.definition,
+            metric.computeCardBody,
+            metric.honestyNote,
+            AtriaIrregularRhythmCopy.cannotDiagnose,
+            AtriaIrregularRhythmCopy.notECG,
+            AtriaIrregularRhythmCopy.talkToADoctor,
+            AtriaIrregularRhythmCopy.watchLikeCaution,
+            AtriaIrregularRhythmCopy.insufficient,
+        ].joined(separator: " ")
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("diagnosed with AFib"))
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("you have AFib"))
+        XCTAssertFalse(corpus.localizedCaseInsensitiveContains("FDA"))
+        XCTAssertTrue(corpus.contains(AtriaIrregularRhythmCopy.cannotDiagnose))
+        XCTAssertTrue(metric.computeCardBody.localizedCaseInsensitiveContains("not an ECG"))
+        XCTAssertTrue(metric.honestyNote.contains("cannot diagnose AFib"))
     }
 }

@@ -265,7 +265,12 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertTrue(doffSnapshot.skinTemperatureRawPoints.isEmpty)
     }
 
-    func testConfirmedSleepWindowsDoNotPublishUnvalidatedRecoveredTemperature() {
+    /// 2026-09-27: the WHOOP 4 relative decoder is installed, so confirmed
+    /// main sleeps now publish a deviation from the prior-night baseline.
+    /// Anchor = same-device median 820 (0.05 °C/raw): nights read 32/33/34
+    /// then 37 °C on the relative scale, so the fourth night is +4.0 vs the
+    /// three-night baseline. The nap is never a baseline or a reading.
+    func testConfirmedSleepWindowsPublishRelativeRecoveredTemperature() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let firstMorning = Date(timeIntervalSince1970: 1_780_000_000)
@@ -343,10 +348,10 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
             confirmedSleeps: sleeps,
             calendar: calendar
         )
-        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
-        XCTAssertEqual(projection.baselineNightCount, 0)
-        XCTAssertTrue(projection.deviations.isEmpty,
-                      "Confirmed windows cannot turn an unvalidated research offset into Celsius")
+        XCTAssertNotNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        XCTAssertEqual(projection.baselineNightCount, 4, "four main nights, nap excluded")
+        XCTAssertEqual(projection.deviations.count, 1, "only a night with three prior nights gets a reading")
+        XCTAssertEqual(try XCTUnwrap(projection.deviations.values.first), 4.0, accuracy: 1e-9)
     }
 
     func testRecoveredSkinStagesAbortAtBoundedCheckpoints() {

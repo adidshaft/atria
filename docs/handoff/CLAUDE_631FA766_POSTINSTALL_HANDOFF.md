@@ -9,7 +9,7 @@ runtime/visual checks below once the Mac and iPhone are available again.
 
 ## Exact source and Git state
 
-- Branch: `codex/whoop-remaining-product-gaps`
+- Branch: `dev`
 - Local + origin: `631fa766e6f96a68c05eef42f9f9272789465608`
 - Upstream parity at handoff: `0 0`
 - Author + committer: `adidshaft <adidshaft@gmail.com>`
@@ -126,13 +126,13 @@ beyond 120 seconds without bounded repair or a disconnect callback.
 1. User manually unlocks the Mac and reconnects/unlocks the cabled iPhone. Never
    access Passwords or ask Claude/Codex to bypass the lock.
 2. Confirm:
-   `xcrun devicectl list devices | rg 3803F5B6-1666-56D3-A71A-62F131F6CE3B`
+   `xcrun devicectl list devices | rg <your-device-udid>`
    reports `available`.
 3. Do **not** reinstall. Pull read-only state from the clean worktree:
 
    ```bash
    ./pull_atria_state.sh \
-     --device 3803F5B6-1666-56D3-A71A-62F131F6CE3B \
+     --device <your-device-udid> \
      --runtime-only \
      --evidence-dir /private/tmp/atria-new3-final-device.xxkTCJ/resume-final
    ```

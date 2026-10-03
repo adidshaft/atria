@@ -73,6 +73,8 @@ struct AtriaExpandedChartView: View {
     /// different chart of different data. The user can still switch form from
     /// "Edit this chart"; this only sets where it starts.
     var defaultChartType: AtriaGraphChartType = .line
+    /// Magnitude bars grow from zero; level bars keep the padded domain.
+    var anchorsAtZero: Bool = true
     let onDismiss: () -> Void
     private let prepared: AtriaExpandedChartPreparedModel
 
@@ -85,6 +87,7 @@ struct AtriaExpandedChartView: View {
     // toggle — so the prior-period overlay appears only when asked for.
     @State private var compareOn: Bool = false
     @State private var compareMode: AtriaGraphCompareMode = .previousPeriod
+    private let coverageNoun: String
     @State private var chartType: AtriaGraphChartType = .line
     @State private var markJournalEvents: Bool = true
     @State private var showCompareSheet: Bool = false
@@ -101,9 +104,14 @@ struct AtriaExpandedChartView: View {
          overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
          xDomain: ClosedRange<Date>? = nil,
          comparisonPeriodNoun: String = "period",
+         // Overnight metrics are read from a night's wear; counting them in
+         // days claims a measurement the strap never took (2026-09-03).
+         coverageNoun: String = "days",
          defaultChartType: AtriaGraphChartType = .line,
+         anchorsAtZero: Bool = true,
          onDismiss: @escaping () -> Void) {
         self.title = title
+        self.coverageNoun = coverageNoun
         self.unit = unit
         self.tint = tint
         self.points = points
@@ -113,6 +121,7 @@ struct AtriaExpandedChartView: View {
         self.overlays = overlays
         self.comparisonPeriodNoun = comparisonPeriodNoun
         self.defaultChartType = defaultChartType
+        self.anchorsAtZero = anchorsAtZero
         _chartType = State(initialValue: defaultChartType)
         self.onDismiss = onDismiss
         self.prepared = AtriaExpandedChartPreparedModel(points: points,
@@ -232,6 +241,9 @@ struct AtriaExpandedChartView: View {
         HStack(spacing: 12) {
             Text(title)
                 .font(.headline.weight(.bold))
+            if AtriaAppReviewDemo.isActive {
+                AtriaSampleDataBadge(compact: true)
+            }
             if let summary = brushSummaryText {
                 Text(summary)
                     .font(.caption.weight(.semibold).monospacedDigit())
@@ -318,8 +330,8 @@ struct AtriaExpandedChartView: View {
             Text("Building your history")
                 .font(.subheadline.weight(.semibold))
             Text(dataDayCount == 1
-                 ? "1 day of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore."
-                 : "\(dataDayCount) days of \(title.lowercased()) recorded. The expanded view opens once there are a few days to explore.")
+                 ? "1 \(coverageNoun.dropLast()) of \(title.lowercased()) recorded. The expanded view opens once there are a few to explore."
+                 : "\(dataDayCount) \(coverageNoun) of \(title.lowercased()) recorded. The expanded view opens once there are a few to explore.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -393,51 +405,17 @@ struct AtriaExpandedChartView: View {
                     .foregroundStyle(tint.opacity(0.14))
             }
         }
-        .atriaGraphPlotSurface()
+        .atriaDailyChartPlotChrome()
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: max(1, visibleDays) * 86_400)
         .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: barAwareYDomain)
-        .chartXAxis {
-            if effectiveChartType == .bars {
-                // A `unit: .day` bar owns its whole day, so its label belongs
-                // at the day's MIDDLE — marked directly, rather than asked for
-                // with `centered:`, which offsets by half the step to the NEXT
-                // mark and so drifts further off the bar the wider the window.
-                // This chart also scrolls, so the count is scaled to hold the
-                // same on-screen density that `.automatic` gave.
-                AxisMarks(values: barAxisMarks) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
-                    if let date = value.as(Date.self) {
-                        AxisValueLabel {
-                            Text(date, format: .dateTime.month(.abbreviated).day())
-                                .font(.caption2)
-                        }
-                    }
-                }
-            } else {
-                // Line and range plot each point AT its date, so the mark
-                // belongs on the date and `.automatic` can keep adapting to
-                // whatever the scroll brings on screen.
-                AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
-                    if let date = value.as(Date.self) {
-                        AxisValueLabel {
-                            Text(date, format: .dateTime.month(.abbreviated).day())
-                                .font(.caption2)
-                        }
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
-                AxisValueLabel().font(.caption2.monospacedDigit())
-            }
-        }
+        .atriaOvernightChartXAxis(
+            recordedDays: points.map(\.day),
+            domain: prepared.xDomain,
+            targetCount: overnightAxisTargetCount
+        )
+        .atriaDailyQuantityYAxis()
         .chartOverlay { chartProxy in
             GeometryReader { geo in
                 Rectangle()
@@ -567,9 +545,10 @@ struct AtriaExpandedChartView: View {
         case .bars:
             ForEach(points) { point in
                 BarMark(x: .value("Day", point.day, unit: .day),
-                        y: .value(title, point.value))
+                        y: .value(title, point.value),
+                        width: .ratio(AtriaChartVisualGrammar.dailyBarWidthRatio))
                     .foregroundStyle(tint.gradient)
-                    .cornerRadius(3)
+                    .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
             }
         case .range:
             ForEach(points) { point in
@@ -579,7 +558,7 @@ struct AtriaExpandedChartView: View {
                             yEnd: .value("Max", upper),
                             width: .fixed(6))
                         .foregroundStyle(tint.opacity(0.32))
-                        .cornerRadius(3)
+                        .cornerRadius(AtriaChartVisualGrammar.dailyBarCornerRadius)
                 }
                 PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value(title, point.value))
@@ -641,37 +620,28 @@ struct AtriaExpandedChartView: View {
         )
     }
 
-    /// `prepared.yDomain` pads 12% around min…max, which is right for a line —
-    /// it shows a level in context. It is wrong for a bar, which draws from the
-    /// zero baseline: with the floor above zero the bar is clipped at the plot
-    /// edge (`atriaGraphPlotSurface` clips the plot area) and its rendered
-    /// height becomes proportional to `value − domainLower` rather than to
-    /// `value`. A sleep week of 5.5…8.0 h pads to 5.2…8.3, drawing a 1.45×
-    /// difference as roughly 9×.
-    ///
-    /// The two inline surfaces already anchor bars at zero for this reason —
-    /// `AtriaOverviewSections`' metric chart and `AtriaTrendChart.trendYDomain`.
-    /// This is the same rule at the third surface, which now opens in bar form
-    /// by default for once-a-day metrics.
-    /// Noon marks across the whole scrollable domain, at a density chosen so a
-    /// screenful shows about as many labels as `.automatic(desiredCount: 6)`
-    /// did before.
-    private var barAxisMarks: [Date] {
+    /// Noon of each recorded night, at a density chosen so a screenful shows
+    /// about as many labels as `.automatic(desiredCount: 6)` did before.
+    /// Empty domain days stay unlabeled so a Recovery bar is not dated as
+    /// the neighbouring hole.
+    private var overnightAxisTargetCount: Int {
         let domain = prepared.xDomain
         let totalDays = Calendar.current.dateComponents([.day],
                                                         from: domain.lowerBound,
                                                         to: domain.upperBound).day ?? 0
-        let target = AtriaChartVisualGrammar.scrollableDayMarkCount(
+        return AtriaChartVisualGrammar.scrollableDayMarkCount(
             totalDays: max(totalDays, 1),
             visibleDays: visibleDays == 0 ? max(totalDays, 1) : visibleDays,
             labelsPerScreen: 6
         )
-        return AtriaChartVisualGrammar.dayCentreMarks(in: domain, targetCount: target)
     }
 
     private var barAwareYDomain: ClosedRange<Double> {
-        guard effectiveChartType == .bars else { return prepared.yDomain }
-        return 0...max(prepared.yDomain.upperBound, 1)
+        AtriaChartVisualGrammar.plottedYDomain(
+            values: prepared.yDomain,
+            drawsBars: effectiveChartType == .bars,
+            anchorsAtZero: anchorsAtZero
+        )
     }
 
     /// Which comparison modes have real data. Only the previous-period series

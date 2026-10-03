@@ -1,5 +1,22 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
+
+final class AtriaLeftoverFlushBoard: ObservableObject {
+    enum Tone {
+        case idle, working, good, warn, bad
+    }
+
+    @Published var running = false
+    @Published var phase = "Ready"
+    @Published var result = "Tap Flush leftover motion. The lines below change only when the strap answers."
+    @Published var strap = "Not checked yet"
+    @Published var heartRate = "Not checked yet"
+    @Published var commands = "Not sent"
+    @Published var listen = "Off"
+    @Published var packets = "None yet"
+    @Published var tone: Tone = .idle
+}
 
 /// Coalesces high-frequency profile controls (notably Stepper repeats) into one
 /// durable store update. `flush` is called by every navigation/dismiss boundary,
@@ -101,11 +118,72 @@ enum AtriaManualHistorySyncFeedback: Equatable {
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
+    // Large type (2026-09-02 XXXL screenshot): the two-column backup grid
+    // wrapped "Back / up now"; from XX-Large up the actions take one column.
+    @Environment(\.dynamicTypeSize) private var settingsDynamicTypeSize
+    @ViewBuilder private var backupActionButtons: some View {
+            if let onWriteBackup {
+                Button {
+                    startBackup(using: onWriteBackup)
+                } label: {
+                    HStack(spacing: 6) {
+                        if backupOperationInProgress {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Label(backupOperationInProgress ? "Working…" : "Back up now",
+                              systemImage: "arrow.down.doc.fill")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .blue)
+                .disabled(backupOperationInProgress)
+            }
+            if let onVerifyBackup {
+                Button {
+                    guard !backupOperationInProgress else { return }
+                    backupOperationInProgress = true
+                    backupActionMessage = nil
+                    Task { @MainActor in
+                        let status = await onVerifyBackup()
+                        backupStatus = status
+                        backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
+                        backupFeedbackTone = status.current ? .success : .failure
+                        backupOperationInProgress = false
+                    }
+                } label: {
+                    // Icon-only actions beside "Back up now" left sighted
+                    // users guessing what the seal and tray did
+                    // (2026-09-02 Settings audit); the words were only in
+                    // the accessibility labels.
+                    Label("Verify", systemImage: "checkmark.seal")
+                        .accessibilityLabel("Verify backup")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .green)
+                .disabled(backupOperationInProgress)
+            }
+            if onRestoreBackup != nil {
+                Button {
+                    backupImportPresented = true
+                } label: {
+                    Label("Restore", systemImage: "tray.and.arrow.down")
+                        .accessibilityLabel("Restore backup from Files")
+                        .frame(maxWidth: .infinity)
+                }
+                .atriaCardAction(prominent: false, tint: .orange)
+                .disabled(backupOperationInProgress)
+            }
+    }
+
     /// One user-facing boundary for local storage ownership. The backup and raw
     /// export paths preserve durable session evidence and summaries; short-lived
     /// derived timelines remain display state rather than a second health archive.
     private enum DataCopy {
-        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+        // 2026-08-29: the Stress display cache retains seven days now
+        // (AtriaStressHistoryArchive.retentionWindow); the disclosure must
+        // name the real window.
+        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local seven-day Stress display cache is excluded from both."
     }
 
     private enum BackupFeedbackTone {
@@ -243,6 +321,9 @@ struct AtriaSettingsView: View {
     let onVerifyBackup: (() async -> SessionBackupStatus)?
     let onRestoreBackup: ((URL) async -> SessionBackupStatus?)?
     let onForgetStrap: (() -> Void)?
+    let flushBoard: AtriaLeftoverFlushBoard
+    let onFlushLeftover: () -> Void
+    let onRestoreHeartRate: () -> Void
     /// The developer validation surface is intentionally a factory. Building
     /// its large observation graph while the Settings sheet is animating can
     /// miss the scene watchdog on a device with a live strap stream.
@@ -306,10 +387,11 @@ struct AtriaSettingsView: View {
     #endif
     @State private var profilePersistence: AtriaProfileDraftPersistenceCoordinator
 
-    /// Support destinations are shown as text only. Atria's core stays local-first
-    /// with no in-app network/browser clients, so contact details are surfaced for
-    /// the user to open themselves rather than launched in-app.
-    private let supportHandle = "@adidshaft on X"
+    /// Public policy and support pages (#72). They open in the browser;
+    /// Atria itself has no network client.
+    static let privacyPolicyURL = URL(string: "https://atria.zookfit.in/privacy/")!
+    static let supportURL = URL(string: "https://github.com/adidshaft/atria/issues")!
+    static let sourceCodeURL = URL(string: "https://github.com/adidshaft/atria")!
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
@@ -349,6 +431,9 @@ struct AtriaSettingsView: View {
          onVerifyBackup: (() async -> SessionBackupStatus)? = nil,
          onRestoreBackup: ((URL) async -> SessionBackupStatus?)? = nil,
          onForgetStrap: (() -> Void)? = nil,
+         flushBoard: AtriaLeftoverFlushBoard = AtriaLeftoverFlushBoard(),
+         onFlushLeftover: @escaping () -> Void = {},
+         onRestoreHeartRate: @escaping () -> Void = {},
          researchValidationContent: (() -> AnyView)? = nil,
          onExitDeveloperMode: @escaping () -> Void = {}) {
         self.profile = profile
@@ -389,6 +474,9 @@ struct AtriaSettingsView: View {
         self.onVerifyBackup = onVerifyBackup
         self.onRestoreBackup = onRestoreBackup
         self.onForgetStrap = onForgetStrap
+        self.flushBoard = flushBoard
+        self.onFlushLeftover = onFlushLeftover
+        self.onRestoreHeartRate = onRestoreHeartRate
         self.researchValidationContent = researchValidationContent
         self.onExitDeveloperMode = onExitDeveloperMode
         _draft = State(initialValue: profile)
@@ -574,6 +662,13 @@ struct AtriaSettingsView: View {
                 AtriaRingLayoutSection()
                 Section {
                     NavigationLink {
+                        AtriaGlanceSettingsView()
+                    } label: {
+                        Label("Lock Screen & Widgets", systemImage: "rectangle.on.rectangle")
+                    }
+                    .accessibilityHint("Choose what the Live Activity and widgets show")
+
+                    NavigationLink {
                         coachSettingsPage
                     } label: {
                         Label("Coach", systemImage: "brain.head.profile")
@@ -686,7 +781,10 @@ struct AtriaSettingsView: View {
     private var coachModeFooter: String {
         switch coachSettings.mode {
         case .off: return "Quick Assistant questions still use Atria's own calculations."
-        case .local: return "Coach summaries run on this iPhone."
+        case .local:
+            return AtriaOnDeviceModel.isAvailable
+                ? "Written by Apple Intelligence on this iPhone. Nothing is sent anywhere."
+                : "\(AtriaOnDeviceModel.status.detail). Until then, summaries use Atria's own wording."
         case .cloud: return "Cloud setup is managed here, away from your daily health view."
         }
     }
@@ -708,14 +806,28 @@ struct AtriaSettingsView: View {
     @ViewBuilder
     private var strapSettingsContent: some View {
         radioModeSection
-        // The all-day motion default is destination-only: its observer lives
-        // in a scope on the Strap page, never on the Settings hub frame.
+        leftoverFlushSection
         AtriaStrapMotionDefaultsScope { allDayMotionEnabled in
             allDayMotionSection(allDayMotionEnabled: allDayMotionEnabled)
         }
         heartRateBroadcastSection
         deviceSection
+        Section {
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+        }
         sensorAvailabilitySection
+    }
+
+    private var leftoverFlushSection: some View {
+        AtriaLeftoverFlushControls(
+            board: flushBoard,
+            onFlush: onFlushLeftover,
+            onRestore: onRestoreHeartRate
+        )
     }
 
     private func allDayMotionSection(allDayMotionEnabled: Binding<Bool>) -> some View {
@@ -761,8 +873,16 @@ struct AtriaSettingsView: View {
 
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
-            AtriaResearchSharingSection(buildPreview: buildResearchPreview,
-                                        buildBundle: buildResearchBundle)
+            if !AtriaAppReviewDemo.isActive {
+                AtriaResearchSharingSection(buildPreview: buildResearchPreview,
+                                            buildBundle: buildResearchBundle)
+            } else {
+                Section {
+                    Label("Sample data stays on this device", systemImage: "lock.shield")
+                } footer: {
+                    Text("Research sharing is unavailable while you explore sample data.")
+                }
+            }
             aboutSection
         }
     }
@@ -819,7 +939,9 @@ struct AtriaSettingsView: View {
                 maxHRSuggestionRow(maxHRSuggestion)
             }
             LabeledContent("Max heart rate") {
-                Text("\(draft.maxHR) bpm").monospacedDigit().foregroundStyle(.pink)
+                // A profile value, not a metric: every sibling value in this list
+                // is plain, and pink read as an alert (2026-09-02 Settings audit).
+                Text("\(draft.maxHR) bpm").monospacedDigit()
             }
             Picker("Set from", selection: $draft.maxHRSource) {
                 ForEach(AthleteProfile.HRMaxSource.allCases) { source in
@@ -936,17 +1058,28 @@ struct AtriaSettingsView: View {
                     Label(exportTapped ? "Syncing to Apple Health…" : "Export to Apple Health",
                           systemImage: exportTapped ? "checkmark.circle.fill" : "square.and.arrow.up")
                 }
-                .disabled(exportTapped)
+                .disabled(exportTapped || AtriaAppReviewDemo.isActive)
+                .accessibilityIdentifier("atria.settings.health-export")
             } else {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
                                 title: "Apple Health export",
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
             }
 
-            Toggle(isOn: useHealthNutrition) {
+            // Sample data never touches Apple Health (App Review): the toggle
+            // shows off and cannot be flipped, so no permission sheet appears.
+            Toggle(isOn: AtriaAppReviewDemo.isActive ? .constant(false) : useHealthNutrition) {
                 Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
             }
+            .disabled(AtriaAppReviewDemo.isActive)
+            .accessibilityIdentifier("atria.settings.health-nutrition")
             .accessibilityHint("Read-only calories, macros, water, caffeine, and alcohol from Apple Health when you grant permission. Atria never asks you to log meals.")
+            if AtriaAppReviewDemo.isActive {
+                Text("Apple Health is off while you explore sample data.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("atria.settings.health-demo-note")
+            }
 
             if let onSyncMissedData {
                 Button {
@@ -1187,52 +1320,17 @@ struct AtriaSettingsView: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: 8) {
-                if let onWriteBackup {
-                    Button {
-                        startBackup(using: onWriteBackup)
-                    } label: {
-                        HStack(spacing: 6) {
-                            if backupOperationInProgress {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                            Label(backupOperationInProgress ? "Working…" : "Back up now",
-                                  systemImage: "arrow.down.doc.fill")
-                        }
-                    }
-                    .atriaCardAction(prominent: false, tint: .blue)
-                    .disabled(backupOperationInProgress)
-                }
-                if let onVerifyBackup {
-                    Button {
-                        guard !backupOperationInProgress else { return }
-                        backupOperationInProgress = true
-                        backupActionMessage = nil
-                        Task { @MainActor in
-                            let status = await onVerifyBackup()
-                            backupStatus = status
-                            backupActionMessage = status.current ? "Latest backup matches this phone." : "Latest backup needs review."
-                            backupFeedbackTone = status.current ? .success : .failure
-                            backupOperationInProgress = false
-                        }
-                    } label: {
-                        Image(systemName: "checkmark.seal")
-                            .accessibilityLabel("Verify backup")
-                    }
-                    .atriaCardAction(prominent: false, tint: .green)
-                    .disabled(backupOperationInProgress)
-                }
-                if onRestoreBackup != nil {
-                    Button {
-                        backupImportPresented = true
-                    } label: {
-                        Image(systemName: "tray.and.arrow.down")
-                            .accessibilityLabel("Restore backup from Files")
-                    }
-                    .atriaCardAction(prominent: false, tint: .orange)
-                    .disabled(backupOperationInProgress)
-                }
+            // Three labeled actions do not always fit one row (2026-09-02
+            // screenshot: "Back up now" wrapped, "Restore" clipped). Fit them
+            // side by side when there is room; otherwise a two-column grid of
+            // equal-width buttons, not three capsules of different widths
+            // stacked at the left (later screenshot the same day).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { backupActionButtons }
+                LazyVGrid(columns: settingsDynamicTypeSize >= .xxLarge
+                            ? [GridItem(.flexible())]
+                            : [GridItem(.flexible(), spacing: 8), GridItem(.flexible())],
+                          spacing: 8) { backupActionButtons }
             }
             .labelStyle(.titleAndIcon)
 
@@ -1516,7 +1614,7 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
                             detail: batterySaver
-                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
+                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
                                 : "Enables additional proprietary streams for diagnostics. This may be less stable and use more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
@@ -1562,7 +1660,7 @@ struct AtriaSettingsView: View {
                             detail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
-                            title: "Wrist temperature signal",
+                            title: "Skin temperature signal",
                             detail: "Relative wrist-skin deviation only; no core temperature or Health export.")
         } header: {
             Text("Sensors")
@@ -1571,19 +1669,32 @@ struct AtriaSettingsView: View {
 
     private var aboutSection: some View {
         Section {
+            NavigationLink {
+                AtriaCompatibleHardwareScreen()
+            } label: {
+                Label("Compatible hardware & signals", systemImage: "applewatch.radiowaves.left.and.right")
+            }
+            NavigationLink {
+                AtriaEvidenceCatalogScreen()
+            } label: {
+                Label("Sources", systemImage: "doc.text.magnifyingglass")
+            }
             LabeledContent("Version") {
                 Text(appVersion).foregroundStyle(.secondary).monospacedDigit()
             }
-            LabeledContent("Privacy") {
-                Text("Local-first; no account or cloud sync").foregroundStyle(.secondary)
+            Link(destination: Self.privacyPolicyURL) {
+                Label("Privacy policy", systemImage: "hand.raised")
             }
-            LabeledContent("Support & contact") {
-                Text(supportHandle).foregroundStyle(.secondary)
+            Link(destination: Self.supportURL) {
+                Label("Support", systemImage: "questionmark.bubble")
+            }
+            Link(destination: Self.sourceCodeURL) {
+                Label("Source code · built in public", systemImage: "chevron.left.forwardslash.chevron.right")
             }
         } header: {
             Text("About")
         } footer: {
-            Text("Independent; not medical software.")
+            Text("Everything stays on this iPhone: no account, no server. Independent; not affiliated with or endorsed by WHOOP. Wellness estimates, not medical software.")
         }
     }
 
@@ -1663,7 +1774,7 @@ private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
     var body: some View {
         content($iCloudBackupEnabled, $useHealthNutrition)
             .onChange(of: useHealthNutrition) { _, enabled in
-                if enabled {
+                if enabled, !AtriaAppReviewDemo.isActive {
                     onNutritionHealthToggle?()
                 }
             }
@@ -1702,7 +1813,7 @@ private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
 /// Activity-style rings vs WHOOP-style separate side-by-side rings. Writes the
 /// shared `AtriaRingLayoutStyle.defaultsKey` that `AtriaTriRing` and the share
 /// card read live, so the whole app switches at once.
-private struct AtriaRingLayoutSection: View {
+struct AtriaRingLayoutSection: View {
     @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
 
     var body: some View {
@@ -2160,7 +2271,7 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                 DisclosureGroup(isExpanded: targetGroupBinding("Activity")) {
 
                 Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
-                    LabeledContent("Strap steps goal") {
+                    LabeledContent("Steps goal") {
                         Text("\(stepsGoal)")
                             .monospacedDigit()
                     }
@@ -2342,7 +2453,9 @@ private struct AtriaAdvancedTargetsSettingsView: View {
                     }
                 }
 
-                Text("Uses RHR, lnRMSSD, zone 2+, and sleep consistency. These bands only tune guidance colors.")
+                // 2026-09-02: "lnRMSSD" is the engine's log-HRV; the footer names the
+                // metrics as the app shows them.
+                Text("Uses resting HR, HRV, zone 2+ minutes, and sleep consistency. These bands only tune guidance colors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2467,24 +2580,13 @@ struct AtriaTrackedBehaviorsSettingsView: View {
     }
 
     private var groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
-        [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
-                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
-                                  .coldExposure, .massage, .stretching, .soreness]),
-            ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
-                                      .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
-                                      .supplements, .medication]),
-            ("Substances", [.alcohol, .nicotine, .cannabis]),
-            ("Mind & lifestyle", [.stress, .anxious, .meditation, .gratitude, .socialTime,
-                                  .morningLight, .outdoors, .travel, .unwell]),
-            ("Intimacy", [.sexualActivity, .selfPleasure])
-        ]
+        AtriaTrackedBehaviors.groups
     }
 
     var body: some View {
         Form {
             Section {
-                Text("Choose the behaviors you want to log each morning. Your daily check-in shows only these — add or remove them anytime.")
+                Text("Choose the behaviors you want to log each morning. Your check-in shows only these — add or remove them anytime from Journal or here.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -2492,7 +2594,13 @@ struct AtriaTrackedBehaviorsSettingsView: View {
                 Section(group.title) {
                     ForEach(group.tags) { tag in
                         Toggle(isOn: binding(for: tag)) {
-                            Label(tag.label, systemImage: tag.symbolName)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(tag.label, systemImage: tag.symbolName)
+                                Text(tag.prompt)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }
@@ -2515,5 +2623,86 @@ struct AtriaTrackedBehaviorsSettingsView: View {
                 trackedRaw = AtriaTrackedBehaviors.serialize(ordered)
             }
         )
+    }
+}
+
+private struct AtriaLeftoverFlushControls: View {
+    @ObservedObject var board: AtriaLeftoverFlushBoard
+    let onFlush: () -> Void
+    let onRestore: () -> Void
+
+    var body: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(board.phase)
+                    .font(.title3.weight(.semibold))
+                Text(board.result)
+                    .font(.subheadline)
+                    .foregroundStyle(resultColor)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 4)
+
+            flushFact("Strap", board.strap)
+            flushFact("Heart rate", board.heartRate)
+            flushFact("Commands", board.commands)
+            flushFact("Motion listen", board.listen)
+            flushFact("Packets", board.packets)
+
+            Button {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                onFlush()
+            } label: {
+                Text(board.running ? "Flushing…" : "Flush leftover motion")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.glass)
+            .tint(.orange)
+            .disabled(board.running)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+            .listRowBackground(Color.clear)
+
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                onRestore()
+            } label: {
+                Text("Restore heart rate")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.glass)
+            .tint(.red)
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+        } header: {
+            Text("Flush leftover")
+        } footer: {
+            Text("These lines update while the flush runs. Packets are what the strap actually sent.")
+        }
+    }
+
+    private var resultColor: Color {
+        switch board.tone {
+        case .idle: return .secondary
+        case .working: return .primary
+        case .good: return .green
+        case .warn: return .orange
+        case .bad: return .red
+        }
+    }
+
+    private func flushFact(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
     }
 }

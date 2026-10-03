@@ -168,7 +168,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 attendedRequest: false,
                 nonDestructiveConnectedHistoryAllowed: true
             ),
-            "the legacy automatic prefilter may pass a no-cancel request; the global realtime-owner gate above still defers every new history transport"
+            "same-link 0x69 IMU catch-up may run while 2A37 stays up"
         )
     }
 
@@ -209,17 +209,243 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
     }
 
     func testConnectedRawCatchUpMintsOnlyForStableExactLiveAuthority() {
-        XCTAssertTrue(connectedRawCatchUpAdmission())
+        XCTAssertFalse(
+            connectedRawCatchUpAdmission(),
+            "autonomous background mint paused 2A37 and emptied Live Activity"
+        )
         XCTAssertTrue(connectedRawCatchUpAdmission(
             background: false,
             queuedPull: true
         ))
-        XCTAssertTrue(connectedRawCatchUpAdmission(
-            background: false,
-            foregroundAutomatic: true
-        ))
+        XCTAssertFalse(
+            connectedRawCatchUpAdmission(
+                background: false,
+                foregroundAutomatic: true
+            ),
+            "foreground automatic catch-up also paused 2A37 on a healthy Home epoch"
+        )
         XCTAssertFalse(connectedRawCatchUpAdmission(background: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(backlog: false))
+        XCTAssertTrue(
+            connectedRawCatchUpAdmission(
+                background: false,
+                queuedPull: true,
+                backlog: false
+            ),
+            "an explicit queued pull may drain even when Start-fresh suppression reports no backlog"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: true,
+                strapBacklogPending: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.connectedRawHistoryCatchUpHasDrainableWork(
+                queuedPullIntent: false,
+                strapBacklogPending: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
+                queuedPullIntent: true
+            ),
+            "queued gym fill must pause 2A37 on the same connection so 0x22 can write-confirm"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferRawCatchUpForIdleWindowDrain(
+                queuedPullIntent: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "post_workout_hr_backfill"
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "history_write_22_timeout_retry"
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.queuedRawCatchUpIntentSurvivesLifetime(
+                reason: "home_status_connected"
+            )
+        )
+        let queuedAt = Date(timeIntervalSince1970: 1_789_660_000)
+        XCTAssertFalse(
+            AtriaBLEManager.queuedRawCatchUpIntentIsExpired(
+                reason: "post_workout_hr_backfill",
+                requestedAt: queuedAt,
+                now: queuedAt.addingTimeInterval(11 * 60),
+                defaultLifetime: 10 * 60
+            ),
+            "gym pull must outlive the 10-minute UI intent"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.queuedRawCatchUpIntentIsExpired(
+                reason: "home_status_connected",
+                requestedAt: queuedAt,
+                now: queuedAt.addingTimeInterval(11 * 60),
+                defaultLifetime: 10 * 60
+            )
+        )
+        let gymEnd = Date(timeIntervalSince1970: 1_789_661_229)
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: 0,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            ),
+            "a just-ended Strength with 0 samples may still pull strap flash"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: 523,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd
+            ),
+            "Walking 20:54–21:05 had live HR; leftover drain must not pause 2A37 before Strength"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: nil,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(2 * 60 * 60)
+            ),
+            "connect/restore may retry a metadata-only gym still inside the 6h pull lifetime"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+                endedWorkoutSampleCount: nil,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(13 * 60 * 60)
+            ),
+            "a 13h-old gym is gone from strap flash; re-queuing leftover drain is why Today sat on Reading…"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd
+            ),
+            "dry leftover pending=5 must drop once no gym pull is queued"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: true,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(2 * 60 * 60)
+            ),
+            "a queued Strength still inside 6h may keep the 0x22 snapshot"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 5,
+                queuedPullIntent: true,
+                metadataOnlyWorkoutEnds: [gymEnd],
+                now: gymEnd.addingTimeInterval(13 * 60 * 60)
+            ),
+            "an expired gym pull must drop leftover pending so 2A37 stays up"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 26_705,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            ),
+            "device 2026-09-27: a real 26,705-record backlog is a drain, never a stuck leftover"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetireStuckIdleWindowLeftover(
+                pendingRecords: 0,
+                queuedPullIntent: false,
+                metadataOnlyWorkoutEnds: [],
+                now: gymEnd
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "pull_to_refresh",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            ),
+            "device 2026-09-19 09:27: pull-to-refresh must not keep leftover pending=5 as a 2A37 pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "home_missed_data_banner",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "post_workout_hr_backfill",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: false
+            ),
+            "a durable gym fill still owns leftover drain"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDropShortLivedCatchUpToRetireDryLeftover(
+                queuedReason: "pull_to_refresh",
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5,
+                chargingOrOffWrist: true
+            ),
+            "charger / off-wrist may still drain a dry leftover"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 0,
+                pendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "device 2026-09-18 21:17: dry no_rows pending=5 must not survive finish to re-pause 2A37"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 0,
+                pendingRecords: 5,
+                queuedPullIntent: true
+            ),
+            "a queued gym leftover may keep the 0x22 snapshot"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearIdleWindowPointerAfterDryTerminal(
+                durableRowsThisAttempt: 12,
+                pendingRecords: 5,
+                queuedPullIntent: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: true,
+                idleWindowAdmitted: true,
+                idleWindowPreparing: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: true,
+                idleWindowAdmitted: false,
+                idleWindowPreparing: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldHoldQueuedCatchUpForIdleWindowDrain(
+                queuedPullIntent: false,
+                idleWindowAdmitted: true,
+                idleWindowPreparing: true
+            )
+        )
         XCTAssertFalse(connectedRawCatchUpAdmission(verified: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(exactSource: false))
         XCTAssertFalse(connectedRawCatchUpAdmission(syncing: true))
@@ -389,6 +615,15 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 bankArmedAt: armedAt,
                 now: armedAt.addingTimeInterval(120)
             )
+        )
+        XCTAssertNil(
+            AtriaBLEManager.connectedRawPresentBankRetryNotBefore(
+                bankArmedForCurrentConnection: true,
+                bankArmedAt: armedAt,
+                now: armedAt.addingTimeInterval(6),
+                queuedPullIntent: true
+            ),
+            "queued gym pull must not wait out present-bank capture"
         )
 
         let source = try managerSource()
@@ -734,6 +969,50 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 consecutiveProductiveSlices: 0
             ),
             .complete
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .complete,
+            "automatic catch-up still completes when Start-fresh reports no backlog"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                queuedPullIntent: true
+            ),
+            .retryAfter(120),
+            "a queued post-workout pull must retry after a dry 0x22 instead of completing on Start-fresh"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: false,
+                cursorCaughtUp: true,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                queuedPullIntent: true
+            ),
+            .complete,
+            "a verified empty cursor still completes a queued pull"
         )
         XCTAssertEqual(
             AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
@@ -1177,6 +1456,145 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    func testResilientDrainSeekSkipsADeadParkedPageWithoutInventingTheFuture() {
+        let friday944: TimeInterval = 1_788_495_274
+        let now: TimeInterval = 1_788_850_000
+        let epsilon = AtriaBLEManager.historyDrainUnrecoverableSkipEpsilon
+        XCTAssertEqual(epsilon, 2, accuracy: 0.000_1)
+
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            friday944 + epsilon,
+            "a parked unrecoverable page must skip just past the skip-rearm gate"
+        )
+
+        let saturday = friday944 + 24 * 60 * 60
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: saturday,
+                nowUnix: now
+            ),
+            saturday,
+            "seek the next recoverable interval when it is known"
+        )
+
+        let startFresh: TimeInterval = 1_788_580_144
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: friday944,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: startFresh,
+                drainedThroughUnix: startFresh,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            friday944 + epsilon,
+            "Start-fresh drained==abandoned is not a fill destination"
+        )
+
+        let futureSkip = AtriaBLEManager.resilientHistoryDrainSeekUnix(
+            parkedCursorUnix: friday944,
+            acceptedUnrecoverableUnix: friday944,
+            abandonedThroughUnix: 0,
+            drainedThroughUnix: 0,
+            nextRecoverableStartUnix: now + 3_600,
+            nowUnix: now
+        )
+        XCTAssertEqual(futureSkip, friday944 + epsilon,
+                       "a future gap start must not become the seek")
+        XCTAssertLessThanOrEqual(futureSkip ?? .greatestFiniteMagnitude, now)
+
+        XCTAssertNil(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: saturday,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now
+            ),
+            "never regress a cursor that already left the dead page"
+        )
+
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: friday944,
+                nowUnix: now,
+                lastDrainYieldedRows: nil,
+                consecutiveZeroProgressSlices: 0,
+                lastStatus: nil
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: saturday,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows"
+            ),
+            "a zero-row park hours behind live is stuck"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: now - 10,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows"
+            ),
+            "a park that is already the live frontier is not stuck"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historyDrainOldestPageIsStuck(
+                parkedCursorUnix: now - 120,
+                nowUnix: now,
+                lastDrainYieldedRows: false,
+                consecutiveZeroProgressSlices: 1,
+                lastStatus: "no_rows",
+                coverLiveUnix: now - 120
+            ),
+            "cover-live already jumped this park; do not re-jump every minute"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: saturday,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: saturday,
+                nowUnix: now,
+                oldestPageIsStuck: true
+            ),
+            saturday + AtriaBLEManager.historyDrainDeadPageSkip,
+            "a stuck oldest page skips one drain page toward now so Last fill moves"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.resilientHistoryDrainSeekUnix(
+                parkedCursorUnix: now - 120,
+                acceptedUnrecoverableUnix: friday944,
+                abandonedThroughUnix: 0,
+                drainedThroughUnix: 0,
+                nextRecoverableStartUnix: nil,
+                nowUnix: now,
+                oldestPageIsStuck: true
+            ),
+            now,
+            "a stuck page already within one skip of live covers now"
+        )
+    }
+
     func testHistoryServeCutoverAlwaysClearsArmedStateAndRetainsPrearm() {
         XCTAssertEqual(
             AtriaBLEManager
@@ -1374,6 +1792,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("advancedOldestFirstHistoryDrainCursor("))
         XCTAssertTrue(source.contains("idle_window_drain status=slice"))
         XCTAssertTrue(source.contains("attended_foreground_abort"))
+        XCTAssertTrue(source.contains("leftoverPendingRecords: leftoverPending"))
+        XCTAssertTrue(source.contains("attended_leftover_tail"))
         XCTAssertTrue(source.contains("2a37_unsubscribe_retry"))
         XCTAssertTrue(source.contains("pointer_diagnosis"))
         XCTAssertTrue(source.contains("shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist("))
@@ -1451,6 +1871,10 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("verifiedEmptyHistoryCursor:"))
         XCTAssertTrue(source.contains("shouldSkipIdleWindowHeartRateReassert("))
         XCTAssertTrue(source.contains("shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry("))
+        XCTAssertTrue(
+            source.contains("lastAttemptYieldedRows: historicalDrainTelemetry.persisted > 0"),
+            "no_rows idle-window finish must restore 2A37 instead of live-tail chaining"
+        )
         XCTAssertTrue(source.contains("scheduleIdleWindowConsumeLiveTailRetryIfNeeded("))
         XCTAssertTrue(source.contains("verified_empty_cursor_restore_2a37"))
         XCTAssertTrue(source.contains("live_tail_keep_2a37_paused"))
@@ -1505,6 +1929,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             finishBody.contains("idleWindowDrainArmFence.clear()")
+        )
+        XCTAssertTrue(
+            finishBody.contains("shouldClearIdleWindowPointerAfterDryTerminal"),
+            "dry idle-window no_rows must drop leftover pending=5 so 2A37 stays up"
+        )
+        XCTAssertTrue(
+            finishBody.contains("clearIdleWindowAckedHistoryRangePointer()"),
+            "the dry leftover 0x22 snapshot must leave UserDefaults, not only RAM"
         )
         XCTAssertTrue(
             finishBody.contains("else if deferLiveHeartRateRestoreForConsumeLiveTail {"),
@@ -1991,15 +2423,36 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "live_restored=%d terminal_and_live_restored=%d"
         ))
         let reassembly = try XCTUnwrap(source.range(
-            of: "let completeFrames = proprietaryFrameReassembler.feed("
+            of: "let completeFrames = AtriaWhoop4CompactIMUDecoder.completeFrames("
         ))
-        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(520))
+        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(3_600))
+        XCTAssertTrue(reassemblyTail.contains("isolatedNotify: data"))
+        XCTAssertTrue(reassemblyTail.contains("proprietaryFrameReassembler.feed("))
         XCTAssertTrue(reassemblyTail.contains(
             "historyGeneration: historyPhase.generation"
         ))
         XCTAssertTrue(reassemblyTail.contains(
             "historyServeToken: historyPhase.serveToken"
         ))
+        XCTAssertTrue(reassemblyTail.contains(
+            "connectionEpoch: callbackSource.epoch"
+        ))
+        XCTAssertTrue(
+            reassemblyTail.contains("recordNativeCompactIMUFrame("),
+            "isolated 0x33 must persist independently of the attended R10 window"
+        )
+        // 2026-09-27: native R10 is archived only inside an attended
+        // calibration capture. Once R10 became the all-day live source, the
+        // unconditional archive wrote every frame to disk (device
+        // diskwrites_resource + cpu_resource_fatal reports).
+        XCTAssertTrue(
+            reassemblyTail.contains("recordNativeR10MotionFrame("),
+            "CRC-valid native R10 is still archived for calibration captures"
+        )
+        XCTAssertTrue(
+            reassemblyTail.contains("} else if let captureUntil, receivedAt <= captureUntil,\n                      AtriaStrapCalibrationArchive.crcValidatedNativeR10MotionFrame("),
+            "native R10 archiving is gated on the attended calibration window"
+        )
     }
 
     func testMotionBankOffloadUsesTypedExactAuthorityNotConnectedHandoffFlag() throws {
@@ -2755,8 +3208,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 preservesConnectedRealtimeOwner: true,
                 linkConnected: true
             ),
-            .disconnectConnectedHistoryOwner,
-            "local owner release cannot prove an in-flight FIFO page stopped"
+            .pauseConnectedHistoryWithoutDisconnect,
+            "a connected live HR owner must stay up when a workout starts"
         )
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
@@ -2765,7 +3218,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 preservesConnectedRealtimeOwner: false,
                 linkConnected: true
             ),
-            .disconnectConnectedHistoryOwner
+            .pauseConnectedHistoryWithoutDisconnect,
+            "history can wait; do not drop a connected strap to chase FIFO"
         )
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
@@ -2808,6 +3262,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(method.contains(
             "preserveConnectedRealtimeOwner: preservesRealtimeOwner"
         ))
+        XCTAssertTrue(method.contains("pauseConnectedHistoryWithoutDisconnect"))
+        XCTAssertTrue(method.contains("explicit_workout_yield_keep_live_hr"))
 
         let beginStart = try XCTUnwrap(source.range(
             of: "func beginWorkoutMotionLease(startedAt: Date, reason: String) {"
@@ -3536,6 +3992,18 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertLessThan(orphanSuccess.lowerBound, orphanGeneric.lowerBound)
     }
 
+    func testDeferredGlanceRetryHandsTerminalPublicationBackWhenGlanceDoesNotStart() {
+        // Firmware without a compact bank never starts the glance, so the
+        // first accepted HR must re-enter terminal publication itself.
+        XCTAssertTrue(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: false, radioTransportOwnsLink: false))
+        // A started glance owns the link; publication waits for its release.
+        XCTAssertFalse(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: true, radioTransportOwnsLink: false))
+        XCTAssertFalse(AtriaBLEManager.shouldResumeTerminalPublicationAfterGlanceRetry(
+            glanceCheckpointStarted: false, radioTransportOwnsLink: true))
+    }
+
     func testInteractiveForegroundPrioritizesBoundedGlanceBeforeHeavyProjection() throws {
         let source = try managerSource()
         let methodStart = try XCTUnwrap(source.range(
@@ -3551,14 +4019,32 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "checkpointHistoricalMotionBankOnGlanceIfNeeded("
         ))
         let heavy = try XCTUnwrap(method.range(
-            of: "resumeDeferredTerminalConsumerMaterializationIfNeeded("
+            of: "resumeForegroundTerminalPublication(reason: \"scene_active\")"
         ))
+        let sharedResume = try XCTUnwrap(source.range(
+            of: "private func resumeForegroundTerminalPublication(reason: String)"
+        ))
+        let sharedResumeBody = String(source[sharedResume.lowerBound...].prefix(1_400))
+        XCTAssertTrue(sharedResumeBody.contains(
+            "resumeDeferredTerminalConsumerMaterializationIfNeeded(reason: reason)"
+        ))
+        XCTAssertTrue(sharedResumeBody.contains("resumePendingFullDrainPublicationIfNeeded("))
         let retryArm = try XCTUnwrap(method.range(
             of: "foregroundGlanceCheckpointRetryGate.recordForegroundAttempt("
         ))
         XCTAssertLessThan(glance.lowerBound, heavy.lowerBound)
         XCTAssertLessThan(glance.lowerBound, retryArm.lowerBound)
         XCTAssertLessThan(retryArm.lowerBound, heavy.lowerBound)
+        XCTAssertTrue(method.contains("reissueAllDayCompactAbortOnForegroundIfNeeded"),
+                      "device 206: empty stream-5 after background abort must re-arm 0x14 on Today")
+        XCTAssertTrue(method.contains("scene_active_before_history"),
+                      "device 207: compact abort must run before glance history on empty stream-5")
+        XCTAssertTrue(method.contains("emptyStreamNeedsLiveCompactIMURecovery"))
+        let abortBeforeHistory = try XCTUnwrap(method.range(
+            of: "scene_active_before_history"
+        ))
+        XCTAssertLessThan(abortBeforeHistory.lowerBound, glance.lowerBound)
+        XCTAssertTrue(source.contains("glance_deferred_live_compact_imu"))
         XCTAssertTrue(method.contains("if !motionBankGlanceCheckpointStarted"))
         XCTAssertTrue(method.contains(
             "!foregroundGlanceCheckpointRetryGate.isAwaitingFreshHeartRate"
@@ -3623,6 +4109,13 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "checkpointHistoricalMotionBankOnGlanceIfNeeded("
         ))
         XCTAssertLessThan(consume.lowerBound, checkpoint.lowerBound)
+        // 2026-10-02: a glance that still cannot start must hand the skipped
+        // scene-active publication back, or a coverageProven journal parks
+        // forever once the strap backlog is empty.
+        let handBack = try XCTUnwrap(retry.range(
+            of: "resumeForegroundTerminalPublication(\n                reason: \"first_foreground_accepted_hr\""
+        ))
+        XCTAssertLessThan(checkpoint.lowerBound, handBack.lowerBound)
         XCTAssertTrue(retry.contains(
             "UIApplication.shared.applicationState == .active"
         ))
@@ -3665,6 +4158,69 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(transition.contains(
             "resumePendingFullDrainPublicationIfNeeded("
         ))
+    }
+
+    func testInteractiveForegroundDefersLongWearRefreshOffSceneUpdatePath() throws {
+        let source = try managerSource()
+        let methodStart = try XCTUnwrap(source.range(
+            of: "func handleInteractiveForeground(rest: Int, maxHR: Int)"
+        ))
+        let methodEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func shouldReissueAllDayCompactAbortOnForeground(",
+            range: methodStart.upperBound..<source.endIndex
+        ))
+        let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
+        XCTAssertTrue(
+            method.contains("scheduleInteractiveForegroundLongWearRefresh("),
+            "scene-active long-wear refresh must not run synchronously on the scene-update path"
+        )
+        XCTAssertFalse(
+            method.contains("startLongWearMode(rest: rest, maxHR: maxHR, reason: \"scene_active_foreground\")"),
+            "handleInteractiveForeground must not call startLongWearMode directly"
+        )
+
+        let schedulerStart = try XCTUnwrap(source.range(
+            of: "private func scheduleInteractiveForegroundLongWearRefresh("
+        ))
+        let schedulerEnd = try XCTUnwrap(source.range(
+            of: "private func startLongWearMode(rest: Int, maxHR: Int, reason: String)",
+            range: schedulerStart.upperBound..<source.endIndex
+        ))
+        let scheduler = String(source[schedulerStart.lowerBound..<schedulerEnd.lowerBound])
+        XCTAssertTrue(scheduler.contains("await Task.yield()"))
+        XCTAssertTrue(scheduler.contains("UIApplication.shared.applicationState == .active"))
+
+        let startLongWearStart = try XCTUnwrap(source.range(
+            of: "private func startLongWearMode(rest: Int, maxHR: Int, reason: String)"
+        ))
+        let startLongWearEnd = try XCTUnwrap(source.range(
+            of: "private func stopLongWearMode(reason: String)",
+            range: startLongWearStart.upperBound..<source.endIndex
+        ))
+        let startLongWear = String(
+            source[startLongWearStart.lowerBound..<startLongWearEnd.lowerBound]
+        )
+        XCTAssertTrue(startLongWear.contains("action=keep_existing_supervisor"))
+        XCTAssertTrue(startLongWear.contains("reason != \"scene_active_foreground\""))
+
+        let app = try appSource()
+        let transitionStart = try XCTUnwrap(app.range(
+            of: "foregroundBLETransitionTask = Task { @MainActor in"
+        ))
+        let transitionEnd = try XCTUnwrap(app.range(
+            of: "private static func registerBackgroundTasks",
+            range: transitionStart.upperBound..<app.endIndex
+        ))
+        let transition = String(
+            app[transitionStart.lowerBound..<transitionEnd.lowerBound]
+        )
+        let handleForeground = try XCTUnwrap(transition.range(
+            of: "ble.handleInteractiveForeground("
+        ))
+        let firstYield = try XCTUnwrap(
+            transition.range(of: "await Task.yield()", range: handleForeground.upperBound..<transition.endIndex)
+        )
+        XCTAssertLessThan(handleForeground.lowerBound, firstYield.lowerBound)
     }
 
     func testFirstUseScanRequiresWhoopSpecificIdentity() {
@@ -3841,6 +4397,39 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 strapBacklogPending: true,
                 strapIsCharging: false,
                 strapOffWrist: false,
+                appBackgrounded: true,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: false,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            .none,
+            "lock-screen Live Activity is attended; leftover backlog must not pause 2A37"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: false,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                queuedPullIntent: true
+            ),
+            .appBackgroundIdle,
+            "queued gym fill may pause 2A37 on a healthy Home epoch without disconnecting"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: true,
+                strapIsCharging: false,
+                strapOffWrist: false,
                 appBackgrounded: false,
                 priorEpochEndedNaturally: true,
                 healthyLiveEpochActive: true,
@@ -3975,8 +4564,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertEqual(window(charging: true, thermal: true), .none)
         XCTAssertEqual(
             window(background: true, healthy: true, attended: false),
-            .appBackgroundIdle,
-            "background may pause 2A37; healthy attended foreground may not"
+            .none,
+            "healthy worn epoch keeps 2A37 while the phone is locked"
         )
     }
 
@@ -4106,6 +4695,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(pause.contains("cancelPeripheralConnection("))
         XCTAssertTrue(pause.contains("startBudgetClock"))
         XCTAssertTrue(
+            pause.contains("shouldRefuseIdleWindowHeartRatePauseForDryLeftover"),
+            "device 168 21:17: a dry leftover must not unsubscribe 2A37"
+        )
+        XCTAssertTrue(
+            pause.contains("skip_pause_cleared_dry_leftover"),
+            "refusing that pause must drop the leftover 0x22 snapshot"
+        )
+        XCTAssertTrue(
             source.contains("startBudgetClock: false"),
             "soak-2 09:27: pause during orphan replay must not start the 20s handshake clock"
         )
@@ -4120,6 +4717,10 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         let eval = String(source[evalStart.lowerBound..<evalEnd.lowerBound])
         XCTAssertTrue(eval.contains("connectedChunkedBackfill: false"))
         XCTAssertTrue(eval.contains("preserveConnectedRealtimeOwner: false"))
+        XCTAssertTrue(
+            eval.contains("lastAttemptYieldedRows: lastIdleWindowDrainAttemptYieldedRows()"),
+            "a no_rows live tail must feed the 20s HR resume, not the 0.4s re-pause"
+        )
         XCTAssertFalse(eval.contains("preserveConnectedRealtimeOwner: true"))
         XCTAssertFalse(eval.contains("cancelPeripheralConnection("))
         XCTAssertTrue(
@@ -4331,6 +4932,54 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    /// Device 2026-09-27: one 50-row ACK per 10 min could never shrink a
+    /// 26,867-record backlog. Large backlogs drain in timed slices.
+    /// Device 2026-09-27: with 26.5k records pending and healthy live HR the
+    /// 30 s retry was refused (never pause a healthy epoch), so catch-up
+    /// waited for reconnects. A large backlog now gets one slice per 240 s.
+    func testHealthyWornEpochYieldsToRateLimitedLargeBacklogSlice() {
+        typealias B = AtriaBLEManager
+        let now = Date(timeIntervalSince1970: 1_790_500_000)
+        XCTAssertTrue(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-241), lastSliceYieldedRows: true, now: now))
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-30), lastSliceYieldedRows: true, now: now),
+            "30 s after a slice, live HR keeps the link")
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 26_529,
+            lastSliceFinishedAt: now.addingTimeInterval(-600), lastSliceYieldedRows: false, now: now),
+            "a dry strap never earns an HR pause")
+        XCTAssertFalse(B.largeBacklogSliceIsDue(pendingRecords: 120,
+            lastSliceFinishedAt: nil, lastSliceYieldedRows: true, now: now))
+        func window(due: Bool) -> AtriaBLEManager.IdleWindowHistoryDrainWindow {
+            B.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true, strapBacklogPending: true, strapIsCharging: false,
+                strapOffWrist: false, appBackgrounded: false, priorEpochEndedNaturally: false,
+                healthyLiveEpochActive: true, attendedForeground: true,
+                explicitMotionOwnershipActive: false, thermalParked: false,
+                lastPendingRecords: 26_529, largeBacklogSliceDue: due)
+        }
+        XCTAssertEqual(window(due: false), .none)
+        XCTAssertEqual(window(due: true), .appBackgroundIdle)
+    }
+
+    func testLargeBacklogDrainsInTimedSlicesNotSingleAcks() {
+        typealias B = AtriaBLEManager
+        XCTAssertFalse(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 3,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: 30))
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 40,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: B.backlogSliceBackgroundLimit))
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 10, attendedForeground: true,
+            sliceStartPendingRecords: 26_867, heartRatePauseElapsed: B.backlogSliceForegroundLimit),
+            "foreground slices give live HR back sooner")
+        XCTAssertTrue(B.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+            idleWindowDrainOwnsLink: true, acknowledgedPages: 1,
+            sliceStartPendingRecords: 40, heartRatePauseElapsed: 2),
+            "a small backlog keeps the one-ACK behaviour")
+    }
+
     func testIdleWindowDrainStopsAtOneAckThenRestoresHeartRate() {
         XCTAssertTrue(
             AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
@@ -4385,6 +5034,25 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 consumeToNow: true
             ),
             "console --activate is attended from t=0; consume-to-now still walks until the HR pause budget"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                attendedForeground: true,
+                queuedPullIntent: true
+            ),
+            "queued gym fill must keep walking past the first ACK while Home is open"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                attendedForeground: true,
+                heartRatePauseElapsed: 18,
+                queuedPullIntent: true
+            ),
+            "queued gym fill restores 2A37 after the worn pause budget"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
@@ -4519,6 +5187,16 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             "unconsented idle-window keeps the existing 20s/180s budgets"
         )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: false,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_018),
+                queuedPullIntent: true
+            ),
+            "queued gym fill restores 2A37 on the worn pause budget without consume consent"
+        )
         XCTAssertFalse(
             AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
                 idleWindowDrainOwnsLink: true,
@@ -4608,6 +5286,28 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 drainBeganUnattended: true,
                 historyRangeRequested: true
             )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: false,
+                historyRangeRequested: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "leftover pending=5 started on Recovery Week must restore 2A37 even if the chunk began attended"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: false,
+                historyRangeRequested: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: true
+            ),
+            "an in-flight gym pull may keep 0x22 while Home is open"
         )
         XCTAssertEqual(
             AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
@@ -4790,6 +5490,23 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
                 lastFinishedAt: Date(timeIntervalSince1970: 1_000),
                 now: Date(timeIntervalSince1970: 1_002),
+                lastPendingRecords: 14_520,
+                queuedPullIntent: true
+            ),
+            "queued gym leftover must re-arm in 2s so live write cannot keep pace"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010),
+                lastPendingRecords: 14_520
+            ),
+            "without a queued gym pull the worn 20s resume still protects live HR"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_002),
                 consumeToNow: true,
                 chargingOrOffWrist: true
             ),
@@ -4820,6 +5537,92 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 consumeToNow: true,
                 lastPendingRecords: 2
             )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 130: no_rows pending=5 must not re-pause 2A37 every 0.4s"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "a dry leftover on-wrist must not keep pausing 2A37 on the 20s beat"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: false,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 168 21:17: dry leftover without consume consent still re-paused 2A37"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: false,
+                lastPendingRecords: nil,
+                lastAttemptYieldedRows: false
+            ),
+            "after the dry pointer is cleared, on-wrist must not mint a new pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: false,
+                chargingOrOffWrist: false,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRefuseIdleWindowHeartRatePauseForDryLeftover(
+                lastAttemptYieldedRows: false,
+                chargingOrOffWrist: true,
+                leftoverPendingRecords: 5,
+                queuedPullIntent: false
+            ),
+            "charger / off-wrist may still drain a dry leftover"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: false,
+                lastAttemptYieldedRows: false,
+                leftoverPendingRecords: 5
+            ),
+            "pause admission must refuse the same dry leftover that retry refuses"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                queuedPullIntent: true,
+                lastAttemptYieldedRows: false
+            ),
+            "queued gym leftover still retries on the worn 20s beat"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.5),
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                lastAttemptYieldedRows: true
+            ),
+            "a productive live tail still 0x22 before write seals another page"
         )
         XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailPendingLimit, 16)
         XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailResumeInterval, 2)
@@ -4885,6 +5688,17 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 consumePauseElapsed: 18
             ),
             "18s pause cap restores 2A37 even on a 1-page tail"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 5,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 5,
+                lastAttemptYieldedRows: false
+            ),
+            "device 130: no_rows pending=5 must restore 2A37 instead of chaining 0x22"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
@@ -5409,6 +6223,64 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(
             connect.contains("pre_hr_same_epoch_no_cancel"),
             "04:27: didConnect must evaluate idle-window without a natural-gap fence"
+        )
+    }
+
+    func testExplicitWorkoutOutranksIdleWindowHeartRatePauseAndHistoryOwner() {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: true
+            ),
+            "device 2026-09-11: archive-warm retry must not pause 2A37 during a live workout"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHeartRatePause(
+                explicitMotionOwnershipActive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitFreshHistoryOwnerOnConnect(
+                explicitMotionOwnershipActive: true
+            ),
+            "reconnect after workout-start history preemption must restore 2A37, not re-admit history"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitFreshHistoryOwnerOnConnect(
+                explicitMotionOwnershipActive: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: false,
+                deferLiveRestoreForConsumeLiveTail: true,
+                explicitMotionOwnershipActive: true
+            ),
+            "a started workout must reassert 2A37 even if idle drain still owns the link"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: false,
+                deferLiveRestoreForConsumeLiveTail: true,
+                explicitMotionOwnershipActive: false
+            )
+        )
+    }
+
+    func testPendingKnownReconnectClockKeepsTheFirstDrop() {
+        let first = Date(timeIntervalSince1970: 1_779_055_800)
+        XCTAssertEqual(
+            AtriaBLEManager.pendingKnownReconnectStart(existing: nil, now: first),
+            first
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.pendingKnownReconnectStart(
+                existing: first,
+                now: first.addingTimeInterval(12)
+            ),
+            first,
+            "stall reconnects must not restart the Reading… grace"
         )
     }
 }

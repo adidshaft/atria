@@ -223,6 +223,17 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 CREATE INDEX IF NOT EXISTS history_frame_retention
                 ON history_frame(archive_durable, last_seen_unix)
                 """)
+            // Pending-first prefix index (device 2026-10-01). The prefix
+            // index above ranges over every frame of the attempt up to the
+            // ordinal; the per-page UPDATE then fetched each already-durable
+            // table row to test `archive_durable`, so promoting 50 rows took
+            // 3.4-4.4 s per HISTORY_END and grew with all history ever
+            // drained (a 1M-row copy: 7.6 s -> 0.01 s). Built once, on the
+            // off-main open path.
+            try execute("""
+                CREATE INDEX IF NOT EXISTS history_frame_attempt_pending
+                ON history_frame(last_attempt_id, archive_durable, last_ordinal)
+                """)
             try execute("""
                 CREATE TABLE IF NOT EXISTS history_archive_receipt (
                     chain_digest TEXT PRIMARY KEY NOT NULL,
@@ -401,10 +412,17 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         guard archiveReceipt.isPromotionAuthority else {
             throw LedgerError.invalidArchiveDurabilityReceipt
         }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         lock.lock()
-        defer { lock.unlock() }
+        phaseMarks = [("start", startedAt)]
+        mark("lock")
+        defer {
+            logPhases("mark_durable")
+            lock.unlock()
+        }
         let committed = try transaction {
             guard try attemptIsCurrent(attempt) else { throw LedgerError.staleAttempt }
+            mark("attempt")
             let pending = try scalarInt(
                 """
                 SELECT COUNT(*) FROM history_frame
@@ -412,10 +430,12 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 """,
                 bindings: [.text(attempt.identifier), .int64(Int64(ordinal))]
             )
+            mark("count")
             let pendingIdentitySnapshot = try pendingArchiveIdentitySnapshot(
                 attempt: attempt,
                 through: ordinal
             )
+            mark("snapshot")
             // A replay-only or empty-tail seal may advance ordering and ACK an
             // already-durable prefix. A crash after raw+identity fsync but
             // before this SQLite promotion leaves positive admission rows
@@ -444,6 +464,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 throw LedgerError.reusedArchiveDurabilityReceipt
             }
             let previous = try previousPrefixReceipt(attemptID: attempt.identifier)
+            mark("previous")
             guard archiveReceipt.durableSequence > UInt64(previous?.durableSequence ?? 0) else {
                 throw LedgerError.invalidArchiveDurabilityReceipt
             }
@@ -459,6 +480,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 bindings: [.text(attempt.identifier), .int64(Int64(ordinal))]
             )
             let changed = Int(sqlite3_changes(database))
+            mark("update")
             try execute(
                 """
                 UPDATE history_attempt
@@ -477,6 +499,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 },
                 through: ordinal
             )
+            mark(previous == nil ? "batch_snapshot_full" : "batch_snapshot")
             let cumulativeRecordCount = (previous.map { UInt64($0.recordCount) } ?? 0)
                 &+ batchSnapshot.recordCount
             let cumulativeByteCount = (previous.map { UInt64($0.byteCount) } ?? 0)
@@ -745,9 +768,16 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         guard maximumFrames >= 0 else {
             throw LedgerError.durableFrameEnumerationLimitExceeded(maximum: maximumFrames)
         }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         lock.lock()
-        defer { lock.unlock() }
+        phaseMarks = [("start", startedAt)]
+        mark("lock")
+        defer {
+            logPhases("pending_frames")
+            lock.unlock()
+        }
         guard try attemptIsCurrent(attempt) else { throw LedgerError.staleAttempt }
+        mark("attempt")
         let count = try scalarInt(
             """
             SELECT COUNT(*) FROM history_frame
@@ -755,6 +785,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             """,
             bindings: [.text(attempt.identifier), .int64(Int64(ordinal))]
         )
+        mark("count")
         guard count <= maximumFrames else {
             throw LedgerError.durableFrameEnumerationLimitExceeded(maximum: maximumFrames)
         }
@@ -787,6 +818,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             }
             frames.append(Data(bytes: pointer, count: length))
         }
+        mark("select")
         return frames
     }
 
@@ -953,11 +985,37 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         let durableOrdinal: Int64
     }
 
+    /// Per-call phase timings for the device drain-throughput investigation
+    /// (2026-10-01: 4-23 s per 50-row page inside this ledger).
+    private var phaseMarks: [(String, UInt64)] = []
+
+    private func mark(_ label: String) {
+        phaseMarks.append((label, DispatchTime.now().uptimeNanoseconds))
+    }
+
+    private func logPhases(_ operation: String) {
+        defer { phaseMarks.removeAll(keepingCapacity: true) }
+        guard let first = phaseMarks.first else { return }
+        var parts: [String] = []
+        var previous = first.1
+        for (label, at) in phaseMarks.dropFirst() {
+            parts.append("\(label)=\(Int((at - previous) / 1_000_000))")
+            previous = at
+        }
+        let wal = ((try? FileManager.default.attributesOfItem(
+            atPath: databaseURL.path + "-wal")[.size]) as? NSNumber)?.int64Value ?? -1
+        AtriaDebugLog("ATRIADBG historyAdmission_timing op=%@ %@ wal_bytes=%lld",
+                      operation, parts.joined(separator: " "), wal)
+    }
+
     private func transaction<T>(_ body: () throws -> T) throws -> T {
         try execute("BEGIN IMMEDIATE")
+        mark("begin")
         do {
             let value = try body()
+            mark("body")
             try execute("COMMIT")
+            mark("commit")
             return value
         } catch {
             try? execute("ROLLBACK")
@@ -1091,13 +1149,6 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
 
     private func scalarInt(_ sql: String, bindings: [Binding] = []) throws -> Int {
         try queryOne(sql, bindings: bindings) { Int(sqlite3_column_int64($0, 0)) } ?? 0
-    }
-
-    private func scalarInt64(_ sql: String, bindings: [Binding] = []) throws -> Int64? {
-        try queryOne(sql, bindings: bindings) { statement in
-            guard sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
-            return sqlite3_column_int64(statement, 0)
-        } ?? nil
     }
 
     private static func boundPrefixDigest(
@@ -1252,47 +1303,6 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             AtriaHistoricalArchiveDurableStore.identityBatchDigest(keys),
             UInt64(keys.count)
         )
-    }
-
-    private func prefixSnapshot(
-        attempt: Attempt,
-        through ordinal: UInt64
-    ) throws -> (sha256: String, recordCount: UInt64, byteCount: UInt64) {
-        guard let database else { throw LedgerError.open(SQLITE_MISUSE) }
-        let sql = """
-            SELECT last_ordinal, frame FROM history_frame
-            WHERE last_attempt_id = ? AND last_ordinal <= ? AND archive_durable = 1
-            ORDER BY last_ordinal ASC
-            """
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
-              let statement else {
-            throw LedgerError.sqlite(code: sqlite3_errcode(database), operation: "prepare_prefix_receipt")
-        }
-        defer { sqlite3_finalize(statement) }
-        try bind([.text(attempt.identifier), .int64(Int64(ordinal))], to: statement)
-        var hasher = SHA256()
-        var count: UInt64 = 0
-        var bytes: UInt64 = 0
-        while true {
-            let result = sqlite3_step(statement)
-            if result == SQLITE_DONE { break }
-            guard result == SQLITE_ROW else {
-                throw LedgerError.sqlite(code: result, operation: "prefix_receipt_query")
-            }
-            var value = UInt64(sqlite3_column_int64(statement, 0)).littleEndian
-            withUnsafeBytes(of: &value) { hasher.update(data: Data($0)) }
-            let length = Int(sqlite3_column_bytes(statement, 1))
-            if let pointer = sqlite3_column_blob(statement, 1), length > 0 {
-                let data = Data(bytes: pointer, count: length)
-                hasher.update(data: data)
-                bytes &+= UInt64(length)
-            }
-            count &+= 1
-        }
-        return (hasher.finalize().map { String(format: "%02x", $0) }.joined(),
-                count,
-                bytes)
     }
 
     private func execute(_ sql: String, bindings: [Binding] = []) throws {

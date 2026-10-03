@@ -350,7 +350,19 @@ enum AtriaStressMinuteBand: Equatable {
     /// score always renders — sleep changes the classification word, never the
     /// value.
     static func scoreLine(_ reading: AtriaStressDetailReading) -> String {
-        "\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(resolve(reading).displayName)"
+        scoreLine(score: reading.score,
+                  isAsleep: reading.sleepContext == .asleep)
+    }
+
+    /// Same line for surfaces that carry only the recorded score and confirmed
+    /// sleep membership (Activity's day-chart scrub card). The zone word is
+    /// resolved from the score by the one shared authority; a confirmed-sleep
+    /// minute says "Sleep", never a zone word.
+    static func scoreLine(score: Double, isAsleep: Bool) -> String {
+        let band: AtriaStressMinuteBand = isAsleep
+            ? .sleep
+            : .zone(.resolve(score: score))
+        return "\(score.formatted(.number.precision(.fractionLength(2)))) · \(band.displayName)"
     }
 
     /// Legend gating: a Sleep legend entry belongs on a stress timeline only
@@ -535,6 +547,9 @@ struct AtriaStressDetailView: View {
 
             ScrollView {
                 VStack(spacing: 16) {
+                    if AtriaAppReviewDemo.isActive {
+                        AtriaSampleDataBadge(compact: true)
+                    }
                     header
                     hero
                     timelineCard
@@ -546,6 +561,7 @@ struct AtriaStressDetailView: View {
                         loggedContextCard
                     }
                     interventionCard
+                    AtriaSourcesLink(metricID: "stress")
                 }
                 // 12pt gutter (2026-08-05 width audit): match the app-wide
                 // screen gutter so the timeline and trend charts gain 12pt.
@@ -588,6 +604,7 @@ struct AtriaStressDetailView: View {
             Button(action: onDismiss) {
                 Image(systemName: "chevron.left")
                     .frame(width: 40, height: 40)
+                    .atriaMinimumHitTarget(width: 40, height: 40)
             }
             .atriaGlassIconAction(tint: .primary, size: 40)
             .accessibilityLabel("Close \(input.presentation.metricTitle)")
@@ -607,6 +624,7 @@ struct AtriaStressDetailView: View {
             Button { showAbout = true } label: {
                 Image(systemName: "info.circle")
                     .frame(width: 40, height: 40)
+                    .atriaMinimumHitTarget(width: 40, height: 40)
             }
             .atriaGlassIconAction(tint: .primary, size: 40)
             .accessibilityLabel("About physiological stress")
@@ -659,9 +677,7 @@ struct AtriaStressDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(projection.presentation.title)
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
 
                 Spacer()
 
@@ -725,8 +741,8 @@ struct AtriaStressDetailView: View {
                             .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
                     }
                 }
-                // Full-bleed plot inside the card (2026-08-05 width audit).
-                .padding(.horizontal, -16)
+                // Inside the card gutter: full-bleed put the axis labels on the
+                // card edge (2026-10-01 chart pass).
 
                 // The Sleep legend appears only while sleep minutes are
                 // actually in the rendered window — a permanent entry would
@@ -756,7 +772,7 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     /// Legend for the confirmed-sleep band. Rendered only when the visible
@@ -809,15 +825,13 @@ struct AtriaStressDetailView: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var loggedContextCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Logged context")
-                .font(.caption.weight(.bold))
-                .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .atriaEyebrow()
 
             ForEach(input.loggedContext) { context in
                 HStack(spacing: 10) {
@@ -841,7 +855,7 @@ struct AtriaStressDetailView: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
     }
 
     private var updateText: String? {
@@ -1067,9 +1081,7 @@ struct AtriaStressDailyTrendCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Stress by day")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 Button {
                     guard canNavigateToPreviousWeek else { return }
@@ -1080,6 +1092,7 @@ struct AtriaStressDailyTrendCard: View {
                     Image(systemName: "chevron.left")
                         .font(.caption.weight(.bold))
                         .frame(width: 28, height: 28)
+                        .atriaMinimumHitTarget(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canNavigateToPreviousWeek)
@@ -1098,6 +1111,7 @@ struct AtriaStressDailyTrendCard: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                         .frame(width: 28, height: 28)
+                        .atriaMinimumHitTarget(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .disabled(weekOffset == 0)
@@ -1105,9 +1119,7 @@ struct AtriaStressDailyTrendCard: View {
             }
 
             if framed.count >= Self.minimumMeasuredDays {
-                // Full-bleed plot inside the card (2026-08-05 width audit).
                 chart(framed)
-                    .padding(.horizontal, -16)
                 HStack(spacing: 14) {
                     legend(color: .green, label: "Calm")
                     legend(color: .yellow, label: "Moderate")
@@ -1125,7 +1137,7 @@ struct AtriaStressDailyTrendCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary(framed))
     }
@@ -1151,9 +1163,9 @@ struct AtriaStressDailyTrendCard: View {
         .chartYScale(domain: 0...1)
         .chartXAxis {
             AxisMarks(values: axisDays) { _ in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisValueLabel(format: .dateTime.day(), centered: true)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     .font(.caption2)
             }
         }
@@ -1190,9 +1202,7 @@ private struct AtriaStressDistributionCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(alignment: .firstTextBaseline) {
                 Text("Today vs typical")
-                    .font(.caption.weight(.bold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .atriaEyebrow()
                 Spacer()
                 if comparison.typical == nil {
                     Text("Learning")
@@ -1218,7 +1228,7 @@ private struct AtriaStressDistributionCard: View {
             }
         }
         .padding(16)
-        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .atriaCard(emphasis: .strong)
         .accessibilityElement(children: .combine)
     }
 
@@ -1454,6 +1464,15 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
 
+            // No-data bands (visual pass 2026-09-24) over the zone wash, under
+            // every context band and the trace.
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
             }) { interval in
@@ -1536,14 +1555,14 @@ private struct AtriaStressTimelineChart: View, Equatable {
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let score = value.as(Double.self) {
                         Text(score == 0 ? "0" : String(format: "%.0f", score))
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -1552,15 +1571,12 @@ private struct AtriaStressTimelineChart: View, Equatable {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
+        .atriaGraphPlotSurface()
         .simultaneousGesture(
             MagnifyGesture()
                 .updating($pinchBase) { _, base, _ in
@@ -1642,6 +1658,9 @@ private struct AtriaStressTimelineChart: View, Equatable {
 
 private struct AtriaStressHeartRateTimelineChart: View {
     let points: [AtriaStressMonitorStore.HeartRateHistoryPoint]
+    // Same drag-to-inspect grammar as the stress timeline beside it
+    // (2026-08-29): time + measured bpm on the shared clamped card.
+    @State private var selectedDate: Date?
 
     private var segmentedPoints: [(point: AtriaStressMonitorStore.HeartRateHistoryPoint,
                                    segment: Int)] {
@@ -1664,29 +1683,63 @@ private struct AtriaStressHeartRateTimelineChart: View {
     }
 
     var body: some View {
-        Chart(segmentedPoints, id: \.point.id) { item in
-            LineMark(x: .value("Time", item.point.t),
-                     y: .value("Heart rate", item.point.bpm),
-                     series: .value("Segment", item.segment))
-                .interpolationMethod(.monotone)
-                .lineStyle(AtriaChartVisualGrammar.traceLine)
-                .foregroundStyle(Metrics.electricRed)
+        Chart {
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.t),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+            ForEach(segmentedPoints, id: \.point.id) { item in
+                LineMark(x: .value("Time", item.point.t),
+                         y: .value("Heart rate", item.point.bpm),
+                         series: .value("Segment", item.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    // One HR color grammar everywhere (visual pass
+                    // 2026-09-24): the intensity ramp Vitals and Activity use,
+                    // not a flat red that read as an alarm.
+                    .foregroundStyle(Metrics.heartRateIntensityGradient)
+            }
         }
         .chartXScale(domain: xDomain)
         .chartYAxisLabel("bpm")
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel().font(AtriaChartVisualGrammar.axisLabelFont).foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
+            }
+        }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .atriaGraphPlotSurface()
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                AtriaChartScrubOverlay(proxy: proxy,
+                                       geometry: geometry,
+                                       points: points,
+                                       date: { $0.t },
+                                       value: { Double($0.bpm) },
+                                       selectedDate: $selectedDate) { point in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(point.t.formatted(date: .omitted, time: .shortened))
+                            .font(.caption2.weight(.semibold))
+                        Text("\(point.bpm) bpm")
+                            .font(.caption.monospacedDigit().weight(.bold))
+                    }
+                    .atriaChartScrubCardChrome()
+                }
+            }
         }
+        .accessibilityHint("Drag across the chart to inspect time and measured heart rate")
     }
 }
 
@@ -1726,6 +1779,13 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                           yEnd: .value("High ceiling", 3))
                 .foregroundStyle(Metrics.electricRed.opacity(0.045))
 
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
+
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
             }) { interval in
@@ -1754,14 +1814,14 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
         .chartYScale(domain: 0...3)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let score = value.as(Int.self) {
                         Text("\(score)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .font(AtriaChartVisualGrammar.axisLabelFont)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -1770,15 +1830,12 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
-                    .foregroundStyle(.secondary)
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
-        .chartPlotStyle { plot in
-            plot
-                .background(.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        }
+        .atriaGraphPlotSurface()
         .accessibilityLabel(accessibilitySummary)
     }
 

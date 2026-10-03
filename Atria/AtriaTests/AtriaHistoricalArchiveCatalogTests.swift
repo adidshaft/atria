@@ -31,6 +31,62 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
             .contains(where: { $0.relativePath.contains("raw-v2") }))
     }
 
+    /// One-chunk retirement must not SHA-256 the 72/134 MB sibling JSONL.
+    func testTargetedFileVerificationDoesNotHashSiblingSealedChunks() throws {
+        let root = try temporaryDirectory()
+        let keep = root.appendingPathComponent("historical-archive.jsonl")
+        let poison = root.appendingPathComponent("segments/old.jsonl")
+        try FileManager.default.createDirectory(
+            at: poison.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("keep-row\n".utf8).write(to: keep)
+        try Data("poison-row\n".utf8).write(to: poison)
+        let ids = IdentifierSource(["legacy-keep", "legacy-poison", "active-a"])
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: ids.next
+        )
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [keep, poison], now: now)
+        let catalog = try store.snapshot()
+        let sealed = catalog.chunks.filter { $0.state == .sealed }
+        XCTAssertEqual(sealed.count, 2)
+        let keepChunk = try XCTUnwrap(sealed.first {
+            $0.relativePath == "historical-archive.jsonl"
+        })
+        let poisonChunk = try XCTUnwrap(sealed.first {
+            $0.relativePath == "segments/old.jsonl"
+        })
+        try store.recordSealedMetadata(
+            chunkID: keepChunk.id,
+            rowCount: 1,
+            firstTimestamp: now,
+            lastTimestamp: now,
+            contentSHA256: try AtriaHistoricalJSONLInput.identity(at: keep).sha256
+        )
+        try store.recordSealedMetadata(
+            chunkID: poisonChunk.id,
+            rowCount: 1,
+            firstTimestamp: now,
+            lastTimestamp: now,
+            contentSHA256: try AtriaHistoricalJSONLInput.identity(at: poison).sha256
+        )
+        try Data("poison-row-corrupted\n".utf8).write(to: poison)
+
+        XCTAssertThrowsError(try store.snapshotVerifiedAgainstFiles()) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalArchiveCatalogStore.StoreError,
+                .catalogFileMismatch
+            )
+        }
+        let targeted = try store.snapshotVerifiedAgainstFiles(chunkIDs: [keepChunk.id])
+        XCTAssertEqual(
+            targeted.chunks.first { $0.id == keepChunk.id }?.contentSHA256,
+            try AtriaHistoricalJSONLInput.identity(at: keep).sha256
+        )
+    }
+
     func testSizeRotationSealsOldChunkAndNeverReopensItsFilename() throws {
         let root = try temporaryDirectory()
         let ids = IdentifierSource(["active-a", "active-b", "active-c"])
@@ -220,6 +276,43 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
 
         XCTAssertEqual(recovered.activeChunk?.byteCount, 12)
         XCTAssertEqual(try restarted.snapshotVerifiedAgainstFiles().activeChunk?.byteCount, 12)
+    }
+
+    // 2026-10-02 device: live appends changed the canonical catalog bytes at
+    // generation 645, so two terminal completions shared a generation with
+    // different digests and refreshCompletionPublished rejected the newer one
+    // forever. Publishers now turn that drift into a newer durable generation.
+    func testAppendHintDriftAdvancesToANewDurableGenerationOnlyWhenPresent() throws {
+        let root = try temporaryDirectory()
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let store = AtriaHistoricalArchiveCatalogStore(
+            rootURL: root,
+            makeIdentifier: IdentifierSource(["active-a"]).next
+        )
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let activeURL = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(
+            at: activeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        XCTAssertFalse(try store.advanceGenerationIfAppendHintsUnpersisted())
+        let before = try store.snapshot()
+
+        try Data("one-row\n".utf8).write(to: activeURL)
+        try store.recordAppendCompleted(at: activeURL)
+        XCTAssertEqual(try store.snapshot().generation, before.generation,
+                       "the append hint itself never bumps the generation")
+
+        XCTAssertTrue(try store.advanceGenerationIfAppendHintsUnpersisted())
+        let advanced = try store.snapshot()
+        XCTAssertEqual(advanced.generation, before.generation + 1)
+        XCTAssertEqual(advanced.activeChunk?.byteCount, 8)
+        XCTAssertFalse(try store.advanceGenerationIfAppendHintsUnpersisted(),
+                       "no drift since the last fsync, no new generation")
+
+        let restarted = AtriaHistoricalArchiveCatalogStore(rootURL: root)
+        let recovered = try restarted.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        XCTAssertEqual(recovered, advanced, "the advanced generation is durable")
     }
 
     func testDurableFlushReconcilesActiveCatalogBeforeTerminalProof() throws {

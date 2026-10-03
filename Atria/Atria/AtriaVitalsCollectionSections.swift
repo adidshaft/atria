@@ -175,11 +175,29 @@ final class AtriaVitalsSessionProjectionStore: ObservableObject {
 /// broad SessionStore observation back into the retained Vitals hierarchy.
 struct AtriaVitalsTrendChartHost: View, Equatable {
     let state: AtriaVitalsSessionState
+    /// Closed-cycle strain, published in lockstep with the rollup history.
+    /// Empty leaves the civil-day series exactly as it was.
+    var cycleStrainByDisplayDay: [Date: Double] = [:]
+    /// The map's identity. Comparing the dictionary itself on every equality
+    /// check would put an O(n) walk in the render path; the store bumps this
+    /// alongside the map it publishes.
+    var cycleStrainRevision: Int = 0
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.cycleStrainRevision == rhs.cycleStrainRevision && lhs.state == rhs.state
+    }
 
     var body: some View {
         let fixturePoints = debugFixtureTrendPoints
-        AtriaTrendChartCard(points: fixturePoints ?? state.overviewTrendPoints,
-                            pointsRevision: fixturePoints == nil ? state.overviewTrendPointsRevision : nil,
+        let points = fixturePoints
+            ?? state.overviewTrendPoints.applyingCycleStrain(cycleStrainByDisplayDay)
+        AtriaTrendChartCard(points: points,
+                            // The prepared-series cache keys on this, so it has
+                            // to move when the cycle series moves, not only when
+                            // the civil points do.
+                            pointsRevision: fixturePoints == nil
+                                ? state.overviewTrendPointsRevision &+ cycleStrainRevision
+                                : nil,
                             baselineRestingHR: fixturePoints == nil ? state.baseline.restingInt : 58,
                             events: trendEvents)
     }
@@ -296,6 +314,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
     case respiration
     case stress
     case sleep
+    case irregularRhythm
 
     var id: String { rawValue }
 
@@ -307,6 +326,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         case .respiration: return "Respiratory rate"
         case .stress: return "Stress"
         case .sleep: return "Sleep"
+        case .irregularRhythm: return AtriaIrregularRhythmCopy.title
         }
     }
 
@@ -323,6 +343,7 @@ enum AtriaVitalsEducationTopic: String, Identifiable {
         case .respiration: return .respiration
         case .stress: return .stress
         case .sleep: return .sleep
+        case .irregularRhythm: return .irregularRhythm
         }
     }
 
@@ -342,7 +363,7 @@ struct AtriaVitalsHintChip: View {
             .minimumScaleFactor(0.8)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(tint.opacity(0.14), in: Capsule(style: .continuous))
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule(style: .continuous))
     }
 }
 
@@ -408,10 +429,11 @@ private struct AtriaHealthMonitorPreparedData {
 
     init(rollups newestFirstRollups: [DailyRollupStoreEntry], sleepHistory: SleepHistorySnapshot) {
         let restingHeartRates = Self.values(from: newestFirstRollups, limit: 28) { rollup in
-            rollup.rhr.map(Double.init)
+            guard (rollup.sleepSeconds ?? 0) > 0 else { return nil }
+            return rollup.rhr.map(Double.init)
         }
         let hrvs = Self.values(from: newestFirstRollups, limit: 28) { rollup in
-            rollup.lnRMSSD.map(exp)
+            rollup.lnRMSSD.map { Double(Int(exp($0).rounded())) }
         }
         let respiratoryRates = Self.values(from: newestFirstRollups, limit: 28) { rollup in
             rollup.respiratoryRate
@@ -439,27 +461,6 @@ private struct AtriaHealthMonitorPreparedData {
 
     private static func sparkPoints(values: [(Date, Double)]) -> [AtriaHealthMonitorSparkPoint] {
         values.reversed().map { AtriaHealthMonitorSparkPoint(day: $0.0, value: $0.1) }
-    }
-}
-
-private struct AtriaHealthMonitorRangeStat {
-    let storedStat: DailyRollupVitals.Stat?
-
-    init(points: [AtriaHealthMonitorSparkPoint]) {
-        guard points.count >= 3 else {
-            storedStat = nil
-            return
-        }
-        var n = 0
-        var mean = 0.0
-        var m2 = 0.0
-        for value in points.map(\.value) {
-            n += 1
-            let delta = value - mean
-            mean += delta / Double(n)
-            m2 += delta * (value - mean)
-        }
-        storedStat = DailyRollupVitals.Stat(mean: mean, sd: sqrt(m2 / Double(max(n - 1, 1))), n: n)
     }
 }
 
@@ -554,13 +555,13 @@ private enum AtriaHealthMonitorVitalKind: String, CaseIterable {
         switch self {
         case .restingHeartRate:
             guard case .aboveTypical = rangeState else { return nil }
-            return "\u{2191} elevated -- try earlier bedtime"
+            return "\u{2191} elevated versus typical"
         case .hrv:
             guard case .belowTypical = rangeState else { return nil }
-            return "\u{2193} below typical -- ease today's training"
+            return "\u{2193} below typical"
         case .respiratoryRate:
             guard case .aboveTypical = rangeState else { return nil }
-            return "\u{2191} elevated -- track how you feel"
+            return "\u{2191} elevated versus typical"
         case .bloodOxygen, .skinTemperature:
             return nil
         }
@@ -810,12 +811,12 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
             .atriaGraphPlotSurface()
             .chartXAxis {
                 AxisMarks(values: compactAxisDates) { value in
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisTick().foregroundStyle(.clear)
                     if let date = value.as(Date.self) {
                         AxisValueLabel {
                             Text(date, format: .dateTime.weekday(.narrow))
-                                .font(.system(size: 8, weight: .medium))
-                                .foregroundStyle(.secondary)
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }
@@ -1160,6 +1161,10 @@ private struct AtriaVitalsPulseCardHost: View {
     @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     let baselineSnapshot: AtriaVitalsPulseBaselineSnapshot
     let isActive: Bool
+    /// Saved-session HR for the live 6h preview. Archive-only refresh left
+    /// the card showing a live tail on an empty 6-hour axis (device
+    /// 2026-09-07: 5:55–10:21 sessions existed, the plot was a sliver).
+    var sessionsForTimeline: () -> [SavedSession] = { [] }
     @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
     @AtriaDefault("atria.target.rhr.yellowDelta") private var restingYellowDelta: Int = 7
     @State private var live: AtriaHomeModel.CoreLiveState
@@ -1181,6 +1186,7 @@ private struct AtriaVitalsPulseCardHost: View {
          baselineSnapshot: AtriaVitalsPulseBaselineSnapshot,
          pulseSparklineStore: AtriaHomeModel.PulseSparklineStore,
          isActive: Bool,
+         sessionsForTimeline: @escaping () -> [SavedSession] = { [] },
          onOpenStressDetail: (() -> Void)? = nil) {
         self.liveStore = liveStore
         self.pulseStore = pulseStore
@@ -1189,6 +1195,7 @@ private struct AtriaVitalsPulseCardHost: View {
         self.baselineSnapshot = baselineSnapshot
         self.pulseSparklineStore = pulseSparklineStore
         self.isActive = isActive
+        self.sessionsForTimeline = sessionsForTimeline
         self.onOpenStressDetail = onOpenStressDetail
         _live = State(initialValue: liveStore.state)
         _pulse = State(initialValue: AtriaVitalsPulsePresentationState(pulseStore.state))
@@ -1347,11 +1354,50 @@ private struct AtriaVitalsPulseCardHost: View {
         // downsample off-main to a bounded count. The chart re-thins to ~400 for
         // display, so ~2500 span-preserving points keep the merge + Equatable
         // cheap while covering the full window.
-        let since = Calendar.current.date(byAdding: .hour, value: -24, to: now)
+        // 2026-08-29: the tail facade (`since:limit:`) rescans up to ~limit KiB
+        // per archive file on EVERY refresh (a measured 144 s-CPU class at
+        // large limits). The exact-window reader selects only the raw chunks
+        // overlapping the 24 h window and memoizes the result against the
+        // archive fingerprint. Quantizing the window to a five-minute boundary
+        // keeps the cache key stable between archive mutations; the closed-open
+        // window never contains future points, so a forward-rounded end adds
+        // nothing that was not measured.
+        let quantum: TimeInterval = 5 * 60
+        let windowEnd = Date(timeIntervalSince1970:
+            (now.timeIntervalSince1970 / quantum).rounded(.up) * quantum)
+        let windowStart = windowEnd.addingTimeInterval(-(24 * 60 * 60) - quantum)
+        let source = HistoricalHeartRateRefreshSource(
+            sessions: sessionsForTimeline(),
+            observed: stressMonitorStore.heartRateHistory.map {
+                AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
+            },
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
         let points = await Task.detached(priority: .utility) {
-            let raw = HistoricalArchive.metricHeartRatePoints(since: since, limit: 50_000).map {
+            // A nil exact-window read is an incomplete scan, not an empty
+            // archive; fall back to the bounded recent tail at the same
+            // 12k budget Activity's current-day path uses — never the old
+            // 50k-limit full-tail rescan.
+            let window = HistoricalArchive.metricHeartRatePoints(
+                start: source.windowStart,
+                end: source.windowEnd,
+                maximumPoints: 100_000
+            )
+            let archive = (window?.points
+                ?? HistoricalArchive.metricHeartRatePoints(since: source.windowStart,
+                                                           limit: 12_000)).map {
                 AtriaHomeModel.HeartRateChartPoint(t: $0.t, bpm: $0.bpm)
             }
+            let fromSessions = AtriaVitalsHeartRateTimeline.points(
+                fromSessions: source.sessions,
+                start: source.windowStart,
+                end: source.windowEnd
+            )
+            let raw = AtriaVitalsHeartRateTimeline.mergedHeartRatePoints(
+                live: fromSessions + source.observed,
+                historical: archive
+            )
             return AtriaVitalsHeartRateTimeline.downsampledSpan(raw, maxPoints: 2_500)
         }.value
         guard !Task.isCancelled else { return }
@@ -1370,6 +1416,15 @@ private struct AtriaVitalsPulseCardHost: View {
     #else
     private static func debugOpensHeartRateTimeline(arguments: [String]) -> Bool { false }
     #endif
+
+    /// `SavedSession` predates Sendable. Capture the resident COW image on
+    /// MainActor, then read only that immutable copy on the utility worker.
+    private struct HistoricalHeartRateRefreshSource: @unchecked Sendable {
+        let sessions: [SavedSession]
+        let observed: [AtriaHomeModel.HeartRateChartPoint]
+        let windowStart: Date
+        let windowEnd: Date
+    }
 
 }
 
@@ -1401,6 +1456,7 @@ struct AtriaVitalsLivePulseSection: View {
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
     let isActive: Bool
     var onOpenStressDetail: (() -> Void)? = nil
+    var sessionsForTimeline: () -> [SavedSession] = { [] }
 
     var body: some View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
@@ -1410,6 +1466,7 @@ struct AtriaVitalsLivePulseSection: View {
                                  baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(baseline),
                                  pulseSparklineStore: pulseSparklineStore,
                                  isActive: isActive,
+                                 sessionsForTimeline: sessionsForTimeline,
                                  onOpenStressDetail: onOpenStressDetail)
     }
 }
@@ -1450,6 +1507,27 @@ enum AtriaVitalsHeartRateTimeline {
         }
 
         static let defaultWindow = Window.hour6
+    }
+
+    /// Saved-session HR inside `[start, end)`. Activity's current-day path
+    /// already unions this source; the Live 6h preview was archive-only and
+    /// therefore plotted a live sliver on an empty axis.
+    static func points(fromSessions sessions: [SavedSession],
+                       start: Date,
+                       end: Date) -> [AtriaHomeModel.HeartRateChartPoint] {
+        guard end > start else { return [] }
+        var points: [AtriaHomeModel.HeartRateChartPoint] = []
+        for session in sessions {
+            guard session.end > start, session.start < end else { continue }
+            for point in session.points {
+                let date = session.start.addingTimeInterval(point.t)
+                guard date >= start,
+                      date < end,
+                      (25...240).contains(point.bpm) else { continue }
+                points.append(AtriaHomeModel.HeartRateChartPoint(t: date, bpm: point.bpm))
+            }
+        }
+        return points.sorted { $0.t < $1.t }
     }
 
     /// One x-axis tick: a boundary-aligned instant plus the exact label the
@@ -1650,8 +1728,10 @@ enum AtriaVitalsHeartRateTimeline {
         for run in runs {
             let share = max(2, Int((Double(run.count) / Double(visible.count)
                                     * Double(displayBudget)).rounded()))
+            let span = (run.last?.t.timeIntervalSince(run.first?.t ?? Date()) ?? 0)
+            let minBySpan = max(2, Int(span / max(1, gapThreshold * 0.8)) + 1)
             out.append(contentsOf: thinnedWithinRun(run,
-                                                    budget: share,
+                                                    budget: min(run.count, max(share, minBySpan)),
                                                     gapThreshold: gapThreshold))
         }
         return out
@@ -2049,7 +2129,7 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureFootnote(candidateValues: Int,
                                         decoderAvailable: Bool) -> String {
-        guard !decoderAvailable else { return "Sleep-only relative deviation; no absolute temperature." }
+        guard !decoderAvailable else { return "vs your sleep baseline" }
         return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
     }
 
@@ -2059,8 +2139,8 @@ enum AtriaExperimentalSensorCopy {
             return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
         }
         return summary.isReady
-            ? "\(summary.valueText) delta C versus your local sleep baseline. This is a relative wrist-skin signal, not core temperature."
-            : "Atria is building a sleep baseline. It will only show relative wrist-skin deviation, never core temperature."
+            ? "\(summary.valueText) °C versus your usual sleep. Wrist skin, relative to your own baseline — not core temperature."
+            : "Learning your usual sleep temperature. Readings start after 3 nights."
     }
 
     static func skinTemperatureAccessibilityDetail(
@@ -2070,10 +2150,10 @@ enum AtriaExperimentalSensorCopy {
         guard hasValidatedSkinTemperatureReading(summary: summary,
                                                   decoderAvailable: decoderAvailable) else {
             return decoderAvailable
-                ? "Wrist temperature deviation is \(summary.detailText.lowercased())."
+                ? "Skin temperature deviation is \(summary.detailText.lowercased())."
                 : "Wrist-temperature decoder not verified."
         }
-        return "Wrist temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
+        return "Skin temperature relative sleep signal \(summary.valueText) degrees Celsius from baseline, \(summary.footnoteText)."
     }
 }
 
@@ -2208,12 +2288,12 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                     decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
                                 zone: nil,
                                 targetMetric: nil)
-                AtriaMetricTile(label: "Wrist temp",
+                AtriaMetricTile(label: "Skin temp",
                                 value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                     ? summary.skinTemperatureDeviation.valueText
                                     : "--",
                                 unit: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
-                                    && summary.skinTemperatureDeviation.isReady ? "delta C" : nil,
+                                    && summary.skinTemperatureDeviation.isReady ? "°C" : nil,
                                 state: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                     && summary.skinTemperatureDeviation.isReady ? .research : .learning,
                                 tint: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
@@ -2236,7 +2316,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                 footnote: respiratory.detail,
                                 zone: respiratory.zone,
                                 targetMetric: .respiratoryRate)
-                AtriaMetricTile(label: "Strap steps",
+                AtriaMetricTile(label: "Steps",
                                 value: summary.strapStepText,
                                 state: summary.strapStepCount > 0 ? .research : .learning,
                                 tint: .green,
@@ -2286,7 +2366,7 @@ private struct AtriaResearchSignalInfoSheet: View {
 
                     researchInfoRow(systemImage: "thermometer.variable",
                                     tint: .teal,
-                                    title: "Wrist temperature signal",
+                                    title: "Skin temperature signal",
                                     detail: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                         summary: skinTemperatureSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable))
@@ -2359,13 +2439,13 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Body Age", subtitle: summary.narrative)
+                AtriaPanelSectionHeader(title: "Fitness age", subtitle: summary.narrative)
                 Spacer(minLength: 0)
                 AtriaStateBadge(state: summary.isReady ? .estimate : .learning)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
-                AtriaMetricTile(label: "Body age",
+                AtriaMetricTile(label: "Fitness age",
                                 value: summary.valueText,
                                 state: summary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? (summary.isReady ? .purple : .orange),
@@ -2443,7 +2523,7 @@ private struct AtriaBioAgeFactorRow: View, Equatable {
                 Text(factor.detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.78)
             }
 
@@ -2741,6 +2821,7 @@ enum AtriaVitalsStressTimelineCopy {
 /// canvas. It avoids an extra full-width card while making the requested
 /// Stress / Heart Rate comparison discoverable.
 private struct AtriaVitalsLiveSignalCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isConnected: Bool
     let live: AtriaVitalsPulsePresentationState
     let miniTimelineSeries: AtriaHeartRateChartSeries
@@ -2833,20 +2914,38 @@ private struct AtriaVitalsLiveSignalCard: View {
                     // in the info sheet and the accessibility value, not in
                     // four places per viewport. Unscored states keep one
                     // short truthful blocker.
-                    Text(stressPresentation.numericScore != nil
-                            ? stressState.label
-                            : stressPresentation.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                    // Declutter (2026-09-02): while the strap is disconnected the
+                    // empty canvas directly below already says "Strap
+                    // disconnected · Reconnect…", so the header's "Waiting for a
+                    // fresh strap signal" was the same fact twice in one
+                    // viewport. Every other unscored state keeps its blocker.
+                    if !(projection.presentation == .empty && !isConnected) {
+                        Text(stressPresentation.numericScore != nil
+                                ? stressState.label
+                                : stressPresentation.detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 8)
-                Text(stressPresentation.numericScore.map {
-                    "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
-                } ?? AtriaCompactMetricPresentation.noValue)
-                    .font(.system(.title2, design: .rounded, weight: .black))
-                    .monospacedDigit()
-                    .foregroundStyle(stressState.level?.tint ?? .secondary)
+                // Same declutter as the subtitle (2026-09-02): with the strap
+                // disconnected and nothing scored, the canvas below already
+                // says so; a "--" beside the chevron was a third placeholder
+                // for one fact. The chevron stays as the tap affordance.
+                if !(projection.presentation == .empty && !isConnected) {
+                    Text(stressPresentation.numericScore.map {
+                        "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
+                    } ?? AtriaCompactMetricPresentation.noValue)
+                        .font(.system(.title2, design: .rounded, weight: .black))
+                        .monospacedDigit()
+                        // Live value: digits roll to the new reading instead of
+                        // snapping, so a refresh reads as movement, not a flicker.
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                                   value: stressPresentation.numericScore)
+                        .foregroundStyle(stressState.level?.tint ?? .secondary)
+                }
                 if onOpenStressDetail != nil {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
@@ -2883,6 +2982,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 ContentUnavailableView(stressEmptyTitle,
                                        systemImage: stressEmptySystemImage,
                                        description: Text(stressEmptyDescription))
+                    .accessibilityHint(stressEmptyAccessibilityHint)
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
@@ -2907,14 +3007,8 @@ private struct AtriaVitalsLiveSignalCard: View {
                 ))
             }
 
-            // A gap note is valuable beside a real timeline, but repeats the
-            // empty-state explanation before there are any readings to inspect.
-            if projection.presentation == .physiologicalStress,
-               !projection.stressPoints.isEmpty {
-                Text(AtriaVitalsStressTimelineCopy.gapNote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            // Owner 2026-10-03: minimal text on main tabs — the gaps are
+            // visible in the chart, so the gap note is no longer rendered here.
         }
     }
 
@@ -2926,10 +3020,19 @@ private struct AtriaVitalsLiveSignalCard: View {
         isConnected ? "waveform.path.ecg" : "bolt.horizontal.circle"
     }
 
+    // Declutter (2026-09-02, same rule as the 2026-08-20 R6 pass): one short
+    // line on the surface; the provenance sentence moves to the accessibility
+    // hint rather than being deleted.
     private var stressEmptyDescription: String {
-        return isConnected
-            ? "Keep wearing your strap. A complete five-minute cardiac window produces the first 0–3 estimate; HR-only estimates are labeled lower confidence."
-            : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
+        isConnected
+            ? "First estimate after a five-minute cardiac window."
+            : "Reconnect to resume live readings."
+    }
+
+    private var stressEmptyAccessibilityHint: String {
+        isConnected
+            ? "Keep wearing your strap. HR-only estimates are labeled lower confidence."
+            : "Recent measured readings remain visible when available."
     }
 
     private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
@@ -2938,7 +3041,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(tint)
             Text(label)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -2952,7 +3055,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                 .font(.caption.weight(.bold))
                 .foregroundStyle(Metrics.electricSleep)
             Text("Sleep")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
@@ -3145,21 +3248,7 @@ private struct AtriaVitalsStressTimelineChart: View {
 
     var body: some View {
         Chart {
-            RectangleMark(xStart: .value("Calm start", xDomain.lowerBound),
-                          xEnd: .value("Calm end", xDomain.upperBound),
-                          yStart: .value("Calm floor", 0),
-                          yEnd: .value("Calm ceiling", 1))
-                .foregroundStyle(Metrics.electricGreen.opacity(0.055))
-            RectangleMark(xStart: .value("Moderate start", xDomain.lowerBound),
-                          xEnd: .value("Moderate end", xDomain.upperBound),
-                          yStart: .value("Moderate floor", 1),
-                          yEnd: .value("Moderate ceiling", 2))
-                .foregroundStyle(Metrics.electricYellow.opacity(0.045))
-            RectangleMark(xStart: .value("High start", xDomain.lowerBound),
-                          xEnd: .value("High end", xDomain.upperBound),
-                          yStart: .value("High floor", 2),
-                          yEnd: .value("High ceiling", 3))
-                .foregroundStyle(Metrics.electricRed.opacity(0.045))
+            AtriaStressZoneBandMarks(domain: xDomain)
 
             RuleMark(y: .value("Calm to moderate", 1))
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
@@ -3167,6 +3256,16 @@ private struct AtriaVitalsStressTimelineChart: View {
             RuleMark(y: .value("Moderate to high", 2))
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
+
+            // No-data bands (visual pass 2026-09-24): a stale or missing
+            // stretch is labeled instead of an unexplained blank.
+            AtriaNoDataBandMarks(
+                bands: AtriaChartNoDataBands.bands(
+                    sampleDates: points.map(\.reading.date),
+                    domain: xDomain,
+                    now: referenceDate,
+                    evidence: AtriaChartGapEvidenceProvider.current()),
+                domain: xDomain)
 
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
                 $0.sleepContext == .asleep
@@ -3217,30 +3316,24 @@ private struct AtriaVitalsStressTimelineChart: View {
                                                       endPoint: .top))
             }
 
-            if let selectedPoint {
-                RuleMark(x: .value("Inspected time", selectedPoint.reading.date))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-                    .foregroundStyle(.primary.opacity(0.28))
-                PointMark(x: .value("Inspected time", selectedPoint.reading.date),
-                          y: .value("Inspected stress", selectedPoint.reading.score))
-                    .symbolSize(36)
-                    .foregroundStyle(.primary)
-                // Handoff-12 CP3: the wide top annotation is gone — the
-                // compact clamped card renders plot-locally in chartOverlay.
-            }
+            // Handoff-12 CP3: the wide top annotation is gone — the compact
+            // clamped card renders plot-locally in chartOverlay. 2026-08-29:
+            // the selection rule/dot moved into the shared
+            // AtriaChartScrubOverlay so Activity's day charts and the
+            // stress-detail HR chart render the identical scrub grammar.
         }
         .atriaGraphPlotSurface()
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
         .chartXScale(domain: xDomain)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
                     if let value = value.as(Int.self) {
                         Text("\(value)")
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                     }
                 }
             }
@@ -3248,9 +3341,9 @@ private struct AtriaVitalsStressTimelineChart: View {
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisTick().foregroundStyle(.clear)
-                AxisValueLabel(format: .dateTime.hour().minute())
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                AxisValueLabel(format: AtriaChartVisualGrammar.intradayTimeFormat)
+                    .font(AtriaChartVisualGrammar.axisLabelFont)
+                    .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
             }
         }
         .padding(.vertical, 8)
@@ -3271,45 +3364,13 @@ private struct AtriaVitalsStressTimelineChart: View {
         )
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(.clear)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    guard let plotFrame = proxy.plotFrame else { return }
-                                    let frame = geometry[plotFrame]
-                                    let x = value.location.x - frame.origin.x
-                                    guard x >= 0, x <= frame.width,
-                                          let date: Date = proxy.value(atX: x) else { return }
-                                    selectedDate = nearestPoint(to: date)?.reading.date
-                                }
-                        )
-                    if let selectedPoint,
-                       let plotFrame = proxy.plotFrame,
-                       let xPosition = proxy.position(
-                            forX: selectedPoint.reading.date
-                       ),
-                       let yPosition = proxy.position(
-                            forY: selectedPoint.reading.score
-                       ) {
-                        let frame = geometry[plotFrame]
-                        let placement = AtriaChartPointerPlacement.place(
-                            anchor: CGPoint(x: frame.origin.x + xPosition,
-                                            y: frame.origin.y + yPosition),
-                            plot: frame
-                        )
-                        inspectionCard(selectedPoint.reading)
-                            .frame(
-                                width: AtriaChartPointerPlacement
-                                    .defaultCardSize.width,
-                                alignment: .leading
-                            )
-                            .offset(x: placement.origin.x,
-                                    y: placement.origin.y)
-                            .allowsHitTesting(false)
-                    }
+                AtriaChartScrubOverlay(proxy: proxy,
+                                       geometry: geometry,
+                                       points: points,
+                                       date: { $0.reading.date },
+                                       value: { $0.reading.score },
+                                       selectedDate: $selectedDate) { point in
+                    inspectionCard(point.reading)
                 }
             }
         }
@@ -3317,17 +3378,6 @@ private struct AtriaVitalsStressTimelineChart: View {
             containsSleep: AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading))
         ))
         .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV availability, motion context, and confidence")
-    }
-
-    private var selectedPoint: AtriaStressTimelinePoint? {
-        selectedDate.flatMap(nearestPoint(to:))
-    }
-
-    private func nearestPoint(to date: Date) -> AtriaStressTimelinePoint? {
-        points.min {
-            abs($0.reading.date.timeIntervalSince(date))
-                < abs($1.reading.date.timeIntervalSince(date))
-        }
     }
 
     /// Handoff-12 CP3: three visible lines — time, score · zone, HR. The
@@ -3346,12 +3396,7 @@ private struct AtriaVitalsStressTimelineChart: View {
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" }
                 ?? "HR unavailable")
         }
-        .font(.caption2)
-        .lineLimit(1)
-        .foregroundStyle(.primary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .atriaChartScrubCardChrome()
         .accessibilityElement(children: .combine)
         .accessibilityValue(Text(
             "\(reading.sleepContext == .asleep ? "Sleep · " : "")\(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) milliseconds" } ?? "HR-only estimate") · \(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence"
@@ -3440,6 +3485,9 @@ private struct AtriaPulseStatRail: View {
                 .allowsTightening(true)
             Text(value)
                 .font(.title3.weight(.bold).monospacedDigit())
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard),
+                           value: value)
                 // A not-ready value renders NEUTRAL, never in the metric's hue.
                 // These tints are red and pink, so an empty heart-rate row was
                 // showing three red "--" side by side, which reads as an error
@@ -3677,12 +3725,16 @@ struct AtriaHeartRateChartSeries: Equatable {
             let index = min(targetBuckets - 1, max(0, Int(point.t.timeIntervalSince(first) / width)))
             accumulators[index].append(point.bpm)
         }
-        return accumulators.indices.compactMap { index in
-            accumulators[index].bucket(
+        var out: [AtriaHeartRateBucket] = []
+        for index in accumulators.indices {
+            if let bucket = accumulators[index].bucket(
                 centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width),
                 segment: segment
-            )
+            ) {
+                out.append(bucket)
+            }
         }
+        return out
     }
 }
 
@@ -4063,6 +4115,7 @@ struct AtriaHeartRateExplorer: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 36, height: 36)
+                .atriaMinimumHitTarget(width: 36, height: 36)
                 // One visual circle and one 44-point hit frame. Keeping the
                 // glass on the label avoids toolbar/button-style chrome being
                 // wrapped around a second pre-drawn circle.
@@ -4078,7 +4131,7 @@ struct AtriaHeartRateExplorer: View {
         VStack(alignment: .leading, spacing: 3) {
             if selectionMode == .range, let summary = selectedRangeSummary {
                 Text("\(summary.average) bpm")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(AtriaDesignTokens.Typography.cardHeroValue)
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -4093,7 +4146,9 @@ struct AtriaHeartRateExplorer: View {
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
-                        .font(.system(size: 38, weight: .bold, design: .rounded))
+                        // Reading value (2026-09-02): the card hero token
+                        // scales with Dynamic Type; the hand-set 38pt did not.
+                        .font(AtriaDesignTokens.Typography.cardHeroValue)
                         .monospacedDigit()
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -4640,8 +4695,22 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         return output
     }
 
+    /// No-data bands over the plotted span (visual pass 2026-09-24).
+    private var gapBands: (bands: [AtriaChartGapBand], domain: ClosedRange<Date>)? {
+        let dates = buckets.map { $0.map(\.t) } ?? points.map(\.t)
+        guard let first = dates.min(), let last = dates.max() else { return nil }
+        let domain = effectiveXDomain ?? (first...last)
+        return (AtriaChartNoDataBands.bands(sampleDates: dates,
+                                            domain: domain,
+                                            evidence: AtriaChartGapEvidenceProvider.current()),
+                domain)
+    }
+
     private var baseChart: some View {
         Chart {
+            if let gapBands {
+                AtriaNoDataBandMarks(bands: gapBands.bands, domain: gapBands.domain)
+            }
             if let buckets {
                 // Smoothed mode: one calm average line per run with a soft
                 // gradient fill beneath it. The old per-bucket min-max band
@@ -4720,8 +4789,8 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 // the compact Vitals canvas) rendered the same "11a" text under
                 // several neighbouring gridlines.
                 AxisMarks(values: xAxisTicks.map(\.date)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                    AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let time = value.as(Date.self),
                            let label = xAxisTickLabel(for: time) {
@@ -4741,13 +4810,13 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             // fabricated axis (chart-honesty rule, 2026-08-04).
             if !plotIsEmpty, !usesLeadingValueAxis {
                 AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                    AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                    AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
                                 .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }
@@ -4760,26 +4829,19 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             // read as one grammar.
             if !plotIsEmpty, usesLeadingValueAxis {
                 AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                    AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                     AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
                                 .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                         }
                     }
                 }
             }
         }
-        .chartPlotStyle { plotArea in
-            plotArea
-                .contentShape(Rectangle())
-                .background(Color.primary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .clipped()
-        }
-        .mask(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .atriaGraphPlotSurface()
     }
 
     /// Ticks span whichever series actually plots (buckets when smoothing).
@@ -4885,7 +4947,10 @@ private extension View {
             transaction.animation = nil
         }
         .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(
+            cornerRadius: AtriaChartVisualGrammar.plotCornerRadius,
+            style: .continuous
+        ))
         .clipped()
     }
 }
@@ -4900,15 +4965,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 // bars below are the labeled HR-only estimate.
                 Text(night.stageDisplayLabel)
                     .font(.caption.weight(.semibold))
-                if night.isEstimatedStageDisplay {
-                    Text("Low confidence")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.12),
-                                    in: Capsule(style: .continuous))
-                }
+                // 2026-09-27: no "Low confidence" chip; the label already
+                // says "Estimated stages · HR-only", which is what was seen.
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
                     .font(.caption2.weight(.semibold))
@@ -4923,7 +4981,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
                     for: night.displayStageSegments,
                     windowStart: start,
-                    windowEnd: end
+                    windowEnd: end,
+                    isEstimate: night.isEstimatedStageDisplay
                 )
                 AtriaSleepStageTimelineChart(
                     runs: timeline.runs,
@@ -4937,8 +4996,8 @@ struct AtriaSleepStageSummary: View, Equatable {
                 .atriaInspectableGraph(sleepStageGraph)
             }
 
-            // Estimate provenance on-card = the title label + "Low confidence"
-            // chip above (declutter 2026-08-20, R8). The full caption stays in
+            // Estimate provenance on-card = the title label above
+            // (declutter 2026-08-20, R8; chip removed 2026-09-27). The full caption stays in
             // this card's accessibilityLabel and renders with the bars on the
             // sleep detail sheet (AtriaSleepHypnogram).
 
@@ -4957,11 +5016,14 @@ struct AtriaSleepStageSummary: View, Equatable {
                                 .frame(width: 6, height: 6)
                             VStack(alignment: .leading, spacing: 0) {
                                 Text(entry.stage.label)
-                                    .font(.system(size: 9, weight: .bold))
+                                    .font(.caption2.weight(.bold))
                                     .foregroundStyle(.secondary)
                                 Text("\(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes)) · \(entry.percent)%")
                                     .font(.caption2.weight(.semibold).monospacedDigit())
-                                    .foregroundStyle(color(for: entry.stage))
+                                    // Theme unification (2026-08-29): the dot
+                                    // carries the stage color; the value reads
+                                    // in .primary like every other value.
+                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                             }
@@ -4976,6 +5038,8 @@ struct AtriaSleepStageSummary: View, Equatable {
             let totalStaged = totalStagedDuration
             let restorativeSeconds = restorativeStageSeconds
             if totalStaged > 0 {
+                // Theme unification (2026-08-29): a quiet summary row is quiet —
+                // plain .secondary text, no indigo, no tinted background.
                 HStack(spacing: 6) {
                     Image(systemName: "bolt.heart.fill")
                         .font(.caption2.weight(.bold))
@@ -4984,19 +5048,15 @@ struct AtriaSleepStageSummary: View, Equatable {
                     Spacer(minLength: 0)
                     Text("\(SleepHistorySnapshot.formatDuration(restorativeSeconds)) · \(Int((restorativeSeconds / totalStaged * 100).rounded()))% · REM + SWS + Deep")
                         .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 }
-                .foregroundStyle(.indigo)
-                .padding(.vertical, 7)
-                .padding(.horizontal, 10)
-                .background(Color.indigo.opacity(0.07),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .foregroundStyle(.secondary)
             }
         }
         .padding(10)
-        .atriaInsetCard(tint: .cyan)
+        // Theme unification (2026-08-29): sleep identity hue, not cyan.
+        .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(night.evidenceLabel) \(night.stageDisplayLabel). \(night.isEstimatedStageDisplay ? AtriaSleepStageEstimateLabel.caption + " " : "")Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
@@ -5090,9 +5150,10 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
         HStack(alignment: .center, spacing: 9) {
             Image(systemName: "moon.zzz.fill")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.cyan)
+                // Theme unification (2026-08-29): sleep identity hue, not cyan.
+                .foregroundStyle(Metrics.electricSleep)
                 .frame(width: 22, height: 22)
-                .background(.cyan.opacity(0.12), in: Circle())
+                .background(Metrics.electricSleep.opacity(0.12), in: Circle())
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(headline)
@@ -5114,9 +5175,14 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
 
     private var headline: String {
         if night.isManualEntry { return "No stages — manual entry" }
+        // 2026-08-29: mirror the detail sheet's states (AtriaSleepHypnogram
+        // displayState) so the compact card and the sheet name the same
+        // night the same way: an HR-only night without drawable segments is
+        // the sheet's "Estimated asleep window", and a no-evidence night
+        // matches its terminal "Stage analysis unavailable" wording.
         return night.stageEvidence == .hrOnlyEstimate
-            ? "Stages need motion data"
-            : "Sleep stages unavailable"
+            ? "Estimated asleep window"
+            : "Stage analysis unavailable"
     }
 
     private var detail: String {
@@ -5136,6 +5202,7 @@ struct AtriaSleepStageHypnogram: View, Equatable {
     let start: Date?
     let end: Date?
     let duration: TimeInterval
+    var isEstimate: Bool = false
 
     var body: some View {
         Canvas { context, size in
@@ -5170,29 +5237,46 @@ struct AtriaSleepStageHypnogram: View, Equatable {
         // Broader lanes (2026-07-08, user request: ~3-4x): scale with the frame
         // and cap so lanes stay distinct at the taller 120pt hypnogram.
         let laneHeight = max(12, min(22, size.height / 5.5))
-        for segment in segments {
-            guard let normalizedRange = Self.normalizedRange(for: segment,
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: segments,
+            windowStart: timelineStart,
+            windowEnd: timelineEnd,
+            isEstimate: isEstimate
+        )
+        for run in timeline.runs {
+            guard let normalizedRange = Self.normalizedRange(start: run.start,
+                                                             end: run.end,
                                                              timelineStart: timelineStart,
                                                              timelineEnd: timelineEnd) else { continue }
             let width = max(1, size.width * (normalizedRange.upperBound - normalizedRange.lowerBound))
             let x = size.width * normalizedRange.lowerBound
-            let y = stageY(segment.stage, height: size.height) - laneHeight / 2
+            let y = stageY(run.stage, height: size.height) - laneHeight / 2
             let rect = CGRect(x: x,
                               y: y,
                               width: min(width, max(0, size.width - x)),
                               height: laneHeight)
             context.fill(Path(roundedRect: rect, cornerRadius: laneHeight / 2),
-                         with: .color(color(for: segment.stage)))
+                         with: .color(color(for: run.stage)))
         }
     }
 
     static func normalizedRange(for segment: SleepStageSegment,
                                 timelineStart: Date,
                                 timelineEnd: Date) -> ClosedRange<Double>? {
+        normalizedRange(start: segment.start,
+                        end: segment.end,
+                        timelineStart: timelineStart,
+                        timelineEnd: timelineEnd)
+    }
+
+    static func normalizedRange(start: Date,
+                                end: Date,
+                                timelineStart: Date,
+                                timelineEnd: Date) -> ClosedRange<Double>? {
         let timelineDuration = timelineEnd.timeIntervalSince(timelineStart)
         guard timelineDuration > 0 else { return nil }
-        let clippedStart = max(segment.start, timelineStart)
-        let clippedEnd = min(segment.end, timelineEnd)
+        let clippedStart = max(start, timelineStart)
+        let clippedEnd = min(end, timelineEnd)
         guard clippedEnd > clippedStart else { return nil }
         let lower = clippedStart.timeIntervalSince(timelineStart) / timelineDuration
         let upper = clippedEnd.timeIntervalSince(timelineStart) / timelineDuration

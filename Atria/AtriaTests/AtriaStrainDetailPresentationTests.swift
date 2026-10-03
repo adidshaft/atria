@@ -77,21 +77,39 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
             source.range(of: "case .sleepPerformance:", range: start.upperBound..<source.endIndex)
         )
         let strainDetail = String(source[start.lowerBound..<end.lowerBound])
-        let gateStart = try XCTUnwrap(
-            strainDetail.range(of: "if showsCurrentPhysiologicalCycleContext {")
-        )
+        // 2026-08-29 minimalism restructure: the live-cycle cards moved into
+        // the contributors slot (behind "Show details"); the cycle gate moved
+        // with them, so the gated span now sits between `} contributors: {`
+        // and `} chart:`.
         let contributorsStart = try XCTUnwrap(
-            strainDetail.range(of: "} contributors:", range: gateStart.upperBound..<strainDetail.endIndex)
+            strainDetail.range(of: "} contributors: {")
         )
-        let gatedCards = String(strainDetail[gateStart.lowerBound..<contributorsStart.lowerBound])
+        let chartStart = try XCTUnwrap(
+            strainDetail.range(of: "} chart:", range: contributorsStart.upperBound..<strainDetail.endIndex)
+        )
+        let contributorsSlot = String(strainDetail[contributorsStart.lowerBound..<chartStart.lowerBound])
+        let gateStart = try XCTUnwrap(
+            contributorsSlot.range(of: "if showsCurrentPhysiologicalCycleContext {"),
+            "every live-cycle card must stay behind the cycle gate"
+        )
+        let gatedCards = String(contributorsSlot[gateStart.lowerBound...])
 
         XCTAssertTrue(gatedCards.contains("strainWorkoutSection"))
         XCTAssertTrue(gatedCards.contains("strainZoneHistogramCard"))
         XCTAssertTrue(gatedCards.contains("strainActivityMixCard"))
+        XCTAssertTrue(gatedCards.contains("AtriaMetricContributorRows"),
+                      "Today's workout and zone contributor rows must be absent on past days")
         XCTAssertTrue(strainDetail.contains("target: showsCurrentPhysiologicalCycleContext"),
                       "A past-day hero must not be classified against today's target")
-        XCTAssertTrue(strainDetail.contains("if showsCurrentPhysiologicalCycleContext {\n                    AtriaMetricContributorRows"),
-                      "Today's workout and zone contributor rows must be absent on past days")
+        // Above the fold only the combo card remains (no cycle-gated card may
+        // render before the contributors slot).
+        let aboveFold = String(strainDetail[strainDetail.startIndex..<contributorsStart.lowerBound])
+        XCTAssertTrue(aboveFold.contains("strainRecoveryComboCard"))
+        for gated in ["strainWorkoutSection", "strainZoneHistogramCard",
+                      "strainActivityMixCard", "strainCardioLiftingSplitCard"] {
+            XCTAssertFalse(aboveFold.contains(gated),
+                           "\(gated) must live behind the Show-details reveal")
+        }
 
         let projectionStart = try XCTUnwrap(
             source.range(of: "private var showsCurrentPhysiologicalCycleContext: Bool")
@@ -102,7 +120,12 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         )
         let projection = String(source[projectionStart.lowerBound..<truthStart.lowerBound])
         XCTAssertTrue(projection.contains("AtriaStrainDetailContextPolicy.showsCurrentCycle("))
-        XCTAssertTrue(source.contains("return range == .day ? \"Saved day\" : \"Period average\""))
+        // 2026-09-02 split the one-liner in two so a live cycle can say "So
+        // far today" instead of calling an accumulating day saved; the rule it
+        // pins — dated history says Saved day, a multi-day range says Period
+        // average — is unchanged.
+        XCTAssertTrue(source.contains("return currentCycleDetailProjection.usesCurrentCycle ? \"So far today\" : \"Saved day\""))
+        XCTAssertTrue(source.contains("return \"Period average\""))
     }
 
     func testPartialDayStrainKeepsMeasuredNumberAndAddsLimitation() throws {

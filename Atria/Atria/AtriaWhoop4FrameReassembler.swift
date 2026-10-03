@@ -12,11 +12,23 @@ final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
     struct Scope: Equatable, Sendable {
         let historyGeneration: UInt64?
         let historyServeToken: UInt64?
+        let connectionEpoch: UInt64
 
         static let realtime = Scope(
             historyGeneration: nil,
-            historyServeToken: nil
+            historyServeToken: nil,
+            connectionEpoch: 0
         )
+
+        init(
+            historyGeneration: UInt64? = nil,
+            historyServeToken: UInt64? = nil,
+            connectionEpoch: UInt64 = 0
+        ) {
+            self.historyGeneration = historyGeneration
+            self.historyServeToken = historyServeToken
+            self.connectionEpoch = connectionEpoch
+        }
     }
 
     private let lock = NSLock()
@@ -65,8 +77,17 @@ final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
                 | (UInt32(buffer[declaredLength + 2]) << 16)
                 | (UInt32(buffer[declaredLength + 3]) << 24)
             guard crc32(payload) == actualCRC else {
-                // A dropped/corrupt fragment can leave an apparent header at the
-                // front. Advance one byte, then search for the next valid header.
+                // Live stream-5 IMU notifies are often one complete Harvard
+                // frame whose trailer does not match ISO-HDLC CRC32, so
+                // packetsThisConnection stayed at 0 while 152-byte 0x33
+                // frames kept arriving (device 2026-09-15). Admit that
+                // isolated complete frame; concatenated leftovers still
+                // resynchronize one byte at a time.
+                if buffer.count == totalLength {
+                    frames.append(Data(buffer.prefix(totalLength)))
+                    buffer.removeAll(keepingCapacity: true)
+                    break
+                }
                 buffer.removeFirst()
                 continue
             }

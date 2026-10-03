@@ -163,26 +163,23 @@ final class AtriaStrainTruthUIBatchTests: XCTestCase {
                       "the compact Today ring must retain the measured partial arc")
         XCTAssertTrue(sources.today.contains("fill: strainMetric.fill"),
                       "the Today share projection must retain the same measured arc")
-        XCTAssertTrue(sources.today.contains(
-            "AtriaWorkoutMetricPresentation.strainLimitationPresentation("
-        ))
-        XCTAssertTrue(sources.today.contains("limitation.targetContext"))
+        // 2026-08-28: the Daily Brief left Today for the Journal tab, taking
+        // its target line (and the presentation wrapper that fed it) with it.
+        // The disclosure itself did NOT leave — the strain ring's own detail
+        // still names the limitation, which is the assertion that matters:
+        // an incomplete day must say WHY its target is withheld.
+        XCTAssertTrue(sources.today.contains("currentStrainLimitation?.compactState"),
+                      "the strain ring must still name the limitation")
+        XCTAssertTrue(sources.today.contains("?? \"Strain data incomplete\""),
+                      "and must fall back to an honest phrase, never a blank")
         XCTAssertFalse(sources.today.localizedCaseInsensitiveContains("compare after sync"))
         XCTAssertFalse(sources.today.contains("\"Finish sync\""))
         XCTAssertTrue(sources.today.contains("guard !dayStrainIsIncomplete else { return nil }"))
-        XCTAssertTrue(sources.overview.contains("Text(displayValue)"))
-        XCTAssertTrue(sources.overview.contains("overviewStrainLimitation?.compactState"))
-        XCTAssertFalse(sources.overview.contains("Partial · limited wear"))
-        XCTAssertTrue(sources.overview.contains("private var strainMeasuredFraction: Double?"))
-        XCTAssertTrue(sources.overview.contains("let fill = strainMeasuredFraction"),
-                      "the main Overview tri-ring must retain measured partial Strain")
-        XCTAssertTrue(sources.overview.contains("ringFraction: strainMeasuredFraction"),
-                      "the Overview glance marker must retain measured partial Strain")
-        XCTAssertTrue(sources.overview.contains("? strainMeasuredFraction"),
-                      "the optional Daily Focus rail must retain measured partial Strain")
-        XCTAssertFalse(sources.overview.contains(
-            "metricIsPending(hero.strainValue) || strainIsPartial\n                                        ? nil"
-        ))
+        // 2026-08-28: the Overview tri-ring / glance-marker half of this pin
+        // scanned the unreachable Overview tree deleted that day. The rule —
+        // a partial day keeps its MEASURED arc and withholds only the target —
+        // stays pinned against the live Today ring above and the shared
+        // tri-ring component below.
         XCTAssertTrue(sources.triRing.contains("fraction: content.metric.fill"),
                       "the separate-ring layout must receive the same non-nil fill")
         XCTAssertTrue(sources.overview.contains("value: currentCycleStrainTruth.exactTrendValue"),

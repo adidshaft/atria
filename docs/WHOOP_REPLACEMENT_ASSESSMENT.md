@@ -1,7 +1,7 @@
 # Atria vs WHOOP — metric truth, patents, and replacement plan
 
 Status: analysis only. No product code was changed for this document.  
-Branch context: `codex/whoop-remaining-product-gaps`  
+Branch context: `dev`  
 Written: 2026-08-14  
 Scope: what Atria actually reads, how every hero metric is calculated, what public WHOOP patents/docs support, what is scientifically sound, what is product fiction, and what it would take to replace the official WHOOP app **without WHOOP cloud APIs**.
 
@@ -50,6 +50,19 @@ Do **not** change any of the following unless a proposed change is *already prov
 
 If a later section mentions motion, it is only as context for sleep/wake or activity *review* prompts. It is not a backlog item.
 
+### 2026-09-20 addendum — compact `0x33` is not type-43
+
+July Gate 4 still stands: **`0x3F` / Labs `0x51` / workout-epoch `6A` that opens type-43 R10 will kill this iPhone’s BLE link.** Do not reopen that lease.
+
+September physical work found a **different** live IMU packet: compact **`0x33` on stream-5**, 152-byte frames, sitting 30–60 s. It ran for hours on 2026-09-19 (build 192) without `CBErrorDomain: 6`, then died after a disconnect ~15:22 and did not resume through build 228 despite `6A` ACKs. That program is recorded in `docs/WHOOP4_PROTOCOL_FINDINGS.md` (2026-09-20). It does **not** license `3F`/`51`, mid-link stream-5 CCCD toggles, or inventing steps when catch-up is empty.
+
+Bind these to the hard rule above:
+
+- A type-24 echo of `6A` is not compact-on. Compact-on is a stream-5 `0x33` frame.
+- Stream-5 type `0x30`/`0x32` is events/console, not IMU.
+- `0x69` 1 Hz type-47 bank is the sealed coarse motion transport; it is not 100 Hz compact and is not a proven `0x34` dump on this firmware.
+- Tick model / gravity-cadence / planted-feet negatives remain frozen until a new held-out walk.
+
 ---
 
 ## 1. Executive verdict
@@ -75,15 +88,15 @@ The winning Atria is automatic where the signal is real (HR, HRV, RHR, cardio lo
 
 ## 2. What the strap actually emits vs what Atria uses
 
-WHOOP 4.0 (“Harvard”) hardware: green PPG (HR + beat timing), red/IR LEDs, thermistor, 3-axis IMU, almost certainly a gyro that is **not** in the public historical stream.
+WHOOP 4.0 (“Harvard”) hardware: green PPG (HR + beat timing), red/IR LEDs, thermistor, 3-axis IMU plus gyro on the **live compact `0x33` stream** (not in the public 1 Hz historical v24 row).
 
 GATT the app talks to:
 
 - Proprietary service `61080001-8d6d-82b8-614a-1c8cb0f8dcc6`
   - `61080002` command TX
-  - `61080003` command RX
-  - `61080004` live/data (not production history)
-  - `61080005` **production historical channel** (`0x2F` after `SEND_HISTORICAL_DATA 0x16`)
+  - `61080003` command RX (`0x24` ACKs; a `6A` echo is not IMU)
+  - `61080004` events (`0x30`); not production history
+  - `61080005` **data**: historical `0x2F` after `0x16`; compact IMU `0x33`; console `0x32`
   - `61080007` diagnostic / research
 - Standard Heart Rate `0x180D` / `0x2A37` — **primary live HR + RR**
 - Battery `0x180F` / `0x2A19` (notify is truth; first read can be stale `0x64`)
@@ -102,12 +115,14 @@ There is **no** standard step characteristic on this firmware.
 | Motion tick u16 | v24 @88–89 | Step *candidate* after the v1 tick model. **Do not reopen casually.** |
 | Battery / contact / clock | GATT + `0x30` / `GET_CLOCK 0x0B` | Quality gates. |
 | Proprietary live RR `0x28` | Compact realtime | Diagnostic only. Unreliable as primary. |
-| High-rate IMU / gyro (R10) | `0x2B` / `0x3F` / `0x6A` | Research. Kills this phone’s BLE link. |
+| High-rate IMU / gyro (R10) | `0x2B` / `0x3F` / workout-epoch `0x6A` | Research. Kills this phone’s BLE link (`CBErrorDomain: 6`). |
+| Compact live IMU | `0x33` on stream-5 / all-day `0x6A` | Product path when frames actually arrive. A `6A` ACK is not proof. Died ~15:22 2026-09-19 through build 228; see protocol findings 2026-09-20. |
+| Banked 1 Hz motion | `0x69` then `0x16` type-47/v24 | Sealed July transport (93/93 s). Quality drop vs compact. Not `0x34`. |
 | Optical words @64/@66 | Historical v12/v24 | **Not decoded.** Not red/IR. Not SpO2%. |
 | Skin ADC @68 | Historical v12/v24 | Relative raw only. **No °C.** |
 | Native vendor step total | — | **Does not exist** on this GATT map. |
 
-If a metric cannot be built from live/historical HR+RR, gravity-as-stillness, user logs, and the already-frozen step model, it is research, an estimate, or fiction.
+If a metric cannot be built from live/historical HR+RR, gravity-as-stillness, live compact `0x33` when it is actually flowing, user logs, and the already-frozen step model, it is research, an estimate, or fiction.
 
 ---
 
@@ -839,7 +854,7 @@ That sentence is more useful than a 41% ring, and you can generate it from data 
 
 These are the only items this assessment is willing to call product-positive **without** touching Gate 4.
 
-> **Status 2026-08-14** — items 2–10 landed on `codex/whoop-remaining-product-gaps`:
+> **Status 2026-08-14** — items 2–10 landed on `dev`:
 > 2+3 in `280c7a88` (heroes demoted; `validated` tier reserved, replay/display read "Personal baseline"),
 > 4 in `1e50cdb3` (`AtriaTodayMorningWhiteboardModel`), 5+6 in `563b59a2` (Recovery v4:
 > personal sleep baseline w/ population fallback tier-capped to `unverified`; robust 30-day
@@ -876,7 +891,7 @@ These are the only items this assessment is willing to call product-positive **w
 
 - Reopening Gate 4, tick scale, gravity-cadence, R10 lease, or phone-step authority.
 - Automatic named-sport classifier on IMU (GAP-11) before Gate 4 is sealed.
-- Live high-rate optical/IMU (`0x6C` / `0x6A` / `0x3F`) as a product path on this phone.
+- Live high-rate optical/IMU (`0x6C` / workout-epoch `0x6A` / `0x3F` / `0x51`) as a product path on this phone. All-day compact `0x33` is a separate packet; do not “fix” it by reopening type-43.
 - Importing WHOOP cloud Recovery/Strain/Sleep as “authoritative.”
 - Adding cycle phase, SpO2, or temp into Recovery as neutral fillers.
 - Building Smart Wake on HR-only stages.
@@ -945,7 +960,7 @@ Protect motion. Measure HRV. Freeze the night. Coach from the whiteboard.
 
 ## 13. Post-handoff remaining work (after items 2–10)
 
-Reviewed: 2026-08-14, on `codex/whoop-remaining-product-gaps` after:
+Reviewed: 2026-08-14, on `dev` after:
 
 | Item | Commit | What shipped |
 |---|---|---|

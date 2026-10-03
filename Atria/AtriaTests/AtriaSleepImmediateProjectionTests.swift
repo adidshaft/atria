@@ -433,6 +433,149 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         ).isEmpty)
     }
 
+    /// Device 2026-09-05: the owner marked 23:17–06:58 as Sleep. Measured
+    /// coverage was 4h 45m of 7h 41m (62%). The 80% ratio rejected it, so
+    /// the physiological day never moved and daytime HR overwrote the night's
+    /// resting 58. A substantial measured night is the user's sleep even
+    /// with a hole in the window.
+    func testUserAdjustedSubstantialNightIsMainSleepDespiteCoverageHole() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 4, hour: 23, minute: 17
+        )))
+        let measured: TimeInterval = 4 * 3_600 + 45 * 60
+        let span: TimeInterval = 7 * 3_600 + 41 * 60
+        let night = confirmedSleep(
+            start: start,
+            duration: measured,
+            span: span,
+            source: "user_adjusted_sleep",
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            restingHR: 58
+        )
+        XCTAssertLessThan(measured / span, AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction)
+        XCTAssertGreaterThanOrEqual(measured, AtriaPhysiologicalCycle.minimumMainSleepDuration)
+        XCTAssertTrue(SessionStore.confirmedSleepIsPhysiologicalMainSleep(night))
+
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        let metrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        )
+        let metric = try XCTUnwrap(metrics.first)
+        XCTAssertEqual(metric.restingHR, 58)
+        XCTAssertEqual(metric.sleepDuration, measured)
+
+        let now = start.addingTimeInterval(span + 6 * 3_600)
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        XCTAssertEqual(cycle.start, night.end)
+        XCTAssertEqual(cycle.boundaryKind, .mainSleep)
+    }
+
+    /// Device 2026-09-18: 23:21–07:01 user-adjusted night, 1h 25m of strap
+    /// coverage after evidence refresh. Below the 3h floor, but still the
+    /// overnight window the user named, with qualified HRV 40.
+    func testUserAdjustedHourCoveredOvernightWindowPublishesHRVDespiteCoverageHole() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 9, day: 14, hour: 23, minute: 21
+        )))
+        let span: TimeInterval = 27_648.603010058403
+        let measured: TimeInterval = 5_112.069190979004
+        let night = confirmedSleep(
+            start: start,
+            duration: measured,
+            span: span,
+            source: "user_adjusted_sleep",
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            restingHR: 67,
+            hrv: 40,
+            hrvWindowCount: 26,
+            id: "1789408260-1789435909-user_adjusted_sleep"
+        )
+        XCTAssertLessThan(measured, AtriaPhysiologicalCycle.minimumMainSleepDuration)
+        XCTAssertLessThan(measured / span, AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction)
+        XCTAssertGreaterThanOrEqual(measured, 60 * 60)
+        XCTAssertGreaterThanOrEqual(span, AtriaPhysiologicalCycle.minimumMainSleepDuration)
+        XCTAssertTrue(SessionStore.confirmedSleepIsPhysiologicalMainSleep(night))
+
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [night],
+            calendar: calendar
+        )
+        let projected = try XCTUnwrap(sleep.nights.first { $0.id == night.id })
+        XCTAssertTrue(SessionStore.confirmedSleepIsPhysiologicalMainSleep(projected))
+        XCTAssertFalse(projected.isNapEvidence)
+
+        let metrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        )
+        let metric = try XCTUnwrap(metrics.first)
+        XCTAssertEqual(metric.hrv, 40)
+        XCTAssertEqual(metric.restingHR, 67)
+        XCTAssertEqual(metric.sleepDuration, measured)
+
+        let rollups = SessionStore.makeDailyRollupStoreEntries(
+            metrics: metrics,
+            sessions: [],
+            calendar: calendar
+        )
+        let rollup = try XCTUnwrap(rollups.first)
+        XCTAssertEqual(
+            try XCTUnwrap(rollup.lnRMSSD),
+            log(40.0),
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(rollup.sleepSeconds, measured)
+        XCTAssertEqual(rollup.rhr, 67)
+
+        let now = start.addingTimeInterval(span + 6 * 3_600)
+        let week = AtriaTrendRange.week.periodInterval(containing: now, calendar: calendar)
+        let hrv = AtriaOvernightMetricChartSeries.nights(
+            from: rollups,
+            interval: week,
+            calendar: calendar,
+            day: \.day,
+            value: { entry in
+                guard let lnRMSSD = entry.lnRMSSD, (entry.sleepSeconds ?? 0) > 0 else { return nil }
+                return Double(Int(exp(lnRMSSD).rounded()))
+            }
+        ).map(\.value)
+        XCTAssertEqual(hrv, [40])
+    }
+
+    func testConfirmedSleepHRVRequalificationDoesNotEmptyReconcileOvernightRows() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sessions = try String(
+            contentsOf: testsDirectory.appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(
+            sessions.contains("scheduleDailyMetricPersist(reason: \"confirmed_sleep_hrv_requalification\")"),
+            "requalification must not drop daily metrics before remint"
+        )
+        XCTAssertTrue(sessions.contains("action=retain_overnight_until_remint"))
+        XCTAssertFalse(sessions.contains("action=recompute_from_verified_rr"))
+    }
+
     func testConfirmedShortRestCannotMintOrRepairCurrentMorningDailyMetric() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
@@ -1019,6 +1162,20 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         XCTAssertTrue(SessionStore.confirmedSleepMutationAffectsBaseline(
             previous: [original],
             next: [nap]
+        ))
+    }
+
+    func testConfirmedSleepHRVFillTriggersBaselineReplay() {
+        let original = confirmedSleep(hrv: nil, hrvWindowCount: 0)
+        let filled = confirmedSleep(hrv: 40, hrvWindowCount: 26)
+
+        XCTAssertTrue(SessionStore.confirmedSleepMutationAffectsBaseline(
+            previous: [original],
+            next: [filled]
+        ))
+        XCTAssertFalse(SessionStore.confirmedSleepMutationAffectsBaseline(
+            previous: [filled],
+            next: [filled]
         ))
     }
 

@@ -211,7 +211,7 @@ struct AtriaHomeContainer: View, Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
+struct AtriaWorkoutDetectionPrompt: Equatable {
     let heartRate: Int
     let strain: Double
     let samples: Int
@@ -219,6 +219,10 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     let restingHeartRate: Int
     let maxHeartRate: Int
     let motionSuggestedActivityType: AtriaWorkoutActivityType?
+    let episodeStart: Date?
+    let episodeEnd: Date?
+    /// Set when strap stepping, not heart rate, found the episode.
+    let walkStepsPerMinute: Int?
 
     init(heartRate: Int,
          strain: Double,
@@ -226,7 +230,11 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
          bpmOverRest: Int,
          restingHeartRate: Int,
          maxHeartRate: Int,
-         motionSuggestedActivityType: AtriaWorkoutActivityType? = nil) {
+         motionSuggestedActivityType: AtriaWorkoutActivityType? = nil,
+         episodeStart: Date? = nil,
+         episodeEnd: Date? = nil,
+         walkStepsPerMinute: Int? = nil) {
+        self.walkStepsPerMinute = walkStepsPerMinute
         self.heartRate = heartRate
         self.strain = strain
         self.samples = samples
@@ -234,6 +242,8 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
         self.restingHeartRate = restingHeartRate
         self.maxHeartRate = maxHeartRate
         self.motionSuggestedActivityType = motionSuggestedActivityType
+        self.episodeStart = episodeStart
+        self.episodeEnd = episodeEnd
     }
 
     var heartRateZone: Metrics.HeartRateZone? {
@@ -267,8 +277,16 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     }
 
     var isReviewReady: Bool {
-        samples >= AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples
+        if walkStepsPerMinute != nil {
+            return samples >= AtriaWalkBoutDetector.minimumBoutMinutes * 60
+        }
+        return samples >= AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples
             && bpmOverRest >= AtriaWorkoutPromptEvaluator.minimumBPMOverRest
+    }
+
+    /// A reconstructed or step-found episode that already ended.
+    func isFinished(now: Date = Date()) -> Bool {
+        episodeEnd.map { now.timeIntervalSince($0) > 120 } ?? false
     }
 
     var primaryTitle: String {
@@ -288,11 +306,11 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
             return "Atria is waiting for a steadier strap rise."
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm a"
-        let approximateStart = formatter.string(
-            from: Date().addingTimeInterval(-Double(samples))
-        )
-        var parts = ["Since ≈\(approximateStart)", "\(evidenceMinutes) min elevated"]
+        formatter.setLocalizedDateFormatFromTemplate("jmm") // follows the 12/24-hour setting
+        let startDate = episodeStart ?? Date().addingTimeInterval(-Double(samples))
+        let approximateStart = formatter.string(from: startDate)
+        var parts = ["Since ≈\(approximateStart)",
+                     walkStepsPerMinute.map { "\($0) steps/min" } ?? "\(evidenceMinutes) min elevated"]
         if let motionSuggestedActivityType {
             parts.append("looks like \(motionSuggestedActivityType.rawValue.lowercased())")
         }
@@ -330,7 +348,7 @@ fileprivate struct AtriaWorkoutDetectionPrompt: Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
+struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
     let id = UUID()
     let prompt: AtriaWorkoutDetectionPrompt
     let suggestedStart: Date
@@ -348,29 +366,13 @@ fileprivate struct AtriaWorkoutReviewDraft: Identifiable, Equatable {
     }
 }
 
-fileprivate struct AtriaWorkoutReviewResult: Equatable {
+struct AtriaWorkoutReviewResult: Equatable {
     let start: Date
     let end: Date
     let activityType: String
     let activitySubtype: String?
     let exerciseNames: [String]
     let strengthSets: [LoggedSet]
-}
-
-fileprivate enum AtriaWorkoutReviewStep: Int, CaseIterable {
-    case time
-    case type
-    case exercises
-    case summary
-
-    var title: String {
-        switch self {
-        case .time: return "Time"
-        case .type: return "Type"
-        case .exercises: return "Exercises"
-        case .summary: return "Save"
-        }
-    }
 }
 
 fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
@@ -382,6 +384,7 @@ fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
     let rrContinuityState: String
     let hasRecentHeartRateSample: Bool
     let officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+    let bluetoothStackWedgeSuspected: Bool
     let lastScanRequestedAt: Date?
     let lastScanMatchAt: Date?
     let pendingKnownReconnectStartedAt: Date?
@@ -396,6 +399,7 @@ fileprivate struct AtriaConnectionDiagnosisLiveTrigger: Equatable {
         rrContinuityState = state.rrContinuityState
         hasRecentHeartRateSample = state.hasRecentHeartRateSample
         officialAppCoexistenceRisk = state.officialAppCoexistenceRisk
+        bluetoothStackWedgeSuspected = state.bluetoothStackWedgeSuspected
         lastScanRequestedAt = state.lastScanRequestedAt
         lastScanMatchAt = state.lastScanMatchAt
         pendingKnownReconnectStartedAt = state.pendingKnownReconnectStartedAt
@@ -633,7 +637,7 @@ struct AtriaHomeView: View {
                 }
             }
             .padding(16)
-            .atriaGlassCard(cornerRadius: 24, emphasis: .strong)
+            .atriaGlassCard(emphasis: .strong)
             .accessibilityElement(children: .contain)
         }
 
@@ -716,29 +720,40 @@ struct AtriaHomeView: View {
                 return [Metric(title: "Duration",
                                value: Self.durationText(duration),
                                systemImage: "clock.fill")]
-            case .persisted(_, let snapshot, _):
+            case .persisted(let workout, let snapshot, _):
                 var result = [Metric(title: "Duration",
                                      value: snapshot.duration,
                                      systemImage: "clock.fill")]
-                if let distance = snapshot.distance {
-                    result.append(Metric(title: "Distance",
-                                         value: distance,
-                                         systemImage: "location.fill"))
-                }
-                if let steps = snapshot.steps, result.count < 3 {
-                    result.append(Metric(title: "Steps",
-                                         value: steps,
-                                         systemImage: "figure.walk"))
-                }
-                if let averageHeartRate = snapshot.averageHeartRate, result.count < 3 {
+                if let averageHeartRate = snapshot.averageHeartRate {
                     result.append(Metric(title: "Avg HR",
                                          value: averageHeartRate,
                                          systemImage: "heart.fill"))
+                }
+                let activity = AtriaWorkoutActivityType.resolved(
+                    activityType: workout.activityType,
+                    subtype: workout.activitySubtype,
+                    label: workout.label
+                )
+                if let steps = AtriaWorkoutSharePresentation.recapStepsText(
+                    count: workout.workoutSteps,
+                    isEstimated: workout.workoutStepsAreEstimated,
+                    capturedAt: workout.workoutStepsCapturedAt,
+                    workoutEndedAt: workout.end,
+                    activity: activity
+                ), result.count < 3 {
+                    result.append(Metric(title: "Steps",
+                                         value: steps,
+                                         systemImage: "figure.walk"))
                 }
                 if snapshot.strain != "--", result.count < 3 {
                     result.append(Metric(title: "Strain",
                                          value: snapshot.strain,
                                          systemImage: "flame.fill"))
+                }
+                if let distance = snapshot.distance, result.count < 3 {
+                    result.append(Metric(title: "Distance",
+                                         value: distance,
+                                         systemImage: "location.fill"))
                 }
                 if snapshot.peakHeartRate != "--", result.count < 3 {
                     result.append(Metric(title: "Peak HR",
@@ -831,19 +846,17 @@ struct AtriaHomeView: View {
 
         var title: String {
             switch self {
-            case .waitingForSettle:
-                return "Still watching effort"
-            case .possibleSignal:
-                return "Possible effort saved"
+            case .waitingForSettle, .possibleSignal:
+                return "Possible workout"
             }
         }
 
         var detail: String {
             switch self {
-            case .waitingForSettle(let bpmOverRest):
-                return "HR is still +\(bpmOverRest) over rest. Atria waits before asking."
+            case .waitingForSettle:
+                return "Still going. Atria will ask once your heart rate settles."
             case .possibleSignal:
-                return "Saved as possible effort. Atria will ask when the strap signal is stronger."
+                return "Kept for later. Atria will ask when there's enough heart rate to judge."
             }
         }
 
@@ -874,6 +887,8 @@ struct AtriaHomeView: View {
     @State private var selectedTab: HomeTab = Self.debugInitialHomeTab(
         arguments: ProcessInfo.processInfo.arguments
     )
+    @State private var pendingMetricDeepLink: AtriaMetricDeepLink?
+    @State private var pendingWorkoutDeepLink: AtriaWorkoutDeepLink?
     @State private var showRRImporter = false
     @State private var showHRImporter = false
     @State private var rrShareURL: URL?
@@ -909,7 +924,10 @@ struct AtriaHomeView: View {
     }
     @State private var showCustomizeSheet = false
     @State private var showWidgetProofSheet = false
+    @State private var showWidgetOvernightBoard = false
+    @State private var showLiveActivityLockPreview = false
     @State private var widgetProofSnapshot: WidgetSnapshot?
+    @State private var metricSheetDismissToken = 0
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var workoutPersistenceRevision: UInt64 = 0
     @State private var showWorkoutStartSheet = false
@@ -989,8 +1007,13 @@ struct AtriaHomeView: View {
     // object here would invalidate the entire tab shell on each 30-second
     // evidence refresh even when the visible prompt does not change.
     @State private var motionActivityMonitor = AtriaMotionActivityMonitor()
-    @State private var liveActivityCoordinator = AtriaLiveActivityCoordinator()
+    private var liveActivityCoordinator: AtriaLiveActivityCoordinator {
+        model.liveActivityCoordinator
+    }
+    @State private var livePresenceStartedAt: Date?
     @State private var aiCoachSettings = AtriaAICoachSettings.load()
+    @StateObject private var compactRingStore = AtriaTodayCompactRingStore()
+    @State private var workoutPromptStepSamples: [AtriaWorkoutPromptEvaluator.StepSample] = []
     @State private var aiCoachHasAPIKey = false
     @State private var batteryState: UIDevice.BatteryState = UIDevice.current.batteryState
     @State private var standByDismissedUntil: Date?
@@ -1000,6 +1023,8 @@ struct AtriaHomeView: View {
     @State private var lastLiveWidgetSnapshotAt: Date?
     @State private var lastLiveWidgetSnapshotHeartRate: Int?
     @State private var workoutDetectionPrompt: AtriaWorkoutDetectionPrompt?
+    @State private var heldSustainedWorkoutPrompt: AtriaWorkoutDetectionPrompt?
+    @State private var heldSustainedWorkoutPromptAt: Date?
     @State private var workoutPromptDismissedUntil: Date?
     @State private var workoutPromptSuppressedForCurrentEpisode = false
     @State private var workoutPromptRecoveryStartedAt: Date?
@@ -1016,7 +1041,7 @@ struct AtriaHomeView: View {
     // as persistentHeartRateBroadcastEnabled below — after that key was fixed,
     // this one became the next storm driver (validated with _printChanges).
     // This view is the only writer; saveHomeLayoutConfig persists explicitly.
-    @State private var homeLayoutConfigStorage = UserDefaults.standard.string(forKey: AtriaHomeLayoutConfig.storageKey) ?? ""
+    @State private var homeLayoutConfigStorage = AtriaHomeLayoutConfig.migratedStoredJSON()
     // Deliberately NOT @AppStorage: the key contains dots, and UserDefaults KVO
     // treats dotted keys as key paths, so the observation fires for writes to
     // ANY `atria.*` key. This app writes diagnostics keys constantly (including
@@ -1170,6 +1195,26 @@ struct AtriaHomeView: View {
     private var homePresentationModifiers: some View {
         homePublisherObservers
         .onOpenURL(perform: handleDeepLink)
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            drainPendingFileDeepLink()
+            // Device 2026-09-18: leftover pending=5 kept pausing 2A37 while
+            // Recovery Week was already foreground and the link stayed
+            // connected, so handleStatusChange(.connected) never re-fired.
+            requestPostWorkoutHistoryBackfillIfNeeded()
+            await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: "scene_active")
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, scenePhase == .active else { return }
+                drainPendingFileDeepLink()
+                await store.applyOvernightHRVRestoreReceiptsIfNeeded(reason: "scene_active_poll")
+            }
+        }
+        .task(id: pendingWorkoutDeepLink) {
+            guard let command = pendingWorkoutDeepLink else { return }
+            pendingWorkoutDeepLink = nil
+            await handleWorkoutDeepLink(command)
+        }
         .sheet(item: $sameDayMainSleepRoute) { choice in
             AtriaSameDayMainSleepSheet(choice: choice) { primaryID in
                 store.resolveSameDayMainSleepChoice(choice, primaryID: primaryID)
@@ -1227,6 +1272,7 @@ struct AtriaHomeView: View {
     }
 
     private func handleWorkoutSessionPresenceChange(_ ended: Bool) {
+        model.liveWorkoutIsActive = !ended
         if ended {
             workoutHeartRateBroadcastEnabled = false
             liveWorkoutTRIMPAccumulator.clear()
@@ -1306,7 +1352,8 @@ struct AtriaHomeView: View {
     }
 
     private func handleLiveActivityUpdate() {
-        guard workoutSession != nil else { return }
+        // All-day live presence, not only an explicit workout (device
+        // 2026-09-18 11:51: preview waited while Today already had 73 bpm).
         updateLiveActivity()
     }
 
@@ -1400,6 +1447,10 @@ struct AtriaHomeView: View {
                         journalContent
                     }
                 }
+                // The Daily Brief left Today (owner stack audit 2026-08-28);
+                // the pending check-in now knocks from the tab it lives in.
+                // Badge = questions remaining; hidden at zero.
+                .badge(journalCheckInBadgeCount)
 
                 Tab(HomeTab.plan.title,
                     systemImage: HomeTab.plan.systemImage,
@@ -1553,6 +1604,16 @@ struct AtriaHomeView: View {
             AtriaWidgetProofSheet(snapshot: widgetProofSnapshot,
                                   layoutConfig: currentHomeLayoutConfig)
         }
+        .sheet(isPresented: $showWidgetOvernightBoard) {
+            AtriaWidgetOvernightBoard()
+        }
+        .sheet(isPresented: $showLiveActivityLockPreview) {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                AtriaLiveActivityLockPreviewSheet(
+                    snapshot: liveActivityCoordinator.lastPublishedSnapshot
+                )
+            }
+        }
         .fullScreenCover(isPresented: liveWorkoutPresentationBinding) {
             if let session = workoutSession {
                 AtriaLiveWorkoutView(pulseStore: model.pulseLiveStore,
@@ -1573,6 +1634,7 @@ struct AtriaHomeView: View {
                                      lowerTargetZone: session.lowerTargetZone,
                                      upperTargetZone: session.upperTargetZone,
                                      activityType: workoutActivityTypeBinding,
+                                     segments: session.segments,
                                      targetChoice: workoutTargetChoiceBinding,
                                      strengthHistory: liveWorkoutStrengthHistory,
                                      loggedSets: $liveWorkoutLoggedSets,
@@ -1592,9 +1654,11 @@ struct AtriaHomeView: View {
         }
         .interactiveDismissDisabled(isSecuringWorkoutStart)
         .sheet(item: $workoutReviewDraft) { draft in
-            AtriaWorkoutReviewFlow(draft: draft) {
-                workoutReviewDraft = nil
-            } onSave: { @MainActor result in
+            AtriaWorkoutReviewSheet(draft: draft,
+                                    loadHeartRate: { interval in
+                                        await loadWorkoutReviewHeartRate(interval)
+                                    },
+                                    onCancel: { workoutReviewDraft = nil }) { @MainActor result in
                 await saveWorkoutReview(
                     result,
                     settlingCandidateWindow: (draft.suggestedStart, draft.suggestedEnd)
@@ -1774,6 +1838,9 @@ struct AtriaHomeView: View {
                                   return store.sessionBackupStatus()
                               },
                               onForgetStrap: { ble.forgetSavedStrap(reason: "user_settings") },
+                              flushBoard: ble.leftoverFlushBoard,
+                              onFlushLeftover: { ble.flushLeftoverMotion() },
+                              onRestoreHeartRate: { ble.restoreHeartRateAfterFlush() },
                               researchValidationContent: developerModeEnabled ? {
                                   AnyView(researchValidationContent)
                               } : nil,
@@ -1817,6 +1884,19 @@ struct AtriaHomeView: View {
             hasUnlockedPrimaryContent = true
             return
         }
+        if let metricLink = AtriaMetricDeepLink.parse(url) {
+            dismissPresentedWorkoutChrome()
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
+            selectedTab = .overview
+            pendingMetricDeepLink = metricLink
+            hasUnlockedPrimaryContent = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=metric_%@ range=%@ url=%@",
+                          metricLink.metric.rawValue,
+                          metricLink.range.rawValue,
+                          url.absoluteString)
+            return
+        }
         if Self.isSleepReviewDeepLink(url) {
             // Land on Overview AND force-present the review/edit sheet for the
             // latest reviewable night, so a "Review your sleep" notification tap
@@ -1841,7 +1921,66 @@ struct AtriaHomeView: View {
             }
             return
         }
+        if Self.isLiveActivityLockPreviewDeepLink(url) {
+            dismissPresentedWorkoutChrome()
+            liveWorkoutMinimized = true
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
+            hasUnlockedPrimaryContent = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showLiveActivityLockPreview = true
+            }
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=live_activity url=%@",
+                          url.absoluteString)
+            return
+        }
+        if let workoutLink = AtriaWorkoutDeepLink.parse(url) {
+            if workoutLink.action != .end {
+                dismissPresentedWorkoutChrome()
+            }
+            pendingWorkoutDeepLink = workoutLink
+            hasUnlockedPrimaryContent = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=workout_%@ type=%@ url=%@",
+                          workoutLink.action.rawValue,
+                          workoutLink.activityType.rawValue,
+                          url.absoluteString)
+            return
+        }
+        if Self.isWidgetOvernightBoardDeepLink(url) {
+            dismissPresentedWorkoutChrome()
+            selectedTab = .overview
+            hasUnlockedPrimaryContent = true
+            pendingMetricDeepLink = nil
+            metricSheetDismissToken += 1
+            showWidgetProofSheet = false
+            // Do not republish. The board must print the payload WidgetKit
+            // already has, and a Sleep sheet already on screen has to dismiss
+            // before this sheet can take the presentation slot.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showWidgetOvernightBoard = true
+            }
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=widget_board url=%@",
+                          url.absoluteString)
+            return
+        }
+        if Self.isWidgetProofDeepLink(url) {
+            dismissPresentedWorkoutChrome()
+            selectedTab = .overview
+            hasUnlockedPrimaryContent = true
+            widgetProofSnapshot = WidgetSnapshotPublisher.publish(store: store,
+                                                                  ble: ble,
+                                                                  reason: "deeplink_widget_proof")
+            showWidgetProofSheet = true
+            AtriaDebugLog("ATRIADBG deeplink status=handled target=widget_proof url=%@",
+                          url.absoluteString)
+            return
+        }
         guard let tab = HomeTab.deepLinkDestination(for: url) else { return }
+        dismissPresentedWorkoutChrome()
+        showWidgetOvernightBoard = false
+        showWidgetProofSheet = false
 #if DEBUG
         if url.absoluteString.lowercased().contains("heart-rate-timeline") {
             UserDefaults.standard.set(true, forKey: AtriaHealthScreen.debugOpenHeartRateTimelineKey)
@@ -1866,7 +2005,48 @@ struct AtriaHomeView: View {
                       url.absoluteString)
     }
 
+    private func drainPendingFileDeepLink() {
+        guard let url = AtriaPendingDeepLinkFile.consume() else { return }
+        handleDeepLink(url)
+    }
+
+    private func dismissPresentedWorkoutChrome() {
+        workoutEndNotice = nil
+        workoutReviewDraft = nil
+        completedWorkoutShareReceipt = nil
+        showWorkoutStartSheet = false
+        showLiveActivityLockPreview = false
+    }
+
+    private func handleWorkoutDeepLink(_ command: AtriaWorkoutDeepLink) async {
+        switch command.action {
+        case .start:
+            dismissPresentedWorkoutChrome()
+            showWidgetOvernightBoard = false
+            showWidgetProofSheet = false
+            liveWorkoutLoggedSets = []
+            liveWorkoutExcludedIntervals = []
+            liveWorkoutPauseStartedAt = nil
+            liveWorkoutMinimized = false
+            showLiveActivityLockPreview = false
+            _ = await beginWorkoutSession(configuration: .init(activityType: command.activityType))
+        case .end:
+            showLiveActivityLockPreview = false
+            guard let session = workoutSession else { return }
+            _ = await endWorkoutSession(startedAt: session.start)
+        case .dismiss:
+            dismissPresentedWorkoutChrome()
+        case .minimize:
+            liveWorkoutMinimized = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                showLiveActivityLockPreview = true
+            }
+        }
+    }
+
     private func drainPendingNotificationDeepLink() {
+        drainPendingFileDeepLink()
         guard let url = AtriaNotificationDeepLinkInbox.shared.consume(
             sceneIsActive: scenePhase == .active
         ) else { return }
@@ -1912,7 +2092,30 @@ struct AtriaHomeView: View {
         guard url.scheme?.lowercased() == "atria" else { return false }
         let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
             .map { $0.lowercased() }
-        return pieces.contains("sleep-review") || pieces.contains("sleep")
+        // `atria://metric/sleep` is the Sleep trend sheet, not the review flow.
+        if pieces.first == "metric" { return false }
+        return pieces.contains("sleep-review") || pieces.first == "sleep"
+    }
+
+    private static func isWidgetProofDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "widget-proof"
+    }
+
+    private static func isLiveActivityLockPreviewDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "live-activity"
+    }
+
+    private static func isWidgetOvernightBoardDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "atria" else { return false }
+        let pieces = ([url.host].compactMap { $0 } + url.pathComponents.filter { $0 != "/" })
+            .map { $0.lowercased() }
+        return pieces.first == "widget-board"
     }
 
     private func postDebugNotificationDeepLinkIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -1987,7 +2190,13 @@ struct AtriaHomeView: View {
         Binding {
             workoutSession?.activityType ?? .other
         } set: { newType in
-            workoutSession?.activityType = newType
+            guard var session = workoutSession,
+                  session.activityType != newType else { return }
+            // Timestamped, user-declared switch: the first switch seeds the
+            // ORIGINAL type at session start, then the new type is appended
+            // at Date(). One session, one start, one TRIMP accumulator.
+            session.recordActivitySwitch(to: newType, at: Date())
+            workoutSession = session
             persistPendingWorkoutProgress()
             if let session = workoutSession, newType.supportsRouteRecording {
                 workoutRouteRecorder.start(activityType: newType, startedAt: session.start)
@@ -2289,6 +2498,7 @@ struct AtriaHomeView: View {
             return false
         }
         workoutSession = session
+        AtriaStrengthSetWindow.live.cancel()
         AtriaDebugLog("ATRIADBG live_workout_start_latency phase=ui_session_published elapsed_ms=%d",
                       Int(((ProcessInfo.processInfo.systemUptime - requestedUptime) * 1_000).rounded()))
         synchronizeWorkoutZoneHaptics(workoutZoneHapticConfiguration)
@@ -2343,7 +2553,8 @@ struct AtriaHomeView: View {
                                   stepAccountingIsComplete: session.stepAccountingIsComplete,
                                   startingDayStrain: session.startingDayStrain,
                                   calculationContext: session.calculationContext,
-                                  persistenceRevision: workoutPersistenceRevision)
+                                  persistenceRevision: workoutPersistenceRevision,
+                                  segments: session.segments)
         AtriaPendingWorkoutIntentStore.shared.enqueueProgress(intent) { saved in
             guard !saved else { return }
             let current = AtriaPendingWorkoutIntent.load()
@@ -2478,6 +2689,7 @@ struct AtriaHomeView: View {
         session.pauseStartedStepCount = pending.pauseStartedStepCount
         session.stepAccountingIsComplete = pending.stepAccountingIsComplete
         session.calculationContext = pending.calculationContext ?? session.calculationContext
+        session.segments = pending.segments ?? session.segments
         workoutSession = session
         liveWorkoutLoggedSets = pending.strengthSets
         liveWorkoutExcludedIntervals = pending.excludedIntervals
@@ -2515,7 +2727,8 @@ struct AtriaHomeView: View {
                                               pauseStartedStepCount: pending.pauseStartedStepCount,
                                               stepAccountingIsComplete: pending.stepAccountingIsComplete,
                                               startingDayStrain: pending.startingDayStrain,
-                                              calculationContext: pending.calculationContext)
+                                              calculationContext: pending.calculationContext,
+                                              segments: pending.segments)
         workoutPersistenceRevision = pending.persistenceRevision
         // Restored open workout: re-adopt the persisted motion ownership
         // lease (idempotent for the same start; a repeated lifecycle callback
@@ -2547,6 +2760,16 @@ struct AtriaHomeView: View {
         let rest = calculationContext?.restingHeartRate
             ?? store.baseline.restingInt
             ?? model.heroStore.state.restingHeartRate
+        // Recovery is also a finalize: with a switch timeline present the
+        // scalar resolves to the dominant declared segment, exactly as the
+        // in-app End path does. No timeline -> the checkpointed scalar.
+        let recoveredActivityType = WorkoutSegment.dominantActivityType(
+            segments: pending.segments,
+            sessionStart: pending.startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: pending.finalizedExcludedIntervals()
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? pending.resolvedActivityType
         if let confirmed = await store.confirmWorkoutWindowForUIAsync(start: pending.startedAt,
                                                                 end: endedAt,
                                                                 rest: rest,
@@ -2554,9 +2777,10 @@ struct AtriaHomeView: View {
                                                                     ?? store.profile.maxHR,
                                                                 source: "pending_live_workout_recovery",
                                                                 preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                                activityType: pending.resolvedActivityType == .other ? nil : pending.activityType,
+                                                                activityType: recoveredActivityType == .other ? nil : recoveredActivityType.rawValue,
                                                                 strengthSets: pending.strengthSets,
                                                                 excludedIntervals: pending.finalizedExcludedIntervals(),
+                                                                segments: pending.segments,
                                                                 workoutSteps: pending.completedStepCount,
                                                                 workoutStepsAreEstimated: pending.completedStepsAreEstimated,
                                                                 workoutStepsCapturedAt: pending.completedStepsCapturedAt) {
@@ -2846,7 +3070,7 @@ struct AtriaHomeView: View {
         let requestedOverviewSegment = Self.debugLaunchOverviewSegmentArgument(arguments: arguments)
         let metricDetailFixtures = ["recovery-detail", "recovery-detail-nutrition", "hrv-detail", "rhr-detail", "respiratory-detail", "sleep-detail", "strain-detail"]
         let shouldOpenMetricDetailFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { metricDetailFixtures.contains($0) } ?? false
-        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights"]
+        let overviewContentFixtures = ["sleep-plan-bedtime", "north-star-highlights", "north-star-warnings"]
         let shouldShowOverviewFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { overviewContentFixtures.contains($0) } ?? false
         let shouldOpenShareSheet = arguments.contains("--atria-open-share-sheet")
         let shouldOpenCustomizeSheet = arguments.contains("--atria-open-customize")
@@ -2858,6 +3082,9 @@ struct AtriaHomeView: View {
         let shouldSeedStrengthWorkoutProof = arguments.contains("--atria-seed-strength-workout-proof")
         let shouldOpenHeartRateTimeline = Self.debugLaunchFixtureValue(arguments: arguments) == "heart-rate-timeline"
         let shouldShowConnectivityPillFixture = Self.debugLaunchFixtureValue(arguments: arguments) == "refresh-connectivity-pill"
+        // Night timeline + morning prompt fixtures (visual pass 2026-09-24).
+        let shouldShowNightTimelineFixture = ["night-timeline", "night-interruptions", "night-timeline-no-motion"]
+            .contains(Self.debugLaunchFixtureValue(arguments: arguments) ?? "")
         guard requestedScreen != "overview"
                 || requestedOverviewSegment != nil
                 || shouldOpenMetricDetailFixture
@@ -2872,7 +3099,8 @@ struct AtriaHomeView: View {
                 || shouldSeedCustomLayout
                 || shouldSeedStrengthWorkoutProof
                 || shouldOpenHeartRateTimeline
-                || shouldShowConnectivityPillFixture else {
+                || shouldShowConnectivityPillFixture
+                || shouldShowNightTimelineFixture else {
             return
         }
 
@@ -2907,7 +3135,7 @@ struct AtriaHomeView: View {
         if shouldOpenMetricDetailFixture {
             debugShowsOverviewSegmentContent = true
         }
-        if shouldShowOverviewFixture {
+        if shouldShowOverviewFixture || shouldShowNightTimelineFixture {
             debugShowsOverviewSegmentContent = true
         }
         if shouldOpenShareSheet {
@@ -3296,11 +3524,42 @@ struct AtriaHomeView: View {
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
         let pulse = model.pulseLiveStore.state
-        let heartRate = pulse.heartRate
-        // The pulse projection already resolved the best available resting-HR
-        // authority. Reusing it prevents a baseline-nil Live Activity from
-        // silently falling back to 60 bpm and disagreeing with Vitals.
-        let zone = pulse.heartRateZone
+        // Pulse zeros after `liveHeartRateFreshnessInterval`, on contact loss, and
+        // across the workout session-boundary reset. ActivityKit still needs
+        // the last real BPM/zone so the Lock Screen does not go `--`.
+        let lastKnownSample = ble.session.last
+        let heartRate: Int
+        let zone: Metrics.HeartRateZone?
+        // PulseLive freezes while inactive, so a post-install background tick
+        // kept a stale 51 while BLE session.last was already ~76.
+        let resolvedHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
+            heartRate: ble.heartRate,
+            sensorHasContact: ble.hasContact,
+            status: ble.status,
+            latestSampleHeartRate: lastKnownSample?.bpm,
+            latestSampleAt: lastKnownSample?.t,
+            now: now
+        )
+        let heldHeartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: resolvedHeartRate,
+            lastKnown: lastKnownSample?.bpm ?? 0,
+            retained: ble.lastKnownDisplayHeartRate
+        )
+        if heldHeartRate > 0 {
+            heartRate = heldHeartRate
+            if pulse.heartRate == heldHeartRate, pulse.heartRate > 0 {
+                zone = pulse.heartRateZone
+            } else if let rest = store.baseline.restingInt {
+                zone = Metrics.heartRateZone(bpm: heldHeartRate,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+            } else {
+                zone = pulse.heartRateZone
+            }
+        } else {
+            heartRate = 0
+            zone = pulse.heartRateZone
+        }
         let session = workoutSession
         let activityType = session?.activityType ?? .other
         let loadExclusions = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(
@@ -3334,10 +3593,29 @@ struct AtriaHomeView: View {
                 now: now
             )
         } ?? 0
+        let status = ble.status
+        let linkUsable = AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+            status: status,
+            heartRate: heldHeartRate
+        )
+        let workoutActive = session != nil
+        let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+            workoutActive: workoutActive,
+            linkUsable: linkUsable,
+            heldHeartRate: heldHeartRate,
+            presenceAlreadyStarted: livePresenceStartedAt != nil
+                || liveActivityCoordinator.activityKitCount > 0
+        )
+        if workoutActive || !livePresence {
+            livePresenceStartedAt = nil
+        } else if livePresenceStartedAt == nil {
+            livePresenceStartedAt = now
+        }
+        let presenceStartedAt = session?.start ?? livePresenceStartedAt ?? now
         liveActivityCoordinator.update(AtriaLiveActivityCoordinator.Snapshot(
-            isRecording: session != nil,
+            isRecording: workoutActive || livePresence,
             heartRate: heartRate,
-            heartRateCapturedAt: ble.lastAcceptedHeartRateAt,
+            heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? lastKnownSample?.t,
             sensorHasContact: pulse.sensorHasContact,
             heartRateAvailability: heartRateAvailability,
             strain: model.heroStore.state.strain,
@@ -3347,9 +3625,11 @@ struct AtriaHomeView: View {
             batteryAvailability: batteryAvailability,
             batteryChargeStatus: model.coreLiveStore.state.batteryChargeStatus,
             readingCount: model.coreLiveStore.state.sessionSampleCount,
-            startedAt: session?.start ?? Date(),
-            activityName: activityType == .other ? "Workout" : activityType.rawValue,
-            activitySystemImage: activityType.icon,
+            startedAt: presenceStartedAt,
+            activityName: workoutActive
+                ? (activityType == .other ? "Workout" : activityType.rawValue)
+                : "Live",
+            activitySystemImage: workoutActive ? activityType.icon : "heart.fill",
             heartRateZoneIndex: zone?.index,
             heartRateZoneName: zone?.name,
             // Preserve the last source value and source clock in ActivityKit;
@@ -3383,17 +3663,30 @@ struct AtriaHomeView: View {
                 ? metricProjection.activeCalories : nil,
             targetLowerHeartRateZone: session?.lowerTargetZone,
             targetUpperHeartRateZone: session?.upperTargetZone,
-            isPaused: liveWorkoutPauseStartedAt != nil,
-            elapsedDuration: movingDuration
+            isPaused: workoutActive && liveWorkoutPauseStartedAt != nil,
+            elapsedDuration: workoutActive ? movingDuration : 0,
+            showsWorkoutControls: workoutActive
         ), forceActivityWrite: forceActivityWrite)
+        model.publishDiagnosisReport(
+            reason: "live_activity",
+            liveActivity: liveActivityCoordinator.lastPublishedSnapshot,
+            activityKitCount: liveActivityCoordinator.activityKitCount
+        )
     }
 
     private func liveWorkoutHeartRateAvailability(now: Date) -> AtriaLiveSensorAvailability {
         let pulse = model.pulseLiveStore.state
         let core = model.coreLiveStore.state
+        // lastAcceptedHeartRateAt can be nil across a session-boundary reset
+        // while session.last still has a fresh BPM (device 2026-09-17:
+        // diagnosis_hr_age missing, island empty at workout start).
+        let capturedAt = AtriaHomeModel.latestHeartRateCapturedAt(
+            lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+            latestSampleAt: ble.session.last?.t
+        )
         if pulse.hasPulseSignal,
            pulse.sensorHasContact,
-           let capturedAt = ble.lastAcceptedHeartRateAt,
+           let capturedAt,
            capturedAt <= now.addingTimeInterval(5),
            now.timeIntervalSince(capturedAt) <= AtriaHomeModel.liveHeartRateFreshnessInterval {
             return .live
@@ -3403,7 +3696,7 @@ struct AtriaHomeView: View {
             || core.isInRecentLiveRecovery(now: now) {
             return .reconnecting
         }
-        return ble.lastAcceptedHeartRateAt == nil ? .unavailable : .stale
+        return capturedAt == nil ? .unavailable : .stale
     }
 
     private func makeLiveWorkoutMetricProjection(
@@ -3464,7 +3757,12 @@ struct AtriaHomeView: View {
                 $0 >= session.start ? $0 : nil
             },
             hasSensorEvidence: sensorMetrics.hasEvidence,
-            loadIsComplete: sensorMetrics.isComplete
+            loadIsComplete: sensorMetrics.isComplete,
+            lastKnownHeartRate: AtriaWorkoutHeartRateHold.displayed(
+                live: model.pulseLiveStore.state.heartRate,
+                lastKnown: ble.session.last?.bpm ?? 0,
+                retained: ble.lastKnownDisplayHeartRate
+            )
         )
     }
 
@@ -3490,7 +3788,6 @@ struct AtriaHomeView: View {
     }
 
     private func publishLiveWidgetSnapshotIfNeeded(now: Date = Date()) {
-        guard scenePhase == .active else { return }
         let heartRate = model.pulseLiveStore.state.heartRate
         if heartRate <= 0 {
             // A zero is a meaningful transition: publish once so widgets clear
@@ -3498,7 +3795,7 @@ struct AtriaHomeView: View {
             guard lastLiveWidgetSnapshotHeartRate != nil else { return }
             lastLiveWidgetSnapshotAt = now
             lastLiveWidgetSnapshotHeartRate = nil
-            scheduleWidgetSnapshot(reason: "live_signal_cleared")
+            publishLiveWidgetSnapshot(reason: "live_signal_cleared")
             return
         }
         let elapsed = lastLiveWidgetSnapshotAt.map { now.timeIntervalSince($0) }
@@ -3513,7 +3810,20 @@ struct AtriaHomeView: View {
         }
         lastLiveWidgetSnapshotAt = now
         lastLiveWidgetSnapshotHeartRate = heartRate
-        scheduleWidgetSnapshot(reason: cadenceReady ? "live_throttled" : "live_bpm_delta")
+        publishLiveWidgetSnapshot(
+            reason: cadenceReady ? "live_throttled" : "live_bpm_delta"
+        )
+    }
+
+    /// Foreground rebuilds the full snapshot. Background used to no-op, so
+    /// Home widgets froze on the last BPM until the next open (goal Live
+    /// Activity/widgets current). Patch live sensors onto the last payload.
+    private func publishLiveWidgetSnapshot(reason: String) {
+        if scenePhase == .active {
+            scheduleWidgetSnapshot(reason: reason)
+        } else {
+            scheduleLiveSensorWidgetPatch(reason: "live_hr_background")
+        }
     }
 
     private func scheduleWidgetSnapshot(reason: String) {
@@ -3526,9 +3836,13 @@ struct AtriaHomeView: View {
             // Stable dashboard authority (sleep, Recovery, RHR, HRV, layout)
             // must still rebuild during a workout. Laundering it through the
             // live-only patch leaves those fields stale until the workout ends.
-            WidgetSnapshotPublisher.schedulePublish(store: store,
-                                                     ble: ble,
-                                                     reason: reason)
+            WidgetSnapshotPublisher.schedulePublish(
+                store: store,
+                ble: ble,
+                reason: reason,
+                presentedDayStrain: model.heroStore.state.strain,
+                presentedDayStrainDetail: model.heroStore.state.strainDetail
+            )
             return
         }
         scheduleLiveSensorWidgetPatch(reason: reason)
@@ -3541,19 +3855,31 @@ struct AtriaHomeView: View {
     ) {
         let core = model.coreLiveStore.state
         let pulse = model.pulseLiveStore.state
+        let lastKnownHeartRate = ble.session.last.flatMap { $0.bpm > 0 ? $0.bpm : nil }
         let liveHeartRate = pulse.sensorHasContact && pulse.heartRate > 0
             ? pulse.heartRate
-            : nil
+            : lastKnownHeartRate
+        let liveHeartRateCapturedAt = liveHeartRate == nil
+            ? nil
+            : (ble.lastAcceptedHeartRateAt ?? ble.session.last?.t)
+        let liveZone: Metrics.HeartRateZone?
+        if pulse.heartRate > 0 {
+            liveZone = pulse.heartRateZone
+        } else if let bpm = lastKnownHeartRate, let rest = store.baseline.restingInt {
+            liveZone = Metrics.heartRateZone(bpm: bpm,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+        } else {
+            liveZone = pulse.heartRateZone
+        }
         let dailySteps = core.dailyStepPresentation
         let steps = dailySteps.count
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
             heartRate: liveHeartRate,
-            heartRateCapturedAt: liveHeartRate == nil ? nil : ble.lastAcceptedHeartRateAt,
-            heartRateZoneIndex: liveHeartRate == nil
-                ? nil : pulse.heartRateZone?.index,
-            heartRateZoneName: liveHeartRate == nil
-                ? nil : pulse.heartRateZone?.name,
+            heartRateCapturedAt: liveHeartRateCapturedAt,
+            heartRateZoneIndex: liveHeartRate == nil ? nil : liveZone?.index,
+            heartRateZoneName: liveHeartRate == nil ? nil : liveZone?.name,
             steps: steps,
             stepsAreEstimated: steps != nil
                 && (!dailySteps.isValidated
@@ -3596,6 +3922,21 @@ struct AtriaHomeView: View {
         )
     }
 
+    /// The strap's live step count while its motion is fresh; motion gaps
+    /// clear it so a cadence is never computed across missing data.
+    private func recordWorkoutPromptStepSample(now: Date) {
+        let fresh = ble.liveStrapMotionCapturedAt.map { now.timeIntervalSince($0) <= 15 } ?? false
+        guard fresh else {
+            if !workoutPromptStepSamples.isEmpty { workoutPromptStepSamples.removeAll() }
+            return
+        }
+        let steps = model.coreLiveStore.state.strapStepResearchCount
+        if let last = workoutPromptStepSamples.last, now.timeIntervalSince(last.t) < 10 { return }
+        workoutPromptStepSamples.append(.init(t: now, steps: steps))
+        let cutoff = now.addingTimeInterval(-15 * 60)
+        workoutPromptStepSamples.removeAll { $0.t < cutoff }
+    }
+
     private func updateWorkoutDetectionPrompt(now: Date = Date()) {
         guard debugWorkoutDetectionPrompt == nil else {
             setWorkoutDetectionPromptIfChanged(nil)
@@ -3629,6 +3970,8 @@ struct AtriaHomeView: View {
         }
         if workoutPromptSuppressedForCurrentEpisode
             || AtriaWorkoutPromptEvaluator.isInCooldown(dismissedUntil: workoutPromptDismissedUntil, now: now) {
+            heldSustainedWorkoutPrompt = nil
+            heldSustainedWorkoutPromptAt = nil
             setWorkoutDetectionPromptIfChanged(nil)
             return
         }
@@ -3636,11 +3979,23 @@ struct AtriaHomeView: View {
         // the workout prompt never disagrees with the number on the main screen.
         let strain = model.heroStore.state.strain
         let bpmOverRest = max(0, heartRate - rest)
+        let recoveredForFiveMinutes = heartRate - rest < 15
+            && workoutPromptRecoveryStartedAt.map { now.timeIntervalSince($0) >= 5 * 60 } == true
         let motionDecision = AtriaMotionActivityGate.evaluate(motionActivityMonitor.context,
                                                               now: now)
         motionActivityMonitor.recordGateDecision(motionDecision, now: now)
-        guard !motionDecision.vetoesWorkoutPrompt else {
-            setWorkoutDetectionPromptIfChanged(nil)
+        if motionDecision.vetoesWorkoutPrompt {
+            if AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+                liveShouldPrompt: false,
+                lastPromptWasSustained: heldSustainedWorkoutPrompt != nil,
+                recoveredForFiveMinutes: recoveredForFiveMinutes,
+                lastQualifiedAt: heldSustainedWorkoutPromptAt,
+                now: now
+            ), let held = heldSustainedWorkoutPrompt {
+                setWorkoutDetectionPromptIfChanged(held)
+            } else {
+                setWorkoutDetectionPromptIfChanged(nil)
+            }
             return
         }
         let evaluation = AtriaWorkoutPromptEvaluator.evaluate(samples: ble.session,
@@ -3651,16 +4006,78 @@ struct AtriaHomeView: View {
                                                              signalQuality: ble.workoutPromptSignalQuality(now: now),
                                                              now: now)
         let detectedSamples = max(evaluation.longestElevatedBout, evaluation.longestZoneBout)
-        let nextPrompt = evaluation.shouldPrompt
-            ? AtriaWorkoutDetectionPrompt(heartRate: heartRate,
+        recordWorkoutPromptStepSample(now: now)
+        let boutStart = now.addingTimeInterval(-TimeInterval(max(evaluation.longestElevatedBout, 1)))
+        let stepCadence = AtriaWorkoutPromptEvaluator.strapStepCadence(samples: workoutPromptStepSamples,
+                                                                       since: boutStart,
+                                                                       now: now)
+        let heartRateOnlyBlocked = evaluation.shouldPrompt
+            && !evaluation.zonePath
+            && !AtriaWorkoutPromptEvaluator.strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: stepCadence)
+        if heartRateOnlyBlocked, workoutDetectionPrompt == nil {
+            AtriaDebugLog("ATRIADBG workout_prompt status=suppressed reason=hr_without_steps steps_per_min=%.1f elevated_s=%d",
+                          stepCadence ?? -1, evaluation.longestElevatedBout)
+        }
+        if evaluation.shouldPrompt, !heartRateOnlyBlocked {
+            let episodeEnd = now
+            let episodeStart = now.addingTimeInterval(-TimeInterval(detectedSamples))
+            let nextPrompt = AtriaWorkoutDetectionPrompt(heartRate: heartRate,
                                           strain: strain,
                                           samples: detectedSamples,
                                           bpmOverRest: bpmOverRest,
                                           restingHeartRate: rest,
                                           maxHeartRate: store.profile.maxHR,
-                                          motionSuggestedActivityType: motionDecision.suggestedActivityType)
-            : nil
-        setWorkoutDetectionPromptIfChanged(nextPrompt)
+                                          motionSuggestedActivityType: motionDecision.suggestedActivityType,
+                                          episodeStart: episodeStart,
+                                          episodeEnd: episodeEnd)
+            if evaluation.sustainedPath {
+                heldSustainedWorkoutPrompt = nextPrompt
+                heldSustainedWorkoutPromptAt = now
+            }
+            setWorkoutDetectionPromptIfChanged(nextPrompt)
+            return
+        }
+        if let walkPrompt = walkDetectionPrompt(strain: strain,
+                                                heartRate: heartRate,
+                                                rest: rest,
+                                                now: now) {
+            setWorkoutDetectionPromptIfChanged(walkPrompt)
+            return
+        }
+        if AtriaWorkoutPromptEvaluator.shouldHoldCompletedSustainedReview(
+            liveShouldPrompt: evaluation.shouldPrompt,
+            lastPromptWasSustained: heldSustainedWorkoutPrompt != nil,
+            recoveredForFiveMinutes: recoveredForFiveMinutes,
+            lastQualifiedAt: heldSustainedWorkoutPromptAt,
+            now: now
+        ), let held = heldSustainedWorkoutPrompt {
+            setWorkoutDetectionPromptIfChanged(held)
+            return
+        }
+        if recoveredForFiveMinutes {
+            heldSustainedWorkoutPrompt = nil
+            heldSustainedWorkoutPromptAt = nil
+        }
+        if let bout = AtriaWorkoutPromptEvaluator.lastCompletedSustainedBout(
+            samples: workoutPromptHeartSamples(now: now),
+            restingHeartRate: rest,
+            now: now
+        ), !completedSustainedBoutOverlapsConfirmedWorkout(bout) {
+            let reconstructed = AtriaWorkoutDetectionPrompt(
+                heartRate: bout.averageBPM,
+                strain: strain,
+                samples: bout.durationSeconds,
+                bpmOverRest: max(0, bout.averageBPM - rest),
+                restingHeartRate: rest,
+                maxHeartRate: store.profile.maxHR,
+                motionSuggestedActivityType: motionDecision.suggestedActivityType,
+                episodeStart: bout.start,
+                episodeEnd: bout.end
+            )
+            setWorkoutDetectionPromptIfChanged(reconstructed)
+            return
+        }
+        setWorkoutDetectionPromptIfChanged(nil)
     }
 
     private func setWorkoutDetectionPromptIfChanged(_ nextPrompt: AtriaWorkoutDetectionPrompt?) {
@@ -3754,13 +4171,31 @@ struct AtriaHomeView: View {
     private var debugWorkoutReviewHoldState: WorkoutReviewHoldState? { nil }
     #endif
 
+    /// Merge HUD-reported sets with the live array and close an open Start Set
+    /// window so End (including Lock Screen) cannot drop the in-progress interval.
+    private func strengthSetsForWorkoutEnd(_ reported: [LoggedSet], at endedAt: Date) -> [LoggedSet] {
+        var merged = reported
+        for set in liveWorkoutLoggedSets where !merged.contains(where: { $0.id == set.id }) {
+            merged.append(set)
+        }
+        let weight = workoutSession?.calculationContext?.profile.weightKg ?? store.profile.weightKg
+        let bodyMass = weight > 0 ? weight : nil
+        if let open = AtriaStrengthSetWindow.live.stopUsingDraft(at: endedAt, bodyMassKg: bodyMass),
+           !merged.contains(where: { $0.id == open.id }) {
+            merged.append(open)
+            liveWorkoutLoggedSets = merged
+        }
+        AtriaStrengthSetWindow.live.cancel()
+        return merged
+    }
+
     @discardableResult
     private func endWorkoutSession(startedAt: Date) async -> Bool {
         await endWorkoutSession(startedAt: startedAt,
                           endedAt: Date(),
                           activityType: workoutSession?.activityType ?? .other,
-                          strengthSets: [],
-                          excludedIntervals: [])
+                          strengthSets: liveWorkoutLoggedSets,
+                          excludedIntervals: liveWorkoutExcludedIntervals)
     }
 
     @discardableResult
@@ -3793,13 +4228,45 @@ struct AtriaHomeView: View {
                       Int(((ProcessInfo.processInfo.systemUptime - endRequestedUptime) * 1_000).rounded()))
         // A missing dense strap boundary stays unavailable; phone motion is
         // never promoted into a wrist-derived workout total.
-        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(strap: strapEvidence)
+        let stepEvidence = AtriaCompletedWorkoutStepEvidence.select(
+            strap: strapEvidence,
+            sourceVersion: workoutSession?.stepSourceVersion ?? .strapAccelerometerV1
+        )
+        // Stale-label seam (2026-08-30): the HUD's onStop closure passes the
+        // activity type captured at its last render. Finalize reads the OWNING
+        // session instead, so a switch racing the End tap can never save under
+        // the older label; with a switch timeline present, the persisted
+        // scalar is the DOMINANT segment (longest moving duration, tie: last).
+        let liveSession = workoutSession?.start == startedAt ? workoutSession : nil
+        let sessionSegments = liveSession?.segments
+        // Same freshness rule for the pause ledger: prefer the owning state
+        // over the closure-captured copy when this End belongs to the live
+        // session, so a pause closed after the HUD's last render still counts.
+        var dominantExclusions = liveSession != nil
+            ? liveWorkoutExcludedIntervals
+            : excludedIntervals
+        if let pauseStartedAt = liveWorkoutPauseStartedAt {
+            // Mirror finalizedExcludedIntervals(): an open pause ends at End.
+            let pauseStart = max(startedAt, pauseStartedAt)
+            if endedAt > pauseStart {
+                dominantExclusions.append(ExcludedInterval(start: pauseStart, end: endedAt))
+            }
+        }
+        let finalActivityType = WorkoutSegment.dominantActivityType(
+            segments: sessionSegments,
+            sessionStart: startedAt,
+            sessionEnd: endedAt,
+            excludedIntervals: dominantExclusions
+        ).flatMap { AtriaWorkoutActivityType(rawValue: $0) }
+            ?? liveSession?.activityType
+            ?? activityType
+        let finalStrengthSets = strengthSetsForWorkoutEnd(strengthSets, at: endedAt)
         workoutPersistenceRevision &+= 1
         let finalIntent = AtriaPendingWorkoutIntent(
             startedAt: startedAt,
             endedAt: endedAt,
-            activityType: activityType.rawValue,
-            strengthSets: strengthSets,
+            activityType: finalActivityType.rawValue,
+            strengthSets: finalStrengthSets,
             excludedIntervals: excludedIntervals,
             pauseStartedAt: liveWorkoutPauseStartedAt,
             targetStrain: workoutSession?.targetStrain,
@@ -3816,7 +4283,8 @@ struct AtriaHomeView: View {
             completedStepsCapturedAt: stepEvidence?.capturedAt,
             startingDayStrain: workoutSession?.startingDayStrain ?? 0,
             calculationContext: workoutSession?.calculationContext,
-            persistenceRevision: .max
+            persistenceRevision: .max,
+            segments: sessionSegments
         )
         // Persist the user's intent before touching the live journal or UI. If
         // any later write fails, launch recovery can rebuild this exact window.
@@ -3849,7 +4317,16 @@ struct AtriaHomeView: View {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(50))
         let routeDraft: AtriaWorkoutRouteRecorder.Draft?
-        if finalIntent.resolvedActivityType.supportsRouteRecording {
+        // A dominant non-route type must not discard a route the user really
+        // recorded in an outdoor segment: any route-capable declared segment
+        // keeps the recorded route, matching the switcher's park-don't-erase
+        // contract.
+        let recordedRouteEligible = finalIntent.resolvedActivityType.supportsRouteRecording
+            || (finalIntent.segments ?? []).contains {
+                AtriaWorkoutActivityType(rawValue: $0.activityType)?
+                    .supportsRouteRecording == true
+            }
+        if recordedRouteEligible {
             routeDraft = workoutRouteRecorder.stop(at: endedAt)
         } else {
             workoutRouteRecorder.cancel()
@@ -3883,9 +4360,13 @@ struct AtriaHomeView: View {
                                                             : finalIntent.activityType,
                                                         strengthSets: finalIntent.strengthSets,
                                                         excludedIntervals: finalizedExcludedIntervals,
+                                                        segments: finalIntent.segments,
                                                         workoutSteps: finalIntent.completedStepCount,
                                                         workoutStepsAreEstimated: finalIntent.completedStepsAreEstimated,
                                                         workoutStepsCapturedAt: finalIntent.completedStepsCapturedAt)
+        requestPostWorkoutHistoryBackfillIfNeeded(
+            endedWorkoutSampleCount: confirmed?.samples ?? 0
+        )
         if let confirmed {
             store.exportToHealthKit()
             if let routeDraft {
@@ -3985,6 +4466,40 @@ struct AtriaHomeView: View {
         return true
     }
 
+    /// Keep live 2A37 up and drain the strap flash for any workout that saved
+    /// without HR. Gym 2026-09-17 Strength 21:05–21:37 IST was metadata-only
+    /// because Start checkpointed the previous walk, cover-live suppression
+    /// reported no backlog, and a process restart after install never
+    /// re-queued catch-up: Home only observed status *changes*, while
+    /// CoreBluetooth restored already-connected.
+    ///
+    /// Do not queue leftover drain after a walk that already has HR — that
+    /// pause is how Strength started into a silent 2A37. Connect/restore
+    /// only retries metadata-only windows still inside the 6h pull lifetime.
+    private func requestPostWorkoutHistoryBackfillIfNeeded(
+        endedWorkoutSampleCount: Int? = nil
+    ) {
+        let metadataOnlyEnds = store.confirmedWorkouts.compactMap { workout -> Date? in
+            guard workout.confidence == "user_confirmed_no_hr",
+                  workout.samples == 0 else { return nil }
+            return workout.end
+        }
+        ble.retireStuckIdleWindowLeftoverIfNeeded(
+            metadataOnlyWorkoutEnds: metadataOnlyEnds
+        )
+        guard AtriaBLEManager.shouldQueuePostWorkoutHistoryBackfill(
+            endedWorkoutSampleCount: endedWorkoutSampleCount,
+            metadataOnlyWorkoutEnds: metadataOnlyEnds,
+            now: Date()
+        ) else { return }
+        requestPostWorkoutHistoryBackfill()
+    }
+
+    private func requestPostWorkoutHistoryBackfill() {
+        ble.queueConnectedRawHistoryCatchUpIntent(reason: "post_workout_hr_backfill")
+        store.upgradeMetadataOnlyWorkoutsFromHistoryInBackground()
+    }
+
     private func workoutShareSnapshot(for workout: UserConfirmedWorkout,
                                       routeArtifact: AtriaWorkoutRouteStore.PreparedShareArtifact? = nil) -> AtriaWorkoutShareSnapshot {
         let shareMetrics = AtriaWorkoutMetricPresentation.shareMetrics(workout)
@@ -4068,12 +4583,80 @@ struct AtriaHomeView: View {
 
     private func presentWorkoutReview(prompt: AtriaWorkoutDetectionPrompt, now: Date = Date()) {
         let observedSeconds = TimeInterval(max(60, prompt.evidenceMinutes * 60))
+        let suggestedEnd = prompt.episodeEnd ?? now
+        let suggestedStart = prompt.episodeStart
+            ?? suggestedEnd.addingTimeInterval(-observedSeconds)
         workoutDetectionPrompt = nil
+        heldSustainedWorkoutPrompt = nil
+        heldSustainedWorkoutPromptAt = nil
         workoutReviewHoldState = nil
         workoutReviewDraft = AtriaWorkoutReviewDraft(prompt: prompt,
-                                                     suggestedStart: now.addingTimeInterval(-observedSeconds),
-                                                     suggestedEnd: now,
+                                                     suggestedStart: suggestedStart,
+                                                     suggestedEnd: suggestedEnd,
                                                      strengthHistory: AtriaStrengthLog.historyProjection(in: store.sessions))
+    }
+
+    /// Sustained stepping is a walk whatever the heart rate did (owner
+    /// 2026-09-30: "activity detection can be improved"; walks at 112–120
+    /// bpm never cleared the heart-rate bar). Ongoing or finished within 3 h,
+    /// never over a saved workout or a walk the user already dismissed.
+    private func walkDetectionPrompt(strain: Double,
+                                     heartRate: Int,
+                                     rest: Int,
+                                     now: Date) -> AtriaWorkoutDetectionPrompt? {
+        guard let walk = AtriaWalkBoutDetector.latestBout(
+            minutes: AtriaStrapStepMinuteLog.shared.snapshot(),
+            now: now
+        ) else { return nil }
+        let end = walk.ongoing ? now : walk.end
+        let overlapsWorkout = store.confirmedWorkouts.contains {
+            max($0.start, walk.start) < min($0.end, end)
+        }
+        let dismissed = AtriaDismissedWorkoutCandidateStore.load().contains {
+            $0.overlaps(start: walk.start, end: end)
+        }
+        guard !overlapsWorkout, !dismissed else { return nil }
+        let bpms = ble.session.filter { $0.t >= walk.start && $0.t <= end }.map(\.bpm)
+        let walkHeartRate = walk.ongoing || bpms.isEmpty
+            ? heartRate
+            : bpms.reduce(0, +) / bpms.count
+        return AtriaWorkoutDetectionPrompt(heartRate: walkHeartRate,
+                                           strain: strain,
+                                           samples: Int(end.timeIntervalSince(walk.start)),
+                                           bpmOverRest: max(0, walkHeartRate - rest),
+                                           restingHeartRate: rest,
+                                           maxHeartRate: store.profile.maxHR,
+                                           motionSuggestedActivityType: .walking,
+                                           episodeStart: walk.start,
+                                           episodeEnd: end,
+                                           walkStepsPerMinute: Int(walk.stepsPerMinute.rounded()))
+    }
+
+    private func completedSustainedBoutOverlapsConfirmedWorkout(
+        _ bout: AtriaWorkoutPromptEvaluator.CompletedSustainedBout
+    ) -> Bool {
+        store.confirmedWorkouts.contains { workout in
+            max(workout.start, bout.start) < min(workout.end, bout.end)
+        }
+    }
+
+    /// Device 2026-09-19 16:25: installing 197 checkpointed the 13:13–16:13
+    /// all-day journal, so live `ble.session` no longer holds the 15:23 walk.
+    /// Reconstruction must read that saved window or Review this workout
+    /// never comes back.
+    private func workoutPromptHeartSamples(now: Date) -> [HRSample] {
+        let lookbackStart = now.addingTimeInterval(
+            -AtriaWorkoutPromptEvaluator.completedSustainedReviewLookback
+        )
+        var samples = ble.session.filter { $0.t >= lookbackStart && $0.t <= now }
+        for session in store.sessions where session.end >= lookbackStart {
+            for point in session.points {
+                let t = session.start.addingTimeInterval(point.t)
+                guard t >= lookbackStart, t <= now else { continue }
+                samples.append(HRSample(t: t, bpm: point.bpm))
+            }
+        }
+        return samples
     }
 
     private func presentWorkoutReview(candidate: WorkoutReviewCandidate) {
@@ -4086,6 +4669,8 @@ struct AtriaHomeView: View {
                                                  maxHeartRate: store.profile.maxHR)
         savedWorkoutReviewCandidate = nil
         workoutDetectionPrompt = nil
+        heldSustainedWorkoutPrompt = nil
+        heldSustainedWorkoutPromptAt = nil
         workoutReviewHoldState = nil
         workoutReviewDraft = AtriaWorkoutReviewDraft(prompt: prompt,
                                                      suggestedStart: candidate.start,
@@ -4382,6 +4967,23 @@ struct AtriaHomeView: View {
         // by their independent bounded lanes below.
         model.setScenePresentationActive(phase == .active)
         updateMediaRefreshLoop()
+        if phase == .inactive {
+            // Device 185: --no-launch bounce never becomes `.active`, but the
+            // new process does get `.inactive` while `applicationState` is
+            // still inactive (not background). Force only while kit is empty
+            // so app-switcher peeks cannot spam Activity.request after start.
+            updateLiveActivity(
+                forceActivityWrite: liveActivityCoordinator.activityKitCount == 0
+            )
+        }
+        if phase == .active,
+           liveActivityCoordinator.activityKitCount == 0 {
+            // Device 186 12:40 IST: Today was Live 72 bpm with kit still 0.
+            // Inactive bounce retries consume `lastIdleStartAttemptAt`, and
+            // pulse updates honor the 20s throttle without `force`. Start
+            // immediately while the scene is actually visible.
+            updateLiveActivity(forceActivityWrite: true)
+        }
         guard phase == .active else {
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
@@ -4422,7 +5024,9 @@ struct AtriaHomeView: View {
                                                              ble: ble,
                                                              reason: "scene_background",
                                                              forceImmediateTimelineReload: true,
-                                                             delay: .zero)
+                                                             delay: .zero,
+                                                             presentedDayStrain: model.heroStore.state.strain,
+                                                             presentedDayStrainDetail: model.heroStore.state.strainDetail)
                 }
                 if AtriaSceneResumePolicy.shouldStopMotionMonitor(isBackground: true) {
                     motionActivityMonitor.stop()
@@ -4494,14 +5098,10 @@ struct AtriaHomeView: View {
             if !isDebugUIScreenLaunchActive {
                 consumePendingIntentCommandIfNeeded()
             }
-            if workoutSession != nil {
-                // A suspended process may not have delivered the final sensor
-                // publisher pulse. Refresh the complete HR/zone/steps/strain/
-                // calorie snapshot after the first returning frame, before any
-                // sleep/archive settlement work, and let the coordinator's
-                // bounded writer coalesce it with an in-flight ActivityKit call.
-                updateLiveActivity(forceActivityWrite: true)
-            }
+            // Workout or idle presence: a background --no-launch install can
+            // leave ActivityKit empty until the next foreground (device 175).
+            // Force a start/adopt retry after the first returning frame.
+            updateLiveActivity(forceActivityWrite: true)
             updateHapticCoordinator()
 
             try? await Task.sleep(for: .milliseconds(520))
@@ -4552,7 +5152,9 @@ struct AtriaHomeView: View {
                     store: store,
                     ble: ble,
                     reason: "scene_foreground_sleep_projection",
-                    delay: .milliseconds(80)
+                    delay: .milliseconds(80),
+                    presentedDayStrain: model.heroStore.state.strain,
+                    presentedDayStrainDetail: model.heroStore.state.strainDetail
                 )
                 Task { await AtriaResearchUploadQueue.runForegroundCatchUpIfMissed(store: store) }
                 let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
@@ -4616,7 +5218,9 @@ struct AtriaHomeView: View {
                                               @ViewBuilder content: @escaping () -> Content) -> some View {
         NavigationStack {
             AtriaDashboardScrollSurface(showsCompactTodayHeader: title == "Today",
+                                        compactRingStore: title == "Today" ? compactRingStore : nil,
                                         prefersLiveActivityStatus: workoutSession != nil,
+                                        bottomContentMargin: scrollBottomClearance,
                                         refresh: handleConnectivityRefresh,
                                         taskID: debugDashboardAutoScrollTaskID(title: title)) { scrollProxy in
                 await runDebugDashboardAutoScrollIfNeeded(proxy: scrollProxy, title: title)
@@ -4651,15 +5255,32 @@ struct AtriaHomeView: View {
                 // bottom padding on the notice, both existed only to close the
                 // void that a floating inset card opened above the greeting.
                 // Edge-to-edge chrome ends flush, so content spaces normally.
-                .padding(.top, 12)
-                .padding(.bottom, scrollBottomClearance)
+                .padding(.top, 4)
+                // No second bottom padding here (device 2026-09-27): the
+                // same clearance was applied twice (safeAreaPadding on the
+                // scroll surface AND content padding), leaving 640-800 pt
+                // of empty scroll under every tab.
                 .frame(maxWidth: .infinity)
             }
             .navigationTitle(title)
+            // MEASURED 2026-09-02: the tab hosting paints an opaque system
+            // background behind every tab (pure white in light, pure black in
+            // dark), so the AtriaBackdropLayer under the TabView was never
+            // visible — light-mode white cards sat on a white field (tile 255,
+            // gap 255, margin 255) and the navy dark field never showed; a
+            // clear `.containerBackground(for: .navigation)` did not get past
+            // it either. Drawing the backdrop as the scroll surface's own
+            // background puts it above that layer, inside each tab. This is
+            // what the 2026-07-05 backdrop tuning could not reach.
+            .background {
+                AtriaBackdropLayer(isDark: isDark, reduceTransparency: reduceTransparency)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    topChrome
+                    topChrome(compactRingStore: title == "Today" ? compactRingStore : nil)
                     // Full-bleed: the notice spans the width flush against the
                     // chrome above it, so it takes no inset or gap of its own.
                     //
@@ -4669,13 +5290,15 @@ struct AtriaHomeView: View {
                     // tile already discloses the same maturity — HRV/RHR
                     // "Calibrating · night N of 14" and VO₂ "Improving · day
                     // N of M" — so the band carries sync-truth states only.
-                    AtriaHomeRecoveryStatusHost(coreLiveStore: model.coreLiveStore)
-                    if showConnectivityPill {
-                        connectivityPill
-                            .padding(.horizontal, 16)
-                            .padding(.bottom, 8)
-                            .transition(.move(edge: .top).combined(with: .opacity))
-                    }
+                    // ONE status bar (owner 2026-09-27: "just keep one liquid UI
+                    // bar for all the statuses"): pull-to-refresh, history
+                    // catch-up and live-data pauses page inside this band
+                    // instead of stacking a caption, a banner and a pill.
+                    AtriaHomeRecoveryStatusHost(
+                        coreLiveStore: model.coreLiveStore,
+                        liveDataNoteStore: model.liveDataNoteStore,
+                        refreshingText: showConnectivityPill ? connectivityPillText : nil
+                    )
                 }
                 .background {
                     // Occluding scrim (2026-07-08, device-reported): the chrome
@@ -4718,7 +5341,14 @@ struct AtriaHomeView: View {
     }
 
     private var scrollBottomClearance: CGFloat {
-        shouldShowLiveAccessory ? 260 : 188
+        // Device 2026-09-17 118: Resting HR 55 and "This week" still sat
+        // under the glass tab at 228/300. The Start workout shortcut is
+        // in-content, not the live accessory, so the idle path needs the
+        // larger inset too.
+        // Measured on device 2026-09-27: the glass tab bar is ~81 pt tall
+        // and the live accessory adds ~60 pt. 400/320 left 40% of a screen
+        // of empty scroll under the last card (it was also applied twice).
+        shouldShowLiveAccessory ? 180 : 120
     }
 
     private static let debugDashboardScrollTopID = "atria-dashboard-scroll-top"
@@ -4787,8 +5417,9 @@ struct AtriaHomeView: View {
     }
 
 
-    private var topChrome: some View {
+    private func topChrome(compactRingStore: AtriaTodayCompactRingStore?) -> some View {
         AtriaHomeTopChrome(statusStore: model.statusStore,
+                           compactRingStore: compactRingStore,
                            coreLiveStore: model.coreLiveStore,
                            pulseLiveStore: model.pulseLiveStore,
                            prefersLiveActivityStatus: workoutSession != nil,
@@ -4876,6 +5507,9 @@ struct AtriaHomeView: View {
     /// a pending gap cannot launch another competing recovery attempt.
     private struct AtriaHomeRecoveryStatusHost: View {
         @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
+        @ObservedObject var liveDataNoteStore: AtriaHomeModel.LiveDataNoteStore
+        /// Pull-to-refresh feedback, shown first while it lasts.
+        var refreshingText: String?
         /// Read inside the timeline tick rather than captured as a value, so a
         /// maturing baseline reaches the banner without depending on a
         /// publisher hop from the session store.
@@ -4935,8 +5569,8 @@ struct AtriaHomeView: View {
                                             .accessibilityHidden(true)
                                         }
                                     }
-                                    .padding(.horizontal, 14)
-                                    .frame(height: 40)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 32)
                                     .containerRelativeFrame(.horizontal)
                                     .glassEffect(.regular, in: .rect(cornerRadius: 18))
                                     .accessibilityElement(children: .combine)
@@ -4952,7 +5586,7 @@ struct AtriaHomeView: View {
                         .contentMargins(.horizontal, 16, for: .scrollContent)
                         .scrollIndicators(.hidden)
                     }
-                    .frame(height: 40)
+                    .frame(height: 32)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -4973,8 +5607,33 @@ struct AtriaHomeView: View {
         /// full row on.
         private func notices(now: Date) -> [Status] {
             var result: [Status] = []
-            if let status = status(now: now) {
-                result.append(status)
+            if let refreshingText {
+                result.append(Status(title: refreshingText,
+                                     symbol: "arrow.clockwise",
+                                     accessibilityLabel: refreshingText))
+            }
+            let sync = status(now: now)
+            if let sync {
+                result.append(sync)
+            }
+            if let tip = AtriaHomeRecoverySyncPresentation.fasterSyncTip(
+                strapPendingRecords: AtriaHomeRecoverySyncPresentation.freshStrapPendingRecords(
+                    defaults: .standard, now: now
+                ),
+                phoneCharging: [.charging, .full].contains(UIDevice.current.batteryState)
+            ) {
+                result.append(Status(title: tip.title,
+                                     symbol: "bolt.fill",
+                                     accessibilityLabel: tip.accessibilityLabel,
+                                     compactTitle: tip.compactTitle))
+            }
+            // A catch-up note is redundant next to the sync notice above; a
+            // pause reason is not (it says why live data stopped).
+            if let note = liveDataNoteStore.note,
+               !(note == .catchingUpHistory && sync != nil) {
+                result.append(Status(title: note.text,
+                                     symbol: note.systemImage,
+                                     accessibilityLabel: note.text))
             }
             if let maturity = maturityText() {
                 result.append(Status(title: maturity,
@@ -4998,12 +5657,22 @@ struct AtriaHomeView: View {
             let live = coreLiveStore.state
             switch live.historicalRecoveryPresentation {
             case .syncing(let savedRecords):
+                let defaults = UserDefaults.standard
                 let copy = AtriaHomeRecoverySyncPresentation.copy(
                     savedRecords: savedRecords,
-                    drainedThroughUnix: UserDefaults.standard.object(
+                    drainedThroughUnix: defaults.object(
                         forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
                     ) as? Double,
-                    now: now
+                    now: now,
+                    abandonedThroughUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+                    ) as? Double,
+                    drainCursorUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+                    ) as? Double,
+                    strapPendingRecords: AtriaHomeRecoverySyncPresentation.freshStrapPendingRecords(
+                        defaults: defaults, now: now
+                    )
                 )
                 return Status(title: copy.title,
                               symbol: "arrow.triangle.2.circlepath",
@@ -5117,12 +5786,38 @@ struct AtriaHomeView: View {
             if defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ) {
+                // Say HOW MUCH, and say WHICH KIND. The backlog that starved
+                // sleep confirmation grew to 15.5 h over three days behind this
+                // exact banner; a size that is visible cannot silently
+                // compound. The claim is split by wear verdict: only time the
+                // strap can still hand over counts as "filling", while proven
+                // off-wrist time is named and excluded instead of inflating
+                // the promise. The ledger read is memoised on the ledger
+                // generation plus the recoverability inputs.
+                let summary = AtriaHomeRecoverySyncPresentation
+                    .memoisedGapBacklogSummary(defaults: defaults, now: now)
+                let backlog = summary.recoverableText
+                let offWrist = summary.offWristExcludedText
+                var title = backlog.map { "Synced · filling \($0)" }
+                    ?? (summary.provenUnrecoverableSeconds >= 60
+                        // 2026-09-27 (owner: lagging data should "recover or
+                        // completely missed out"): name it missed, and how much.
+                        ? "Synced · "
+                            + (AtriaHomeRecoverySyncPresentation.shortDuration(
+                                seconds: summary.provenUnrecoverableSeconds
+                            ).map { "\($0) missed" } ?? "earlier gap missed")
+                        : "Synced · filling earlier gaps")
+                if let offWrist { title += " · \(offWrist)" }
                 return Status(
-                    title: "Synced · filling earlier gaps",
+                    title: title,
                     symbol: "checkmark.circle.badge.questionmark",
                     accessibilityLabel: "Strap history is synced through now, "
                         + "but an earlier stretch is known to be missing and is "
-                        + "still being refetched.",
+                        + "still being refetched."
+                        + (backlog.map { " About \($0.replacingOccurrences(of: " of gaps", with: "")) remain." } ?? "")
+                        + (AtriaHomeRecoverySyncPresentation.shortDuration(
+                            seconds: summary.offWristExcludedSeconds
+                        ).map { " Another \($0) was off the wrist and is excluded." } ?? ""),
                     compactTitle: "Synced · filling gaps"
                 )
             }
@@ -5160,6 +5855,29 @@ struct AtriaHomeView: View {
                            liveStore: model.coreLiveStore,
                            heroStore: model.heroStore,
                            pulseStore: model.heroPulseStore)
+    }
+
+    /// Heart rate for the review chart: saved-session points plus the
+    /// durable archive, read off the main actor, one union (nothing invented).
+    private func loadWorkoutReviewHeartRate(_ interval: DateInterval) async -> [HistoricalArchive.HeartRatePoint] {
+        let canonical = store.sessions
+            .filter { $0.end > interval.start && $0.start < interval.end }
+            .flatMap { session in
+                session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
+                    let date = session.start.addingTimeInterval(point.t)
+                    guard date >= interval.start, date < interval.end else { return nil }
+                    return HistoricalArchive.HeartRatePoint(t: date, bpm: point.bpm)
+                }
+            }
+        let archive = await Task.detached(priority: .userInitiated) {
+            HistoricalArchive.metricHeartRatePoints(start: interval.start,
+                                                    end: interval.end,
+                                                    maximumPoints: 20_000)?.points ?? []
+        }.value
+        return AtriaExactWindowHeartRate.union(canonical: canonical,
+                                               archive: archive,
+                                               observed: [],
+                                               interval: interval)
     }
 
     private var currentHomeLayoutConfig: AtriaHomeLayoutConfig {
@@ -5277,7 +5995,7 @@ struct AtriaHomeView: View {
                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepFill),
                                                                  fill: sleepFill,
                                                                  stateTintHex: sleepZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
-                                                                 targetFraction: sleepProjection == nil ? nil : 1.0),
+                                                                 targetFraction: nil),
                                   strain: AtriaShareSnapshot.Ring(title: "Strain",
                                                                   value: strainValue,
                                                                   detail: hero.strainDetail,
@@ -5346,7 +6064,17 @@ struct AtriaHomeView: View {
         let todayNotifications = AnyView(Group {
             if let prompt = debugWorkoutDetectionPrompt ?? workoutDetectionPrompt, workoutSession == nil {
                 AtriaWorkoutDetectionBanner(prompt: prompt) {
+                    if prompt.motionSuggestedActivityType == .walking,
+                       let start = prompt.episodeStart,
+                       let end = prompt.episodeEnd, end > start {
+                        AtriaDismissedWorkoutCandidateStore.save(
+                            AtriaDismissedWorkoutCandidateStore.load()
+                                + [AtriaDismissedWorkoutCandidate(start: start, end: end)]
+                        )
+                    }
                     workoutDetectionPrompt = nil
+                    heldSustainedWorkoutPrompt = nil
+                    heldSustainedWorkoutPromptAt = nil
                     workoutPromptSuppressedForCurrentEpisode = true
                     workoutPromptRecoveryStartedAt = nil
                     workoutPromptDismissedUntil = Date().addingTimeInterval(Self.workoutPromptCooldown)
@@ -5455,19 +6183,41 @@ struct AtriaHomeView: View {
                              onCustomizeToday: {
                                  showCustomizeSheet = true
                              },
+                             pendingMetricDeepLink: pendingMetricDeepLink,
+                             onConsumeMetricDeepLink: {
+                                 pendingMetricDeepLink = nil
+                             },
+                             metricSheetDismissToken: metricSheetDismissToken,
                              systemNotifications: todayNotifications)
 
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
-            // Live strap catch-up progress, always the last row of Overview.
-            if !debugShowsNorthStarTodayFixture {
-                AtriaSyncProgressFooter(
-                    liveHeartRateIsCurrent:
-                        model.coreLiveStore.state.hasRecentHeartRateSample
-                )
-            }
+            // No sync footer here (2026-09-27, owner: "just keep one liquid
+            // glass bar for all the statuses"): the pinned status band owns
+            // catch-up; a "Last fill · 67h old" row under Today contradicted
+            // its "7 h left".
         }
+    }
+
+    /// Questions left in today's check-in, for the Journal tab badge. Zero
+    /// (hidden) once complete — the badge is the brief's only knock now.
+    private var journalCheckInBadgeCount: Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let entry = store.behaviorJournalEntries.first {
+            calendar.isDate($0.day, inSameDayAs: today)
+        }
+        let progress = AtriaJournalCheckInProgress.resolve(
+            trackedTags: AtriaTrackedBehaviors.parse(
+                UserDefaults.standard.string(
+                    forKey: AtriaTrackedBehaviors.storageKey) ?? ""),
+            todayEntry: entry,
+            answersByQuestion: store.journalAnswers.answersByQuestion(
+                for: today, calendar: calendar))
+        return progress.isComplete
+            ? 0
+            : max(0, progress.totalCount - progress.answeredCount)
     }
 
     @ViewBuilder
@@ -5944,6 +6694,7 @@ struct AtriaHomeView: View {
             showConnectionGuide = false
             connectionGuidePresentationToken = UUID()
             logHomeTiming(event: "connected", status: status)
+            requestPostWorkoutHistoryBackfillIfNeeded()
             if selectedTab == .overview, !model.snapshotStore.diagnosticsReady {
                 scheduleOverviewDiagnosticsKickoff(reason: "connected_overview_idle",
                                                    delayNanoseconds: 6_800_000_000)
@@ -6030,6 +6781,197 @@ enum AtriaHomeRecoverySyncPresentation {
     /// could never read "Synced" between catch-up slices on a healthy link.
     /// Staleness fails closed: an old observation (link lost, app suspended)
     /// never fabricates a synced claim.
+    /// Per-window verdicts folded into the two numbers the status line can
+    /// honestly show. Indeterminate verdicts count as recoverable: missing
+    /// evidence must never shrink the visible backlog (the 15.5 h starvation
+    /// hid exactly this way), only proven off-wrist/dead time is excluded.
+    struct GapBacklogSummary: Equatable {
+        let recoverableSeconds: TimeInterval
+        /// Windows provably beyond recovery (behind the ACK cursor, behind the
+        /// Start-fresh watermark, or terminally stalled).
+        let provenUnrecoverableSeconds: TimeInterval
+        /// Time proven off-wrist at gap-open and never minted as a window.
+        let offWristExcludedSeconds: TimeInterval
+
+        /// "1.2h of gaps" — recoverable time only; nil under a minute.
+        var recoverableText: String? {
+            AtriaHomeRecoverySyncPresentation.gapBacklogText(
+                seconds: recoverableSeconds
+            )
+        }
+
+        /// "3.1h off wrist excluded" — nil under a minute.
+        var offWristExcludedText: String? {
+            guard let short = AtriaHomeRecoverySyncPresentation
+                .shortDuration(seconds: offWristExcludedSeconds) else { return nil }
+            return "\(short) off wrist excluded"
+        }
+    }
+
+    private struct GapBacklogMemoKey: Equatable {
+        let generation: Int
+        let drainCursorUnix: Double
+        let abandonedThroughUnix: Double
+        let terminallyStalled: Bool
+    }
+
+    private static var gapBacklogMemo: (key: GapBacklogMemoKey,
+                                        recoverableSeconds: TimeInterval,
+                                        provenUnrecoverableSeconds: TimeInterval)?
+
+    /// Memoised on the ledger generation plus the recoverability inputs, so the
+    /// status render only touches the ledger file when a drain actually changed
+    /// it. The off-wrist tally is read fresh — it moves without a ledger write.
+    static func memoisedGapBacklogSummary(defaults: UserDefaults,
+                                          now: Date) -> GapBacklogSummary {
+        let key = GapBacklogMemoKey(
+            generation: defaults.integer(
+                forKey: AtriaHistoricalGapLedger.generationKey
+            ),
+            drainCursorUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+            ),
+            abandonedThroughUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix
+            ),
+            terminallyStalled: terminallyStalledFromDefaults(defaults: defaults,
+                                                             now: now)
+        )
+        let offWrist = AtriaGapWearClassification.OffWristExclusion
+            .excludedSeconds(now: now, defaults: defaults)
+        if let memo = gapBacklogMemo, memo.key == key {
+            return GapBacklogSummary(
+                recoverableSeconds: memo.recoverableSeconds,
+                provenUnrecoverableSeconds: memo.provenUnrecoverableSeconds,
+                offWristExcludedSeconds: offWrist
+            )
+        }
+        let classified = classifiedGapBacklog(
+            windows: AtriaHistoricalGapLedger
+                .windowsForEvidence(defaults: defaults),
+            now: now,
+            drainCursorUnix: key.drainCursorUnix,
+            abandonedThroughUnix: key.abandonedThroughUnix,
+            terminallyStalled: key.terminallyStalled
+        )
+        gapBacklogMemo = (key,
+                          classified.recoverable,
+                          classified.provenUnrecoverable)
+        return GapBacklogSummary(
+            recoverableSeconds: classified.recoverable,
+            provenUnrecoverableSeconds: classified.provenUnrecoverable,
+            offWristExcludedSeconds: offWrist
+        )
+    }
+
+    /// Same persistent stall signals the missed-data banner uses; the render
+    /// path holds no in-memory drain state.
+    private static func terminallyStalledFromDefaults(defaults: UserDefaults,
+                                                      now: Date) -> Bool {
+        AtriaMissedDataBannerPresentation.gapIsTerminallyStalled(
+            backlogPending: defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            sequenceGapParkedTerminal: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
+            ) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+            ),
+            secondsSinceRangeLossRequested: (defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+            ) as? Double).map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+    }
+
+    /// Splits the ledger's missing time by per-window wear/recoverability
+    /// verdicts. Wear evidence is not gathered on this synchronous render path,
+    /// so the wear-side inputs stay nil and the core fails closed to
+    /// `.indeterminate` — which lands in the recoverable bucket. Only windows
+    /// the drain provably cannot refill move to the unrecoverable bucket.
+    static func classifiedGapBacklog(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date,
+        drainCursorUnix: Double,
+        abandonedThroughUnix: Double,
+        terminallyStalled: Bool
+    ) -> (recoverable: TimeInterval, provenUnrecoverable: TimeInterval) {
+        var recoverable: TimeInterval = 0
+        var unrecoverable: TimeInterval = 0
+        for window in windows {
+            let seconds = expectedMissingSeconds(window: window, now: now)
+            guard seconds > 0 else { continue }
+            let verdict = AtriaGapWearClassification.classify(.init(
+                windowStart: window.start,
+                windowEnd: window.end,
+                expectedMissingSeconds: seconds,
+                drainCursorUnix: drainCursorUnix > 0 ? drainCursorUnix : nil,
+                abandonedThroughUnix: abandonedThroughUnix > 0
+                    ? abandonedThroughUnix : nil,
+                terminallyStalled: terminallyStalled
+            ))
+            switch verdict {
+            case .offWrist, .charging, .unrecoverable,
+                 .wornUndrained(recoverable: false),
+                 .appOrRadioDown(recoverable: false):
+                unrecoverable += seconds
+            case .wornUndrained(recoverable: true),
+                 .appOrRadioDown(recoverable: true),
+                 .indeterminate:
+                recoverable += seconds
+            }
+        }
+        return (recoverable, unrecoverable)
+    }
+
+    /// Total genuinely-missing time across the gap ledger, in seconds.
+    ///
+    /// A coalesced envelope can SPAN days while missing only minutes — its
+    /// `expectedSecondBits` mask is the truth (device 2026-08-27: a 61.6 h
+    /// envelope whose mask held 15.52 h). An ordinary window with no mask is
+    /// missing end-to-end. `coveredSecondBits` is deliberately ignored: it is
+    /// unpopulated in production data, and treating empty as "no progress"
+    /// would overstate.
+    ///
+    /// This number existing on screen is the point. The 15.5 h backlog that
+    /// starved sleep confirmation for three days was reachable only by pulling
+    /// the container and decoding the mask by hand.
+    static func unresolvedGapSeconds(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date
+    ) -> TimeInterval {
+        windows.reduce(0) { total, window in
+            total + expectedMissingSeconds(window: window, now: now)
+        }
+    }
+
+    /// One window's genuinely-missing seconds: the exact mask when present,
+    /// the envelope duration otherwise (open windows run to `now`).
+    static func expectedMissingSeconds(
+        window: AtriaHistoricalGapLedger.Window,
+        now: Date
+    ) -> TimeInterval {
+        if let bits = window.expectedSecondBits {
+            return TimeInterval(bits.reduce(0) { $0 + $1.nonzeroBitCount })
+        }
+        let end = window.end ?? now
+        guard end > window.start else { return 0 }
+        return end.timeIntervalSince(window.start)
+    }
+
+    /// "12m of gaps" / "2.3h of gaps" / nil under a minute (not worth a claim).
+    static func gapBacklogText(seconds: TimeInterval) -> String? {
+        guard let short = shortDuration(seconds: seconds) else { return nil }
+        return "\(short) of gaps"
+    }
+
+    /// "12m" / "2.3h" / nil under a minute.
+    static func shortDuration(seconds: TimeInterval) -> String? {
+        guard seconds >= 60 else { return nil }
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m" }
+        return String(format: "%.1fh", seconds / 3_600)
+    }
+
     static func strapReportsCaughtUp(
         flushDebtLevelRaw: String?,
         flushDebtObservedAtUnix: Double?,
@@ -6045,17 +6987,104 @@ enum AtriaHomeRecoverySyncPresentation {
         return age >= 0 && age <= freshnessWindow
     }
 
+    /// Start fresh writes `drainedThroughUnix` and `historyAbandonedThroughUnix`
+    /// to the same instant. That pair is a watermark, not a newest saved
+    /// record. Device 2026-09-05: both sat at 09:19 while live HR was current
+    /// and the oldest-first cursor was still yesterday 09:44, so the footer
+    /// read "last 9:19 AM".
+    static func isSyntheticStartFreshFrontier(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double?
+    ) -> Bool {
+        guard let drained = drainedThroughUnix,
+              let abandoned = abandonedThroughUnix,
+              drained.isFinite, abandoned.isFinite,
+              drained > 0, abandoned > 0 else { return false }
+        return abs(drained - abandoned) <= 1
+    }
+
+    static func newestSavedRecordUnix(
+        drainedThroughUnix: Double?,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if isSyntheticStartFreshFrontier(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        ) {
+            return nil
+        }
+        return drainedThroughUnix
+    }
+
+    static func fillThroughUnix(
+        drainCursorUnix: Double?,
+        drainedThroughUnix: Double? = nil,
+        abandonedThroughUnix: Double? = nil
+    ) -> Double? {
+        if let cursor = drainCursorUnix, cursor.isFinite, cursor > 0 {
+            return cursor
+        }
+        return newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+    }
+
     static func copy(savedRecords: Int,
                      drainedThroughUnix: Double?,
                      now: Date,
                      calendar: Calendar = .current,
-                     locale: Locale = .current) -> Copy {
+                     locale: Locale = .current,
+                     abandonedThroughUnix: Double? = nil,
+                     drainCursorUnix: Double? = nil,
+                     strapPendingRecords: Int? = nil) -> Copy {
         let savedRecords = max(0, savedRecords)
-        let through = syncedThroughText(drainedThroughUnix: drainedThroughUnix,
-                                        now: now,
-                                        calendar: calendar,
-                                        locale: locale)
+        let newestUnix = newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let newest = syncedThroughText(drainedThroughUnix: newestUnix,
+                                       now: now,
+                                       calendar: calendar,
+                                       locale: locale)
+        let filled = syncedThroughText(
+            drainedThroughUnix: fillThroughUnix(
+                drainCursorUnix: drainCursorUnix,
+                drainedThroughUnix: drainedThroughUnix,
+                abandonedThroughUnix: abandonedThroughUnix
+            ),
+            now: now,
+            calendar: calendar,
+            locale: locale
+        )
 
+        // Where catch-up actually is (owner 2026-09-27: "user should be
+        // always aware where the catching up is"): the fill cursor is the
+        // last page the strap confirmed, so now minus it is how far behind
+        // history still is. Only when that cursor is known and sane.
+        // The cursor only: "newest record" can sit ahead of what is filled,
+        // so using it would understate how far behind history is.
+        //
+        // What is LEFT is the strap's own count, not the clock: WHOOP 4
+        // writes ~1 record per worn second, so 26.5k pending records are
+        // ~7 h of data even when the cursor is 68 h old (device 2026-09-27:
+        // the strap was off or dead for the rest). A fresh count wins.
+        if let pending = strapPendingRecords,
+           let left = durationText(seconds: Double(pending)) {
+            // Owner 2026-09-30: worn catch-up runs while you sleep or the
+            // phone charges, so "left" read as a countdown that never moved
+            // during the day. Say how much is waiting instead.
+            return Copy(title: "Strap history · \(left) to sync",
+                        compactTitle: "History · \(left) to sync",
+                        accessibilityLabel: "About \(left) of recorded data is still on the strap. "
+                            + "It syncs while you sleep or the phone charges; live heart rate is current.")
+        }
+        if let behind = behindText(fillThroughUnix: drainCursorUnix, now: now) {
+            return Copy(title: "Strap history · \(behind) behind",
+                        compactTitle: "History · \(behind) behind",
+                        accessibilityLabel: "Strap history is \(behind) behind. "
+                            + "It syncs while you sleep or the phone charges; live heart rate is current.")
+        }
         var titleParts = ["Syncing strap history"]
         // Keep the channel word in the compact fallback (shown when the full
         // title does not fit, e.g. narrow widths): "Syncing history · …" so the
@@ -6077,10 +7106,15 @@ enum AtriaHomeRecoverySyncPresentation {
         // So "through 7:02 PM" claimed a completeness the value never had, and
         // the owner's question — "idk when it's fully synced" — is exactly the
         // question this string appeared to answer and did not. It reports how
-        // far the drain has REACHED, not how much it has filled.
-        if let through {
-            titleParts.append("newest \(through)")
-            compactParts.append("newest \(through)")
+        // far the drain has REACHED, not how much it has filled. A Start-fresh
+        // watermark equal to abandoned-through is omitted; the fill cursor is
+        // the honest last page the strap actually ACKed.
+        if let newest {
+            titleParts.append("newest \(newest)")
+            compactParts.append("newest \(newest)")
+        } else if let filled {
+            titleParts.append("filled through \(filled)")
+            compactParts.append("filled through \(filled)")
         }
 
         var accessibilityParts = ["History sync in progress."]
@@ -6089,14 +7123,19 @@ enum AtriaHomeRecoverySyncPresentation {
                 "\(savedRecords) records durably saved in this recovery."
             )
         }
-        if let through {
+        if let newest {
             // The old VoiceOver line was the strongest claim of the three —
             // "Strap history is durably synced through X." — and was followed
             // immediately by "Missing data is not yet verified.", which
             // contradicted it. One honest sentence replaces both.
             accessibilityParts.append(
-                "The newest saved record is from \(through). Earlier stretches "
+                "The newest saved record is from \(newest). Earlier stretches "
                     + "may still be filling in."
+            )
+        } else if let filled {
+            accessibilityParts.append(
+                "History fill last reached \(filled). Older pages may no "
+                    + "longer be on the strap."
             )
         } else {
             accessibilityParts.append("Missing data is not yet verified.")
@@ -6105,6 +7144,53 @@ enum AtriaHomeRecoverySyncPresentation {
         return Copy(title: titleParts.joined(separator: " · "),
                     compactTitle: compactParts.joined(separator: " · "),
                     accessibilityLabel: accessibilityParts.joined(separator: " "))
+    }
+
+    /// The strap's last pending-record count, only while it is recent
+    /// enough (30 min) to describe what is left.
+    /// Owner 2026-10-01: tell the wearer how to flush a backlog faster.
+    /// A worn link drains in long slices only while the phone charges, and a
+    /// locked phone gets 5-minute slices instead of 45-second ones (device:
+    /// ~19 rows/s locked on the charger vs ~10 with the app open, ~0 while
+    /// unplugged). Shown only while a large backlog is waiting.
+    static func fasterSyncTip(strapPendingRecords: Int?, phoneCharging: Bool) -> Copy? {
+        guard let strapPendingRecords,
+              strapPendingRecords >= Int(AtriaBLEManager.backlogSlicePendingThreshold) else {
+            return nil
+        }
+        if phoneCharging {
+            return Copy(title: "Tip · Lock your phone to sync faster",
+                        compactTitle: "Lock phone to sync faster",
+                        accessibilityLabel: "Tip: strap history syncs fastest while your phone is locked and charging.")
+        }
+        return Copy(title: "Tip · Charge & lock your phone to sync faster",
+                    compactTitle: "Charge + lock to sync faster",
+                    accessibilityLabel: "Tip: strap history syncs fastest while your phone is locked and charging.")
+    }
+
+    static func freshStrapPendingRecords(defaults: UserDefaults, now: Date) -> Int? {
+        guard let pending = defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords) as? Int,
+              let observedAt = defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt) as? Double,
+              now.timeIntervalSince1970 - observedAt <= 30 * 60 else { return nil }
+        return pending
+    }
+
+    /// "40 min", "31 h", "3 days". Nil for missing, future or under 2 min.
+    static func behindText(fillThroughUnix: Double?, now: Date) -> String? {
+        guard let fillThroughUnix, fillThroughUnix.isFinite, fillThroughUnix > 0 else { return nil }
+        return durationText(seconds: now.timeIntervalSince1970 - fillThroughUnix)
+    }
+
+    /// "40 min", "31 h", "3 days". Nil under 2 min.
+    static func durationText(seconds behind: TimeInterval) -> String? {
+        guard behind.isFinite, behind >= 120 else { return nil }
+        let minutes = Int(behind / 60)
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = Int((behind / 3_600).rounded())
+        if hours < 48 { return "\(hours) h" }
+        return "\(Int((behind / 86_400).rounded())) days"
     }
 
     private static func syncedThroughText(drainedThroughUnix: Double?,
@@ -6193,7 +7279,10 @@ enum AtriaSyncProgressFooterPresentation {
                        backgroundLeaseActive: Bool,
                        liveHeartRateIsCurrent: Bool = false,
                        now: Date,
-                       calendar: Calendar = .current) -> Footer? {
+                       calendar: Calendar = .current,
+                       abandonedThroughUnix: Double? = nil,
+                       drainCursorUnix: Double? = nil,
+                       lastDrainYieldedRows: Bool? = nil) -> Footer? {
         let debtFresh = debtObservedAgeSeconds.map {
             $0.isFinite && $0 >= 0
                 && $0 <= AtriaMissedDataBannerPresentation.debtFreshnessWindow
@@ -6204,7 +7293,19 @@ enum AtriaSyncProgressFooterPresentation {
         // not missing strap data).
         let freshlyCaughtUp = debtFresh
             && (debtRecords ?? 0) <= caughtUpRecordFloor
-        let behindSeconds = drainedThroughUnix.map {
+        let newestUnix = AtriaHomeRecoverySyncPresentation.newestSavedRecordUnix(
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        let fillUnix = AtriaHomeRecoverySyncPresentation.fillThroughUnix(
+            drainCursorUnix: drainCursorUnix,
+            drainedThroughUnix: drainedThroughUnix,
+            abandonedThroughUnix: abandonedThroughUnix
+        )
+        // One cursor: the oldest-first fill moving toward now. The newest-ever
+        // watermark is not a second clock.
+        let displayUnix = fillUnix ?? newestUnix
+        let behindSeconds = displayUnix.map {
             now.timeIntervalSince1970 - $0
         }
         let visiblyBehind = !freshlyCaughtUp
@@ -6217,6 +7318,7 @@ enum AtriaSyncProgressFooterPresentation {
             return nil
         }
         let active: Bool = {
+            if lastDrainYieldedRows == false { return false }
             if let age = secondsSinceLastFlush,
                age <= AtriaMissedDataBannerPresentation.activeDrainRecencyWindow {
                 return true
@@ -6229,8 +7331,8 @@ enum AtriaSyncProgressFooterPresentation {
         let liveText = liveHeartRateIsCurrent
             ? "live HR current · "
             : ""
-        guard let drainedThroughUnix, drainedThroughUnix > 0,
-              drainedThroughUnix <= now.timeIntervalSince1970 else {
+        guard let displayUnix, displayUnix > 0,
+              displayUnix <= now.timeIntervalSince1970 else {
             // No trustworthy frontier yet — state only, never a made-up time.
             let detail = liveText + stateText
             let capitalized = detail.prefix(1).uppercased() + detail.dropFirst()
@@ -6239,7 +7341,7 @@ enum AtriaSyncProgressFooterPresentation {
                           accessibilityDetail: capitalized,
                           active: active)
         }
-        let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
+        let frontier = Date(timeIntervalSince1970: displayUnix)
         let timeFormatter = DateFormatter()
         timeFormatter.calendar = calendar
         timeFormatter.timeZone = calendar.timeZone
@@ -6260,94 +7362,41 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
-        // Same frontier, same correction as the banner above: this reads the
-        // newest-ever watermark, so "through X" and "N behind" both overstated
-        // it. `behind` is `now - frontier` — the AGE OF THE NEWEST RECORD, not
-        // the size of the backlog, which is larger whenever holes remain behind
-        // the frontier.
-        return Footer(
-            headline: "Newest strap record \(throughText)",
-            // Numbers-first visible line; the reassurance clauses live in
-            // accessibilityDetail (and the icon still shows active/paused).
-            detail: "Newest \(throughText) · \(behindText(behind)) old",
-            accessibilityDetail: "Newest record \(behindText(behind)) old · \(liveText)\(stateText)",
-            active: active
-        )
-    }
-}
-
-private struct AtriaSyncProgressFooter: View {
-    let liveHeartRateIsCurrent: Bool
-    @State private var now = Date()
-    private let refresh = Timer.publish(every: 30, on: .main, in: .common)
-        .autoconnect()
-
-    var body: some View {
-        Group {
-            if let footer {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: footer.active
-                          ? "arrow.triangle.2.circlepath"
-                          : "pause.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(footer.active ? Color.cyan : Color.secondary)
-                        .frame(width: 30, height: 30)
-                        .background(AtriaIconTileBackground(
-                            cornerRadius: 9,
-                            tint: footer.active ? .cyan : .gray))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(footer.headline)
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                        Text(footer.detail)
-                            .font(.caption2)
-                            .foregroundStyle(Color.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.82)
-                    }
-                    Spacer(minLength: 0)
+        let fillingFromPast = fillUnix != nil
+            && (newestUnix == nil || (fillUnix ?? 0) + 30 < (newestUnix ?? 0))
+        // One user-facing cursor: the oldest-first fill moving toward now.
+        // "Last fill 3:06pm yesterday" and "newest record" cannot disagree.
+        if fillingFromPast {
+            let strapEmpty = freshlyCaughtUp
+            let remainingMinutes = (!strapEmpty && debtFresh)
+                ? max(1, (debtRecords ?? 0) / 60)
+                : nil
+            let detail: String
+            if strapEmpty {
+                detail = "Older pages aren't on the strap"
+            } else if active {
+                if let remainingMinutes, (debtRecords ?? 0) > caughtUpRecordFloor {
+                    detail = "catching up toward now · ~\(remainingMinutes) min still on the strap"
+                } else {
+                    detail = "catching up toward now · \(behindText(behind)) still to cover"
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(Color(uiColor: .secondarySystemBackground),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(footer.headline). \(footer.accessibilityDetail).")
+            } else if let remainingMinutes, (debtRecords ?? 0) > caughtUpRecordFloor {
+                detail = "~\(remainingMinutes) min still on the strap"
+            } else {
+                detail = "\(behindText(behind)) old · resumes in the background"
             }
+            return Footer(
+                headline: "Last fill \(throughText)",
+                detail: detail,
+                accessibilityDetail: "History fill last reached \(throughText). \(liveText)\(stateText)",
+                active: active
+            )
         }
-        .onReceive(refresh) { now = $0 }
-    }
-
-    private var footer: AtriaSyncProgressFooterPresentation.Footer? {
-        let defaults = UserDefaults.standard
-        let flushAt = defaults.object(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
-        ) as? Double
-        let debtObservedAt = defaults.object(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
-        ) as? Double
-        return AtriaSyncProgressFooterPresentation.footer(
-            drainedThroughUnix: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
-            ) as? Double,
-            backlogPending: defaults.bool(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
-            ),
-            debtRecords: defaults.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
-            ) as? Int,
-            debtObservedAgeSeconds: debtObservedAt.map {
-                now.timeIntervalSince1970 - $0
-            },
-            secondsSinceLastFlush: flushAt.map {
-                max(0, now.timeIntervalSince1970 - $0)
-            },
-            backgroundLeaseActive: defaults.string(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
-            ) == "active",
-            liveHeartRateIsCurrent: liveHeartRateIsCurrent,
-            now: now
+        return Footer(
+            headline: "Last fill \(throughText)",
+            detail: "\(behindText(behind)) old",
+            accessibilityDetail: "History fill last reached \(throughText). \(behindText(behind)) old · \(liveText)\(stateText)",
+            active: active
         )
     }
 }
@@ -6360,6 +7409,12 @@ enum AtriaMissedDataBannerPresentation {
         /// honest). False when the gap is effectively lost — the view then hides
         /// the futile sync button and offers only dismissal / start-fresh.
         let offersRecovery: Bool
+        /// True for the oversized pre-Atria backlog: a DECISION the owner must
+        /// make (start fresh vs sync it all), so the banner shows the whole
+        /// sentence and two labeled actions instead of a status icon (device
+        /// 2026-09-02: the copy recommended "Start fresh" while the row offered
+        /// only a sync glyph and a snooze, with the sentence cut at one line).
+        var isDecision: Bool = false
     }
 
     /// ~5 min still bankable on the strap is the floor for calling catch-up
@@ -6436,6 +7491,257 @@ enum AtriaMissedDataBannerPresentation {
         return false
     }
 
+    /// Device 2026-09-05: range-loss backfill stayed pending after the strap
+    /// had already abandoned the missing interval, so Sync kept advertising
+    /// "filling" while every drain slice yielded zero rows. Accept the loss
+    /// without wiping nights, sessions, or pairing. Returns whether it cleared
+    /// a pending flag.
+    @discardableResult
+    static func acceptTerminalHistoryLossIfNeeded(
+        defaults: UserDefaults,
+        now: Date = Date(),
+        pendingKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending,
+        requestedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt,
+        startedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt,
+        reasonKey: String = AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason,
+        parkedAtKey: String = AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt,
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices,
+        drainCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix,
+        acceptedCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+    ) -> Bool {
+        let pending = defaults.bool(forKey: pendingKey)
+        let stalled = gapIsTerminallyStalled(
+            backlogPending: pending,
+            sequenceGapParkedTerminal: defaults.object(forKey: parkedAtKey) != nil,
+            consecutiveZeroProgressSlices: defaults.integer(forKey: zeroProgressKey),
+            secondsSinceRangeLossRequested: (defaults.object(forKey: requestedAtKey) as? Double)
+                .map { max(0, now.timeIntervalSince1970 - $0) }
+        )
+        guard stalled else { return false }
+        let cursor = defaults.double(forKey: drainCursorKey)
+        let accepted = defaults.double(forKey: acceptedCursorKey)
+        let bound = accepted > 0 ? accepted : cursor
+        if earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: bound,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        ) != nil {
+            // Leftover Friday stall slices must not terminate a Saturday–Tuesday
+            // interval. Remember the abandoned fill cursor, keep the later
+            // ticket pending, and start that interval's slice count at zero.
+            if cursor > 0 {
+                defaults.set(cursor, forKey: acceptedCursorKey)
+            }
+            defaults.set(0, forKey: zeroProgressKey)
+            _ = applyResilientHistoryDrainSeekIfNeeded(defaults: defaults, now: now)
+            return false
+        }
+        if cursor > 0 {
+            defaults.set(cursor, forKey: acceptedCursorKey)
+        }
+        defaults.set(false, forKey: pendingKey)
+        defaults.removeObject(forKey: requestedAtKey)
+        defaults.removeObject(forKey: startedAtKey)
+        defaults.removeObject(forKey: reasonKey)
+        return true
+    }
+
+    /// After a terminal stall is accepted, do not re-arm the same unfillable
+    /// oldest-first interval until that cursor actually advances. A proposed
+    /// gap that starts strictly after the accepted cursor is a different
+    /// interval (device 2026-09-08: Friday 09:44 IST fill freeze must not
+    /// block Saturday–Tuesday history still on the strap).
+    static func shouldSkipRangeLossRearm(
+        acceptedCursorUnix: Double,
+        drainCursorUnix: Double,
+        proposedGapStartUnix: Double? = nil
+    ) -> Bool {
+        guard acceptedCursorUnix.isFinite, acceptedCursorUnix > 0 else { return false }
+        if let gapStart = proposedGapStartUnix,
+           gapStart.isFinite, gapStart > 0 {
+            // A gap that starts before the live seek is the abandoned prefix.
+            // Device 2026-09-08: after bringing the cursor to now, Saturday's
+            // dead page must not re-arm and starve live IMU.
+            if drainCursorUnix.isFinite, drainCursorUnix > 0,
+               gapStart + 1 < drainCursorUnix {
+                return true
+            }
+            if gapStart > acceptedCursorUnix + 1 {
+                return false
+            }
+        }
+        guard drainCursorUnix.isFinite else { return false }
+        return drainCursorUnix <= acceptedCursorUnix + 1
+    }
+
+    /// Earliest closed-or-open ledger window that starts strictly after the
+    /// accepted fill cursor. Legacy coalesced envelopes are not actionable.
+    static func earliestGapStartStrictlyAfter(
+        acceptedCursorUnix: Double,
+        windows: [AtriaHistoricalGapLedger.Window]
+    ) -> Double? {
+        guard acceptedCursorUnix.isFinite, acceptedCursorUnix > 0 else { return nil }
+        return windows
+            .filter { !AtriaHistoricalGapLedger.isLegacyCoalescedWindow($0) }
+            .compactMap { window -> Double? in
+                let start = window.start.timeIntervalSince1970
+                guard start.isFinite, start > acceptedCursorUnix + 1 else { return nil }
+                return start
+            }
+            .min()
+    }
+
+    /// True when the ledger has a window that starts after the accepted (or
+    /// parked drain) fill cursor. Used so leftover stall slices from that
+    /// cursor cannot skip or accept-away a strictly later interval.
+    static func hasActionableGapAfterAcceptedCursor(
+        defaults: UserDefaults
+    ) -> Bool {
+        let accepted = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+        )
+        let cursor = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        let bound = accepted > 0 ? accepted : cursor
+        return earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: bound,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        ) != nil
+    }
+
+    /// Move the oldest-first seek cursor off a proven-dead page onto the next
+    /// recoverable start, or to now when that page is stuck. Returns the new
+    /// seek unix, or nil when already correctly placed. Does not rewrite
+    /// `drainedThroughUnix`.
+    @discardableResult
+    static func applyResilientHistoryDrainSeekIfNeeded(
+        defaults: UserDefaults,
+        now: Date = Date(),
+        drainCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix,
+        acceptedCursorKey: String = AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix,
+        abandonedThroughKey: String = AtriaBLEManager.OfflineSyncDefaults.historyAbandonedThroughUnix,
+        drainedThroughKey: String = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+    ) -> Double? {
+        let parked = defaults.double(forKey: drainCursorKey)
+        let accepted = defaults.double(forKey: acceptedCursorKey)
+        let laterStart = earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: accepted > 0 ? accepted : parked,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        )
+        let yielded = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows
+        ) as? Bool
+        let stuck = AtriaBLEManager.historyDrainOldestPageIsStuck(
+            parkedCursorUnix: parked,
+            nowUnix: now.timeIntervalSince1970,
+            lastDrainYieldedRows: yielded,
+            consecutiveZeroProgressSlices: defaults.integer(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+            ),
+            lastStatus: defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus
+            ),
+            coverLiveUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix
+            ) as? Double
+        )
+        guard let seek = AtriaBLEManager.resilientHistoryDrainSeekUnix(
+            parkedCursorUnix: parked,
+            acceptedUnrecoverableUnix: accepted,
+            abandonedThroughUnix: defaults.double(forKey: abandonedThroughKey),
+            drainedThroughUnix: defaults.double(forKey: drainedThroughKey),
+            nextRecoverableStartUnix: laterStart,
+            nowUnix: now.timeIntervalSince1970,
+            oldestPageIsStuck: stuck
+        ) else { return nil }
+        defaults.set(seek, forKey: drainCursorKey)
+        let coveredLive = stuck && seek + 0.5 >= now.timeIntervalSince1970
+        if coveredLive {
+            // Accept the abandoned prefix so skip-rearm will not pull the
+            // radio back onto pages that just timed out.
+            defaults.set(seek, forKey: acceptedCursorKey)
+            defaults.set(seek,
+                         forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix)
+            defaults.set(0, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+            defaults.set(false, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt)
+            defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillReason)
+        } else if stuck {
+            // One dead page toward now. Do not cover-live: remaining history
+            // after this skip can still fill. Clear the failed-page bits so
+            // reconcile cannot skip another 15 minutes without a drain.
+            defaults.set(0, forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices)
+            defaults.set(true,
+                         forKey: AtriaBLEManager.OfflineSyncDefaults.lastDrainAttemptYieldedRows)
+            if let status = defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus
+            ), status.contains("no_rows")
+                || status.contains("first_frame_timeout")
+                || status.contains("history_start_timeout") {
+                defaults.set("history_drain_page_skip",
+                             forKey: AtriaBLEManager.OfflineSyncDefaults.lastStatus)
+            }
+        }
+        return seek
+    }
+
+    /// Leftover consecutive zero-progress slices belong to the abandoned
+    /// oldest-first interval. A strictly later admission starts a new count.
+    @discardableResult
+    static func resetZeroProgressSlicesForLaterGapAdmission(
+        defaults: UserDefaults,
+        zeroProgressKey: String = AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
+    ) -> Bool {
+        guard hasActionableGapAfterAcceptedCursor(defaults: defaults) else {
+            return false
+        }
+        defaults.set(0, forKey: zeroProgressKey)
+        return true
+    }
+
+    /// After a terminal stall is accepted, do not re-arm the same unfillable
+    /// interval until the oldest-first cursor actually advances.
+    static func shouldSkipRangeLossRearm(
+        defaults: UserDefaults,
+        now: Date = Date()
+    ) -> Bool {
+        // Cover-live jumped the drain to now. A reconnect blip must not
+        // re-arm oldest-first history and steal the radio from 51/IMU.
+        if defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyCoverLiveUnix
+        ) != nil {
+            return true
+        }
+        let accepted = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+        )
+        let cursor = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        let laterGapStart = earliestGapStartStrictlyAfter(
+            acceptedCursorUnix: accepted > 0 ? accepted : cursor,
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(defaults: defaults)
+        )
+        if laterGapStart != nil {
+            return shouldSkipRangeLossRearm(
+                acceptedCursorUnix: accepted > 0 ? accepted : cursor,
+                drainCursorUnix: cursor,
+                proposedGapStartUnix: laterGapStart
+            )
+        }
+        if acceptTerminalHistoryLossIfNeeded(defaults: defaults, now: now) {
+            return true
+        }
+        return shouldSkipRangeLossRearm(
+            acceptedCursorUnix: defaults.double(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.unrecoverableHistoryAcceptedCursorUnix
+            ),
+            drainCursorUnix: cursor,
+            proposedGapStartUnix: nil
+        )
+    }
+
     static func copy(strapPendingRecords: Int,
                      protectsLiveStream: Bool,
                      secondsSinceLastFlush: TimeInterval?,
@@ -6444,7 +7750,9 @@ enum AtriaMissedDataBannerPresentation {
                      backlogPending: Bool = false,
                      consecutiveZeroProgressSlices: Int = 0,
                      secondsSinceRangeLossRequested: TimeInterval? = nil,
-                     sequenceGapParkedTerminal: Bool = false) -> Copy {
+                     sequenceGapParkedTerminal: Bool = false,
+                     ledgerRecoverableSeconds: TimeInterval? = nil,
+                     ledgerProvenUnrecoverableSeconds: TimeInterval? = nil) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
@@ -6471,6 +7779,22 @@ enum AtriaMissedDataBannerPresentation {
             return Copy(
                 title: "Strap can't catch up",
                 subtitle: "No recent progress — start fresh to clear the gap. New data is unaffected.",
+                offersRecovery: false
+            )
+        }
+
+        // Every classified ledger window is provably beyond recovery (served
+        // past the ACK cursor, behind the Start-fresh watermark, or off-wrist)
+        // — a Sync tap cannot refill any of it, so no affordance is dangled.
+        // Fail-open by construction: indeterminate windows count as
+        // recoverable upstream and keep the Sync button, and callers that
+        // gathered no classification pass nil and change nothing.
+        if backlogPending,
+           let recoverable = ledgerRecoverableSeconds, recoverable < 60,
+           (ledgerProvenUnrecoverableSeconds ?? 0) >= 60 {
+            return Copy(
+                title: "Earlier data missed",
+                subtitle: "The strap no longer holds it (off wrist, battery out, or overwritten). New data is unaffected.",
                 offersRecovery: false
             )
         }
@@ -6541,12 +7865,19 @@ private struct AtriaMissedDataBanner: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            compactIcon
-            copyBlock
-            Spacer(minLength: 0)
-            compactState
-            dismissButton
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
+                compactIcon
+                copyBlock
+                Spacer(minLength: 0)
+                if !bannerCopy.isDecision {
+                    compactState
+                }
+                dismissButton
+            }
+            if bannerCopy.isDecision {
+                decisionActions
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -6554,6 +7885,21 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(bannerCopy.title). \(bannerCopy.subtitle).")
+    }
+
+    /// The oversized-backlog decision, spelled out: the recommended clean
+    /// slate first (its confirm dialog explains what is lost), the slow full
+    /// sync second. Both reuse the existing wiring; nothing new is minted.
+    private var decisionActions: some View {
+        HStack(spacing: 10) {
+            Button("Start fresh", action: onStartFresh)
+                .atriaCardAction(tint: .cyan)
+            Button("Sync all", action: handleSyncTap)
+                .atriaCardAction(prominent: false, tint: .secondary)
+                .accessibilityLabel(protectsLiveStream
+                                    ? "Sync all history; live tracking stays uninterrupted"
+                                    : "Sync all history from before Atria")
+        }
     }
 
     private var compactIcon: some View {
@@ -6572,7 +7918,34 @@ private struct AtriaMissedDataBanner: View, Equatable {
     /// buffer pending, P6) AND whether the background drain is actively flushing
     /// (durable-flush recency + active lease) — NOT the stale pending count
     /// alone, which made a working drain read as "stuck at ~8 min".
+    /// A huge backlog is a DECISION, not a status. A fresh user pairing a
+    /// strap that lived with the official WHOOP app inherits weeks of foreign
+    /// flash history; at ~1x replay that backlog never converges, silently
+    /// starves sleep confirmation, and poisons the cycle boundary — the exact
+    /// failure the owner lived through at 15.5 h, met on day one at 10x. Over
+    /// a day of backlog, the banner leads with the choice instead of quietly
+    /// "filling".
+    private var oversizedBacklogText: String? {
+        let seconds = AtriaHomeRecoverySyncPresentation.unresolvedGapSeconds(
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(
+                defaults: .standard),
+            now: Date()
+        )
+        guard seconds >= 24 * 3_600 else { return nil }
+        return String(format: "%.0f days", (seconds / 86_400).rounded())
+    }
+
     private var bannerCopy: AtriaMissedDataBannerPresentation.Copy {
+        if let days = oversizedBacklogText {
+            return .init(
+                title: "This strap holds ~\(days) of history from before Atria",
+                subtitle: "Syncing it all is slow and delays sleep and step "
+                    + "accuracy. Start fresh keeps live tracking and lets "
+                    + "today work now — recommended for a newly paired strap.",
+                offersRecovery: true,
+                isDecision: true
+            )
+        }
         let defaults = UserDefaults.standard
         let pending = defaults.integer(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
@@ -6608,6 +7981,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let secondsSinceRangeLossRequested: TimeInterval? = rangeLossRequestedAt.map {
             max(0, Date().timeIntervalSince1970 - $0)
         }
+        // Per-window wear/recoverability verdicts (memoised on the ledger
+        // generation) so the Sync affordance reflects only time the strap can
+        // still hand over.
+        let gapSummary = AtriaHomeRecoverySyncPresentation
+            .memoisedGapBacklogSummary(defaults: defaults, now: Date())
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6621,7 +7999,9 @@ private struct AtriaMissedDataBanner: View, Equatable {
             ),
             consecutiveZeroProgressSlices: zeroProgressSlices,
             secondsSinceRangeLossRequested: secondsSinceRangeLossRequested,
-            sequenceGapParkedTerminal: sequenceGapParked
+            sequenceGapParkedTerminal: sequenceGapParked,
+            ledgerRecoverableSeconds: gapSummary.recoverableSeconds,
+            ledgerProvenUnrecoverableSeconds: gapSummary.provenUnrecoverableSeconds
         )
     }
 
@@ -6657,12 +8037,13 @@ private struct AtriaMissedDataBanner: View, Equatable {
         VStack(alignment: .leading, spacing: 2) {
             Text(bannerCopy.title)
                 .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
+                // A status row stays one line; a decision gets its sentence.
+                .lineLimit(bannerCopy.isDecision ? 2 : 1)
                 .minimumScaleFactor(0.82)
             Text(syncTapFeedback ?? bannerCopy.subtitle)
                 .font(.caption)
                 .foregroundStyle(syncTapFeedback == nil ? Color.secondary : Color.cyan)
-                .lineLimit(1)
+                .lineLimit(bannerCopy.isDecision ? 4 : 1)
                 .minimumScaleFactor(0.82)
                 .task(id: syncTapFeedback) {
                     // Auto-clear the tap confirmation so the row returns to its
@@ -6686,6 +8067,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     // 44pt hit area (UX-quality audit 2026-07-07): the glyph
                     // stays 16pt, the target doesn't.
                     .frame(width: 32, height: 32)
+                    .atriaMinimumHitTarget(width: 32, height: 32)
                     .contentShape(.rect)
             }
             .atriaCardAction(prominent: false, tint: .cyan)
@@ -6712,33 +8094,6 @@ private struct AtriaMissedDataBanner: View, Equatable {
                             : "Start fresh; clear this unrecoverable gap")
     }
 
-    private var missedDataDurationText: String {
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return "3.2 h"
-        }
-        let defaults = UserDefaults.standard
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let reference = requestedAt ?? startedAt
-        guard let reference else { return "0.0 h" }
-        let hours = max(0, Date().timeIntervalSince1970 - reference) / 3600
-        return String(format: "%.1f h", hours)
-    }
-
-    private var catchUpProgress: Double {
-        // Retained for older handoff fixture compatibility; the current UI is a calm
-        // status row and no longer renders a progress bar.
-        if Self.debugShowsCatchUpPill(arguments: ProcessInfo.processInfo.arguments) {
-            return 0.42
-        }
-        let defaults = UserDefaults.standard
-        let startedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillStartedAt) as? Double
-        let requestedAt = defaults.object(forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
-        let reference = startedAt ?? requestedAt
-        guard let reference else { return 0.08 }
-        return min(0.96, max(0.08, Date().timeIntervalSince1970 - reference) / (30 * 60))
-    }
-
     #if DEBUG
     private static func debugShowsCatchUpPill(arguments: [String]) -> Bool {
         guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
@@ -6749,6 +8104,167 @@ private struct AtriaMissedDataBanner: View, Equatable {
     #else
     private static func debugShowsCatchUpPill(arguments _: [String]) -> Bool { false }
     #endif
+}
+
+/// One card for every "possible workout" state on Today, laid out like the
+/// Sleep review card (owner 2026-09-27: "similar to Sleep one"): icon, title
+/// and window, the duration as the hero, Review / Dismiss, and a
+/// Start → Window → End arc. Orange instead of the sleep hue.
+private struct AtriaPossibleWorkoutCard: View {
+    let rangeText: String
+    let detail: String?
+    let durationText: String
+    let startText: String
+    let endText: String
+    let note: String?
+    let primaryEnabled: Bool
+    let onReview: (() -> Void)?
+    let onDismiss: (() -> Void)?
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    Circle().fill(Color.orange.opacity(0.14))
+                    Image(systemName: "figure.mixed.cardio")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                .frame(width: 50, height: 50)
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Possible workout")
+                        .font(.headline.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(rangeText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize >= .xxLarge ? 2 : 1)
+                        .minimumScaleFactor(0.85)
+                    if let detail {
+                        Text(detail)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.75)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if hasWindow {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(durationText)
+                            .font(AtriaDesignTokens.Typography.cardHeroValue)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                        Text("Workout")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if onReview != nil || onDismiss != nil {
+                HStack(spacing: 10) {
+                    if let onReview {
+                        Button(action: onReview) {
+                            Group {
+                                if dynamicTypeSize >= .xxLarge {
+                                    Text("Review")
+                                } else {
+                                    Label("Review", systemImage: "checkmark.circle")
+                                }
+                            }
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .atriaCardAction(tint: .orange)
+                        .disabled(!primaryEnabled)
+                        .accessibilityLabel("Review workout")
+                        .accessibilityHint("Opens the workout to check the time and pick the activity before saving.")
+                    }
+                    if let onDismiss {
+                        Button(action: onDismiss) {
+                            Text("Dismiss")
+                                .font(.caption.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .atriaCardAction(prominent: false, tint: .secondary)
+                        .accessibilityLabel("Not a workout")
+                        .accessibilityHint("Dismisses this without saving it.")
+                    }
+                }
+            }
+
+            if let note {
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if hasWindow {
+                workoutArc
+            }
+        }
+        .padding(16)
+        .atriaCard(emphasis: .soft)
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The waiting state has no window yet: no hero, no arc, no dashes.
+    private var hasWindow: Bool { startText != "--" }
+
+    private var workoutArc: some View {
+        HStack(spacing: 8) {
+            arcNode(title: "Start", value: startText, systemImage: "figure.walk")
+            arcConnector
+            arcNode(title: "Window", value: durationText, systemImage: "clock.fill")
+            arcConnector
+            arcNode(title: "End", value: endText, systemImage: "flag.checkered")
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.06), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Start \(startText), window \(durationText), end \(endText).")
+    }
+
+    private func arcNode(title: String, value: String, systemImage: String) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.orange)
+                .frame(width: 26, height: 26)
+                .background(Color.orange.opacity(0.13), in: Circle())
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.caption2.weight(.black).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var arcConnector: some View {
+        Capsule(style: .continuous)
+            .fill(Color.orange.opacity(0.58))
+            .frame(width: 14, height: 3)
+            .accessibilityHidden(true)
+    }
 }
 
 private struct AtriaWorkoutDetectionBanner: View, Equatable {
@@ -6762,116 +8278,46 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(.orange.opacity(0.16), lineWidth: 8)
-                    Circle()
-                        .trim(from: 0, to: prompt.progressFraction)
-                        .stroke(.orange, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: "figure.mixed.cardio")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(prompt.headline)
-                        .font(.headline.weight(.semibold))
-                    Text(prompt.subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
-                }
-
-                Spacer(minLength: 0)
-
-                Text("Strap HR")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.orange.opacity(0.13), in: Capsule(style: .continuous))
-            }
-
-            workoutEvidenceRail
-
-            HStack(spacing: 10) {
-                Button(action: onStart) {
-                    Text(prompt.primaryTitle)
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!prompt.isReviewReady)
-                .atriaCardAction(tint: .orange)
-
-                Button(action: onDismiss) {
-                    Text("Not now")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(prompt.headline). Heart rate \(prompt.heartRate) beats per minute, \(prompt.bpmOverRest) above rest, strain \(String(format: "%.1f", prompt.strain)), \(prompt.confidenceLabel).")
+        AtriaPossibleWorkoutCard(
+            rangeText: rangeText,
+            detail: detailText,
+            durationText: "\(prompt.evidenceMinutes)m",
+            startText: startText,
+            endText: endText,
+            note: nil,
+            primaryEnabled: prompt.isReviewReady,
+            onReview: onStart,
+            onDismiss: onDismiss
+        )
+        .accessibilityLabel("Possible workout. \(prompt.subtitle). Heart rate \(prompt.heartRate) beats per minute, strain \(String(format: "%.1f", prompt.strain)).")
     }
 
-    private var workoutEvidenceRail: some View {
-        // Two calm, clearly SEPARATED bars (user feedback 2026-07-30). The old
-        // rail stacked an HR bar and a thin strain bar in ONE ZStack — the strain
-        // capsule was offset just 7pt down INTO the HR capsule — so they overlapped
-        // and read as one muddy bar. Each metric now owns a labeled row and its
-        // own full-height track. The redundant "Strap HR / Strain" footer row and
-        // the three Signal/Time/Next decision chips were dropped: the header, these
-        // two bars, and the buttons already carry everything this prompt needs.
-        VStack(alignment: .leading, spacing: 12) {
-            evidenceBar(title: "Effort",
-                        valueText: "\(prompt.heartRate) bpm · +\(prompt.bpmOverRest)",
-                        fraction: min(max(Double(prompt.bpmOverRest) / 80.0, 0), 1),
-                        tint: .orange,
-                        rollValue: prompt.heartRate)
-            evidenceBar(title: "Strain",
-                        valueText: String(format: "%.1f", prompt.strain),
-                        fraction: min(max(prompt.strain / 12.0, 0), 1),
-                        tint: Metrics.electricStrain,
-                        rollValue: prompt.strain)
-        }
-        .padding(12)
-        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
-        // this panel's corners parallel to the card's (28 − 14 = 14).
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
+    private var startText: String {
+        let start = prompt.episodeStart ?? Date().addingTimeInterval(-Double(prompt.samples))
+        return start.formatted(date: .omitted, time: .shortened)
     }
 
-    private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color, rollValue: some Equatable) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(valueText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .contentTransition(reduceMotion ? .identity : .numericText())
-                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
-                               value: rollValue)
-            }
-            GeometryReader { proxy in
-                let width = proxy.size.width
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.7))
-                        .frame(width: max(6, width * fraction))
-                }
-            }
-            .frame(height: 7)
-        }
+    private var endText: String {
+        guard prompt.isFinished(), let end = prompt.episodeEnd else { return "Now" }
+        return end.formatted(date: .omitted, time: .shortened)
     }
+
+    private var rangeText: String {
+        guard prompt.isReviewReady else { return "Watching a heart-rate rise" }
+        let kind = prompt.walkStepsPerMinute == nil ? "" : "Walk · "
+        return prompt.isFinished()
+            ? "\(kind)\(startText)–\(endText)"
+            : "\(kind)Since ≈\(startText) · still going"
+    }
+
+    private var detailText: String {
+        if let cadence = prompt.walkStepsPerMinute {
+            return "\(cadence) steps/min · heart rate \(prompt.heartRate) bpm"
+        }
+        let when = prompt.isFinished() ? "avg" : "now"
+        return "Heart rate \(prompt.heartRate) bpm \(when) · strain \(String(format: "%.1f", prompt.strain))"
+    }
+
 }
 
 private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
@@ -6888,183 +8334,20 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(.orange.opacity(0.16), lineWidth: 8)
-                    Circle()
-                        .trim(from: 0, to: candidate.kind == .workout ? 1 : 0.72)
-                        .stroke(.orange, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: candidate.kind == .workout ? "checkmark.seal.fill" : "figure.strengthtraining.traditional")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(candidate.title)
-                        .font(.headline.weight(.semibold))
-                    Text("\(timeRangeText) · \(durationText) from strap HR")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
-                }
-
-                Spacer(minLength: 0)
-
-                Text("Review")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(.orange.opacity(0.13), in: Capsule(style: .continuous))
-            }
-
-            savedWorkoutEvidenceRail
-            savedWorkoutDecisionStrip
-
-            HStack(spacing: 10) {
-                Button(action: onReview) {
-                    Text("Confirm type")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(tint: .orange)
-
-                Button(action: onDismiss) {
-                    Text("Dismiss")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(candidate.title). \(durationText) from strap heart rate, \(timeRangeText), peak \(candidate.peakHR) beats per minute. Strap window \(signalReviewTitle). Confirm type before saving.")
-    }
-
-    private var savedWorkoutEvidenceRail: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Workout window")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(timeRangeText)
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .layoutPriority(1)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let peakProgress = heartRateProgress(candidate.peakHR)
-                let averageProgress = heartRateProgress(candidate.avgHR)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Capsule(style: .continuous)
-                        .fill(.orange.opacity(0.68))
-                        .frame(width: max(10, width * peakProgress))
-                    Capsule(style: .continuous)
-                        .fill(Color.cyan.opacity(0.56))
-                        .frame(width: max(8, width * averageProgress), height: 6)
-                        .offset(y: 7)
-                }
-            }
-            .frame(height: 17)
-
-            // Colour the labels to match the two bars above (orange = peak HR,
-            // cyan = average HR) so the bars are self-explanatory instead of two
-            // unlabelled lines.
-            HStack(spacing: 8) {
-                Label("Peak \(candidate.peakHR)", systemImage: "waveform.path.ecg")
-                    .foregroundStyle(.orange)
-                Label("Avg \(candidate.avgHR)", systemImage: "smallcircle.filled.circle")
-                    .foregroundStyle(.cyan)
-                    .monospacedDigit()
-                Spacer(minLength: 8)
-                Text(durationText)
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption2.weight(.semibold))
-        }
-        .padding(12)
-        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
-        // this panel's corners parallel to the card's (28 − 14 = 14).
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout window \(timeRangeText). Peak \(candidate.peakHR), average \(candidate.avgHR), duration \(durationText).")
-    }
-
-    private func heartRateProgress(_ bpm: Int) -> Double {
-        guard maxHeartRate > restingHeartRate else { return 0 }
-        let value = Double(bpm - restingHeartRate) / Double(maxHeartRate - restingHeartRate)
-        return min(max(value, 0), 1)
-    }
-
-    // Was three button-looking tiles ("Review Window", "Strap <signal>", "Save
-    // After type") that weren't tappable — a false affordance that just narrated
-    // the flow the Confirm/Dismiss buttons already drive. Replaced with one clear
-    // non-button row that keeps the genuinely useful bit — the strap signal
-    // quality — and states the next action plainly.
-    private var savedWorkoutDecisionStrip: some View {
-        HStack(spacing: 8) {
-            Image(systemName: signalReviewIcon)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(signalReviewTint)
-            Text("Strap signal: \(signalReviewTitle)")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(signalReviewTint)
-            Spacer(minLength: 8)
-            Text("Confirm the type to save")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(signalReviewTint.opacity(0.10), in: Capsule(style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Strap signal \(signalReviewTitle). Confirm the activity type to save.")
-    }
-
-    // Uncalled in code but pinned by test_handoff_static_checks
-    // (test_live_workout_auto_detect_prompt_is_inline_and_conservative) as
-    // required structure — retained as intentional scaffolding, not deleted.
-    private var reviewPathStrip: some View {
-        HStack(spacing: 7) {
-            pathStep("1", "Window", tint: .cyan)
-            pathStep("2", "Type", tint: .orange)
-            pathStep("3", "Exercises", tint: .mint)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review path: adjust window, choose type, add exercises.")
-    }
-
-    private func pathStep(_ number: String, _ title: String, tint: Color) -> some View {
-        HStack(spacing: 5) {
-            Text(number)
-                .font(.caption2.weight(.black).monospacedDigit())
-                .foregroundStyle(tint)
-                .frame(width: 18, height: 18)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        AtriaPossibleWorkoutCard(
+            rangeText: timeRangeText,
+            detail: "Heart-rate estimate · Avg \(candidate.avgHR) · Peak \(candidate.peakHR) bpm",
+            durationText: durationText,
+            startText: candidate.start.formatted(date: .omitted, time: .shortened),
+            endText: candidate.end.formatted(date: .omitted, time: .shortened),
+            note: candidate.missingMinutes >= 5
+                ? "Heart rate is missing for \(candidate.missingMinutes) min of this — check the times."
+                : nil,
+            primaryEnabled: true,
+            onReview: onReview,
+            onDismiss: onDismiss
+        )
+        .accessibilityLabel("Possible workout, \(timeRangeText), \(durationText). Average \(candidate.avgHR), peak \(candidate.peakHR) beats per minute.")
     }
 
     private var durationText: String {
@@ -7078,29 +8361,7 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
     private var timeRangeText: String {
         let startText = candidate.start.formatted(date: .omitted, time: .shortened)
         let endText = candidate.end.formatted(date: .omitted, time: .shortened)
-        return "\(startText)-\(endText)"
-    }
-
-    private var signalReviewTitle: String {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 {
-            return "Ready"
-        }
-        if candidate.streamCoveragePercent >= 60 {
-            return "Review"
-        }
-        return "Check time"
-    }
-
-    private var signalReviewTint: Color {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 { return .mint }
-        if candidate.streamCoveragePercent >= 60 { return .cyan }
-        return .orange
-    }
-
-    private var signalReviewIcon: String {
-        if candidate.streamCoveragePercent >= 75, candidate.gapCount == 0 { return "checkmark.seal.fill" }
-        if candidate.streamCoveragePercent >= 60 { return "waveform.path.badge.plus" }
-        return "exclamationmark.triangle.fill"
+        return "\(startText)–\(endText)"
     }
 
 }
@@ -7113,98 +8374,18 @@ private struct AtriaWorkoutReviewHoldBanner: View, Equatable {
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            holdMark
-
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text(state.title)
-                        .font(.headline.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                    Text("Strap HR")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.orange.opacity(0.12), in: Capsule(style: .continuous))
-                }
-
-                Text(state.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-
-                holdPathStrip
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .combine)
+        AtriaPossibleWorkoutCard(
+            rangeText: state.detail,
+            detail: nil,
+            durationText: "--",
+            startText: "--",
+            endText: "--",
+            note: nil,
+            primaryEnabled: false,
+            onReview: nil,
+            onDismiss: nil
+        )
         .accessibilityLabel(state.accessibilityText)
-    }
-
-    private var holdMark: some View {
-        ZStack {
-            Circle()
-                .stroke(.orange.opacity(0.16), lineWidth: 7)
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(.orange, style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            Image(systemName: symbolName)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.orange)
-        }
-        .frame(width: 54, height: 54)
-        .accessibilityHidden(true)
-    }
-
-    private var progress: Double {
-        switch state {
-        case .waitingForSettle(let bpmOverRest):
-            return min(max(Double(bpmOverRest) / 70.0, 0.22), 0.88)
-        case .possibleSignal:
-            return 0.42
-        }
-    }
-
-    private var symbolName: String {
-        switch state {
-        case .waitingForSettle:
-            return "heart.fill"
-        case .possibleSignal:
-            return "waveform.path.ecg"
-        }
-    }
-
-    private var holdPathStrip: some View {
-        HStack(spacing: 7) {
-            holdStep("1", "Observe", tint: .orange)
-            holdStep("2", "Settle", tint: .cyan)
-            holdStep("3", "Ask", tint: .secondary)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private func holdStep(_ number: String, _ title: String, tint: Color) -> some View {
-        HStack(spacing: 5) {
-            Text(number)
-                .font(.caption2.weight(.black).monospacedDigit())
-                .foregroundStyle(tint)
-                .frame(width: 18, height: 18)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -7246,1536 +8427,12 @@ private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable {
     }
 }
 
-private struct AtriaWorkoutReviewFlow: View {
-    let draft: AtriaWorkoutReviewDraft
-    let onCancel: () -> Void
-    let onSave: @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?
-
-    @State private var step: AtriaWorkoutReviewStep = .time
-    @State private var start: Date
-    @State private var end: Date
-    @State private var selectedType: AtriaWorkoutActivityType = .strength
-    @State private var selectedSubtype: String?
-    @State private var selectedExercises = Set<String>()
-    @State private var exerciseSearch = ""
-    @State private var exerciseGroups: [AtriaWorkoutExerciseGroup]
-    @State private var exerciseNameKeys: Set<String>
-    @State private var filteredExerciseGroups: [AtriaWorkoutExerciseGroup]
-    @State private var showsAllWorkoutTypes = false
-    @State private var typeSearch = ""
-    @State private var summaryExerciseHistoryMemo = AtriaWorkoutSummaryExerciseHistoryMemo()
-    @State private var isSaving = false
-
-    init(draft: AtriaWorkoutReviewDraft,
-         onCancel: @escaping () -> Void,
-         onSave: @escaping @MainActor (AtriaWorkoutReviewResult) async -> UserConfirmedWorkout?) {
-        self.draft = draft
-        self.onCancel = onCancel
-        self.onSave = onSave
-        _start = State(initialValue: draft.suggestedStart)
-        _end = State(initialValue: draft.suggestedEnd)
-        _selectedType = State(initialValue: draft.prompt.suggestedActivityType)
-        // Detection may suggest only a broad activity type. Preserve subtype
-        // abstention until the user explicitly chooses a style in review.
-        _selectedSubtype = State(initialValue: nil)
-        _step = State(initialValue: Self.debugInitialStep(arguments: ProcessInfo.processInfo.arguments))
-        let initialExerciseGroups = AtriaWorkoutExerciseCatalog.allGroups()
-        _exerciseGroups = State(initialValue: initialExerciseGroups)
-        _exerciseNameKeys = State(initialValue: Self.exerciseNameKeys(in: initialExerciseGroups))
-        _filteredExerciseGroups = State(initialValue: AtriaWorkoutExerciseCatalog.filteredGroups(search: "", groups: initialExerciseGroups))
-    }
-
-    private var visibleSteps: [AtriaWorkoutReviewStep] {
-        selectedType.supportsExerciseSelection ? AtriaWorkoutReviewStep.allCases : [.time, .type, .summary]
-    }
-
-    private var visibleWorkoutTypes: [AtriaWorkoutActivityType] {
-        // 2026-08-01 (gym-session review): the full catalog is long enough to
-        // need a plain text filter. Filtering only applies to the revealed
-        // full list; the compact suggested list stays untouched.
-        if showsAllWorkoutTypes, !trimmedTypeSearch.isEmpty {
-            return AtriaWorkoutActivityType.allCases.filter {
-                $0.rawValue.localizedCaseInsensitiveContains(trimmedTypeSearch)
-            }
-        }
-        guard !showsAllWorkoutTypes else { return AtriaWorkoutActivityType.allCases }
-        var types = draft.prompt.suggestedActivityTypes
-        if !types.contains(selectedType) {
-            types.append(selectedType)
-        }
-        return types
-    }
-
-    private var trimmedTypeSearch: String {
-        typeSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var hiddenWorkoutTypeCount: Int {
-        max(AtriaWorkoutActivityType.allCases.count - visibleWorkoutTypes.count, 0)
-    }
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                AtriaDashboardBackdrop()
-                    .ignoresSafeArea()
-
-                VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            header
-                            currentStep
-                        }
-                        .padding(16)
-                        .padding(.bottom, 16)
-                    }
-                    footer
-                }
-            }
-            .navigationTitle("Review workout")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                reloadExerciseGroups()
-            }
-            .onChange(of: exerciseSearch) { _, _ in
-                refreshFilteredExerciseGroups()
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Label("Review effort", systemImage: "waveform.path.ecg")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.primary)
-
-            Spacer(minLength: 4)
-
-            headerChip("Peak \(draft.prompt.heartRate)", tint: .orange)
-
-            if let zone = draft.prompt.heartRateZone {
-                headerChip(zone.shortLabel, tint: zone.tint)
-            }
-
-            Button(action: onCancel) {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 22, height: 22)
-            }
-            .atriaGlassIconAction(tint: .secondary, size: 38)
-            .accessibilityLabel("Cancel workout review")
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private var workoutReceiptBoard: some View {
-        HStack(spacing: 8) {
-            workoutReceiptTile(title: "Time",
-                               value: durationText,
-                               detail: "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))",
-                               systemImage: "clock.fill",
-                               tint: .cyan)
-            workoutReceiptTile(title: "Peak",
-                               value: "\(draft.prompt.heartRate)",
-                               detail: draft.prompt.heartRateZone?.shortLabel ?? "bpm",
-                               systemImage: "waveform.path.ecg",
-                               tint: draft.prompt.heartRateZone?.tint ?? .orange)
-            workoutReceiptTile(title: "Type",
-                               value: selectedType.rawValue,
-                               detail: selectedSubtype ?? "Tap type",
-                               systemImage: selectedType.icon,
-                               tint: .orange)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout receipt. Time \(durationText). Peak \(draft.prompt.heartRate). Type \(selectedType.rawValue).")
-    }
-
-    private func workoutReceiptTile(title: String,
-                                    value: String,
-                                    detail: String,
-                                    systemImage: String,
-                                    tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .background(tint.opacity(0.12), in: Circle())
-
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.black).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-            Text(detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private var captureEvidenceStrip: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label("What Atria saw", systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.orange)
-                Spacer(minLength: 8)
-                Text(draft.prompt.isReviewReady ? "Ready for you" : "Check timing")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(draft.prompt.isReviewReady ? .mint : .orange)
-            }
-
-            HStack(spacing: 8) {
-                captureTile(title: "Time seen",
-                            value: "\(draft.prompt.evidenceMinutes)m",
-                            progress: min(max(Double(draft.prompt.evidenceMinutes) / 45.0, 0.08), 1),
-                            tint: .cyan)
-                captureTile(title: "Signal",
-                            value: draft.prompt.confidenceLabel,
-                            progress: draft.prompt.progressFraction,
-                            tint: .orange)
-                captureTile(title: "Next",
-                            value: draft.prompt.isReviewReady ? "Confirm" : "Wait",
-                            progress: draft.prompt.isReviewReady ? 1 : 0.58,
-                            tint: draft.prompt.isReviewReady ? .mint : .secondary)
-            }
-        }
-        .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(Color.orange.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("What Atria saw. \(draft.prompt.evidenceMinutes == 1 ? "1 minute" : "\(draft.prompt.evidenceMinutes) minutes") of strap heart rate. Signal \(draft.prompt.confidenceLabel). Next \(draft.prompt.isReviewReady ? "confirm workout" : "wait or adjust timing").")
-    }
-
-    private func captureTile(title: String, value: String, progress: Double, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                Text(value)
-                    .font(.caption2.monospacedDigit().weight(.black))
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.66)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.72))
-                        .frame(width: max(7, width * min(max(progress, 0), 1)))
-                }
-            }
-            .frame(height: 7)
-            .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
-        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    private var reviewDecisionLens: some View {
-        HStack(spacing: 8) {
-            reviewDecisionMetric(title: "Confirm",
-                                 value: "Looks right",
-                                 systemImage: "checkmark.seal.fill",
-                                 tint: .mint)
-            reviewDecisionMetric(title: "Adjust",
-                                 value: "Move time",
-                                 systemImage: "slider.horizontal.3",
-                                 tint: .cyan)
-            reviewDecisionMetric(title: "Dismiss",
-                                 value: "Not workout",
-                                 systemImage: "xmark.circle.fill",
-                                 tint: .secondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review choices. Confirm type, adjust time, or dismiss.")
-    }
-
-    private func reviewDecisionMetric(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 22)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .atriaInsetCard(tint: tint)
-    }
-
-    private var stepIndicator: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ForEach(visibleSteps, id: \.self) { candidate in
-                    VStack(spacing: 7) {
-                        ZStack {
-                            Capsule(style: .continuous)
-                                .fill(candidate.rawValue <= step.rawValue ? Color.orange.opacity(0.12) : Color.secondary.opacity(0.07))
-                            Text(candidate.title)
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(candidate == step ? .orange : .secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.78)
-                        }
-                        .frame(height: 30)
-
-                        Capsule(style: .continuous)
-                            .fill(candidate.rawValue <= step.rawValue ? Color.orange : Color.secondary.opacity(0.18))
-                            .frame(height: candidate == step ? 4 : 2)
-                    }
-                }
-            }
-
-            Text(stepSubtitle)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 2)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout review step \(step.title). \(stepContextAccessibilityText)")
-    }
-
-    private var stepSubtitle: String {
-        switch step {
-        case .time:
-            return "Confirm time."
-        case .type:
-            return "Choose type."
-        case .exercises:
-            return "Add remembered moves."
-        case .summary:
-            return "Save workout."
-        }
-    }
-
-    private var currentStepIndex: Int {
-        visibleSteps.firstIndex(of: step).map { $0 + 1 } ?? 1
-    }
-
-    private var nextStepTitle: String {
-        guard let index = visibleSteps.firstIndex(of: step) else { return "Save" }
-        let nextIndex = visibleSteps.index(after: index)
-        guard visibleSteps.indices.contains(nextIndex) else { return "Save" }
-        return visibleSteps[nextIndex].title
-    }
-
-    private var stepContextAccessibilityText: String {
-        "Now \(step.title), step \(currentStepIndex) of \(visibleSteps.count). Next \(nextStepTitle)."
-    }
-
-    private var stepContextRail: some View {
-        HStack(spacing: 8) {
-            stepContextChip(title: "Now",
-                            value: step.title,
-                            detail: "\(currentStepIndex)/\(visibleSteps.count)",
-                            systemImage: "location.fill",
-                            tint: .orange)
-            stepContextChip(title: "Next",
-                            value: nextStepTitle,
-                            detail: selectedType.supportsExerciseSelection ? "Moves next" : "Type only",
-                            systemImage: "arrow.forward.circle.fill",
-                            tint: step == visibleSteps.last ? .mint : .cyan)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(stepContextAccessibilityText)
-    }
-
-    private func stepContextChip(title: String,
-                                 value: String,
-                                 detail: String,
-                                 systemImage: String,
-                                 tint: Color) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 26, height: 26)
-                .background(tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-
-            Text(detail)
-                .font(.caption2.monospacedDigit().weight(.bold))
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-    }
-
-    private func headerChip(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(tint.opacity(0.10), in: Capsule(style: .continuous))
-    }
-
-    @ViewBuilder
-    private var currentStep: some View {
-        switch step {
-        case .time:
-            timeStep
-        case .type:
-            typeStep
-        case .exercises:
-            exerciseStep
-        case .summary:
-            summaryStep
-        }
-    }
-
-    private var timeStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            stepTitle("Time", subtitle: "Adjust only if needed.")
-            DatePicker("Start", selection: $start, displayedComponents: [.hourAndMinute, .date])
-            DatePicker("End", selection: $end, displayedComponents: [.hourAndMinute, .date])
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var typeStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            stepTitle("Activity", subtitle: "Choose the closest match.")
-            typeRevealHeader
-
-            if showsAllWorkoutTypes {
-                TextField("Search activity types", text: $typeSearch)
-                    .textInputAutocapitalization(.words)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    // Direct child of the step's .padding(14).atriaCard — concentric
-                    // keeps the field's corners parallel to the card's (28 − 14 = 14).
-                    .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-            }
-
-            // Plain one-per-row selection list (2026-08-01 gym-session review):
-            // the adaptive chip grid cropped names like "Football / soccer" and
-            // relaid every chip on reveal, which made opening the full catalog
-            // slow. Full-width rows never truncate and stay cheap to build.
-            // With the 77-activity WHOOP-parity catalog (2026-08-05) the
-            // revealed list groups by category; search stays a flat filter.
-            if showsAllWorkoutTypes, trimmedTypeSearch.isEmpty {
-                ForEach(AtriaWorkoutActivityType.Category.allCases) { category in
-                    let types = AtriaWorkoutActivityType.allCases.filter {
-                        $0.category == category
-                    }
-                    if !types.isEmpty {
-                        Text(category.rawValue.uppercased())
-                            .font(.caption2.weight(.bold))
-                            .tracking(0.6)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 6)
-                        VStack(spacing: 2) {
-                            ForEach(types) { type in
-                                workoutTypeRow(type)
-                            }
-                        }
-                    }
-                }
-            } else {
-                VStack(spacing: 2) {
-                    ForEach(visibleWorkoutTypes) { type in
-                        workoutTypeRow(type)
-                    }
-                }
-            }
-
-            if visibleWorkoutTypes.isEmpty {
-                Text("No activity types match \"\(trimmedTypeSearch)\".")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if !selectedType.subtypeOptions.isEmpty {
-                chipSection(title: "Style", values: selectedType.subtypeOptions, selected: selectedSubtype) { value in
-                    selectedSubtype = value
-                }
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var typeRevealHeader: some View {
-        HStack(spacing: 10) {
-            Label(showsAllWorkoutTypes ? "All activity types" : "Best matches first",
-                  systemImage: showsAllWorkoutTypes ? "square.grid.3x3.fill" : "scope")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 8)
-
-            Button {
-                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                    showsAllWorkoutTypes.toggle()
-                }
-                if !showsAllWorkoutTypes {
-                    typeSearch = ""
-                }
-            } label: {
-                Text(showsAllWorkoutTypes ? "Less" : "+\(hiddenWorkoutTypeCount)")
-                    .font(.caption.weight(.black).monospacedDigit())
-                    .foregroundStyle(.orange)
-                    .frame(minWidth: 40)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 7)
-            }
-            .atriaCardAction(prominent: false, tint: .orange)
-            .accessibilityLabel(showsAllWorkoutTypes ? "Show fewer workout types" : "Show \(hiddenWorkoutTypeCount) more workout types")
-        }
-        .padding(.horizontal, 2)
-        .accessibilityElement(children: .contain)
-    }
-
-    /// One plain full-width row per activity type. Selection is marked in
-    /// place — the list order never changes on tap, and long names get the
-    /// whole row width instead of a cropped chip.
-    private func workoutTypeRow(_ type: AtriaWorkoutActivityType) -> some View {
-        let selected = selectedType == type
-        return Button {
-            applyWorkoutType(type)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: type.icon)
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(selected ? Color.orange : .secondary)
-                    .frame(width: 26)
-                Text(type.rawValue)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(selected ? Color.orange : Color.secondary.opacity(0.4))
-            }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 10)
-            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .background(selected ? Color.orange.opacity(0.10) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .accessibilityLabel(type.rawValue)
-        .accessibilityValue(selected ? "Selected" : "Not selected")
-    }
-
-    private var suggestedTypeRunway: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Activity type", systemImage: "figure.strengthtraining.traditional")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                ForEach(draft.prompt.suggestedActivityTypes) { type in
-                    Button {
-                        applyWorkoutType(type)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Image(systemName: type.icon)
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(selectedType == type ? .orange : .secondary)
-                                .frame(width: 30, height: 30)
-                                .background((selectedType == type ? Color.orange : Color.secondary).opacity(0.12),
-                                            in: Circle())
-                            Text(type.rawValue)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(selectedType == type ? .orange : .primary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.72)
-                            Text(type.supportsExerciseSelection ? "Exercises next" : "Type only")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.70)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                        .background((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.12 : 0.055),
-                                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                                .stroke((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.20 : 0.10), lineWidth: 1)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Suggested activity \(type.rawValue). \(type.supportsExerciseSelection ? "Exercises next" : "Type only").")
-                }
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var selectedTypeLens: some View {
-        HStack(alignment: .center, spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.orange.opacity(0.14))
-                Image(systemName: selectedType.icon)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.orange)
-            }
-            .frame(width: 46, height: 46)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Label("Selected type", systemImage: selectedType.icon)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Text(selectedType.rawValue)
-                    .font(.headline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Text(selectedSubtype ?? (selectedType.supportsExerciseSelection ? "Exercises next" : "No exercise step"))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 5) {
-                Text(selectedType.supportsExerciseSelection ? "3 steps" : "2 steps")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(selectedType.supportsExerciseSelection ? .mint : .secondary)
-                Text(selectedType.supportsExerciseSelection ? "Exercises" : "Type only")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Selected type \(selectedType.rawValue). \(selectedSubtype ?? (selectedType.supportsExerciseSelection ? "Exercises next" : "No exercise step")).")
-    }
-
-    private var exerciseStep: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            stepTitle("Exercises", subtitle: "Optional")
-            if exerciseQuery.isEmpty, !promptExerciseSuggestions.isEmpty {
-                exerciseQuickAddStrip
-            }
-
-            TextField("Search exercises", text: $exerciseSearch)
-                .textInputAutocapitalization(.words)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 11)
-                // Direct child of the step's .padding(14).atriaCard — concentric
-                // keeps the field's corners parallel to the card's (28 − 14 = 14).
-                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
-
-            if !selectedExercises.isEmpty {
-                chipSection(title: "Selected", values: selectedExerciseNames, selected: nil) { value in
-                    selectedExercises.remove(value)
-                }
-            }
-
-            if !exerciseQuery.isEmpty {
-                ForEach(filteredExerciseGroups) { group in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(group.title)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                            ForEach(group.exercises, id: \.self) { exercise in
-                                exerciseChip(exercise)
-                            }
-                        }
-                    }
-                }
-                if shouldOfferCustomExercise {
-                    addCustomExerciseButton(exerciseQuery)
-                }
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var exerciseQuickAddStrip: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label("Likely moves", systemImage: "plus.circle.fill")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 8)
-                Text("\(selectedSuggestedExerciseCount)/\(promptExerciseSuggestions.count)")
-                    .font(.caption2.monospacedDigit().weight(.bold))
-                    .foregroundStyle(.orange)
-            }
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], spacing: 8) {
-                ForEach(promptExerciseSuggestions, id: \.self) { exercise in
-                    quickExerciseButton(exercise)
-                }
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var exerciseSearchPrompt: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.cyan)
-                .frame(width: 28, height: 28)
-                .background(Color.cyan.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Search only if needed")
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                Text("Skip exercises if you are unsure.")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search only if needed. Skip exercises if you are unsure.")
-    }
-
-    private var exerciseCatalogPreview: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "books.vertical.fill")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.cyan)
-                .frame(width: 28, height: 28)
-                .background(Color.cyan.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Search full catalog")
-                    .font(.caption.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Text("\(AtriaWorkoutExerciseCatalog.groups.count) groups ready when needed")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Search full exercise catalog. \(AtriaWorkoutExerciseCatalog.groups.count) groups ready when needed.")
-    }
-
-    private func quickExerciseButton(_ exercise: String) -> some View {
-        let selected = selectedExercises.contains(exercise)
-        return Button {
-            toggleExercise(exercise)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: selected ? "checkmark.circle.fill" : "plus.circle")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(selected ? .mint : .orange)
-                Text(exercise)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(selected ? .mint : .primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            // Intentionally .chip (was 15): this is a grid cell in the same
-            // adaptive(132) LazyVGrid family as exerciseChip, and the review
-            // flow's selection surfaces (workoutTypeRow, exerciseChip) all sit
-            // at .chip. H4's numeric 14–17→inset rule yields to that convention.
-            .background((selected ? Color.mint : Color.orange).opacity(selected ? 0.12 : 0.08),
-                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke((selected ? Color.mint : Color.orange).opacity(selected ? 0.18 : 0.12), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(selected ? "Remove" : "Add") \(exercise)")
-    }
-
-    private var summaryStep: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            stepTitle("Ready to save", subtitle: "Time, activity, and exercises save together.")
-
-            Label(selectedType.rawValue, systemImage: selectedType.icon)
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.orange)
-
-            Text("\(summaryTimeRangeText) · \(durationText)")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if !selectedExercises.isEmpty {
-                Text(selectedExerciseNames.joined(separator: " · "))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Ready to save. \(selectedType.rawValue), \(durationText), \(selectedExercises.count) exercises. Time, activity, and exercises save together.")
-    }
-
-    private var summaryReceiptLens: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.orange.opacity(0.14), lineWidth: 7)
-                    Circle()
-                        .trim(from: 0, to: min(max(draft.prompt.progressFraction, 0.12), 1))
-                        .stroke(Color.orange.opacity(0.88),
-                                style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: selectedType.icon)
-                        .font(.headline.weight(.black))
-                        .foregroundStyle(.orange)
-                }
-                .frame(width: 54, height: 54)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(selectedType.rawValue)
-                        .font(.title3.weight(.black))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                    Text(selectedSubtype ?? "Reviewed workout")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                }
-
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(durationText)
-                        .font(.title2.weight(.black).monospacedDigit())
-                        .foregroundStyle(.orange)
-                        .contentTransition(.numericText())
-                    Text("Strap HR")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.orange)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.orange.opacity(0.12), in: Capsule(style: .continuous))
-                }
-            }
-
-            HStack(spacing: 8) {
-                summaryReceiptMetric(title: "Time",
-                                     value: durationText,
-                                     detail: summaryTimeRangeText,
-                                     tint: .cyan)
-                summaryReceiptMetric(title: "Type",
-                                     value: selectedType.rawValue,
-                                     detail: selectedSubtype ?? "Activity",
-                                     tint: .orange)
-                summaryReceiptMetric(title: "Moves",
-                                     value: selectedExercises.isEmpty ? "0" : "\(selectedExercises.count)",
-                                     detail: selectedExercises.isEmpty ? "Optional" : "Selected",
-                                     tint: .mint)
-            }
-
-            summaryMemoryRail
-            summaryExerciseHistorySection
-
-            if let zone = draft.prompt.heartRateZone {
-                AtriaWorkoutZoneEvidenceStrip(zone: zone)
-            }
-
-            if !selectedExercises.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label("Movements saved locally", systemImage: "checkmark.seal.fill")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Text(selectedExerciseNames.joined(separator: " · "))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(10)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .orange)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Workout save receipt. Window \(summaryTimeRangeText), \(durationText). Type \(selectedType.rawValue). Exercises \(selectedExercises.count). Save to history and learn from this label. Source strap heart rate.")
-    }
-
-    @ViewBuilder
-    private var summaryExerciseHistorySection: some View {
-        let rows = summaryExerciseHistoryRows
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Label("Exercise history", systemImage: "chart.xyaxis.line")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Text("\(rows.count)")
-                        .font(.caption2.monospacedDigit().weight(.black))
-                        .foregroundStyle(.orange)
-                }
-
-                ForEach(rows) { row in
-                    summaryExerciseHistoryRow(row)
-                }
-            }
-            .padding(10)
-            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                    .stroke(Color.orange.opacity(0.10), lineWidth: 1)
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Exercise history from saved sessions. \(rows.count) movements.")
-        }
-    }
-
-    private var summaryExerciseHistoryRows: [AtriaWorkoutSummaryExerciseHistory] {
-        let exercises = summaryExerciseHistoryNames
-        let key = AtriaWorkoutSummaryExerciseHistoryMemo.Key(
-            exercises: exercises.map(normalizedExercise),
-            currentSets: draft.strengthSets,
-            history: draft.strengthHistory)
-        return summaryExerciseHistoryMemo.rows(key: key) {
-            makeSummaryExerciseHistoryRows(exercises: exercises)
-        }
-    }
-
-    private func makeSummaryExerciseHistoryRows(exercises: [String]) -> [AtriaWorkoutSummaryExerciseHistory] {
-        exercises.map { exercise in
-            let history = draft.strengthHistory.history(for: exercise)
-            let records = draft.strengthHistory.records(for: exercise)
-            let currentBest = draft.strengthSets
-                .filter { normalizedExercise($0.exercise) == normalizedExercise(exercise) }
-                .max(by: { strengthShareScore($0) < strengthShareScore($1) })
-            let isPR = currentBest.map { AtriaStrengthLog.isPR($0, against: records) } ?? false
-            let sparkline = history.map { strengthShareScore($0.best) }
-            return AtriaWorkoutSummaryExerciseHistory(id: normalizedExercise(exercise),
-                                                      exercise: exercise,
-                                                      days: history.count,
-                                                      bestSet: history.last?.best,
-                                                      maxE1RM: records.maxE1RM,
-                                                      maxWeightKg: records.maxWeightKg,
-                                                      sparklineValues: sparkline,
-                                                      currentPRSet: isPR ? currentBest : nil)
-        }
-    }
-
-    private var summaryExerciseHistoryNames: [String] {
-        var names: [String] = []
-        for name in selectedExerciseNames + draft.strengthSets.map(\.exercise) {
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty,
-                  !names.contains(where: { normalizedExercise($0) == normalizedExercise(trimmed) }) else {
-                continue
-            }
-            names.append(trimmed)
-        }
-        return Array(names.prefix(4))
-    }
-
-    private func summaryExerciseHistoryRow(_ row: AtriaWorkoutSummaryExerciseHistory) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(row.exercise)
-                    .font(.caption.weight(.black))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.74)
-
-                Spacer(minLength: 8)
-
-                Text(row.days == 0 ? "New" : "\(row.days)d")
-                    .font(.caption2.monospacedDigit().weight(.black))
-                    .foregroundStyle(row.days == 0 ? .mint : .orange)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background((row.days == 0 ? Color.mint : Color.orange).opacity(0.12),
-                                in: Capsule(style: .continuous))
-
-                if row.currentPRSet != nil {
-                    Label("PR", systemImage: "trophy.fill")
-                        .font(.caption2.weight(.black))
-                        .foregroundStyle(Metrics.electricYellow)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Metrics.electricYellow.opacity(0.12), in: Capsule(style: .continuous))
-                }
-            }
-
-            AtriaWorkoutSummarySparkline(values: row.sparklineValues, tint: .orange)
-                .frame(height: 32)
-
-            HStack(spacing: 8) {
-                summaryExerciseMetric("Best", row.bestSet.map(strengthSetShareText) ?? "--")
-                summaryExerciseMetric("e1RM", row.maxE1RM.map { Self.formatShareWeightKg($0) } ?? "--")
-                summaryExerciseMetric("Max", row.maxWeightKg.map { Self.formatShareWeightKg($0) } ?? "--")
-            }
-        }
-        .padding(10)
-        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Exercise history \(row.exercise). \(row.days) saved days. Best \(row.bestSet.map(strengthSetShareText) ?? "none"). \(row.currentPRSet == nil ? "" : "New PR.")")
-    }
-
-    private func summaryExerciseMetric(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption2.monospacedDigit().weight(.black))
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var summaryMemoryRail: some View {
-        HStack(spacing: 8) {
-            summaryMemoryNode(title: "Save",
-                              value: "Workout",
-                              systemImage: "checkmark.seal.fill",
-                              tint: .mint)
-            summaryMemoryNode(title: "History",
-                              value: selectedType.rawValue,
-                              systemImage: "clock.arrow.circlepath",
-                              tint: .orange)
-            summaryMemoryNode(title: "Remember",
-                              value: selectedExercises.isEmpty ? "Label" : "\(selectedExercises.count) moves",
-                              systemImage: "arrow.triangle.2.circlepath",
-                              tint: .cyan)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("After save, Atria adds the workout to history and remembers the selected label.")
-    }
-
-    private func summaryMemoryNode(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .background(tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption2.weight(.black))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(tint.opacity(0.11), lineWidth: 1)
-        }
-    }
-
-    private func summaryReceiptMetric(title: String, value: String, detail: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-            Text(detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8)
-        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-    }
-
-    private var footer: some View {
-        VStack(spacing: 8) {
-            if let reason = saveDisabledReason {
-                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityLabel("Can't save yet. \(reason)")
-            }
-
-            HStack(spacing: 10) {
-                if step != visibleSteps.first {
-                    Button("Back") {
-                        moveBack()
-                    }
-                    .atriaCardAction(prominent: false, tint: .secondary)
-                    .disabled(isSaving)
-                }
-
-                // Always-visible commit (2026-08-01 gym-session review): the
-                // user edited the detected window on the Time step and found no
-                // Save control — only "Continue". Save is now reachable from
-                // every step and commits the complete current draft.
-                if step != .summary {
-                    Button(isSaving ? "Saving…" : "Save") {
-                        commitSave()
-                    }
-                    .disabled(saveDisabledReason != nil || isSaving)
-                    .atriaCardAction(prominent: false, tint: .orange)
-                    .accessibilityLabel("Save workout now")
-                    .accessibilityHint("Saves the workout with the current time, activity, and exercises without visiting the remaining steps.")
-                }
-
-                Button(isSaving ? "Saving…" : primaryActionTitle) {
-                    primaryAction()
-                }
-                .disabled(saveDisabledReason != nil || isSaving)
-                .atriaCardAction(tint: .orange)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity)
-        .atriaInsetCard(cornerRadius: 28, tint: .orange)
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-    }
-
-    /// Non-nil while the edited window cannot be saved, with the exact reason
-    /// shown next to the disabled Save/Continue buttons instead of a silently
-    /// dead control.
-    private var saveDisabledReason: String? {
-        end > start ? nil : "End must be after start"
-    }
-
-    private var primaryActionTitle: String {
-        step == .summary ? "Save" : "Continue"
-    }
-
-    private var durationText: String {
-        let minutes = max(1, Int(end.timeIntervalSince(start) / 60))
-        if minutes >= 60 {
-            return "\(minutes / 60)h \(minutes % 60)m"
-        }
-        return "\(minutes)m"
-    }
-
-    private var summaryTimeRangeText: String {
-        "\(start.formatted(date: .omitted, time: .shortened))-\(end.formatted(date: .omitted, time: .shortened))"
-    }
-
-    private func strengthShareScore(_ set: LoggedSet) -> Double {
-        AtriaStrengthLog.estimatedOneRepMax(weightKg: set.weightKg, reps: set.reps)
-            ?? set.weightKg
-            ?? Double(set.reps ?? 0)
-    }
-
-    private func normalizedExercise(_ exercise: String) -> String {
-        exercise.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func strengthSetShareText(_ set: LoggedSet) -> String {
-        let weightText = set.weightKg.map { Self.formatShareWeightKg($0) }
-        let repsText = set.reps.map { "\($0)" }
-        switch (weightText, repsText) {
-        case let (weight?, reps?):
-            return "\(weight) x \(reps)"
-        case let (weight?, nil):
-            return weight
-        case let (nil, reps?):
-            return "\(reps) reps"
-        default:
-            return "New best"
-        }
-    }
-
-    private static func formatShareWeightKg(_ weightKg: Double) -> String {
-        let rounded = weightKg.rounded()
-        if abs(weightKg - rounded) < 0.01 {
-            return "\(Int(rounded)) kg"
-        }
-        return String(format: "%.1f kg", weightKg)
-    }
-
-    private var selectedExerciseNames: [String] {
-        Array(selectedExercises).sorted()
-    }
-
-    private var exerciseQuery: String {
-        exerciseSearch.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var shouldOfferCustomExercise: Bool {
-        guard !exerciseQuery.isEmpty else { return false }
-        return !exerciseNameKeys.contains(Self.exerciseNameKey(exerciseQuery))
-    }
-
-    private var promptExerciseSuggestions: [String] {
-        draft.prompt.exerciseSuggestions.flatMap { suggestion in
-            AtriaWorkoutExerciseCatalog.suggestedExercises(for: suggestion)
-        }
-    }
-
-    private var selectedSuggestedExerciseCount: Int {
-        promptExerciseSuggestions.filter { selectedExercises.contains($0) }.count
-    }
-
-    private func stepTitle(_ title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.headline.weight(.bold))
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func chipSection(title: String,
-                             values: [String],
-                             selected: String?,
-                             onTap: @escaping (String) -> Void) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], spacing: 8) {
-                ForEach(values, id: \.self) { value in
-                    Button(value) { onTap(value) }
-                        .buttonStyle(.plain)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .frame(maxWidth: .infinity)
-                        .background((selected == value ? Color.orange : Color.secondary).opacity(0.12),
-                                    in: Capsule(style: .continuous))
-                        .foregroundStyle(selected == value ? Color.orange : Color.secondary)
-                }
-            }
-        }
-    }
-
-    private func exerciseChip(_ exercise: String) -> some View {
-        let selected = selectedExercises.contains(exercise)
-        return Button {
-            toggleExercise(exercise)
-        } label: {
-            Text(exercise)
-                .font(.caption.weight(.semibold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.76)
-                .frame(maxWidth: .infinity, minHeight: 42)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        // Genuine grid chip — .chip (was 14) despite H4's numeric 14–17→inset
-        // rule; 14 is nearer the chip rung and this IS a chip semantically.
-        .background((selected ? Color.orange : Color.secondary).opacity(selected ? 0.14 : 0.08),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .foregroundStyle(selected ? Color.orange : Color.primary)
-    }
-
-    private func addCustomExerciseButton(_ exercise: String) -> some View {
-        Button {
-            AtriaWorkoutExerciseCatalog.addCustomExercise(exercise)
-            selectedExercises.insert(exercise)
-            reloadExerciseGroups(search: "")
-            exerciseSearch = ""
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.callout.weight(.bold))
-                    .foregroundStyle(.mint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Add \"\(exercise)\"")
-                        .font(.caption.weight(.bold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    Text("Save as a custom exercise")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            // Intentionally .chip (was 15): renders directly below the 12-radius
-            // exerciseChip grid as "one more item" in the exercise selection
-            // area — matching the chips beats H4's numeric 14–17→inset rule,
-            // which would put an 18 corner flush under a field of 12s.
-            .background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke(Color.mint.opacity(0.18), lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Add custom exercise \(exercise)")
-    }
-
-    private func toggleExercise(_ exercise: String) {
-        if selectedExercises.contains(exercise) {
-            selectedExercises.remove(exercise)
-        } else {
-            selectedExercises.insert(exercise)
-        }
-    }
-
-    private func reloadExerciseGroups(search: String? = nil) {
-        let groups = AtriaWorkoutExerciseCatalog.allGroups()
-        exerciseGroups = groups
-        exerciseNameKeys = Self.exerciseNameKeys(in: groups)
-        filteredExerciseGroups = AtriaWorkoutExerciseCatalog.filteredGroups(search: search ?? exerciseSearch, groups: groups)
-    }
-
-    private func refreshFilteredExerciseGroups() {
-        filteredExerciseGroups = AtriaWorkoutExerciseCatalog.filteredGroups(search: exerciseSearch, groups: exerciseGroups)
-    }
-
-    private static func exerciseNameKeys(in groups: [AtriaWorkoutExerciseGroup]) -> Set<String> {
-        Set(groups.flatMap(\.exercises).map(exerciseNameKey))
-    }
-
-    private static func exerciseNameKey(_ exercise: String) -> String {
-        exercise
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-    }
-
-    private func primaryAction() {
-        if step == .summary {
-            commitSave()
-            return
-        }
-        if step == .type, !selectedType.supportsExerciseSelection {
-            step = .summary
-            return
-        }
-        if let index = visibleSteps.firstIndex(of: step),
-           visibleSteps.indices.contains(visibleSteps.index(after: index)) {
-            step = visibleSteps[visibleSteps.index(after: index)]
-        }
-    }
-
-    /// The single commit path shared by the summary primary action and the
-    /// always-visible footer Save (2026-08-01): every save routes the complete
-    /// current draft through the same canonical onSave call.
-    private func commitSave() {
-        guard !isSaving, end > start else { return }
-        isSaving = true
-        Task { @MainActor in
-            _ = await onSave(AtriaWorkoutReviewResult(
-                start: start,
-                end: end,
-                activityType: selectedType.rawValue,
-                activitySubtype: selectedSubtype,
-                exerciseNames: selectedExerciseNames,
-                strengthSets: draft.strengthSets
-            ))
-            isSaving = false
-        }
-    }
-
-    private func applyWorkoutType(_ type: AtriaWorkoutActivityType) {
-        selectedType = type
-        selectedSubtype = nil
-        if !selectedType.supportsExerciseSelection {
-            selectedExercises.removeAll()
-        }
-    }
-
-    private func moveBack() {
-        guard let index = visibleSteps.firstIndex(of: step), index > 0 else { return }
-        step = visibleSteps[index - 1]
-    }
-
-    #if DEBUG
-    private static func debugInitialStep(arguments: [String]) -> AtriaWorkoutReviewStep {
-        if arguments.contains("--atria-workout-review-type-step") { return .type }
-        if arguments.contains("--atria-workout-review-exercises-step") { return .exercises }
-        if arguments.contains("--atria-workout-review-summary-step") { return .summary }
-        return .time
-    }
-    #else
-    private static func debugInitialStep(arguments: [String]) -> AtriaWorkoutReviewStep { .time }
-    #endif
-}
-
-private final class AtriaWorkoutSummaryExerciseHistoryMemo {
-    struct Key: Equatable {
-        let exercises: [String]
-        let currentSets: [LoggedSet]
-        let history: StrengthHistoryProjection
-    }
-
-    private var key: Key?
-    private var value: [AtriaWorkoutSummaryExerciseHistory] = []
-
-    func rows(key: Key, build: () -> [AtriaWorkoutSummaryExerciseHistory]) -> [AtriaWorkoutSummaryExerciseHistory] {
-        if self.key == key { return value }
-        let next = build()
-        self.key = key
-        value = next
-        return next
-    }
-}
-
-private struct AtriaWorkoutSummaryExerciseHistory: Identifiable, Equatable {
-    let id: String
-    let exercise: String
-    let days: Int
-    let bestSet: LoggedSet?
-    let maxE1RM: Double?
-    let maxWeightKg: Double?
-    let sparklineValues: [Double]
-    let currentPRSet: LoggedSet?
-}
-
-private struct AtriaWorkoutSummarySparkline: View {
-    let values: [Double]
-    let tint: Color
-
-    var body: some View {
-        GeometryReader { proxy in
-            let normalized = normalizedValues
-            let width = max(proxy.size.width, 1)
-            let height = max(proxy.size.height, 1)
-            let step = normalized.count > 1 ? width / CGFloat(normalized.count - 1) : width
-            Path { path in
-                guard let first = normalized.first else { return }
-                path.move(to: CGPoint(x: 0, y: height - (height * first)))
-                for index in normalized.indices.dropFirst() {
-                    path.addLine(to: CGPoint(x: CGFloat(index) * step,
-                                             y: height - (height * normalized[index])))
-                }
-            }
-            .stroke(tint.opacity(normalized.count > 1 ? 0.90 : 0.28),
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-
-            if normalized.isEmpty {
-                Capsule(style: .continuous)
-                    .fill(Color.secondary.opacity(0.16))
-                    .frame(height: 3)
-                    .position(x: width / 2, y: height / 2)
-            }
-        }
-        .accessibilityHidden(true)
-    }
-
-    private var normalizedValues: [CGFloat] {
-        guard let minValue = values.min(),
-              let maxValue = values.max(),
-              maxValue > 0 else {
-            return []
-        }
-        let spread = max(maxValue - minValue, 1)
-        return values.map { value in
-            CGFloat(0.16 + (0.78 * ((value - minValue) / spread)))
-        }
-    }
-}
-
-/// Owns dashboard scroll state outside `AtriaHomeView`, preventing every
-/// scroll quantum from invalidating the app shell while allowing viewport-
-/// pinned overlays to respond directly to the real ScrollView offset.
 private struct AtriaDashboardScrollSurface<Content: View>: View {
     let showsCompactTodayHeader: Bool
+    /// Where the collapsed Today rings go (drawn by the top bar).
+    let compactRingStore: AtriaTodayCompactRingStore?
     let prefersLiveActivityStatus: Bool
+    let bottomContentMargin: CGFloat
     let refresh: @MainActor () async -> Void
     let taskID: String
     let autoScroll: @MainActor (ScrollViewProxy) async -> Void
@@ -8785,13 +8442,17 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
     @State private var showsCompactHeader = false
 
     init(showsCompactTodayHeader: Bool,
+         compactRingStore: AtriaTodayCompactRingStore? = nil,
          prefersLiveActivityStatus: Bool,
+         bottomContentMargin: CGFloat,
          refresh: @escaping @MainActor () async -> Void,
          taskID: String,
          autoScroll: @escaping @MainActor (ScrollViewProxy) async -> Void,
          @ViewBuilder content: @escaping () -> Content) {
         self.showsCompactTodayHeader = showsCompactTodayHeader
+        self.compactRingStore = compactRingStore
         self.prefersLiveActivityStatus = prefersLiveActivityStatus
+        self.bottomContentMargin = bottomContentMargin
         self.refresh = refresh
         self.taskID = taskID
         self.autoScroll = autoScroll
@@ -8806,12 +8467,13 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             .scrollContentBackground(.hidden)
             // The tabViewBottomAccessory (Live pill) stacks ON TOP of the
             // glass tab capsule, and on this iOS beta its height is not
-            // added to the scroll safe area — the last card ("Start
-            // activity", the plan pill) ended up permanently clipped
-            // behind the bottom chrome (seen live 2026-08-05). Explicit
-            // bottom margin keeps every card reachable; scroll-under still
-            // shows content beneath the glass while scrolling.
-            .contentMargins(.bottom, 72, for: .scrollContent)
+            // added to the scroll safe area — first-screen cards (compact
+            // insight, saved workouts) and the last card ("Start workout",
+            // the plan pill) sat under the chrome (device 2026-08-05 and
+            // 2026-09-17). contentMargins only extended the scroll range;
+            // safeAreaPadding also insets the resting viewport. Do not use
+            // safeAreaInset(edge: .bottom) — that painted a black shelf.
+            .safeAreaPadding(.bottom, bottomContentMargin)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .refreshable { await refresh() }
             .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -8819,24 +8481,18 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
             } action: { _, newValue in
                 if newValue != showsCompactHeader { showsCompactHeader = newValue }
             }
-            .overlayPreferenceValue(AtriaTodayCompactRingPreferenceKey.self) { presentation in
-                ZStack(alignment: .topTrailing) {
-                    if showsCompactTodayHeader,
-                       !prefersLiveActivityStatus,
-                       showsCompactHeader,
-                       let presentation {
-                        AtriaTodayCompactRingRail(slots: presentation.slots,
-                                                  accessibilitySummary: presentation.accessibilitySummary)
-                            .transition(reduceMotion ? .identity : .move(edge: .top).combined(with: .opacity))
-                    }
+            // The collapsed rings are drawn by the pinned top bar (owner
+            // 2026-09-27); this surface only reports them and the threshold.
+            .onPreferenceChange(AtriaTodayCompactRingPreferenceKey.self) { presentation in
+                guard showsCompactTodayHeader, let compactRingStore else { return }
+                if compactRingStore.presentation != presentation {
+                    compactRingStore.presentation = presentation
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                // The overlay consumes the scene's live safe-area geometry;
-                // it cannot drift beside or underneath the Dynamic Island.
-                .safeAreaPadding(.top, 8)
-                .padding(.trailing, 12)
-                .allowsHitTesting(false)
-                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: showsCompactHeader)
+            }
+            .onChange(of: showsCompactHeader, initial: true) { _, collapsed in
+                guard showsCompactTodayHeader, let compactRingStore else { return }
+                let show = collapsed && !prefersLiveActivityStatus
+                if compactRingStore.isCollapsed != show { compactRingStore.isCollapsed = show }
             }
             .task(id: taskID) {
                 await autoScroll(scrollProxy)
@@ -8877,6 +8533,7 @@ private struct AtriaLiveTabAccessoryHost: View {
 
     var body: some View {
         AtriaLiveTabAccessory(pulseStore: pulseStore,
+                              lastKnownHeartRate: metricStore.state.lastKnownHeartRate,
                               workoutStart: workoutStart,
                               workoutSystemImage: workoutSystemImage,
                               strainText: metricStore.state.strainHUDText,
@@ -8886,6 +8543,7 @@ private struct AtriaLiveTabAccessoryHost: View {
 
 private struct AtriaLiveTabAccessory: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
+    let lastKnownHeartRate: Int
     let workoutStart: Date?
     let workoutSystemImage: String
     let strainText: String
@@ -8899,6 +8557,7 @@ private struct AtriaLiveTabAccessory: View {
     var body: some View {
         if let workoutStart {
             AtriaLiveWorkoutTabAccessory(pulseStore: pulseStore,
+                                         lastKnownHeartRate: lastKnownHeartRate,
                                          workoutStart: workoutStart,
                                          workoutSystemImage: workoutSystemImage,
                                          strainText: strainText,
@@ -8910,6 +8569,7 @@ private struct AtriaLiveTabAccessory: View {
 
 private struct AtriaLiveWorkoutTabAccessory: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
+    let lastKnownHeartRate: Int
     let workoutStart: Date
     let workoutSystemImage: String
     let strainText: String
@@ -8918,7 +8578,11 @@ private struct AtriaLiveWorkoutTabAccessory: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let presentation = AtriaLiveTabAccessoryPresentation(heartRate: pulseStore.state.heartRate,
+        let heartRate = AtriaWorkoutHeartRateHold.displayed(
+            live: pulseStore.state.heartRate,
+            lastKnown: lastKnownHeartRate
+        )
+        let presentation = AtriaLiveTabAccessoryPresentation(heartRate: heartRate,
                                                               strainText: strainText)
         Button(action: onOpenWorkout) {
             HStack(spacing: isInline ? 8 : 10) {
@@ -8938,12 +8602,12 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                         .layoutPriority(2)
                 }
 
-                Text(pulseStore.state.heartRate > 0 ? "\(pulseStore.state.heartRate) bpm" : "-- bpm")
+                Text(heartRate > 0 ? "\(heartRate) bpm" : "-- bpm")
                     .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
-                               value: pulseStore.state.heartRate)
+                               value: heartRate)
                     .lineLimit(1)
                     .minimumScaleFactor(0.62)
                     .allowsTightening(true)
@@ -9075,7 +8739,7 @@ private struct AtriaStandByMetric: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(tint)
             Text(value)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .font(AtriaDesignTokens.Typography.cardHeroValue)
                 .monospacedDigit()
                 .contentTransition(reduceMotion ? .identity : .numericText())
                 .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
@@ -9086,7 +8750,7 @@ private struct AtriaStandByMetric: View {
             Text(detail)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.white.opacity(0.58))
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -9203,7 +8867,29 @@ struct AtriaHomeLivePresentationAuthority: Equatable, Sendable {
 
 @MainActor
 final class AtriaHomeModel {
-    nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
+    /// Idle 2A37 on this strap is often 8–12s, not 1Hz. Device 2026-09-18 10:26
+    /// IST on build 134: diagnosis `hrAgeSeconds=10.3` / Live Activity 82 bpm
+    /// while Today showed Reading… / Finding because this window was 6s.
+    /// Keep it aligned with `AtriaDiagnosisReport.liveStaleSeconds`.
+    nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 15
+    /// Workout HUD / Live Activity occupancy, not BLE capture `isRecording`.
+    var liveWorkoutIsActive = false
+    let liveActivityCoordinator = AtriaLiveActivityCoordinator()
+    private var lastLiveActivityDiagnosis: AtriaLiveActivityCoordinator.Snapshot?
+    private var lastActivityKitCount: Int?
+    /// Overnight windows depend only on the rollups and the civil day, but the
+    /// diagnosis report is rebuilt on the ~1 Hz CoreLive lane, foreground and
+    /// background. Reuse them until either changes (2026-09-24 code review:
+    /// eight rollup scans and eight DateFormatters per tick before this).
+    private var diagnosisMetricWindowsMemo: (rollupsRevision: Int,
+                                             day: Date,
+                                             timeZone: TimeZone,
+                                             windows: AtriaDiagnosisReport.MetricWindows)?
+    private var lastFrozenSceneWidgetPatchAt: Date?
+    private var lastFrozenSceneWidgetHeartRate: Int?
+    private var frozenSceneIdlePresenceStartedAt: Date?
+    private static let frozenSceneWidgetPatchMinimumInterval: TimeInterval = 45
+    private static let frozenSceneWidgetPatchBPMDelta = 4
     /// Charging is a short explicit-evidence lease, not a percentage trend.
     /// The strap can keep reporting rising SOC after physical removal, so the
     /// top-left bolt disappears within 90 seconds unless another accepted
@@ -9308,6 +8994,7 @@ final class AtriaHomeModel {
         var strapStepResearchState: String
         var dailyStepPresentation: AtriaDailyStepPresentation
         var officialAppCoexistenceRisk: AtriaBLEManager.OfficialAppCoexistenceRisk
+        var bluetoothStackWedgeSuspected: Bool = false
         var lastScanRequestedAt: Date?
         var lastScanMatchAt: Date?
         var pendingKnownReconnectStartedAt: Date?
@@ -9479,7 +9166,27 @@ final class AtriaHomeModel {
         var isLowBatteryLiveLimited: Bool {
             strapStreamState == .lowBatteryShutoff || strapStreamState == .lowBatteryReducedDetail
         }
+        /// Wear/charge re-attribution for the pulseless states. Device-proven
+        /// 2026-08-28: a charging off-wrist strap flapped "No signal"→"Live"
+        /// all night. Each claim here is evidence-backed (the strap's own
+        /// HR==0 stream, or the bounded charge proof); ambiguity falls
+        /// through to the unchanged honest copy below.
+        var strapWearAttribution: AtriaStrapWearAttribution {
+            AtriaStrapWearAttribution.classify(
+                streamState: strapStreamState,
+                hasFreshPulse: hasRecentHeartRateSample,
+                lastAcceptedPulseAt: lastReadingAt,
+                chargingProven: batteryIsCharging,
+                batteryRecentlyDropping: batteryRecentlyDropping
+            )
+        }
+
         var strapStreamConnectionLabel: String {
+            switch strapWearAttribution {
+            case .charging: return "Charging"
+            case .offWrist: return "Off wrist"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "Live"
@@ -9488,14 +9195,19 @@ final class AtriaHomeModel {
             case .lowBatteryReducedDetail:
                 return "Low battery"
             case .silentUnknown:
-                return "No signal"
+                return "Connected"
             case .warming:
                 return "Waiting"
             case .unknown:
-                return hasRecentHeartRateSample ? "Live" : "Pending"
+                return hasRecentHeartRateSample ? "Live" : "Waiting"
             }
         }
         var strapStreamConnectionDetail: String {
+            switch strapWearAttribution {
+            case .charging: return "No pulse while charging — resumes on wear"
+            case .offWrist: return "Strap streams but sees no pulse"
+            case .none: break
+            }
             // Per-state short forms; each keeps the honest state fact
             // (arriving / too low / reduced / connected-but-silent / pending).
             switch strapStreamState {
@@ -9510,37 +9222,36 @@ final class AtriaHomeModel {
             case .warming:
                 return "Waiting for live heart rate"
             case .unknown:
-                return hasRecentHeartRateSample ? "HR arriving" : "State pending"
+                return hasRecentHeartRateSample ? "HR arriving" : "Waiting for live heart rate"
             }
         }
         var strapStreamConnectionSymbol: String {
+            switch strapWearAttribution {
+            case .charging: return "battery.100percent.bolt"
+            case .offWrist: return "applewatch.slash"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "bolt.heart.fill"
             case .lowBatteryShutoff, .lowBatteryReducedDetail:
                 return "battery.25percent"
             case .silentUnknown:
-                return "heart.slash"
+                return "link"
             case .warming:
                 return "waveform.path.ecg"
             case .unknown:
-                return hasRecentHeartRateSample ? "bolt.heart.fill" : "antenna.radiowaves.left.and.right"
+                return hasRecentHeartRateSample ? "bolt.heart.fill" : "waveform.path.ecg"
             }
         }
 
         /// SF Symbol matching the level, with the bolt overlay while charging.
+        /// One ladder for the whole app (AtriaBatteryIdentity); this file used
+        /// to carry two byte-identical copies (2026-08-28).
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "questionmark.circle" }
-            if batteryShowsPowered {
-                return "battery.100percent.bolt"
-            }
-            switch batteryLevel {
-            case ..<13: return "battery.0percent"
-            case ..<38: return "battery.25percent"
-            case ..<63: return "battery.50percent"
-            case ..<88: return "battery.75percent"
-            default: return "battery.100percent"
-            }
+            return AtriaBatteryIdentity.systemImage(percent: batteryLevel,
+                                                    isCharging: batteryShowsPowered)
         }
     }
 
@@ -9990,6 +9701,12 @@ final class AtriaHomeModel {
         }
     }
 
+    /// Only the top-bar note; separate so HR ticks never re-render it.
+    final class LiveDataNoteStore: ObservableObject {
+        @Published fileprivate(set) var note: AtriaLiveDataNote?
+    }
+    let liveDataNoteStore = LiveDataNoteStore()
+
     let heroStore: HeroStore
     let heroPulseStore: HeroPulseStore
     let statusStore: StatusStore
@@ -10014,6 +9731,8 @@ final class AtriaHomeModel {
     private let storeRefreshSubject = PassthroughSubject<Void, Never>()
     private var deferredDetails: DeferredDetails?
     private var savedAggregate: SavedAggregate
+    private var lastPublishedSavedAggregateInput: SavedAggregateRefreshInput?
+    private var lastPublishedSavedAggregateIdentity: SavedAggregateInputIdentity?
     private var diagnosticsRequested = false
     private var diagnosticsPresentationIsDirty = false
     private var diagnosticsPresentationResumeScheduled = false
@@ -10086,6 +9805,52 @@ final class AtriaHomeModel {
         let confirmedWorkouts: Int
         let confirmedSleeps: Int
         let savedTodayObservedSeconds: TimeInterval
+    }
+
+    /// Constant-time "did anything change" for a refresh input. Arrays are
+    /// copy-on-write: an unmodified array shares its storage with the retained
+    /// last input, a modified one gets new storage. Time counts per minute.
+    struct ArrayStorageIdentity: Equatable {
+        let address: UInt?
+        let count: Int
+
+        init<Element>(_ array: [Element]) {
+            address = array.withUnsafeBufferPointer {
+                $0.baseAddress.map { UInt(bitPattern: $0) }
+            }
+            count = array.count
+        }
+    }
+
+    struct SavedAggregateInputIdentity: Equatable {
+        let arrays: [ArrayStorageIdentity]
+        let profile: AthleteProfile
+        let baselineDigest: Data
+        let liveRestingHeartRate: Int?
+        let activeSessionID: UUID?
+        let confirmedWorkouts: Int
+        let minute: Int
+    }
+
+    private static func savedAggregateInputIdentity(
+        _ input: SavedAggregateRefreshInput
+    ) -> SavedAggregateInputIdentity {
+        let source = input.source
+        return SavedAggregateInputIdentity(
+            arrays: [
+                ArrayStorageIdentity(source.canonicalSessions),
+                ArrayStorageIdentity(source.archiveHeartRatePoints),
+                ArrayStorageIdentity(source.confirmedSleeps),
+                ArrayStorageIdentity(source.confirmedWorkouts),
+                ArrayStorageIdentity(source.rawSessions)
+            ],
+            profile: source.profile,
+            baselineDigest: (try? JSONEncoder().encode(input.baseline)) ?? Data(),
+            liveRestingHeartRate: input.liveRestingHeartRate,
+            activeSessionID: input.activeSessionID,
+            confirmedWorkouts: input.confirmedWorkouts,
+            minute: Int((input.windowEnd.timeIntervalSince1970 / 60).rounded(.down))
+        )
     }
 
     private struct SavedAggregateRefreshInput: @unchecked Sendable {
@@ -10377,6 +10142,13 @@ final class AtriaHomeModel {
         )
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
         historicalStressFallbackRestSubject.send(initialLiveSessionDerived.rest)
+        ble.$liveDataNote
+            .combineLatest(ble.$status)
+            .map { note, status in status == .connected ? note : nil }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak noteStore = liveDataNoteStore] in noteStore?.note = $0 }
+            .store(in: &cancellables)
         bind()
         scheduleSavedAggregateCycleRolloverRefresh()
         coreRefreshSubject.send(())
@@ -10690,9 +10462,11 @@ final class AtriaHomeModel {
             ble.$rrContinuityState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$sessionSampleCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$liveStrapStepResearchCumulativeCount.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepResearchState.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$liveStrapStepCountCapturedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$officialAppCoexistenceRisk.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            ble.$bluetoothStackWedgeSuspected.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanRequestedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -10709,6 +10483,15 @@ final class AtriaHomeModel {
         throttledCoreLiveChanges
             .sink { [weak self] (_: Void) in
                 self?.publishCoreLive()
+                // Pulse/Core stores stay frozen while inactive, so HomeView's
+                // live widget/LA publishers never fire. BLE is still live —
+                // patch widgets and retry idle presence from this lane before
+                // diagnosis reads kit count / start error.
+                self?.publishFrozenSceneLiveSurfaces()
+                // CoreLive presentation stays frozen while inactive. Diagnosis
+                // must still age HR/IMU from the live BLE clocks so a
+                // background install (device 2026-09-17 115) is pullable.
+                self?.publishDiagnosisReport(reason: "core_live")
             }
             .store(in: &cancellables)
 
@@ -11151,8 +10934,225 @@ final class AtriaHomeModel {
         )
         recoveryPresentationHold = held.state
         next.historicalRecoveryPresentation = held.value
-        guard next != coreLiveStore.state else { return }
-        coreLiveStore.state = next
+        if next != coreLiveStore.state {
+            coreLiveStore.state = next
+        }
+        publishDiagnosisReport(reason: "core_live")
+    }
+
+    func publishDiagnosisReport(
+        reason: String,
+        liveActivity: AtriaLiveActivityCoordinator.Snapshot? = nil,
+        activityKitCount: Int? = nil
+    ) {
+        // Device 2026-09-19 09:27: leftover idle-window pending=5 was still
+        // in UserDefaults after Today was already Live (HR 3.5s, IMU 0.4s,
+        // kit=1). Scene-active retire can miss a session that never left
+        // .active; diagnosis is the loop that still runs. Drop the dry
+        // 0x22 snapshot before this report reads it, so the next background
+        // tick cannot re-pause 2A37.
+        ble.retireStuckIdleWindowLeftoverIfNeeded(
+            metadataOnlyWorkoutEnds: store.confirmedWorkouts.compactMap { workout -> Date? in
+                guard workout.confidence == "user_confirmed_no_hr",
+                      workout.samples == 0 else { return nil }
+                return workout.end
+            }
+        )
+        if let liveActivity {
+            lastLiveActivityDiagnosis = liveActivity
+        }
+        if let activityKitCount {
+            lastActivityKitCount = activityKitCount
+        }
+        let liveActivitySnapshot = liveActivity ?? lastLiveActivityDiagnosis
+        let now = Date()
+        let core = coreLiveStore.state
+        let pulse = pulseLiveStore.state
+        let rollups = store.dailyRollupHistory
+        let today = Calendar.current.startOfDay(for: now)
+        let todayRollup = rollups.first { Calendar.current.isDate($0.day, inSameDayAs: today) }
+        let lastWorkout = store.confirmedWorkouts.max { $0.end < $1.end }
+        let recentNoHeartRateWorkouts = store.confirmedWorkouts
+            .filter { $0.samples <= 0 }
+            .sorted { $0.end > $1.end }
+            .prefix(5)
+        let lastKnownHR = Self.diagnosisDisplayedHeartRate(
+            pulseHeartRate: pulse.heartRate,
+            bleHeartRate: ble.heartRate,
+            sensorHasContact: ble.hasContact,
+            status: ble.status,
+            latestSampleHeartRate: ble.session.last?.bpm,
+            latestSampleAt: ble.session.last?.t,
+            retained: ble.lastKnownDisplayHeartRate
+        )
+        let zone = pulse.heartRateZone?.name
+        let publishedWidget = AtriaIntentSnapshotStore.loadPublishedPayload()
+        func diagnosisWorkout(_ workout: UserConfirmedWorkout) -> AtriaDiagnosisReport.Workout {
+            AtriaDiagnosisReport.Workout(
+                activityType: workout.activityType ?? workout.label,
+                start: workout.start,
+                end: workout.end,
+                samples: workout.samples,
+                avgHR: workout.avgHR > 0 ? workout.avgHR : nil,
+                peakHR: workout.peakHR > 0 ? workout.peakHR : nil,
+                strain: workout.strain,
+                steps: workout.workoutSteps,
+                stepsAreEstimated: workout.workoutStepsAreEstimated,
+                heartRateLoad: AtriaWorkoutMetricPresentation.heartRateLoadPoints(workout),
+                reason: workout.reason
+            )
+        }
+        AtriaDiagnosisReport.publish(
+            AtriaDiagnosisReport.make(
+                now: now,
+                build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "",
+                status: AtriaDiagnosisReport.reportedConnectionStatus(
+                    status: core.status,
+                    hrAgeSeconds: Self.diagnosisHeartRateAgeSeconds(
+                        lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+                        latestSampleAt: ble.session.last?.t,
+                        now: now
+                    )
+                ),
+                recovering: core.isInRecentLiveRecovery(now: now),
+                reconnectAgeSeconds: core.pendingKnownReconnectAge(now: now),
+                reconnectReason: core.pendingKnownReconnectReason,
+                hrAgeSeconds: Self.diagnosisHeartRateAgeSeconds(
+                    lastAcceptedAt: ble.lastAcceptedHeartRateAt,
+                    latestSampleAt: ble.session.last?.t,
+                    now: now
+                ),
+                imuAgeSeconds: Self.diagnosisIMUAgeSeconds(
+                    motionCapturedAt: ble.lastAcceptedMotionFrameAt ?? ble.liveStrapMotionCapturedAt,
+                    compactAssembledAt: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAt() ?? {
+                        let at = UserDefaults.standard.double(
+                            forKey: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAtKey
+                        )
+                        guard at > 0 else { return nil }
+                        return Date(timeIntervalSince1970: at)
+                    }(),
+                    compactPacketAt: AtriaCompactIMULiveDiagnostics.lastPacketAt() ?? {
+                        let at = UserDefaults.standard.double(
+                            forKey: AtriaCompactIMULiveDiagnostics.lastPacketAtKey
+                        )
+                        guard at > 0 else { return nil }
+                        return Date(timeIntervalSince1970: at)
+                    }(),
+                    now: now
+                ),
+                stream5Confirmed: ble.liveStream5NotifyConfirmed,
+                batteryPercent: core.batteryLevel >= 0 ? core.batteryLevel : nil,
+                officialAppRisk: ble.officialAppCoexistenceRisk.rawValue,
+                workoutRecording: liveWorkoutIsActive,
+                settledHRV: AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(from: rollups),
+                liveHRV: ble.hrv > 0 ? ble.hrv : nil,
+                overnightRHR: AtriaHealthMetricEvidencePresentation.newestSettledRestingHeartRate(from: rollups),
+                daytimeRHR: ((todayRollup?.sleepSeconds ?? 0) > 0) ? nil : todayRollup?.rhr,
+                overnightRecovery: AtriaHealthMetricEvidencePresentation.newestSettledRecovery(from: rollups),
+                todayRecovery: todayRollup?.recovery,
+                lastWorkout: lastWorkout.map(diagnosisWorkout),
+                recentNoHeartRateWorkouts: recentNoHeartRateWorkouts.map(diagnosisWorkout),
+                liveHeartRate: lastKnownHR,
+                liveZone: zone,
+                widgetHeartRate: publishedWidget?.heartRate,
+                widgetHRV: publishedWidget?.hrvRMSSD,
+                widgetRHR: publishedWidget?.restingHR,
+                widgetRecovery: publishedWidget?.recoveryPercent,
+                widgetHRVCapturedAt: publishedWidget?.hrvCapturedAt,
+                widgetCreatedAt: publishedWidget?.createdAt,
+                widgetSteps: publishedWidget?.steps,
+                todaySteps: core.dailyStepPresentation.count
+                    ?? AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                        cycleStart: AtriaPhysiologicalCycle.current(
+                            now: now,
+                            confirmedSleeps: store.confirmedSleeps
+                        ).start
+                    )?.count,
+                widgetStrain: publishedWidget?.strain,
+                todayStrain: heroStore.state.strain,
+                heldStrain: AtriaHeldDayStrainFloor.load(
+                    cycleStart: AtriaPhysiologicalCycle.current(
+                        now: now,
+                        confirmedSleeps: store.confirmedSleeps
+                    ).start,
+                    now: now
+                )?.value,
+                metricWindows: diagnosisMetricWindows(rollups: rollups, now: now),
+                liveActivityName: liveActivitySnapshot?.activityName,
+                liveActivityAvailability: liveActivitySnapshot?
+                    .heartRateAvailability.rawValue,
+                liveActivityStrain: liveActivitySnapshot.map(\.workoutStrain),
+                liveActivitySteps: liveWorkoutIsActive
+                    ? liveActivitySnapshot?.steps
+                    : liveActivitySnapshot?.dailySteps,
+                liveActivityElapsedSeconds: liveActivitySnapshot
+                    .map { Int($0.elapsedDuration.rounded()) },
+                compactAssembledAgeSeconds: {
+                    let at = UserDefaults.standard.double(
+                        forKey: AtriaCompactIMULiveDiagnostics.lastAssembledSecondAtKey
+                    )
+                    guard at > 0 else { return nil }
+                    return now.timeIntervalSince1970 - at
+                }(),
+                idleWindowPending: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
+                    ) != nil else { return nil }
+                    return defaults.integer(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.idleWindowAckedRangePending
+                    )
+                }(),
+                wwrPendingCount: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.RadioDefaults.wwrPendingCount
+                    ) != nil else { return nil }
+                    return defaults.integer(
+                        forKey: AtriaBLEManager.RadioDefaults.wwrPendingCount
+                    )
+                }(),
+                lastWWRAllowed: {
+                    let defaults = UserDefaults.standard
+                    guard defaults.object(
+                        forKey: AtriaBLEManager.RadioDefaults.lastWWRAllowed
+                    ) != nil else { return nil }
+                    return defaults.bool(
+                        forKey: AtriaBLEManager.RadioDefaults.lastWWRAllowed
+                    )
+                }(),
+                compactSittingSkip: UserDefaults.standard.bool(
+                    forKey: AtriaCompactIMULiveDiagnostics.lastSecondSkippedKey
+                ),
+                liveActivityKitCount: lastActivityKitCount,
+                liveActivityStartError: UserDefaults.standard.string(
+                    forKey: AtriaLiveActivityCoordinator.lastStartErrorKey
+                )
+            ),
+            reason: reason
+        )
+    }
+
+    private func diagnosisMetricWindows(
+        rollups: [DailyRollupStoreEntry],
+        now: Date
+    ) -> AtriaDiagnosisReport.MetricWindows {
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: now)
+        let revision = store.dailyRollupHistoryRevision
+        if let memo = diagnosisMetricWindowsMemo,
+           memo.rollupsRevision == revision,
+           memo.day == day,
+           memo.timeZone == calendar.timeZone {
+            return memo.windows
+        }
+        let windows = AtriaDiagnosisReport.overnightMetricWindows(
+            rollups: rollups,
+            now: now,
+            calendar: calendar
+        )
+        diagnosisMetricWindowsMemo = (revision, day, calendar.timeZone, windows)
+        return windows
     }
 
     /// Carry-over for the recovery-banner anti-flicker debounce above.
@@ -11239,7 +11239,7 @@ final class AtriaHomeModel {
     }
 
     /// A permanent 1 Hz timer used to wake the main run loop for the entire app
-    /// lifetime just to expire a six-second-old pulse. One coalesced sleeper is
+    /// lifetime just to expire a pulse past `liveHeartRateFreshnessInterval`. One coalesced sleeper is
     /// enough: while samples keep arriving it wakes at most once per freshness
     /// window and moves to the newest deadline; after the stream stops it clears
     /// the UI once and does not re-arm.
@@ -11439,13 +11439,32 @@ final class AtriaHomeModel {
 
     private func startSavedAggregateRefresh(generation: UInt64, reason: String) {
         let input = savedAggregateRefreshInputSnapshot(now: Date())
+        let identity = Self.savedAggregateInputIdentity(input)
+        if identity == lastPublishedSavedAggregateIdentity {
+            // Launch fired 16 refreshes in 13 s and 13 rebuilt an identical
+            // aggregate (2026-10-02 device). Same inputs within the same
+            // minute cannot produce a different aggregate.
+            let unchanged = savedAggregate
+            DispatchQueue.main.async { [weak self] in
+                self?.finishSavedAggregateRefresh(
+                    generation: generation,
+                    result: unchanged,
+                    reason: reason,
+                    input: nil,
+                    identity: nil
+                )
+            }
+            return
+        }
         savedAggregateRefreshQueue.async { [weak self, input] in
             let result = Self.makeSavedAggregate(input: input)
             DispatchQueue.main.async { [weak self] in
                 self?.finishSavedAggregateRefresh(
                     generation: generation,
                     result: result,
-                    reason: reason
+                    reason: reason,
+                    input: input,
+                    identity: identity
                 )
             }
         }
@@ -11453,7 +11472,9 @@ final class AtriaHomeModel {
 
     private func finishSavedAggregateRefresh(generation: UInt64,
                                              result: SavedAggregate,
-                                             reason: String) {
+                                             reason: String,
+                                             input: SavedAggregateRefreshInput?,
+                                             identity: SavedAggregateInputIdentity?) {
         switch savedAggregateRefreshGate.complete(generation) {
         case .ignored:
             return
@@ -11463,6 +11484,12 @@ final class AtriaHomeModel {
                 reason: pendingSavedAggregateRefreshReason
             )
         case .publish:
+            if let identity, let input {
+                // Retaining the input keeps its array storage alive, so an
+                // equal storage identity later really means "not modified".
+                lastPublishedSavedAggregateInput = input
+                lastPublishedSavedAggregateIdentity = identity
+            }
             let changed = result != savedAggregate
             if changed {
                 savedAggregate = result
@@ -11495,6 +11522,12 @@ final class AtriaHomeModel {
             confirmedWorkouts: store.confirmedWorkouts.count,
             windowEnd: now
         )
+    }
+
+    /// True when an off-main saved aggregate was built for this cycle.
+    nonisolated static func savedAggregateDescribesCycle(aggregateCycleStart: Date,
+                                                         cycleStart: Date) -> Bool {
+        abs(aggregateCycleStart.timeIntervalSince(cycleStart)) < 1
     }
 
     /// The start of the CONTINUOUS active period the cumulative Today metrics
@@ -11794,6 +11827,26 @@ final class AtriaHomeModel {
     /// framing, shared RR qualification, and v3 evaluation run in a cancellable
     /// utility worker. Rapid publications invalidate the older generation before
     /// any result can reach the chronological archive.
+    /// Drained strap HR over the replay source window. Bounds are snapped to
+    /// 15 minutes so repeated replays reuse the archive's window cache.
+    nonisolated private static func historicalStressArchiveHeartRates(
+        now: Date
+    ) -> [AtriaHistoricalStressReplay.HeartRateRow] {
+        let step: TimeInterval = 15 * 60
+        let from = now.addingTimeInterval(
+            -AtriaHistoricalStressReplay.replaySourceWindow
+                - AtriaPhysiologicalStressModel.windowDuration
+        ).timeIntervalSince1970
+        let start = Date(timeIntervalSince1970: floor(from / step) * step)
+        let end = Date(timeIntervalSince1970: ceil(now.timeIntervalSince1970 / step) * step)
+        guard let read = HistoricalArchive.metricHeartRatePoints(
+            start: start, end: end, maximumPoints: 250_000
+        ) else { return [] }
+        return read.points.map {
+            AtriaHistoricalStressReplay.HeartRateRow(date: $0.t, bpm: $0.bpm)
+        }
+    }
+
     private func scheduleHistoricalStressReplay(now: Date) {
         let generation = historicalStressReplayGate.begin()
         historicalStressReplayWorker?.cancel()
@@ -11852,7 +11905,10 @@ final class AtriaHomeModel {
                     now: now
                 )
             }) else { return (.empty, nil, nil) }
-            let result = AtriaHistoricalStressReplay.evaluate(snapshot)
+            let result = AtriaHistoricalStressReplay.evaluate(
+                snapshot,
+                archiveHeartRates: Self.historicalStressArchiveHeartRates(now: now)
+            )
             // W1-B (stress-gaps fix 4): a structurally-rejected non-empty
             // source yields an honest abort marker for the gap receipts —
             // never per-minute `kernel_declined` for a kernel that never ran.
@@ -12221,6 +12277,7 @@ final class AtriaHomeModel {
                                           savedAggregate: SavedAggregate,
                                           canonicalStepDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
                                           motionTickDailyStore: AtriaWhoop4MotionTickDailyStore = .shared) -> CoreLiveState {
+        ble.noteOpenPhysiologicalCycleStart(savedAggregate.cycleStart)
         let deviceName = ble.resolvedDeviceName
         let displayableBatteryLevel = ble.displayableBatteryLevel()
         let batteryRecentlyDropping = displayableBatteryLevel != nil && ble.batteryRecentlyDropping
@@ -12251,11 +12308,19 @@ final class AtriaHomeModel {
                                                                isCharging: false)
             batteryChargeLastVerifiedAt = nil
         }
-        let strapStepsToday = mergedStrapStepResearchCount(
-            savedToday: savedAggregate.savedTodayStrapSteps,
-            savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
-            savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
-            liveActiveSession: ble.liveStrapStepResearchCount
+        let strapStepsToday = presentedDailyStrapStepCount(
+            savedMerge: mergedStrapStepResearchCount(
+                savedToday: savedAggregate.savedTodayStrapSteps,
+                savedActiveSession: savedAggregate.savedActiveSessionStrapSteps,
+                savedActiveSessionTotal: savedAggregate.savedActiveSessionTotalStrapSteps,
+                liveActiveSession: ble.liveStrapStepResearchTodayCount
+            ),
+            liveCumulative: ble.liveStrapStepResearchTodayCount,
+            liveGyroToday: AtriaHeldDailyStepFloor.loadLiveGyroToday(
+                cycleStart: savedAggregate.cycleStart
+            )?.count ?? 0,
+            cycleStart: savedAggregate.cycleStart,
+            now: Date()
         )
         let currentCycleStepDays: [
             AtriaHistoricalDailyConsumerProjection.StepDay
@@ -12286,12 +12351,19 @@ final class AtriaHomeModel {
                 before: savedAggregate.cycleStart,
                 strapIdentifiers: strapIdentifiers
             )
+        let heldFloor = AtriaHeldDailyStepFloor.load(cycleStart: savedAggregate.cycleStart)
+        let now = Date()
         var dailyStepPresentation = AtriaDailyStepPresentation.resolve(
-            day: Date(),
-            now: Date(),
+            day: now,
+            now: now,
             liveCount: strapStepsToday,
             liveValidationState: ble.liveStrapStepResearchState,
-            liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+            liveCapturedAt: AtriaDailyStepPresentation.inCycleCaptureClock(
+                liveCapturedAt: ble.liveStrapStepCountCapturedAt,
+                cycleStart: savedAggregate.cycleStart,
+                now: now,
+                presentedCount: strapStepsToday
+            ),
             canonicalDays: currentCycleStepDays,
             liveAuthorityQualified:
                 AtriaWhoop4GravityCadenceStepModel
@@ -12301,13 +12373,33 @@ final class AtriaHomeModel {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
             },
             boundaryIsUnconfirmedFallback:
-                savedAggregate.cycleBoundaryIsUnconfirmedFallback
+                savedAggregate.cycleBoundaryIsUnconfirmedFallback,
+            heldCount: heldFloor?.count ?? 0,
+            heldCapturedAt: heldFloor?.capturedAt
         )
+        if dailyStepPresentation.source == .live,
+           let count = dailyStepPresentation.count, count > 0 {
+            AtriaHeldDailyStepFloor.persist(
+                count: count,
+                cycleStart: savedAggregate.cycleStart,
+                capturedAt: dailyStepPresentation.capturedAt
+            )
+            if let capturedAt = dailyStepPresentation.capturedAt {
+                AtriaHeldDailyStepFloor.persistLiveGyroToday(
+                    count: count,
+                    capturedAt: capturedAt,
+                    cycleStart: savedAggregate.cycleStart
+                )
+            }
+        }
         // Classify strap-motion availability so the step copy stops promising an
         // endless sync when the transport is a terminal pure-HR fallback (while
         // keeping the verified count/coverage). Computed once per Core-Live
         // rebuild, not per HR sample.
         dailyStepPresentation.motionAvailability = ble.strapMotionAvailability
+        // Live R10 off under the power policy: the count is history-only and
+        // partial until the bank syncs (never zero, never a finished day).
+        dailyStepPresentation.livePauseNote = ble.status == .connected ? ble.liveDataNote : nil
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
             savedActiveSession: savedAggregate.savedActiveSessionActiveCalories,
@@ -12337,6 +12429,7 @@ final class AtriaHomeModel {
                              strapStepResearchState: ble.liveStrapStepResearchState,
                              dailyStepPresentation: dailyStepPresentation,
                              officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
+                             bluetoothStackWedgeSuspected: ble.bluetoothStackWedgeSuspected,
                              lastScanRequestedAt: ble.lastScanRequestedAt,
                              lastScanMatchAt: ble.lastScanMatchAt,
                              pendingKnownReconnectStartedAt: ble.pendingKnownReconnectStartedAt,
@@ -12361,6 +12454,42 @@ final class AtriaHomeModel {
         let checkpointRaw = max(0, savedActiveSessionTotal)
         let newSinceCheckpoint = max(0, liveActiveSession - checkpointRaw)
         return saved + newSinceCheckpoint
+    }
+
+    /// Native leftover R10 gyro is the open-cycle source while compact `0x33`
+    /// is absent. That is not fulfillment of compact gait. Saved-session sums use the
+    /// gyro-cadence coordinate only; accelerometer-peak leftovers stay on
+    /// `strapStepResearchCount` and must not become Today's floor. IMU drop
+    /// (`live == 0`) keeps the gyro saved floor so a reconnect does not flash "--".
+    /// `liveGyroToday` keeps a same-day walk when cycle-local count reset on
+    /// relaunch (device 2026-09-17: 167 vs 1944).
+    nonisolated static func presentedDailyStrapStepCount(savedMerge: Int,
+                                                        liveCumulative: Int,
+                                                        liveGyroToday: Int = 0,
+                                                        cycleStart: Date? = nil,
+                                                        now: Date = Date()) -> Int {
+        let live = max(0, liveCumulative)
+        let gyro = max(0, liveGyroToday)
+        let combined = max(live, gyro)
+        if let cycleStart {
+            if let plausible = AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                count: combined,
+                windowStart: cycleStart,
+                capturedAt: now
+            ) {
+                return plausible
+            }
+            if let plausibleLive = AtriaDailyStepPresentation.plausibleOpenCycleStepCount(
+                count: live,
+                windowStart: cycleStart,
+                capturedAt: now
+            ), plausibleLive > 0 {
+                return plausibleLive
+            }
+            return 0
+        }
+        if combined > 0 { return combined }
+        return max(0, savedMerge)
     }
 
     private static func makePulseLiveState(ble: AtriaBLEManager,
@@ -12406,24 +12535,243 @@ final class AtriaHomeModel {
                               latestSampleAt: ble.session.last?.t)
     }
 
+    /// Frozen PulseLive can keep a stale BPM after install while `session.last`
+    /// is already current. Diagnosis and background widgets must prefer BLE.
+    nonisolated static func diagnosisDisplayedHeartRate(
+        pulseHeartRate: Int,
+        bleHeartRate: Int,
+        sensorHasContact: Bool,
+        status: AtriaBLEManager.Status,
+        latestSampleHeartRate: Int?,
+        latestSampleAt: Date?,
+        retained: Int,
+        now: Date = Date()
+    ) -> Int {
+        let resolved = resolvedLiveHeartRate(
+            heartRate: bleHeartRate,
+            sensorHasContact: sensorHasContact,
+            status: status,
+            latestSampleHeartRate: latestSampleHeartRate,
+            latestSampleAt: latestSampleAt,
+            now: now
+        )
+        if resolved > 0 { return resolved }
+        return AtriaWorkoutHeartRateHold.displayed(
+            live: pulseHeartRate,
+            lastKnown: latestSampleHeartRate ?? 0,
+            retained: retained
+        )
+    }
+
+    func publishFrozenSceneLiveSurfaces() {
+        guard !livePresentationIsCurrentlyAuthorized else { return }
+        publishFrozenSceneWidgetPatchIfNeeded()
+        publishFrozenSceneIdleLiveActivityIfNeeded()
+    }
+
+    private func publishFrozenSceneWidgetPatchIfNeeded(now: Date = Date()) {
+        let heartRate = Self.liveHeartRate(ble: ble)
+        guard heartRate > 0 else { return }
+        let elapsed = lastFrozenSceneWidgetPatchAt.map { now.timeIntervalSince($0) }
+        let meaningfulDelta = lastFrozenSceneWidgetHeartRate.map {
+            abs(heartRate - $0) >= Self.frozenSceneWidgetPatchBPMDelta
+        } ?? true
+        let cadenceReady = elapsed.map { $0 >= Self.frozenSceneWidgetPatchMinimumInterval } ?? true
+        guard cadenceReady || meaningfulDelta else { return }
+        lastFrozenSceneWidgetPatchAt = now
+        lastFrozenSceneWidgetHeartRate = heartRate
+        let core = coreLiveStore.state
+        let dailySteps = core.dailyStepPresentation
+        let steps = dailySteps.count
+        let displayableBatteryLevel = ble.displayableBatteryLevel(now: now)
+        let liveZone: Metrics.HeartRateZone?
+        if let rest = store.baseline.restingInt {
+            liveZone = Metrics.heartRateZone(bpm: heartRate,
+                                             rest: rest,
+                                             max: store.profile.maxHR)
+        } else {
+            liveZone = nil
+        }
+        WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
+            heartRate: heartRate,
+            heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? ble.session.last?.t,
+            heartRateZoneIndex: liveZone?.index,
+            heartRateZoneName: liveZone?.name,
+            steps: steps,
+            stepsAreEstimated: steps != nil
+                && (!dailySteps.isValidated
+                    || (dailySteps.source == .verifiedCanonical
+                        && dailySteps.completeness == .partial)),
+            stepsCapturedAt: steps == nil ? nil : dailySteps.capturedAt,
+            stepsSource: WidgetSnapshotPublisher.stepSourceIdentifier(dailySteps.source),
+            stepsCompleteness: WidgetSnapshotPublisher.stepCompletenessIdentifier(
+                dailySteps.completeness
+            ),
+            stepsCoverageFraction: dailySteps.coverageFraction,
+            stepsAuthorityVersion: steps == nil
+                ? nil
+                : WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            stepsValueText: steps == nil ? nil : dailySteps.valueText,
+            stepsStatusText: steps == nil ? nil : dailySteps.detailText,
+            strain: heroStore.state.strain,
+            strainDetail: heroStore.state.strainDetail,
+            strainCapturedAt: ble.lastAcceptedHeartRateAt,
+            batteryLevel: displayableBatteryLevel,
+            batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
+            batteryCorroboratedAt: displayableBatteryLevel == nil
+                ? nil : ble.batteryDisplayCorroboratedAt(now: now),
+            batteryChargeCapturedAt: displayableBatteryLevel != nil
+                && (ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full)
+                ? core.batteryChargeLastVerifiedAt : nil,
+            batteryChargeStatus: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.rawValue
+                : ble.batteryChargeStatus.rawValue,
+            batteryChargeText: displayableBatteryLevel == nil
+                ? AtriaBLEManager.BatteryChargeStatus.levelOnly.label
+                : ble.batteryChargeStatus.label,
+            reason: "live_hr_frozen_scene"
+        )
+    }
+
+    private func publishFrozenSceneIdleLiveActivityIfNeeded(now: Date = Date()) {
+        guard !liveWorkoutIsActive else { return }
+        let heartRate = Self.liveHeartRate(ble: ble)
+        let status = ble.status
+        let linkUsable = AtriaLiveActivityCoordinator.idleLiveLinkIsUsable(
+            status: status,
+            heartRate: heartRate
+        )
+        let livePresence = AtriaLiveActivityCoordinator.idleLivePresenceShouldStayActive(
+            workoutActive: false,
+            linkUsable: linkUsable,
+            heldHeartRate: heartRate,
+            presenceAlreadyStarted: frozenSceneIdlePresenceStartedAt != nil
+                || liveActivityCoordinator.activityKitCount > 0
+        )
+        if !livePresence {
+            frozenSceneIdlePresenceStartedAt = nil
+            return
+        }
+        if frozenSceneIdlePresenceStartedAt == nil {
+            frozenSceneIdlePresenceStartedAt = now
+        }
+        let dailySteps = coreLiveStore.state.dailyStepPresentation
+        let displayableBatteryLevel = ble.displayableBatteryLevel(now: now)
+        let zone: Metrics.HeartRateZone?
+        if let rest = store.baseline.restingInt {
+            zone = Metrics.heartRateZone(bpm: heartRate,
+                                         rest: rest,
+                                         max: store.profile.maxHR)
+        } else {
+            zone = nil
+        }
+        let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
+        liveActivityCoordinator.update(
+            AtriaLiveActivityCoordinator.Snapshot(
+                isRecording: true,
+                heartRate: heartRate,
+                heartRateCapturedAt: ble.lastAcceptedHeartRateAt ?? ble.session.last?.t,
+                sensorHasContact: ble.hasContact,
+                heartRateAvailability: .live,
+                strain: heroStore.state.strain,
+                batteryLevel: displayableBatteryLevel ?? -1,
+                batteryCapturedAt: displayableBatteryLevel == nil ? nil : ble.lastVerifiedBatteryLevelAt,
+                batteryChargeCapturedAt: displayableBatteryLevel != nil
+                    && (ble.batteryChargeStatus == .charging || ble.batteryChargeStatus == .full)
+                    ? coreLiveStore.state.batteryChargeLastVerifiedAt : nil,
+                batteryAvailability: displayableBatteryLevel == nil
+                    ? .unavailable
+                    : (status == .connected ? .live : .reconnecting),
+                batteryChargeStatus: ble.batteryChargeStatus,
+                readingCount: ble.sessionSampleCount,
+                startedAt: frozenSceneIdlePresenceStartedAt ?? now,
+                activityName: "Live",
+                activitySystemImage: "heart.fill",
+                heartRateZoneIndex: zone?.index,
+                heartRateZoneName: zone?.name,
+                steps: dailySteps.count,
+                stepsAreEstimated: dailySteps.count != nil && !dailySteps.isValidated,
+                stepsCapturedAt: dailySteps.count == nil ? nil : dailySteps.capturedAt,
+                stepsAvailability: dailySteps.count == nil ? .unavailable : .live,
+                dailySteps: dailySteps.count,
+                dailyStepsAreEstimated: dailySteps.count != nil && !dailySteps.isValidated,
+                dailyStepsCapturedAt: dailySteps.count == nil ? nil : dailySteps.capturedAt,
+                dailyStepsIsLowerBound: dailySteps.count != nil
+                    && dailySteps.source == .verifiedCanonical
+                    && dailySteps.completeness == .partial,
+                dailyStepGoal: storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000,
+                workoutStrain: 0,
+                isPaused: false,
+                elapsedDuration: 0,
+                showsWorkoutControls: false
+            )
+        )
+        lastActivityKitCount = liveActivityCoordinator.activityKitCount
+        lastLiveActivityDiagnosis = liveActivityCoordinator.lastPublishedSnapshot
+    }
+
     nonisolated static func resolvedLiveHeartRate(heartRate: Int,
                                                   sensorHasContact: Bool,
                                                   status: AtriaBLEManager.Status,
                                                   latestSampleHeartRate: Int?,
                                                   latestSampleAt: Date?,
                                                   now: Date = Date()) -> Int {
-        guard status == .connected,
-              sensorHasContact,
+        guard sensorHasContact,
               let latestSampleAt,
               let latestSampleHeartRate,
               latestSampleHeartRate > 0 else {
             return 0
+        }
+        switch status {
+        case .poweredOff, .disconnected:
+            return 0
+        case .connected, .connecting, .scanning:
+            break
         }
         let sampleAge = now.timeIntervalSince(latestSampleAt)
         guard sampleAge >= 0,
               sampleAge <= liveHeartRateFreshnessInterval else { return 0 }
         if heartRate > 0 { return heartRate }
         return latestSampleHeartRate
+    }
+
+    /// Diagnosis and Live Activity freshness must not ignore a live session
+    /// sample when `lastAcceptedHeartRateAt` is nil after a session boundary.
+    nonisolated static func latestHeartRateCapturedAt(
+        lastAcceptedAt: Date?,
+        latestSampleAt: Date?
+    ) -> Date? {
+        [lastAcceptedAt, latestSampleAt].compactMap { $0 }.max()
+    }
+
+    nonisolated static func diagnosisHeartRateAgeSeconds(
+        lastAcceptedAt: Date?,
+        latestSampleAt: Date?,
+        now: Date
+    ) -> Double? {
+        guard let captured = latestHeartRateCapturedAt(
+            lastAcceptedAt: lastAcceptedAt,
+            latestSampleAt: latestSampleAt
+        ), now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
+    }
+
+    /// Compact 0x33 is live IMU on WHOOP 4. R10 type-2B after `0x3F`
+    /// must not masquerade as native IMU: diagnosis uses only compact
+    /// 0x33 packet / assembled-second clocks. Sitting skip can leave
+    /// assembled seconds stale while packets still arrive (device
+    /// 2026-09-18: assembled 2437s, last notify type 33).
+    nonisolated static func diagnosisIMUAgeSeconds(
+        motionCapturedAt: Date?,
+        compactAssembledAt: Date?,
+        compactPacketAt: Date? = nil,
+        now: Date
+    ) -> Double? {
+        _ = motionCapturedAt
+        guard let captured = [compactAssembledAt, compactPacketAt]
+            .compactMap({ $0 }).max(),
+              now >= captured else { return nil }
+        return now.timeIntervalSince(captured)
     }
 
     private static func hasRecentHeartRateSample(ble: AtriaBLEManager, now: Date = Date()) -> Bool {
@@ -12610,9 +12958,17 @@ final class AtriaHomeModel {
             },
             calendar: calendar
         )
-        let presentedRecovery = dayResolution.recoveryOverride ?? recovery
-        let presentedRecoveryIsProvisional = dayResolution.recoveryOverride != nil
-            || recoveryIsProvisional
+        let overnightRecoveryRollup = AtriaHealthMetricEvidencePresentation
+            .newestSettledRecoveryRollup(from: store.dailyRollupHistory)
+        let presentedRecovery = AtriaHealthMetricEvidencePresentation.presentedRecoveryEstimate(
+            overnightRollup: overnightRecoveryRollup,
+            identityOverride: dayResolution.recoveryOverride,
+            cycleRecovery: recovery,
+            now: now,
+            calendar: calendar
+        )
+        let presentedRecoveryIsProvisional = overnightRecoveryRollup == nil
+            && (dayResolution.recoveryOverride != nil || recoveryIsProvisional)
         // The primary never carries a prior cycle's value anymore; the dated
         // disclosure replaces the old heuristic marker.
         let recoveryIsFromPreviousSleep = false
@@ -12622,10 +12978,19 @@ final class AtriaHomeModel {
             physiologicalCycleStart: physiologicalCycle.start,
             now: now
         )
-        let liveTRIMP = live.liveTRIMP
+        // The saved aggregate (and the live TRIMP clipped to its window) is
+        // refreshed off the main actor and can still describe the PREVIOUS
+        // cycle right after a wake is confirmed. Read as the new cycle's load,
+        // it showed yesterday's 9.0 as today's and ratcheted into the held
+        // floor for the whole day (device 2026-10-02, wake 07:38).
+        let aggregateIsCurrentCycle = Self.savedAggregateDescribesCycle(
+            aggregateCycleStart: savedAggregate.cycleStart,
+            cycleStart: physiologicalCycle.start
+        )
+        let liveTRIMP = aggregateIsCurrentCycle ? live.liveTRIMP : 0
         let totalTRIMP = SessionStore.mergedTodayTRIMP(
-            savedToday: savedAggregate.savedTodayTRIMP,
-            savedActiveSession: savedAggregate.savedActiveSessionTRIMP,
+            savedToday: aggregateIsCurrentCycle ? savedAggregate.savedTodayTRIMP : 0,
+            savedActiveSession: aggregateIsCurrentCycle ? savedAggregate.savedActiveSessionTRIMP : 0,
             liveActiveSession: liveTRIMP
         )
         let strain = Metrics.strain(fromTRIMP: totalTRIMP)
@@ -12707,7 +13072,9 @@ final class AtriaHomeModel {
         }
         let whiteboardGuidance = AtriaWhiteboardCoachSentence.rewrite(
             kernel: kernelGuidance,
-            context: .init(hrvMS: Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
+            context: .init(hrvMS: AtriaHealthMetricEvidencePresentation
+                                .newestSettledHRVMilliseconds(from: store.dailyRollupHistory)
+                                ?? Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
                            restingHR: presentationRestingHeartRate,
                            baseline: AtriaBaselineTargetSnapshot(store.baseline),
                            yesterdayTRIMP: whiteboardYesterday?.trimp,
@@ -12728,15 +13095,57 @@ final class AtriaHomeModel {
         // (guidance, strain target) above intentionally still uses the
         // wake-to-wake projection; only what the Today surface DISPLAYS as
         // primary changes.
-        let presentedStrain = dayResolution.strainOverride ?? strain
-        let presentedStrainConfidence = dayResolution.strainOverride != nil
-            ? Metrics.StrainPresentation.resolve(
+        let computedPresentedStrain = dayResolution.strainOverride ?? strain
+        let computedPresentedDetail = dayResolution.strainOverride != nil
+            ? "Partial · current day"
+            : strainConfidence
+        let strainCycleExpiresAt = WidgetSnapshotPublisher.cumulativeStrainCycleExpiration(
+            cycle: physiologicalCycle,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: calendar
+        )
+        let heldStrain = AtriaHeldDayStrainFloor.load(
+            cycleStart: physiologicalCycle.start,
+            now: now
+        )
+        let widgetCycleStrain = AtriaIntentSnapshotStore.loadPublishedPayload().flatMap { snapshot -> Double? in
+            guard snapshot.strain > 0 else { return nil }
+            let sameCycle = snapshot.strainCycleStart == physiologicalCycle.start
+                || snapshot.strainCycleExpiresAt == strainCycleExpiresAt
+            return sameCycle ? snapshot.strain : nil
+        }
+        let previousCycleStrain = max(heldStrain?.value ?? 0, widgetCycleStrain ?? 0)
+        let presentedStrainResolution = WidgetSnapshotPublisher.resolvedPresentedWidgetStrain(
+            computed: computedPresentedStrain,
+            computedDetail: computedPresentedDetail,
+            heroStrain: previousCycleStrain > 0 ? previousCycleStrain : nil,
+            heroDetail: heldStrain?.detail
+        )
+        let presentedStrain = presentedStrainResolution.value
+        if presentedStrain > 0, aggregateIsCurrentCycle {
+            AtriaHeldDayStrainFloor.persist(
+                value: presentedStrain,
+                cycleStart: physiologicalCycle.start,
+                cycleExpiresAt: strainCycleExpiresAt,
+                detail: presentedStrainResolution.detail,
+                now: now
+            )
+        }
+        let presentedStrainConfidence: String
+        if presentedStrain > 0,
+           strainConfidence.localizedCaseInsensitiveContains("learning")
+            || strainConfidence.localizedCaseInsensitiveContains("standby") {
+            presentedStrainConfidence = presentedStrainResolution.detail ?? "Current cycle"
+        } else if dayResolution.strainOverride != nil {
+            presentedStrainConfidence = Metrics.StrainPresentation.resolve(
                 value: presentedStrain,
                 coverageFraction: wearCoverage,
                 baseConfidence: baseStrainConfidence,
                 additionalIncompleteEvidence: true
               ).confidence
-            : strainConfidence
+        } else {
+            presentedStrainConfidence = strainConfidence
+        }
         return HeroSnapshot(recoveryEstimate: presentedRecovery,
                             recoveryIsProvisional: presentedRecoveryIsProvisional,
                             recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
@@ -12746,9 +13155,23 @@ final class AtriaHomeModel {
                             strainConfidence: presentedStrainConfidence,
                             dayWearCoverageFraction: wearCoverage,
                             guidance: guidance,
-                            hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
-                            hrvDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
-                            hrvNarrative: deferredDetails?.hrvNarrative ?? fallbackHrv.narrative,
+                            hrvValue: AtriaHealthMetricEvidencePresentation.presentedHRVDisplayValue(
+                                overnightMilliseconds: AtriaHealthMetricEvidencePresentation
+                                    .newestSettledHRVMilliseconds(from: store.dailyRollupHistory),
+                                liveDisplay: deferredDetails?.hrvValue ?? fallbackHrv.value
+                            ),
+                            hrvDetail: AtriaHealthMetricEvidencePresentation.presentedHRVDetail(
+                                overnightRollup: AtriaHealthMetricEvidencePresentation
+                                    .newestSettledHRVRollup(from: store.dailyRollupHistory),
+                                liveDetail: deferredDetails?.hrvDetail ?? fallbackHrv.detail,
+                                now: now,
+                                calendar: calendar
+                            ),
+                            hrvNarrative: AtriaHealthMetricEvidencePresentation
+                                .newestSettledHRVMilliseconds(from: store.dailyRollupHistory)
+                                .map { "Overnight HRV was \($0) ms." }
+                                ?? deferredDetails?.hrvNarrative
+                                ?? fallbackHrv.narrative,
                             stressLevel: stress.level,
                             stressValue: stress.value,
                             stressDetail: stress.detail,
@@ -13194,12 +13617,20 @@ final class AtriaHomeModel {
                                             recoveryIsLearning: Bool) -> DeferredDetails {
         let diagnostics = store.homeDashboardDiagnostics()
         let now = Date()
-        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
-            validated: store.latestReferenceValidatedHRVForDisplay,
-            live: ble.hrvSnapshot,
-            local: store.latestLocalRMSSDForDisplay,
-            now: now
+        let overnightHRV = AtriaHealthMetricEvidencePresentation.newestSettledHRVMilliseconds(
+            from: store.dailyRollupHistory
         )
+        let overnightHRVRollup = AtriaHealthMetricEvidencePresentation.newestSettledHRVRollup(
+            from: store.dailyRollupHistory
+        )
+        let displayHRV = overnightHRV == nil
+            ? AtriaCurrentCycleHRVDisplayProjection.resolve(
+                validated: store.latestReferenceValidatedHRVForDisplay,
+                live: ble.hrvSnapshot,
+                local: store.latestLocalRMSSDForDisplay,
+                now: now
+            )
+            : nil
         let rrPackage = diagnostics.rrPackage
         let sleep = diagnostics.sleep
         let workout = diagnostics.workout
@@ -13207,15 +13638,19 @@ final class AtriaHomeModel {
         let backup = diagnostics.backup
         let trend90 = diagnostics.trend90
 
-        let hrvValue: String
-        if let displayHRV {
-            hrvValue = "\(displayHRV.value)"
-        } else {
-            hrvValue = "Learning"
-        }
+        let hrvValue = AtriaHealthMetricEvidencePresentation.presentedHRVDisplayValue(
+            overnightMilliseconds: overnightHRV,
+            liveDisplay: displayHRV.map { "\($0.value)" } ?? "Learning"
+        )
 
         let hrvDetail: String
-        if displayHRV?.source == .referenceValidated {
+        if overnightHRV != nil {
+            hrvDetail = AtriaHealthMetricEvidencePresentation.presentedHRVDetail(
+                overnightRollup: overnightHRVRollup,
+                liveDetail: "personal baseline",
+                now: now
+            )
+        } else if displayHRV?.source == .referenceValidated {
             hrvDetail = "validated"
         } else if displayHRV != nil {
             hrvDetail = "personal baseline"
@@ -13225,7 +13660,9 @@ final class AtriaHomeModel {
         }
 
         let hrvNarrative: String
-        if displayHRV?.source == .referenceValidated {
+        if let overnightHRV {
+            hrvNarrative = "Overnight HRV was \(overnightHRV) ms."
+        } else if displayHRV?.source == .referenceValidated {
             hrvNarrative = "Checked HRV is ready."
         } else if displayHRV != nil {
             hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."
@@ -13487,12 +13924,19 @@ private struct AtriaToolbarIcon: View, Equatable {
     }
 }
 
+/// One segment of the header's shared glass pill (owner 2026-10-03: system
+/// toolbar look). The pill's glass is drawn once by `actionButtons`; each
+/// segment is only a 44pt hit area with a press response.
 private struct AtriaHeaderActionButtonStyle: ButtonStyle {
     private static let size: CGFloat = AtriaHeaderControlMetrics.height
 
     func makeBody(configuration: Configuration) -> some View {
-        AtriaGlassIconButtonStyle(tint: .secondary, size: Self.size)
-            .makeBody(configuration: configuration)
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
+            .frame(width: Self.size, height: Self.size)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.55 : 1)
     }
 }
 
@@ -13501,7 +13945,10 @@ enum AtriaHomeChromeLayout {
     /// small, explicit portrait lane clear of the Dynamic Island instead of
     /// relying on a nested scroll-view's safe-area propagation.
     static func topChromeClearance(verticalSizeClass: UserInterfaceSizeClass?) -> CGFloat {
-        verticalSizeClass == .regular ? 26 : 0
+        // 26 -> 8 (owner 2026-08-28 strict pass): the safe-area inset already
+        // clears the status bar; the extra clearance was dead air above the
+        // status chip.
+        verticalSizeClass == .regular ? 8 : 0
     }
 
     static func showsHomeStatusChip(workoutIsActive: Bool) -> Bool {
@@ -13516,6 +13963,7 @@ enum AtriaHomeChromeLayout {
 
 private struct AtriaHomeTopChrome: View {
     let statusStore: AtriaHomeModel.StatusStore
+    let compactRingStore: AtriaTodayCompactRingStore?
     let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let pulseLiveStore: AtriaHomeModel.PulseLiveStore
     let prefersLiveActivityStatus: Bool
@@ -13547,6 +13995,10 @@ private struct AtriaHomeTopChrome: View {
                         statusChip
                     }
                     Spacer(minLength: 8)
+                    if let compactRingStore {
+                        AtriaTodayCompactRingChromeHost(store: compactRingStore)
+                            .layoutPriority(1)
+                    }
                     actionButtons
                 }
             }
@@ -13571,18 +14023,18 @@ private struct AtriaHomeTopChrome: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             // One native menu replaces the ambiguous chat bubble. The trigger
             // remains the only new glass surface; both destinations reuse their
             // existing sheets and keep the Today page's in-content actions.
             Menu {
                 Button(action: onStartActivity) {
-                    Label("Start Activity", systemImage: "figure.run")
+                    Label("Start workout", systemImage: "figure.run")
                 }
                 .disabled(!activityStartIsAvailable)
 
                 Button(action: onAddActivity) {
-                    Label("Add Activity", systemImage: "calendar.badge.plus")
+                    Label("Add workout", systemImage: "calendar.badge.plus")
                 }
             } label: {
                 AtriaToolbarIcon(symbol: "plus")
@@ -13600,7 +14052,12 @@ private struct AtriaHomeTopChrome: View {
             }
             .buttonStyle(AtriaHeaderActionButtonStyle())
             .accessibilityLabel("Settings")
+            .accessibilityIdentifier("atria.home.settings")
         }
+        .padding(.horizontal, 4)
+        // One shared glass pill for the actions, like the system toolbars
+        // (owner 2026-10-03 inspiration).
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -13758,10 +14215,13 @@ enum AtriaTopStatusProjection {
             displayStatus = input.status
         }
 
-        let freshPulseOverridesLaggingStream = hasPulseSignal
-            && (input.strapStreamState == .warming
-                || input.strapStreamState == .silentUnknown
-                || input.strapStreamState == .unknown)
+        // One shared rule for every connection surface (see
+        // AtriaLiveSignalTruth.freshPulseOverridesLaggingStream). This pill was
+        // the original owner of the rule; the Strap screen and the Overview
+        // card now read the same definition instead of each carrying its own.
+        let freshPulseOverridesLaggingStream = AtriaLiveSignalTruth
+            .freshPulseOverridesLaggingStream(hasPulseSignal: hasPulseSignal,
+                                              streamState: input.strapStreamState)
 
         var label: String
         if displayStatus == .connected {
@@ -13849,7 +14309,7 @@ enum AtriaTopStatusProjection {
                 switch input.strapStreamState {
                 case .live: tone = .green
                 case .lowBatteryShutoff, .lowBatteryReducedDetail: tone = .yellow
-                case .silentUnknown: tone = .orange
+                case .silentUnknown: tone = .cyan
                 case .warming, .unknown: tone = .cyan
                 }
             }
@@ -13945,13 +14405,7 @@ enum AtriaTopStatusProjection {
     }
 
     private static func batterySymbol(level: Int) -> String {
-        switch level {
-        case ..<13: return "battery.0percent"
-        case ..<38: return "battery.25percent"
-        case ..<63: return "battery.50percent"
-        case ..<88: return "battery.75percent"
-        default: return "battery.100percent"
-        }
+        AtriaBatteryIdentity.systemImage(percent: level)
     }
 
     static func nextSemanticDeadline(input: AtriaTopStatusProjectionInput,
@@ -14222,8 +14676,11 @@ private struct AtriaTopStatusChip: View, Equatable {
 
     private var chipLabel: some View {
         HStack(spacing: 5) {
+            // Colour only on the state glyph (owner 2026-10-03); the glass
+            // itself stays neutral.
             Image(systemName: presentation.symbol)
                 .imageScale(.small)
+                .foregroundStyle(presentation.isConnected ? Color.primary : toneColor)
             Text(presentation.label)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -14236,20 +14693,13 @@ private struct AtriaTopStatusChip: View, Equatable {
             }
         }
         .font(.caption.weight(.bold))
-        // The state hue already lives in the glass surface. Adaptive primary
-        // remains legible when Liquid Glass intensifies a connected tint.
-        .foregroundStyle(presentation.isConnected ? Color.primary : toneColor)
+        .foregroundStyle(Color.primary)
         .padding(.horizontal, 12)
         .frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,
                maxWidth: 172,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
-        .glassEffect(
-            .regular
-                .tint(toneColor.opacity(colorScheme == .dark ? 0.34 : 0.22))
-                .interactive(),
-            in: .capsule
-        )
+        .glassEffect(.regular.interactive(), in: .capsule)
         .contentShape(Capsule())
         .accessibilityLabel("Strap status \(presentation.accessibilityLabel)")
     }
@@ -14311,7 +14761,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
     }
 
     var showsImmediately: Bool {
-        title == "Bluetooth is off"
+        title == Self.restartIPhoneTitle
+            || title == "Bluetooth is off"
             || title == "Bluetooth permission needed"
             || title == "Strap battery too low"
             || title == "Strap battery low"
@@ -14326,6 +14777,8 @@ private struct AtriaConnectionDiagnosis: Equatable {
             || title == "Fit check needed"
     }
 
+    static let restartIPhoneTitle = "Restart your iPhone"
+
     static func derive(live: AtriaHomeModel.CoreLiveState,
                        pulse: AtriaHomeModel.PulseLiveState,
                        officialAppInstalled: Bool) -> AtriaConnectionDiagnosis? {
@@ -14337,6 +14790,18 @@ private struct AtriaConnectionDiagnosis: Equatable {
         let needsContactCoach = pulse.needsContactCoach
             && !live.hasRecentHeartRateSample
             && !isRecoveringLiveSignal
+
+        if live.bluetoothStackWedgeSuspected,
+           live.status != .poweredOff,
+           !live.bluetoothPermissionDenied {
+            return AtriaConnectionDiagnosis(
+                title: Self.restartIPhoneTitle,
+                action: "Bluetooth on this iPhone keeps timing out, which often happens after an iOS update. Restarting the iPhone clears it; re-pairing won't.",
+                imperative: "Restart your iPhone",
+                systemImage: "arrow.clockwise.circle.fill",
+                tint: .orange,
+                guidanceDomain: .bluetoothLink)
+        }
 
         switch live.status {
         case .poweredOff:

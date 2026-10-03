@@ -313,6 +313,7 @@ struct AtriaHistoricalAggregateReader {
         var limitExceeded = false
 
         for manifestURL in manifestURLs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            AtriaBackgroundWorkPacer.checkpoint()
             do {
                 let manifestData = try boundedData(at: manifestURL,
                                                    maximumBytes: limits.maximumManifestBytes)
@@ -642,7 +643,8 @@ struct AtriaHistoricalAggregateReader {
     /// lifetime byte limit an eventual hard stop for raw retirement.
     func loadCommittedChunkIDs(
         maximumManifestCount: Int = 200_000,
-        pageSize: Int = 64
+        pageSize: Int = 64,
+        shouldContinue: () -> Bool = { true }
     ) -> ChunkIDSnapshot {
         guard maximumManifestCount > 0, pageSize > 0 else {
             return .init(chunkIDs: [], rejectedManifests: 0, limitExceeded: true)
@@ -657,6 +659,11 @@ struct AtriaHistoricalAggregateReader {
         var identifiers = Set<String>()
         var rejected = 0
         repeat {
+            guard shouldContinue() else {
+                return .init(chunkIDs: [],
+                             rejectedManifests: rejected,
+                             limitExceeded: true)
+            }
             let page = loadPage(after: cursor,
                                 maximumAggregateCount: pageSize,
                                 limits: limits)

@@ -449,8 +449,12 @@ final class AtriaHandoff12Tests: XCTestCase {
         let chart = String(sections[chartStart.lowerBound..<chartEnd.lowerBound])
         XCTAssertFalse(chart.contains(".annotation(position: .top"),
                        "the escaping annotation card must stay replaced")
-        XCTAssertTrue(chart.contains("AtriaChartPointerPlacement.place"),
-                      "the clamped placement policy owns the pointer")
+        // 2026-08-29: the clamped-placement scrub moved into the shared
+        // AtriaChartScrubOverlay (which itself calls
+        // AtriaChartPointerPlacement.place), so Activity's day charts and the
+        // stress-detail HR chart render the identical inspection grammar.
+        XCTAssertTrue(chart.contains("AtriaChartScrubOverlay("),
+                      "the shared clamped scrub owns the pointer")
         XCTAssertEqual(AtriaVitalsStressTimelineCopy.gapNote,
                        "5-min estimates · gaps are missing data")
         for forbidden in ["HR-only estimate", "Motion unavailable",

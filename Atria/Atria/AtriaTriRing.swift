@@ -26,6 +26,11 @@ struct AtriaTriRingMetric: Equatable {
     /// 1.0. Nil -- and no marker drawn -- whenever there isn't a real target
     /// to honestly show (never fabricated).
     var targetFraction: Double? = nil
+    /// The day's target ZONE (low…high), as ring fractions: strain target ±
+    /// its green band, sleep 85–100 % of need, recovery's green zone. Drawn
+    /// as a thin bright edge over the ring, so it stays visible after the
+    /// fill passes it (owner 2026-10-02). Nil when no real target exists.
+    var targetBand: ClosedRange<Double>? = nil
     /// True when the ring center already shows this metric's value — the
     /// chip then renders title + detail only (dedup audit 2026-07-07: the
     /// big center numeral repeated verbatim in its own legend chip).
@@ -58,6 +63,24 @@ enum AtriaRingMetricProjection {
     static func strainTargetFraction(_ target: Double?) -> Double? {
         guard let target, target.isFinite, target > 0 else { return nil }
         return min(max(target / 21, 0), 1)
+    }
+
+    /// Strain target ± the configured green band, on the 0–21 ring.
+    static func strainTargetBand(_ target: Double?, greenBand: Double) -> ClosedRange<Double>? {
+        guard let target, target.isFinite, target > 0,
+              greenBand.isFinite, greenBand >= 0 else { return nil }
+        let low = min(max((target - greenBand) / 21, 0), 1)
+        let high = min(max((target + greenBand) / 21, 0), 1)
+        return high > low ? low...high : nil
+    }
+
+    /// Sleep's green zone: 85 % of the night's need up to the need itself.
+    static let sleepTargetBand: ClosedRange<Double> = 0.85...1.0
+
+    /// Recovery's green zone from its configured lower bound to 100.
+    static func recoveryTargetBand(greenLower: Double) -> ClosedRange<Double>? {
+        guard greenLower.isFinite, greenLower > 0, greenLower < 100 else { return nil }
+        return (greenLower / 100)...1.0
     }
 
     static func achievementTintHex(fill: Double?) -> String {
@@ -393,6 +416,18 @@ struct AtriaTriRing: View, Equatable {
         actions[slot] ?? {}
     }
 
+    /// A slot with no action is a READ-ONLY presentation (the frozen day
+    /// browser, the onboarding preview, the share render). Before the
+    /// 2026-08-28 uniformity pass those still consumed the tap through a
+    /// no-op closure, so browsing one day back silently turned the app's most
+    /// prominent control dead — identical chips, nothing happening, the touch
+    /// swallowed rather than passed on, and VoiceOver still announcing
+    /// buttons. The values shown are real saved numbers, so the fix removes
+    /// the false affordance without dimming anything.
+    private func isInteractive(_ slot: AtriaTriRingSlot) -> Bool {
+        actions[slot] != nil
+    }
+
     /// Compress a metric's own detail line into the one-word marker the
     /// separate layout has room for. Returns nil for a settled metric so a
     /// confident ring stays clean — the marker exists to stop a provisional
@@ -403,7 +438,7 @@ struct AtriaTriRing: View, Equatable {
     static func confidenceMarker(for metric: AtriaTriRingMetric) -> String? {
         let detail = metric.detail.lowercased()
         guard !detail.isEmpty else { return nil }
-        if detail.contains("limited confidence") || detail.contains("resting hr only") {
+        if detail.contains("resting hr only") || detail.contains("estimate") {
             return "estimate"
         }
         if detail.contains("learning") || detail.contains("building") {
@@ -453,6 +488,7 @@ struct AtriaTriRing: View, Equatable {
                                         ))
                     }
                     .buttonStyle(.plain)
+                    .disabled(!isInteractive(content.slot))
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
@@ -501,6 +537,7 @@ struct AtriaTriRing: View, Equatable {
                         .frame(width: Self.outerDiameter, height: Self.outerDiameter)
                         .contentShape(AtriaRingBandShape(innerRadius: radii.inner, outerRadius: radii.outer), eoFill: true)
                         .onTapGesture(perform: action(for: content.slot))
+                        .allowsHitTesting(isInteractive(content.slot))
                 }
 
                 centerContent
@@ -510,9 +547,25 @@ struct AtriaTriRing: View, Equatable {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilitySummary)
 
-            HStack(spacing: 8) {
-                ForEach(slots, id: \.slot) { content in
-                    legendChip(metric: content.metric, action: action(for: content.slot))
+            // Large type (2026-09-02 XXXL screenshots): three chips in a row
+            // truncated "Rec…" in the onboarding preview's 260pt card and
+            // cramped Today's row. From XX-Large up the chips stack as
+            // full-width rows; each already stretches to its container.
+            if legendDynamicTypeSize >= .xxLarge {
+                VStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(slots, id: \.slot) { content in
+                        legendChip(metric: content.metric,
+                                   action: action(for: content.slot))
+                            .disabled(!isInteractive(content.slot))
+                    }
                 }
             }
         }
@@ -558,10 +611,14 @@ struct AtriaTriRing: View, Equatable {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
+            // Large type (2026-09-02, XXXL screenshot): "Save sleep to score"
+            // truncated to "Save sleep to s…" at the 0.75 floor. From
+            // XX-Large up the state may take a second line inside the ring.
             Text(centerState)
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .multilineTextAlignment(.center)
+                .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                 .minimumScaleFactor(0.75)
             if let centerDelta {
                 Text(centerDelta)
@@ -652,11 +709,31 @@ struct AtriaTriRing: View, Equatable {
                                                dash: [4, 16]))
             }
 
+            if let band = metric.targetBand {
+                targetBandEdge(diameter: diameter, lineWidth: lineWidth, band: band)
+            }
             if let targetFraction = metric.targetFraction {
                 targetMarker(diameter: diameter, lineWidth: lineWidth, tint: metric.stateTint ?? metric.tint, fraction: targetFraction)
             }
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    /// The target zone as a thin bright line along the ring's outer edge,
+    /// drawn above the fill so it reads on both the track and a full arc.
+    private func targetBandEdge(diameter: CGFloat,
+                                lineWidth: CGFloat,
+                                band: ClosedRange<Double>) -> some View {
+        let edgeWidth: CGFloat = 2.5
+        let edgeDiameter = diameter + lineWidth - edgeWidth
+        return Circle()
+            .trim(from: min(max(band.lowerBound, 0), 1),
+                  to: min(max(band.upperBound, 0), 1))
+            .stroke(Color.primary.opacity(0.75),
+                    style: StrokeStyle(lineWidth: edgeWidth, lineCap: .round))
+            .frame(width: edgeDiameter, height: edgeDiameter)
+            .rotationEffect(.degrees(-90))
+            .accessibilityHidden(true)
     }
 
     /// A small RADIAL clock-tick marking a REAL target/recommendation on the
@@ -699,6 +776,12 @@ struct AtriaTriRing: View, Equatable {
             && !metric.suppressesDetail
     }
 
+    // Large type (2026-09-02, XXXL screenshot): "No sleep this cycle"
+    // truncated to "No sleep this c…" at the one-line contract's 0.6 floor.
+    // The contract stays through Extra Large; from XX-Large up, where the
+    // values already wrap, the caption may take a second line too.
+    @Environment(\.dynamicTypeSize) private var legendDynamicTypeSize
+
     private func legendChip(metric: AtriaTriRingMetric, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
@@ -712,7 +795,7 @@ struct AtriaTriRing: View, Equatable {
                     // "it's not mentioned what they are — Sleep, Recovery,
                     // Strain") — value and context alone weren't legible.
                     Text(metric.title)
-                        .font(.caption2.weight(.bold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -732,8 +815,9 @@ struct AtriaTriRing: View, Equatable {
                                 .fill(stateTint)
                                 .frame(width: 5, height: 5)
                         }
+                        // Owner 2026-10-03: bigger numbers.
                         Text(metric.suppressesValue ? " " : metric.value)
-                            .font(.caption.weight(.bold))
+                            .font(.system(.title3, design: .rounded).weight(.bold))
                             .monospacedDigit()
                             .foregroundStyle(metric.tint)
                             .contentTransition(reduceMotion ? .identity : .numericText())
@@ -770,7 +854,7 @@ struct AtriaTriRing: View, Equatable {
                     Text(showsLegendDetail(metric) ? metric.detail : " ")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(legendDynamicTypeSize >= .xxLarge ? 2 : 1)
                         .minimumScaleFactor(0.6)
                         .allowsTightening(true)
                         .accessibilityHidden(!showsLegendDetail(metric))
@@ -779,14 +863,9 @@ struct AtriaTriRing: View, Equatable {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.vertical, 4)
             .padding(.horizontal, 8)
-            // Identity-forward chip, unified with the glance tiles and trend
-            // summary pills (design-handoff "metric chip": hue wash + hue
-            // hairline). Radius snapped off the stray 8 to the `chip` token.
-            .background(metric.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                    .stroke(metric.tint.opacity(0.22), lineWidth: 1)
-            )
+            // Neutral glass chip (owner 2026-10-03: colour for data only —
+            // the ring arc and the value carry the metric hue).
+            .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip, tint: metric.tint, hueTinted: true)
         }
         .buttonStyle(.plain)
         // Mirror the visual de-duplication above so VoiceOver does not read
@@ -794,6 +873,7 @@ struct AtriaTriRing: View, Equatable {
         .accessibilityLabel(showsLegendDetail(metric)
                             ? "\(metric.title) \(metric.value), \(metric.detail)"
                             : "\(metric.title) \(metric.value)")
+        .accessibilityIdentifier("atria.today.ring.\(metric.title.lowercased())")
     }
 
     /// Spring fill-in that plays once per real appearance/value change, and

@@ -170,18 +170,11 @@ private struct AtriaInspectableGraphModifier: ViewModifier {
                 guard graph != nil else { return }
                 isPresented = true
             }
-            .overlay(alignment: .topTrailing) {
-                if graph != nil {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .padding(7)
-                        .background(Color(uiColor: .secondarySystemBackground), in: Circle())
-                        .padding(6)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                }
-            }
+            // No floating expand glyph: as an overlay it covered the top-right
+            // of every chart (where the newest reading lands), and as a strip it
+            // floated outside the cards that wrap whole sections (2026-10-01).
+            // Tapping the graph still opens the inspector; VoiceOver announces
+            // it as a button with the hint below.
             .accessibilityAddTraits(graph == nil ? [] : .isButton)
             .accessibilityHint(graph == nil ? "" : "Opens a full-screen landscape graph inspector")
             .fullScreenCover(isPresented: $isPresented) {
@@ -295,9 +288,32 @@ private struct AtriaGraphInspectorView: View {
         }
     }
 
+    /// No-data bands for intraday traces only (median spacing under an hour,
+    /// from the primary series). Day-per-point trends already show missing
+    /// days as absent points; banding them would be noise.
+    static func intradayGapBands(_ series: [AtriaInspectableGraph.Series],
+                                 domain: ClosedRange<Date>?)
+        -> (bands: [AtriaChartGapBand], domain: ClosedRange<Date>)? {
+        guard let primary = series.first else { return nil }
+        let dates = primary.points.map(\.date).sorted()
+        guard let first = dates.first, let last = dates.last, last > first else { return nil }
+        let deltas = zip(dates, dates.dropFirst()).map { $1.timeIntervalSince($0) }.sorted()
+        guard let median = deltas.isEmpty ? nil : deltas[deltas.count / 2],
+              median < 3_600 else { return nil }
+        let plotted = domain ?? (first...last)
+        return (AtriaChartNoDataBands.bands(sampleDates: dates,
+                                            domain: plotted,
+                                            evidence: AtriaChartGapEvidenceProvider.current()),
+                plotted)
+    }
+
     private func timeSeriesChart(_ series: [AtriaInspectableGraph.Series],
                                  domain: ClosedRange<Date>?) -> some View {
-        Chart {
+        let gapBands = Self.intradayGapBands(series, domain: domain)
+        return Chart {
+            if let gapBands {
+                AtriaNoDataBandMarks(bands: gapBands.bands, domain: gapBands.domain)
+            }
             ForEach(series) { item in
                 ForEach(item.points) { point in
                     LineMark(x: .value("Time", point.date),
@@ -323,8 +339,8 @@ private struct AtriaGraphInspectorView: View {
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
                 if let date = value.as(Date.self) {
                     AxisValueLabel {
                         Text(axisLabel(for: date, duration: currentVisibleDuration))
@@ -378,8 +394,8 @@ private struct AtriaGraphInspectorView: View {
         .chartXSelection(value: $selectedDate)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
+                AxisTick().foregroundStyle(.clear)
                 if let date = value.as(Date.self) {
                     AxisValueLabel {
                         Text(axisLabel(for: date, duration: currentVisibleDuration))

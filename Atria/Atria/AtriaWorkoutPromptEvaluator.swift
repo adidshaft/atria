@@ -113,6 +113,37 @@ enum AtriaWorkoutPromptEvaluator {
         }
     }
 
+    // Strap-motion gate (2026-09-28, owner: "false workout detection can be
+    // tightened"; device: "Possible workout · 90 bpm now · strain 0.2" at a
+    // desk). Raised heart rate WITHOUT stepping — caffeine, stress, heat,
+    // sitting — is not a workout. With the validated strap step count live,
+    // the heart-rate-only path needs real stepping; the hard-effort zone path
+    // (zone 3+, where cycling and strength live) is unchanged, and with no
+    // strap motion the heart-rate rule is unchanged.
+    static let minimumStepsPerMinute: Double = 30
+    static let minimumStepCadenceCoverage: TimeInterval = 4 * 60
+
+    struct StepSample: Equatable {
+        let t: Date
+        let steps: Int
+    }
+
+    /// Steps per minute across `[start, now]` from the strap's live count, or
+    /// nil when motion covers less than `minimumStepCadenceCoverage` of it.
+    static func strapStepCadence(samples: [StepSample], since start: Date, now: Date) -> Double? {
+        let window = samples.filter { $0.t >= start && $0.t <= now }
+        guard let first = window.first, let last = window.last else { return nil }
+        let covered = last.t.timeIntervalSince(first.t)
+        guard covered >= minimumStepCadenceCoverage else { return nil }
+        return Double(max(0, last.steps - first.steps)) / (covered / 60)
+    }
+
+    /// The heart-rate-only path stands only with stepping, or without motion data.
+    static func strapMotionAllowsHeartRateOnlyPrompt(stepsPerMinute: Double?) -> Bool {
+        guard let stepsPerMinute else { return true }
+        return stepsPerMinute >= minimumStepsPerMinute
+    }
+
     static func evaluate(samples: [HRSample],
                          currentHeartRate: Int,
                          restingHeartRate: Int,
@@ -274,5 +305,102 @@ enum AtriaWorkoutPromptEvaluator {
     static func isInCooldown(dismissedUntil: Date?, now: Date = Date()) -> Bool {
         guard let dismissedUntil else { return false }
         return dismissedUntil > now
+    }
+
+    /// Device 2026-09-19 15:31: an 8-minute strap-elevated bout (705 samples,
+    /// avg 108) vanished from Today as soon as HR returned to 88. Live
+    /// `shouldPrompt` requires current elevation inside an 8-minute lookback,
+    /// so a completed effort is exactly when the banner disappears. Keep that
+    /// sustained snapshot until rest recovers or the hold ceiling elapses.
+    /// Zone-only prompts stay ephemeral (stair / stress must not linger).
+    static let completedSustainedReviewHold: TimeInterval = 15 * 60
+
+    static func shouldHoldCompletedSustainedReview(
+        liveShouldPrompt: Bool,
+        lastPromptWasSustained: Bool,
+        recoveredForFiveMinutes: Bool,
+        lastQualifiedAt: Date?,
+        now: Date
+    ) -> Bool {
+        guard lastPromptWasSustained, !liveShouldPrompt, !recoveredForFiveMinutes else {
+            return false
+        }
+        guard let lastQualifiedAt, now >= lastQualifiedAt else { return false }
+        return now.timeIntervalSince(lastQualifiedAt) <= completedSustainedReviewHold
+    }
+
+    struct CompletedSustainedBout: Equatable {
+        let start: Date
+        let end: Date
+        let durationSeconds: Int
+        let averageBPM: Int
+        let peakBPM: Int
+    }
+
+    /// Device 2026-09-19 15:31: 8 min elevated vanished from Today once HR
+    /// returned to 88 because live `shouldPrompt` requires current elevation.
+    /// Rebuild that completed window from the journal for two hours so Review
+    /// can still save the real start/end instead of "now".
+    static let completedSustainedReviewLookback: TimeInterval = 2 * 60 * 60
+
+    static func lastCompletedSustainedBout(
+        samples: [HRSample],
+        restingHeartRate: Int,
+        now: Date,
+        lookback: TimeInterval = completedSustainedReviewLookback
+    ) -> CompletedSustainedBout? {
+        let windowStart = now.addingTimeInterval(-lookback)
+        let ordered = samples
+            .filter { $0.t >= windowStart && $0.t <= now }
+            .sorted { $0.t < $1.t }
+        guard ordered.count >= 2 else { return nil }
+
+        var lastQualified: CompletedSustainedBout?
+        var boutStart: Date?
+        var boutBPMs: [Int] = []
+        var lastAccepted: Date?
+
+        func finishBout(endingAt end: Date) {
+            defer {
+                boutStart = nil
+                boutBPMs = []
+            }
+            guard let start = boutStart, end > start, !boutBPMs.isEmpty else { return }
+            let duration = end.timeIntervalSince(start)
+            guard duration >= TimeInterval(minimumContinuousElevatedSamples) else { return }
+            let peak = boutBPMs.max() ?? 0
+            let average = Int((Double(boutBPMs.reduce(0, +)) / Double(boutBPMs.count)).rounded())
+            lastQualified = CompletedSustainedBout(
+                start: start,
+                end: end,
+                durationSeconds: wholeSeconds(duration),
+                averageBPM: average,
+                peakBPM: peak
+            )
+        }
+
+        for sample in ordered {
+            if let last = lastAccepted, sample.t.timeIntervalSince(last) > maximumPacketGap {
+                finishBout(endingAt: last)
+            }
+            let elevated = sample.bpm - restingHeartRate >= minimumBPMOverRest
+            if elevated {
+                if boutStart == nil {
+                    boutStart = lastAccepted ?? sample.t
+                }
+                boutBPMs.append(sample.bpm)
+            } else {
+                finishBout(endingAt: lastAccepted ?? sample.t)
+            }
+            lastAccepted = sample.t
+        }
+        if boutStart != nil, let last = lastAccepted {
+            let lastElevated = ordered.last.map { $0.bpm - restingHeartRate >= minimumBPMOverRest } ?? false
+            let agedOut = now.timeIntervalSince(last) > maximumSampleAge
+            if !lastElevated || agedOut {
+                finishBout(endingAt: last)
+            }
+        }
+        return lastQualified
     }
 }

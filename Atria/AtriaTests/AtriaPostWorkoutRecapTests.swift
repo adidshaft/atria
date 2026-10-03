@@ -24,7 +24,9 @@ final class AtriaPostWorkoutRecapTests: XCTestCase {
         let recap = try section(in: source,
                                 from: "private struct AtriaWorkoutEndRecapSheet: View",
                                 to: "private enum HomeTab:")
-        XCTAssertTrue(recap.contains(".atriaGlassCard(cornerRadius: 24, emphasis: .strong)"))
+        // 2026-09-02 radius-scale pass: the recap card now takes the default
+        // card radius from the token scale instead of a literal 24.
+        XCTAssertTrue(recap.contains(".atriaGlassCard(emphasis: .strong)"))
         XCTAssertTrue(recap.contains("GlassEffectContainer(spacing: 12)"))
         XCTAssertTrue(recap.contains("Label(\"Share\", systemImage: \"square.and.arrow.up\")"))
         XCTAssertLessThan(recap.components(separatedBy: "Text(notice.message)").count - 1, 2,
@@ -47,6 +49,13 @@ final class AtriaPostWorkoutRecapTests: XCTestCase {
         XCTAssertTrue(notice.contains("guard case .persisted(_, let snapshot, _) = outcome else { return nil }"))
         XCTAssertTrue(recap.contains("if let snapshot = notice.persistedShareSnapshot"))
         XCTAssertFalse(source.contains("retainedWorkoutShareSnapshot"))
+        XCTAssertTrue(recap.contains("case .persisted(let workout, let snapshot, _):"))
+        XCTAssertTrue(recap.contains("if let averageHeartRate = snapshot.averageHeartRate"))
+        XCTAssertTrue(recap.contains("AtriaWorkoutSharePresentation.recapStepsText("))
+        let avgHR = try XCTUnwrap(recap.range(of: "if let averageHeartRate = snapshot.averageHeartRate"))
+        let distance = try XCTUnwrap(recap.range(of: "if let distance = snapshot.distance, result.count < 3"))
+        XCTAssertLessThan(avgHR.lowerBound, distance.lowerBound,
+                          "Recap must prefer Avg HR and strain over GPS distance")
     }
 
     func testShareComposerWaitsForRecapDismissal() throws {

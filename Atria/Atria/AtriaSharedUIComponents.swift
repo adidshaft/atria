@@ -148,41 +148,30 @@ struct AtriaCalibratingLabel: View, Equatable {
     }
 }
 
-struct AtriaLoadingPanel: View, Equatable {
-    let title: String
-    let subtitle: String
+/// Layout-shaped loading placeholder. A spinner says "busy" and nothing
+/// about what is coming; a block the size of the content it stands in for
+/// keeps the layout stable, so nothing jumps when the real view lands.
+/// Neutral gray on purpose — never a fake chart or number (honesty-first).
+/// The slow pulse is the only motion, and Reduce Motion stills it.
+struct AtriaSkeletonBlock: View {
+    var height: CGFloat
+    var cornerRadius: CGFloat = AtriaDesignTokens.Radius.concentric(inset: AtriaDesignTokens.Spacing.lg)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dimmed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ProgressView()
-                    .controlSize(.small)
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.quaternary)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .opacity(dimmed ? 0.5 : 1)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                    dimmed = true
+                }
             }
-            if !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(.quaternary)
-                .frame(height: 58)
-            HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.quaternary)
-                    .frame(height: 38)
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(.quaternary)
-                    .frame(height: 38)
-            }
-        }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(subtitle.isEmpty ? title : "\(title). \(subtitle)")
+            .accessibilityHidden(true)
     }
 }
 
@@ -231,7 +220,7 @@ struct AtriaQuickTile: View, Equatable {
             Text(detail)
                 .font(.caption2)
                 .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.66) : .secondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .minimumScaleFactor(0.72)
         }
         .frame(maxWidth: .infinity, minHeight: 80, alignment: .leading)
@@ -610,7 +599,7 @@ struct AtriaInlineQuickStat: View, Equatable {
                 Text(detail)
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.72)
             }
         }
@@ -702,9 +691,7 @@ struct AtriaEventWindowTimeline: View, Equatable {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                    .atriaEyebrow()
                 Spacer(minLength: 8)
                 Text(Self.durationText(duration))
                     .font(.caption2.weight(.bold).monospacedDigit())
@@ -740,7 +727,7 @@ struct AtriaEventWindowTimeline: View, Equatable {
                 Spacer(minLength: 0)
                 Text(Self.timeText(end, timeZoneIdentifier: timeZoneIdentifier))
             }
-            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            .font(.caption2.weight(.semibold).monospacedDigit())
             .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .ignore)
@@ -861,3 +848,40 @@ struct AtriaTextSelector<Item: Hashable>: View {
         .accessibilityElement(children: .contain)
     }
 }
+
+/// The "not yet" state's honest progress: the engine's real minimum as the
+/// track, the user's real count as the fill, one monospaced caption. One look
+/// for Journal Patterns, Behavior impact and the Sleep schedule (2026-09-02),
+/// so a learning state shows how close it is instead of describing the wait.
+struct AtriaLearningProgressTrack: View {
+    let current: Int
+    let target: Int
+    let caption: String
+    var tint: Color = Metrics.electricGreen
+
+    private var fraction: CGFloat {
+        guard target > 0 else { return 0 }
+        return CGFloat(min(max(current, 0), target)) / CGFloat(target)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.quaternary.opacity(0.5))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(0.75))
+                        .frame(width: max(fraction > 0 ? 6 : 0, geo.size.width * fraction))
+                }
+            }
+            .frame(height: 5)
+            Text(caption)
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(caption)
+    }
+}
+

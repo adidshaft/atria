@@ -359,6 +359,28 @@ final class AtriaHistoricalRetentionConsumerCutoverTests: XCTestCase {
         }?.state, .sealed)
     }
 
+    func testCutoverSourcePinsTargetChunkFileVerification() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let archive = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/HistoricalArchive.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(archive.range(
+            of: "static func publishAndVerifyHistoricalConsumerCutover("
+        ))
+        let end = try XCTUnwrap(archive.range(
+            of: "enum TerminalConsumerProjectionError",
+            range: start.upperBound..<archive.endIndex
+        ))
+        let body = String(archive[start.lowerBound..<end.lowerBound])
+        XCTAssertEqual(
+            body.components(separatedBy: "chunkIDs: [chunkID]").count - 1,
+            2
+        )
+    }
+
     func testCatalogAggregateSourceMetadataMismatchFailsBeforePublicationAndRetainsRaw() throws {
         let fixture = try makeFixture(completion: .missing,
                                       committedAggregateRawRowCount: 3)

@@ -98,7 +98,7 @@ final class AtriaMetricTruthGateTests: XCTestCase {
         XCTAssertEqual(projected.baselineSessions, 0)
         XCTAssertEqual(
             projected.footnoteText,
-            "Relative sleep-only deviation from a persisted qualified sleep baseline; no absolute temperature."
+            "vs your sleep baseline"
         )
     }
 

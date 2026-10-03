@@ -4,7 +4,7 @@ Updated: 2026-08-11 (Asia/Kolkata)
 
 ## Authority
 
-- Pushed branch: `codex/whoop-remaining-product-gaps`
+- Pushed branch: `dev`
 - Exact tip: `99809085a83158cd8db62ceea73d0e31bbff507a`
 - Remote parity verified with `git ls-remote`.
 - Commit chain over the previously accepted base:

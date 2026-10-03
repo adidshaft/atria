@@ -165,13 +165,13 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaTrendChart.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        XCTAssertTrue(
-            source.contains(
-                ".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))"
-            )
-        )
-        XCTAssertTrue(source.contains("AxisMarks(preset: .aligned, values: chartXAxisDates)"))
-        XCTAssertTrue(source.contains("chartXAxisLabels[date]"))
+        // 2026-09-03: the same padding, now applied alongside the explicit
+        // trailing-window domain. Without the domain the axis sized itself to
+        // whatever data existed, which is what put a lone point in the middle
+        // of an otherwise unlabelled chart.
+        XCTAssertTrue(source.contains(".chartXScale(domain: prepared.xDomain"),
+                      "the window, not the data, sets the axis")
+        XCTAssertTrue(source.contains("atriaOvernightChartXAxis("))
         XCTAssertFalse(source.contains("private var compactXAxisLabelRow"))
         XCTAssertFalse(
             source.contains(

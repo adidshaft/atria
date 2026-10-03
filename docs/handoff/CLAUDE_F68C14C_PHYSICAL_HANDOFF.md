@@ -5,7 +5,7 @@ not modify source unless a physical run demonstrates a concrete contradiction.
 
 ## Current authoritative state
 
-- Branch: `codex/whoop-remaining-product-gaps`
+- Branch: `dev`
 - Local + origin: `f68c14c9352e40972d38f420279144cba761b467`
 - Upstream parity at handoff: `0 0`
 - Parent: `631fa766e6f96a68c05eef42f9f9272789465608`
@@ -66,7 +66,7 @@ The currently installed app is the older clean `631fa766` build. Do not claim
 1. User reconnects the cable (or restores the same-LAN pairing) and unlocks the
    iPhone. Never access Passwords or attempt a credential workaround.
 2. Require the target
-   `3803F5B6-1666-56D3-A71A-62F131F6CE3B` to report `available` in CoreDevice.
+   `<your-device-udid>` to report `available` in CoreDevice.
 3. Confirm no competing `xcodebuild`, `xctrace`, `devicectl` mutation,
    `live_device_debug`, `ios-deploy`, or `idevicesyslog` owner.
 4. Free enough disposable build space if needed. Do not delete source,
