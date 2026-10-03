@@ -2680,7 +2680,7 @@ struct AtriaActivityMonitorTab: View {
                 if !timelineSignalValueText.hasPrefix("--") {
                     Text(timelineSignalValueText)
                         .font(.subheadline.weight(.black).monospacedDigit())
-                        .foregroundStyle(selectedSignal == .stress ? Metrics.electricStress : Color.red)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                 }
             }
@@ -3394,7 +3394,7 @@ struct AtriaActivityMonitorTab: View {
                     .font(.subheadline.weight(.black).monospacedDigit())
                 Text(badge)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .fixedSize()
@@ -4663,7 +4663,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.title2.weight(.black).monospacedDigit())
-                .foregroundStyle(tint)
+                .foregroundStyle(.primary)
             if let detail {
                 Text(detail)
                     .font(.caption2)
@@ -4708,7 +4708,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 Spacer(minLength: 8)
                 Text(load.map { "\($0)" } ?? "--")
                     .font(.title2.weight(.black).monospacedDigit())
-                    .foregroundStyle(Metrics.electricStrain)
+                    .foregroundStyle(.primary)
             }
 
             if loadSeconds > 0 {

@@ -21,7 +21,7 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
                         in: shape
                     )
                     .overlay {
-                        shape.stroke(selected ? tint.opacity(0.58)
+                        shape.stroke(selected ? Color.primary.opacity(0.4)
                                               : (colorScheme == .dark
                                                  ? Color.white.opacity(0.14)
                                                  : Color.black.opacity(0.14)),
@@ -31,10 +31,11 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
                 // Selected: a real tinted Liquid Glass capsule, not an opaque fill.
                 configuration.label
                     .foregroundStyle(Color.primary.opacity(colorScheme == .dark ? 0.98 : 0.96))
-                    .glassEffect(.regular.tint(tint.opacity(colorScheme == .dark ? 0.42 : 0.26)).interactive(),
-                                 in: shape)
+                    // Neutral like a system segmented control (owner
+                    // 2026-10-03: colour only for data and state).
+                    .glassEffect(.regular.interactive(), in: shape)
                     .overlay {
-                        shape.stroke(tint.opacity(colorScheme == .dark ? 0.55 : 0.45), lineWidth: 1)
+                        shape.stroke(Color.primary.opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 1)
                     }
             } else {
                 // Unselected: a calm, clearly-tappable chip — distinct from selected.
@@ -251,12 +252,8 @@ struct AtriaInsetCardModifier: ViewModifier {
 private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
-    /// Opt-in identity-forward chip surface. When true, the card carries a
-    /// visible wash + border in its metric hue (design-handoff "metric chip"
-    /// look — one identity hue per metric, on the surface itself, not just the
-    /// icon). Off by default so the ~100 existing neutral inset cards keep the
-    /// deliberately-subtle gray surface. Kept restrained (well under the
-    /// handoff's 0.12/0.25) to honor Atria's "Liquid Glass stays quiet" rule.
+    /// Kept for call-site compatibility; it only decides whether a nested
+    /// card still draws a surface. It no longer washes the card in its hue.
     var hueTinted: Bool = false
 
     @Environment(\.colorScheme) private var colorScheme
@@ -264,19 +261,19 @@ private struct AtriaInsetCardBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
+        // Owner 2026-10-03: colour is for data and state only. Every card is
+        // the same neutral Liquid Glass; `tint` and `hueTinted` no longer
+        // colour the surface (the metric hue lives on the ring, chart or
+        // icon inside the card instead).
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        if reduceTransparency || hueTinted {
+        if reduceTransparency {
             shape
                 .fill(baseFill)
-                .overlay(tintWash)
                 .overlay(shape.stroke(strokeColor, lineWidth: 1))
         } else {
-            // Owner 2026-10-03: more Liquid Glass. A faint identity tint keeps
-            // each card's metric hue without a solid block.
             shape
                 .fill(Color.clear)
-                .glassEffect(.regular.tint(tint.opacity(colorScheme == .dark ? 0.05 : 0.04)),
-                             in: shape)
+                .glassEffect(.regular, in: shape)
                 .overlay(shape.stroke(strokeColor, lineWidth: 1))
         }
     }
@@ -286,40 +283,8 @@ private struct AtriaInsetCardBackground: View {
     }
 
     private var strokeColor: Color {
-        if hueTinted {
-            // Identity-hue hairline, matching the handoff's tinted-border chips.
-            return colorScheme == .dark ? tint.opacity(0.22) : tint.opacity(0.28)
-        }
-        return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.09)
     }
-
-    @ViewBuilder
-    private var tintWash: some View {
-        if hueTinted {
-            // A gentle top-lit hue wash so the chip reads as its metric's color
-            // at a glance, without the flat saturated block the raw handoff uses.
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        tint.opacity(colorScheme == .dark ? 0.14 : 0.10),
-                        tint.opacity(colorScheme == .dark ? 0.05 : 0.03)
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        } else if colorScheme == .dark {
-            // ~3% tint is invisible on the dark UI; skip the extra rounded-rect
-            // layer so scrolling cards have less overdraw.
-            EmptyView()
-        } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [
-                        tint.opacity(0.045),
-                        Color.white.opacity(0.02)
-                    ], startPoint: .topLeading, endPoint: .bottomTrailing)
-                )
-        }
-    }
-
 }
 
 struct AtriaIconTileBackground: View {

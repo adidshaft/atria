@@ -363,7 +363,7 @@ struct AtriaVitalsHintChip: View {
             .minimumScaleFactor(0.8)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(tint.opacity(0.14), in: Capsule(style: .continuous))
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule(style: .continuous))
     }
 }
 

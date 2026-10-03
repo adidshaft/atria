@@ -445,7 +445,7 @@ struct AtriaManualSleepSheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(AtriaSleepStageEstimateLabel.title)
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(Metrics.electricSleep)
+                                .foregroundStyle(.secondary)
                             Text(AtriaSleepStageEstimateLabel.caption)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -521,7 +521,7 @@ struct AtriaManualSleepSheet: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 10)
-        .background(Metrics.electricSleep.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     /// One compact editing surface keeps the three parts of the same decision

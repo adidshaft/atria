@@ -144,7 +144,7 @@ struct AtriaNightInterruptionPromptCard: View {
                             .font(.footnote.weight(.medium))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 7)
-                            .background(Metrics.electricSleep.opacity(0.10), in: Capsule())
+                            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
                             .foregroundStyle(.primary)
                             .buttonStyle(.plain)
                     }

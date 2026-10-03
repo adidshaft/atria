@@ -268,7 +268,7 @@ private struct AtriaStrapConnectionHero: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(primaryState)
                         .font(.headline.weight(.bold))
-                        .foregroundStyle(Metrics.electricGreen)
+                        .foregroundStyle(.primary)
                     Text(connectionDetail)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
@@ -345,7 +345,7 @@ private struct AtriaStrapConnectionHero: View {
             .font(.title3.weight(.bold))
             .foregroundStyle(tint)
             .frame(width: 44, height: 44)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private var primaryState: String {
@@ -468,7 +468,7 @@ private struct AtriaStrapStatusRow: View, Equatable {
                     .font(.caption.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 26, height: 26)
-                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 Text(title)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)

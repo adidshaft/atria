@@ -853,7 +853,7 @@ struct AtriaGraphCompareDeltaCard: View {
                     in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(delta.scopeText), \(delta.deltaText). This window \(delta.currentText), comparison \(delta.comparisonText).")

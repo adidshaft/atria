@@ -67,7 +67,8 @@ struct AtriaTodayLearningsFeed: View {
     }
 
     /// Wallet-style deck (owner 2026-10-03 sketch): the front card in full,
-    /// the next ones peeking above it as narrower coloured slivers. Tapping
+    /// the next ones peeking above it as narrower neutral slivers (only the
+    /// icon carries colour — owner 2026-10-03). Tapping
     /// the front card removes it and the next one comes forward.
     static let peekStep: CGFloat = 9
     static let maximumPeeking = 3
@@ -87,7 +88,7 @@ struct AtriaTodayLearningsFeed: View {
                             ForEach(Array(behind.enumerated().reversed()), id: \.element.id) { index, item in
                                 let depth = CGFloat(index + 1)
                                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(item.tint.opacity(0.85))
+                                    .fill(Color(uiColor: .tertiarySystemFill))
                                     .scaleEffect(x: 1 - 0.05 * depth, y: 1, anchor: .top)
                                     .offset(y: -Self.peekStep * depth)
                                     .transition(.opacity)
@@ -134,7 +135,7 @@ struct AtriaTodayLearningsFeed: View {
         // Opaque base so the peeking cards behind never show through.
         .background(Color(uiColor: .secondarySystemBackground),
                     in: .rect(cornerRadius: 18))
-        .glassEffect(.regular.tint(item.tint.opacity(0.12)).interactive(),
+        .glassEffect(.regular.interactive(),
                      in: .rect(cornerRadius: 18))
     }
 }

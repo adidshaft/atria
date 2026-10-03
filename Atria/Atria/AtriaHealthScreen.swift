@@ -1265,7 +1265,7 @@ struct AtriaHealthScreen: View {
                         .foregroundStyle(Metrics.electricSleep)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4)
-                        .background(Metrics.electricSleep.opacity(0.14),
+                        .background(Color(uiColor: .tertiarySystemFill),
                                     in: Capsule(style: .continuous))
                         .accessibilityLabel("Not yet confirmed. Review it on Today.")
                 }
@@ -2466,7 +2466,7 @@ private struct AtriaHealthFitnessAgeCard: View, Equatable {
                     .font(.system(.title3, design: .rounded, weight: .black))
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                    .foregroundStyle(tint)
+                    .foregroundStyle(.primary)
             }
 
             if summary.isReady {
@@ -2810,7 +2810,7 @@ private struct AtriaHealthMetricRow: View, Equatable {
             .font(.caption.weight(.bold))
             .foregroundStyle(tint)
             .frame(width: 24, height: 24)
-            .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private var metricValue: some View {

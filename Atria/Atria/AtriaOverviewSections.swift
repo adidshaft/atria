@@ -1630,7 +1630,7 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
                     Text(target.isLearning ? (target.learningProgressText ?? "Learning")
                          : target.isWithheld ? "Learning" : target.progressText)
                         .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(target.isLearning || target.isWithheld ? .secondary : tint)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
@@ -7868,7 +7868,7 @@ private struct AtriaRecoveryScoreHero: View {
                     .font(.caption.weight(.bold).monospacedDigit())
                     .foregroundStyle(tint)
                     .padding(.horizontal, 11).padding(.vertical, 6)
-                    .background(tint.opacity(0.12), in: Capsule(style: .continuous))
+                    .background(Color(uiColor: .tertiarySystemFill), in: Capsule(style: .continuous))
             } else {
                 // The ring above already says "--" / Learning when there is no
                 // score; claiming "Today's score is ready" beneath it
@@ -8115,19 +8115,18 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         }
     }
 
-    /// Hero honesty guard: the numeral is painted in the metric's identity
-    /// hue — the ONE tinted element of the standard hero (2026-08-29 theme).
-    /// When there's no trusted value yet (empty / "—" placeholder, or a
-    /// Learning state) the numeral falls back to neutral grey — a colored
-    /// number never implies a confidence the data hasn't earned.
+    /// Hero honesty guard: when there's no trusted value yet (empty / "—"
+    /// placeholder, or a Learning state) the numeral falls back to grey.
     private var heroIsUncertain: Bool {
         let v = heroValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if v.isEmpty || v == "—" || v == "--" { return true }
         return heroState.localizedCaseInsensitiveContains("learning")
     }
 
+    /// Owner 2026-10-03: colour for data only — the numeral is primary text
+    /// and the chart below carries the metric hue.
     private var heroTint: Color {
-        heroIsUncertain ? Color.secondary : tint
+        heroIsUncertain ? Color.secondary : Color.primary
     }
 
     @ViewBuilder
@@ -9607,7 +9606,7 @@ private struct AtriaSleepPlanCard: View {
                                   set: { plannerGoalRaw = $0.rawValue }))
         }
         .padding(12)
-        .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Tonight's plan. \(goal.title): in bed by \(plan.inBedByText) for \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) of sleep. Projected need \(AtriaMetricFormat.sleepHours(tonightNeed)).")
     }
@@ -10203,7 +10202,7 @@ struct AtriaOverviewMorningJournalCard: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     }
 
     private func sleepFactPill(_ fact: AtriaJournalSleepFact) -> some View {
@@ -10805,7 +10804,7 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         }
         .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
         .padding(10)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     private func glanceChip(title: String,
@@ -10833,10 +10832,10 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(tint.opacity(0.11), lineWidth: 1)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         }
     }
 }

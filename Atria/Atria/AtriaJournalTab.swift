@@ -945,8 +945,8 @@ private struct AtriaJournalCheckInDeck: View {
             .foregroundStyle(tint)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(tint.opacity(0.14), in: Capsule())
-            .overlay(Capsule().stroke(tint.opacity(0.5), lineWidth: 1))
+            .background(Color(uiColor: .tertiarySystemFill), in: Capsule())
+            .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
             .padding(14)
             .accessibilityHidden(true)
     }
