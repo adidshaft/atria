@@ -3007,14 +3007,8 @@ private struct AtriaVitalsLiveSignalCard: View {
                 ))
             }
 
-            // A gap note is valuable beside a real timeline, but repeats the
-            // empty-state explanation before there are any readings to inspect.
-            if projection.presentation == .physiologicalStress,
-               !projection.stressPoints.isEmpty {
-                Text(AtriaVitalsStressTimelineCopy.gapNote)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            // Owner 2026-10-03: minimal text on main tabs — the gaps are
+            // visible in the chart, so the gap note is no longer rendered here.
         }
     }
 

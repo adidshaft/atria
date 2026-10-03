@@ -58525,7 +58525,7 @@ struct HistoryView: View {
                                                     .frame(maxWidth: .infinity)
                                             }
                                         }
-                                        .buttonStyle(.bordered)
+                                        .buttonStyle(.glass)
                                         .disabled(isLoadingCanonicalHistory)
                                     }
                                 }
@@ -58603,7 +58603,7 @@ struct HistoryView: View {
                                             .frame(maxWidth: .infinity)
                                     }
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(.glass)
                                 .disabled(isLoadingArchivedSessions || archivedSessionsExhausted)
                             }
                         }

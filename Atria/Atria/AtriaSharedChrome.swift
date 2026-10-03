@@ -381,11 +381,11 @@ extension View {
 
     @ViewBuilder
     func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View {
-        // Standard native iOS 26 Liquid Glass: .glassProminent for the one primary
-        // action, .glass for secondary actions. The system handles translucency,
-        // press highlight, and shape — no hand-rolled fill-under-glass.
+        // Native iOS 26 Liquid Glass (owner 2026-10-03: clear glass, not
+        // solid colour slabs). Primary actions are the same clear glass with a
+        // bold tinted label; secondary actions keep a regular-weight label.
         if prominent {
-            self.tint(tint).buttonStyle(.glassProminent)
+            self.fontWeight(.semibold).tint(tint).buttonStyle(.glass)
         } else {
             self.tint(tint).buttonStyle(.glass)
         }

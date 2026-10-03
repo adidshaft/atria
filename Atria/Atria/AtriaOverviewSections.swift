@@ -2946,13 +2946,13 @@ struct AtriaStrapStepsDetailSheet: View {
                         arbitrate(cluster, verdict: .walking)
                     }
                     .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .tint(.green)
                     Button("Not walking") {
                         arbitrate(cluster, verdict: .notWalking)
                     }
                     .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .tint(.orange)
                 }
                 .accessibilityElement(children: .combine)

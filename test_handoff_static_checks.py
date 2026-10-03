@@ -979,9 +979,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "func atriaGlassSelectable(selected: Bool, tint: Color = .blue) -> some View",
             "self.buttonStyle(AtriaSegmentButtonStyle(selected: selected, tint: tint))",
             "func atriaCardAction(prominent: Bool = true, tint: Color = .blue) -> some View",
-            # Card actions are now standard native iOS 26 Liquid Glass
-            # (.glassProminent for primary, .glass for secondary).
-            "self.tint(tint).buttonStyle(.glassProminent)",
+            # Card actions are native iOS 26 clear Liquid Glass; primary
+            # differs only by a bold tinted label (owner 2026-10-03).
+            "self.fontWeight(.semibold).tint(tint).buttonStyle(.glass)",
             "self.tint(tint).buttonStyle(.glass)",
             "struct AtriaGlassIconButtonStyle: ButtonStyle",
             # 2026-07-05: default raised 38 -> 44 for HIG tap-target compliance.
@@ -1116,7 +1116,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct AtriaHeaderActionButtonStyle: ButtonStyle",
             "private static let size: CGFloat = AtriaHeaderControlMetrics.height",
             "func makeBody(configuration: Configuration) -> some View",
-            "AtriaGlassIconButtonStyle(tint: .secondary, size: Self.size)",
+            ".glassEffect(.regular.interactive(), in: .capsule)",
             "case .notCharging: return \"Strap not charging\"",
             "var batteryHeaderAccessoryText: String?",
             "case .charging: return \"Charging\"",
