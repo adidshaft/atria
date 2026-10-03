@@ -1196,6 +1196,28 @@ struct AtriaActivityTimelineStressProjection: Equatable, Sendable {
 /// byte-identical observations collapse; real gaps are left for the segmenter to
 /// break so the saved-day HR card and the Overnight HR card cannot disagree.
 enum AtriaExactWindowHeartRate {
+    /// Saved-session points with no archive point within `tolerance`. Phone
+    /// and strap timestamps for the same beat differ slightly, so a plain
+    /// union would double a covered stretch; this keeps sessions to the holes.
+    static func fillingArchiveGaps(
+        canonical: [HistoricalArchive.HeartRatePoint],
+        archive: [HistoricalArchive.HeartRatePoint],
+        tolerance: TimeInterval = 60
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        guard !archive.isEmpty else { return canonical }
+        let times = archive.map(\.t).sorted()
+        return canonical.filter { point in
+            var low = 0, high = times.count
+            while low < high {
+                let mid = (low + high) / 2
+                if times[mid] < point.t { low = mid + 1 } else { high = mid }
+            }
+            let after = low < times.count ? times[low].timeIntervalSince(point.t) : .infinity
+            let before = low > 0 ? point.t.timeIntervalSince(times[low - 1]) : .infinity
+            return min(after, before) > tolerance
+        }
+    }
+
     static func union(
         canonical: [HistoricalArchive.HeartRatePoint],
         archive: [HistoricalArchive.HeartRatePoint],
@@ -2321,21 +2343,21 @@ struct AtriaActivityMonitorTab: View {
     private nonisolated static func readTimelineHeartRate(
         _ snapshot: TimelineHeartRateSourceSnapshot
     ) -> TimelineHeartRateReadResult {
+        let canonical = snapshot.sessions
+            .filter {
+                $0.end > snapshot.interval.start
+                    && $0.start < snapshot.interval.end
+            }
+            .flatMap { session in
+                session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
+                    let date = session.start.addingTimeInterval(point.t)
+                    guard date >= snapshot.interval.start,
+                          date < snapshot.interval.end,
+                          (25...240).contains(point.bpm) else { return nil }
+                    return .init(t: date, bpm: point.bpm)
+                }
+            }
         if snapshot.isCurrent {
-            let canonical = snapshot.sessions
-                .filter {
-                    $0.end > snapshot.interval.start
-                        && $0.start < snapshot.interval.end
-                }
-                .flatMap { session in
-                    session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
-                        let date = session.start.addingTimeInterval(point.t)
-                        guard date >= snapshot.interval.start,
-                              date < snapshot.interval.end,
-                              (25...240).contains(point.bpm) else { return nil }
-                        return .init(t: date, bpm: point.bpm)
-                    }
-                }
             // Same exact-window reader Vitals uses. The newest-N tail used to
             // spend its 12k budget on dense morning samples and drop overnight
             // rows, so Activity Heart rate looked empty while Vitals did not.
@@ -2372,11 +2394,18 @@ struct AtriaActivityMonitorTab: View {
             end: snapshot.interval.end,
             maximumPoints: 100_000
         )
-        if archive == nil, snapshot.observedHeartRate.isEmpty {
+        // Raw older than the 7-day horizon is retired, so the archive read
+        // for those days comes back empty. Saved sessions fill only where the
+        // archive has nothing nearby; where it has rows it stays the authority.
+        let sessionFill = AtriaExactWindowHeartRate.fillingArchiveGaps(
+            canonical: canonical,
+            archive: archive?.points ?? []
+        )
+        if archive == nil, snapshot.observedHeartRate.isEmpty, sessionFill.isEmpty {
             return .unavailable
         }
         let merged = AtriaExactWindowHeartRate.union(
-            canonical: [],
+            canonical: sessionFill,
             archive: archive?.points ?? [],
             observed: snapshot.observedHeartRate,
             interval: snapshot.interval
@@ -2417,8 +2446,7 @@ struct AtriaActivityMonitorTab: View {
         let interval = DateInterval(start: window.displayInterval.start,
                                     end: max(end, window.displayInterval.start.addingTimeInterval(1)))
         let snapshot = TimelineHeartRateSourceSnapshot(
-            sessions: window.isCurrentPhysiologicalDay
-                ? store.sessionsIncludingFreshActiveJournal() : [],
+            sessions: store.sessionsIncludingFreshActiveJournal(),
             observedHeartRate: stressMonitorStore.heartRateHistory.map {
                 HistoricalArchive.HeartRatePoint(t: $0.t, bpm: $0.bpm)
             },
@@ -4103,7 +4131,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
                     heartRateTraceCard
                     workoutHeartRateLoadCard
-                    workoutZoneDistributionCard
+                    // With no zone time the HR-load card already says so; a
+                    // second card repeating it was only words (owner: fewer
+                    // words, keep charts).
+                    if recordedZoneSeconds > 0 {
+                        workoutZoneDistributionCard
+                    }
                     recoveryEffectCard
 
                     if workout.samples == 0 {
@@ -5391,10 +5424,11 @@ struct AtriaWorkoutStressTraceChart: View {
             .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
             .atriaChartXScale(effectiveWindow)
             .chartYAxis {
-                AxisMarks(values: [0, 1, 2, 3]) { _ in
+                AxisMarks(position: .leading, values: [0, 1, 2, 3]) { _ in
                     AxisGridLine().foregroundStyle(.secondary.opacity(AtriaChartVisualGrammar.axisGridOpacity))
                     AxisValueLabel()
-                        .font(.caption2)
+                        .font(AtriaChartVisualGrammar.axisLabelFont)
+                        .foregroundStyle(AtriaChartVisualGrammar.axisLabelColor)
                 }
             }
             .chartXAxis {
