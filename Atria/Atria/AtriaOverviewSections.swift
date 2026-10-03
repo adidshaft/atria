@@ -4318,6 +4318,9 @@ private actor AtriaMetricDetailPreparationCache {
 }
 
 struct AtriaMetricDetailSheet: View {
+    @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var recommendationWakeAlarmEnabled: Bool = false
+    @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var recommendationWakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault("atria.sleepPlanner.goal") private var recommendationPlannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     let metric: AtriaMetricDetailKind
     let confirmedWorkouts: [UserConfirmedWorkout]
     let confirmedWorkoutsRevision: Int?
@@ -4911,7 +4914,8 @@ struct AtriaMetricDetailSheet: View {
             // the same data the main chart already shows in W/M.
             AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: periodHeroState(sleepHeroState),
-                                      tint: Metrics.electricSleep) {
+                                      tint: Metrics.electricSleep,
+                                      heroRecommendation: sleepRecommendation) {
                 // Night timeline (visual pass 2026-09-24; real data
                 // 2026-09-24): episode lane + HR line + 1–3 insight lines from
                 // AtriaNightTimelineAnalyzer over the latest confirmed main
@@ -4982,7 +4986,11 @@ struct AtriaMetricDetailSheet: View {
                                                          target: showsCurrentPhysiologicalCycleContext
                                                             && !dayStrainMetricsIncomplete
                                                             ? guidance.target
-                                                            : nil)) {
+                                                            : nil),
+                                      heroRecommendation: showsCurrentPhysiologicalCycleContext
+                                        ? Coach.strainRecommendation(recovery: recoveryEstimate.percent,
+                                                                     target: guidance.target)
+                                        : nil) {
                 // 2026-08-29 minimalism restructure: only the combo card stays
                 // above the fold; the workout/zone/mix/split cards moved
                 // behind the "Show details" reveal (contributors slot).
@@ -6127,6 +6135,27 @@ struct AtriaMetricDetailSheet: View {
         )?.isClamped ?? false
         return performance.map { capped ? "\($0)% of need \u{00b7} need capped" : "\($0)% of need" }
             ?? "Need unavailable"
+    }
+
+    /// Tonight's bedtime from tonight's projected need. Without a wake alarm
+    /// the plan works back from this person's own typical wake time.
+    private var sleepRecommendation: AtriaMetricRecommendation? {
+        guard showsCurrentPhysiologicalCycleContext else { return nil }
+        let recentMainWakes = confirmedSleeps
+            .filter { $0.end.timeIntervalSince($0.start) >= 3 * 3600 }
+            .sorted { $0.end > $1.end }
+            .prefix(14)
+            .map(\.end)
+        let wakeBy = recommendationWakeAlarmEnabled
+            ? recommendationWakeByMinutes
+            : AtriaSleepPlanner.typicalWakeMinute(wakes: Array(recentMainWakes))
+                ?? recommendationWakeByMinutes
+        return AtriaSleepPlanner.recommendation(
+            needHours: tonightProjectedNeed.totalHours,
+            goal: AtriaSleepPlannerGoal(rawValue: recommendationPlannerGoalRaw) ?? .peak,
+            wakeByMinutes: wakeBy,
+            nightEfficiencies: confirmedNightEfficiencies
+        )
     }
 
     private var strainContributorRows: [AtriaMetricContributorRow] {
@@ -7939,6 +7968,9 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
     let tint: Color
     let heroStyle: AtriaMetricDetailHeroStyle
     var heroLearning: AtriaMetricDetailHeroLearning? = nil
+    /// Today's recommendation for this metric, one line under the hero
+    /// (owner 2026-10-03: recommendations live in the detail sheet).
+    var heroRecommendation: AtriaMetricRecommendation? = nil
     let betweenHeroAndContributors: BetweenHero
     let contributors: Contributors
     let chart: ChartContent
@@ -7951,6 +7983,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
          heroLearning: AtriaMetricDetailHeroLearning? = nil,
+         heroRecommendation: AtriaMetricRecommendation? = nil,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
          @ViewBuilder about: () -> About) where BetweenHero == EmptyView {
@@ -7959,6 +7992,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.tint = tint
         self.heroStyle = heroStyle
         self.heroLearning = heroLearning
+        self.heroRecommendation = heroRecommendation
         self.betweenHeroAndContributors = EmptyView()
         self.contributors = contributors()
         self.chart = chart()
@@ -7970,6 +8004,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
          tint: Color,
          heroStyle: AtriaMetricDetailHeroStyle = .standard,
          heroLearning: AtriaMetricDetailHeroLearning? = nil,
+         heroRecommendation: AtriaMetricRecommendation? = nil,
          @ViewBuilder betweenHeroAndContributors: () -> BetweenHero,
          @ViewBuilder contributors: () -> Contributors,
          @ViewBuilder chart: () -> ChartContent,
@@ -7979,6 +8014,7 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         self.tint = tint
         self.heroStyle = heroStyle
         self.heroLearning = heroLearning
+        self.heroRecommendation = heroRecommendation
         self.betweenHeroAndContributors = betweenHeroAndContributors()
         self.contributors = contributors()
         self.chart = chart()
@@ -7994,6 +8030,10 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
         // a wall of literature.
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.lg) {
             hero
+            if let heroRecommendation {
+                AtriaMetricRecommendationLine(recommendation: heroRecommendation,
+                                              tint: tint)
+            }
             chart
             betweenHeroAndContributors
             revealAffordance
@@ -11042,5 +11082,36 @@ struct AtriaChartOptionsSheet: View {
                 }
             }
         }
+    }
+}
+
+
+/// One actionable line for today: what to aim for, and why.
+struct AtriaMetricRecommendation: Equatable {
+    let systemImage: String
+    let action: String
+    let reason: String
+}
+
+private struct AtriaMetricRecommendationLine: View {
+    let recommendation: AtriaMetricRecommendation
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: recommendation.systemImage)
+                .font(.headline)
+                .foregroundStyle(tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(recommendation.action)
+                    .font(.headline)
+                Text(recommendation.reason)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }

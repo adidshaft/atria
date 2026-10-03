@@ -594,4 +594,54 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
             requiredEndUnix: 100, drainCursorUnix: 50,
             lastRetryFingerprint: nil, fingerprint: "c-100"))
     }
+
+    // 2026-10-03 owner: "many fake workouts/activity". Low-confidence
+    // candidates surface only when long and genuinely elevated in HR-reserve
+    // terms (rest 54 / max 191 here; the rule scales to any wearer).
+    func testLowConfidenceActivitySuggestionsNeedLengthAndReserve() {
+        typealias S = SavedSession
+        XCTAssertTrue(S.lowConfidenceActivitySuggestionQualifies(
+            duration: 16 * 60, averageHR: 120, rest: 54, maxHR: 191), "a brisk walk")
+        XCTAssertFalse(S.lowConfidenceActivitySuggestionQualifies(
+            duration: 40 * 60, averageHR: 95, rest: 54, maxHR: 191), "a stressful drive")
+        XCTAssertFalse(S.lowConfidenceActivitySuggestionQualifies(
+            duration: 12 * 60, averageHR: 135, rest: 54, maxHR: 191), "a flight of stairs")
+        XCTAssertTrue(S.lowConfidenceActivitySuggestionQualifies(
+            duration: 20 * 60, averageHR: 92, rest: 40, maxHR: 170),
+            "the same reserve on a fitter heart qualifies")
+    }
+
+    // 2026-10-03 owner: recommendations live in the detail sheets; the strain
+    // ring carries only a notch.
+    func testStrainRecommendationStatesRangeAndRecoveryReason() throws {
+        XCTAssertNil(Coach.strainRecommendation(recovery: nil, target: 12))
+        let high = try XCTUnwrap(Coach.strainRecommendation(recovery: 74, target: 17))
+        XCTAssertEqual(high.action, "Aim for 15–19 strain today")
+        XCTAssertTrue(high.reason.contains("74%") && high.reason.contains("hard day"))
+        let low = try XCTUnwrap(Coach.strainRecommendation(recovery: 25, target: 9))
+        XCTAssertEqual(low.action, "Aim for 7–11 strain today")
+        XCTAssertTrue(low.reason.contains("light"))
+        XCTAssertEqual(try XCTUnwrap(Coach.strainRecommendation(recovery: 90, target: 20)).action,
+                       "Aim for 18–21 strain today", "never past the scale")
+    }
+
+    func testTypicalWakeIsTheMedianAcrossMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        func at(_ h: Int, _ m: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: h, minute: m))!
+        }
+        XCTAssertEqual(AtriaSleepPlanner.typicalWakeMinute(
+            wakes: [at(8, 0), at(7, 38), at(8, 57), at(7, 50)], calendar: calendar), 8 * 60)
+        XCTAssertEqual(AtriaSleepPlanner.typicalWakeMinute(
+            wakes: [at(23, 50), at(0, 10), at(0, 5)], calendar: calendar), 5,
+            "wakes around midnight stay together")
+        XCTAssertNil(AtriaSleepPlanner.typicalWakeMinute(wakes: [at(8, 0)], calendar: calendar),
+                     "one night is not a typical wake")
+        let rec = AtriaSleepPlanner.recommendation(needHours: 8, goal: .peak,
+                                                   wakeByMinutes: 8 * 60, nightEfficiencies: [])
+        XCTAssertNotNil(rec)
+        XCTAssertNil(AtriaSleepPlanner.recommendation(needHours: nil, goal: .peak,
+                                                      wakeByMinutes: 8 * 60, nightEfficiencies: []))
+    }
 }
