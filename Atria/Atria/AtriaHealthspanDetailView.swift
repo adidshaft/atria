@@ -209,6 +209,7 @@ struct AtriaHealthspanDetailView: View {
                 Image(systemName: "info.circle")
                     .font(.subheadline.weight(.semibold))
                     .frame(width: 34, height: 34)
+                    .atriaMinimumHitTarget(width: 34, height: 34)
             }
             .atriaGlassIconAction(tint: .primary, size: 34)
             .accessibilityLabel("About Fitness age and VO2max")
@@ -216,6 +217,7 @@ struct AtriaHealthspanDetailView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Metrics.electricStrain)
                 .frame(width: 34, height: 34)
+                .atriaMinimumHitTarget(width: 34, height: 34)
                 .background(AtriaIconTileBackground(cornerRadius: 11, tint: Metrics.electricStrain))
                 .accessibilityHidden(true)
         }

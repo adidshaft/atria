@@ -156,6 +156,7 @@ struct AtriaAssistantScreen: View {
                 if isAsking {
                     ProgressView()
                         .frame(width: 32, height: 32)
+                        .atriaMinimumHitTarget(width: 32, height: 32)
                 } else {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.title)

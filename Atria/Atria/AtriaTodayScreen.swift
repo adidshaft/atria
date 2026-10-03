@@ -1331,6 +1331,7 @@ struct AtriaTodayScreen: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 32, height: 32)
+                .atriaMinimumHitTarget(width: 32, height: 32)
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
@@ -1825,6 +1826,7 @@ struct AtriaTodayScreen: View {
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.blue)
                         .frame(width: 24, height: 24)
+                        .atriaMinimumHitTarget(width: 24, height: 24)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Morning check-in")
                             .font(.caption.weight(.bold))

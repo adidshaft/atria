@@ -1567,6 +1567,7 @@ struct AtriaHealthScreen: View {
                     .font(.headline.weight(.bold))
                     .foregroundStyle(Metrics.electricGreen)
                     .frame(width: 36, height: 36)
+                    .atriaMinimumHitTarget(width: 36, height: 36)
                     .background(AtriaIconTileBackground(cornerRadius: AtriaDesignTokens.Radius.chip, tint: Metrics.electricGreen))
 
                 Text("Breathwork")

@@ -1858,6 +1858,7 @@ struct AtriaWeeklyReportSheet: View {
                 Image(systemName: "chevron.left")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 28)
+                    .atriaMinimumHitTarget(width: 32, height: 28)
             }
             .buttonStyle(.plain)
             .disabled(!canNavigateToPreviousWeek)
@@ -1880,6 +1881,7 @@ struct AtriaWeeklyReportSheet: View {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 28)
+                    .atriaMinimumHitTarget(width: 32, height: 28)
             }
             .buttonStyle(.plain)
             .disabled(weekOffset == 0)
@@ -2499,6 +2501,7 @@ struct AtriaMonthlyReportSheet: View {
                 Image(systemName: "chevron.left")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 28)
+                    .atriaMinimumHitTarget(width: 32, height: 28)
             }
             .buttonStyle(.plain)
             .disabled(!canNavigateToPreviousMonth)
@@ -2517,6 +2520,7 @@ struct AtriaMonthlyReportSheet: View {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 28)
+                    .atriaMinimumHitTarget(width: 32, height: 28)
             }
             .buttonStyle(.plain)
             .disabled(monthOffset == 0)
@@ -4541,10 +4545,14 @@ struct AtriaMetricDetailSheet: View {
     }
 
     var body: some View {
+        metricSheetBody.atriaCardHierarchyRoot()
+    }
+
+    private var metricSheetBody: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 12) {
-                    AtriaPanelSectionHeader(title: metric.title, subtitle: "Trend and context")
+                    AtriaPanelSectionHeader(title: metric.title, subtitle: "")
                     Spacer(minLength: 0)
                     if chartSupportsOptions {
                         Button {
@@ -5708,6 +5716,7 @@ struct AtriaMetricDetailSheet: View {
                     Image(systemName: "chevron.left")
                         .font(.subheadline.weight(.semibold))
                         .frame(width: 40, height: 40)
+                        .atriaMinimumHitTarget(width: 40, height: 40)
                         .background(.quaternary.opacity(0.22), in: Circle())
                         .contentShape(Circle())
                 }
@@ -5740,6 +5749,7 @@ struct AtriaMetricDetailSheet: View {
                     Image(systemName: "chevron.right")
                         .font(.subheadline.weight(.semibold))
                         .frame(width: 40, height: 40)
+                        .atriaMinimumHitTarget(width: 40, height: 40)
                         .background(.quaternary.opacity(0.22), in: Circle())
                         .contentShape(Circle())
                 }
@@ -7187,6 +7197,16 @@ private struct AtriaPreparedMetricChart: View {
     }
 
     var body: some View {
+        // Owner 2026-10-03 (screen space): one observation is not a chart; the
+        // sheet hero already shows it. The card returns at two points.
+        if points.count == 1 {
+            EmptyView()
+        } else {
+            chartCard
+        }
+    }
+
+    private var chartCard: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text(title).font(.subheadline.weight(.semibold))
@@ -7209,6 +7229,7 @@ private struct AtriaPreparedMetricChart: View {
                         Image(systemName: "arrow.up.left.and.arrow.down.right")
                             .font(.caption.weight(.bold)).foregroundStyle(.secondary)
                             .frame(width: 40, height: 40)
+                            .atriaMinimumHitTarget(width: 40, height: 40)
                             .background(.quaternary.opacity(0.22), in: Circle())
                             .contentShape(Circle())
                     }

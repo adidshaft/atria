@@ -658,4 +658,13 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
             behavior: [])
         XCTAssertEqual(items.map(\.headline), ["sleepDebt", "hrvDrift"])
     }
+
+    // 2026-10-03 owner: "a lot of UI space is taken by nested cards".
+    func testOnlyTopLevelCardsDrawASurface() {
+        XCTAssertTrue(AtriaInsetCardModifier.drawsSurface(depth: 0, hueTinted: false))
+        XCTAssertFalse(AtriaInsetCardModifier.drawsSurface(depth: 1, hueTinted: false),
+                       "a card inside a card flows in its parent")
+        XCTAssertTrue(AtriaInsetCardModifier.drawsSurface(depth: 2, hueTinted: true),
+                      "metric chips keep their identity surface")
+    }
 }

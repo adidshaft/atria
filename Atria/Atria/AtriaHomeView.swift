@@ -8067,6 +8067,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
                     // 44pt hit area (UX-quality audit 2026-07-07): the glyph
                     // stays 16pt, the target doesn't.
                     .frame(width: 32, height: 32)
+                    .atriaMinimumHitTarget(width: 32, height: 32)
                     .contentShape(.rect)
             }
             .atriaCardAction(prominent: false, tint: .cyan)

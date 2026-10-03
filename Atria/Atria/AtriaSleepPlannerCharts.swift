@@ -530,6 +530,7 @@ struct AtriaSleepDebtChartCard: View {
                     Image(systemName: "chevron.left")
                         .font(.caption.weight(.bold))
                         .frame(width: 30, height: 30)
+                        .atriaMinimumHitTarget(width: 30, height: 30)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canNavigateToPreviousWeek)
@@ -547,6 +548,7 @@ struct AtriaSleepDebtChartCard: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                         .frame(width: 30, height: 30)
+                        .atriaMinimumHitTarget(width: 30, height: 30)
                 }
                 .buttonStyle(.plain)
                 .disabled(weekOffset == 0)

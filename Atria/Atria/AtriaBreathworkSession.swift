@@ -249,6 +249,7 @@ struct AtriaBreathworkSession: View {
                     .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
                     .frame(width: 42, height: 42)
+                    .atriaMinimumHitTarget(width: 42, height: 42)
                     .background(.white.opacity(0.12), in: Circle())
                     .glassEffect(.regular.tint(.white.opacity(0.08)), in: Circle())
             }
