@@ -97,3 +97,39 @@ enum AtriaSleepPlanner {
                               efficiencyIsDefault: efficiency.isDefault)
     }
 }
+
+extension AtriaSleepPlanner {
+    /// Median wake time (minutes of day) over recent confirmed main sleeps,
+    /// so a plan without a wake alarm works back from when this person
+    /// actually gets up (shifted sleepers included). Circular-safe: wakes are
+    /// unwrapped around the first one so 23:50 and 00:10 stay 20 min apart.
+    static func typicalWakeMinute(wakes: [Date], calendar: Calendar = .current) -> Int? {
+        let minutes = wakes.map {
+            calendar.component(.hour, from: $0) * 60 + calendar.component(.minute, from: $0)
+        }
+        guard let anchor = minutes.first, minutes.count >= 3 else { return nil }
+        let unwrapped = minutes.map { m -> Int in
+            var d = m - anchor
+            if d > 720 { d -= 1440 } else if d < -720 { d += 1440 }
+            return anchor + d
+        }.sorted()
+        let median = unwrapped[unwrapped.count / 2]
+        return ((median % 1440) + 1440) % 1440
+    }
+
+    /// The Sleep sheet's one-line recommendation (owner 2026-10-03).
+    static func recommendation(needHours: Double?,
+                               goal: AtriaSleepPlannerGoal,
+                               wakeByMinutes: Int?,
+                               nightEfficiencies: [Double]) -> AtriaMetricRecommendation? {
+        guard let needHours, needHours > 0, let wakeByMinutes else { return nil }
+        let plan = plan(needHours: needHours, goal: goal,
+                        wakeByMinutes: wakeByMinutes,
+                        nightEfficiencies: nightEfficiencies)
+        return AtriaMetricRecommendation(
+            systemImage: "bed.double.fill",
+            action: "In bed by \(plan.inBedByText) tonight",
+            reason: "Tonight's need: \(AtriaMetricFormat.sleepHours(needHours))"
+        )
+    }
+}

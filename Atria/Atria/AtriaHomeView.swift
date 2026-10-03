@@ -5995,7 +5995,7 @@ struct AtriaHomeView: View {
                                                                  tintHex: AtriaRingMetricProjection.achievementTintHex(fill: sleepFill),
                                                                  fill: sleepFill,
                                                                  stateTintHex: sleepZone.map { AtriaRingMetricProjection.zoneTintHex($0.level) },
-                                                                 targetFraction: sleepProjection == nil ? nil : 1.0),
+                                                                 targetFraction: nil),
                                   strain: AtriaShareSnapshot.Ring(title: "Strain",
                                                                   value: strainValue,
                                                                   detail: hero.strainDetail,

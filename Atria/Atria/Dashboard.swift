@@ -452,6 +452,25 @@ enum Coach {
         return baseStrainTarget(recovery: recovery)
     }
 
+    /// Today's strain recommendation for the Strain sheet (owner 2026-10-03):
+    /// the recovery-scaled target as the same ±2 band the guidance uses, and
+    /// why. Nil until recovery is in — no fabricated target.
+    static func strainRecommendation(recovery: Int?, target: Double?) -> AtriaMetricRecommendation? {
+        guard let recovery, let target else { return nil }
+        let low = max(0, target - 2), high = min(21, target + 2)
+        let reason: String
+        switch recovery {
+        case ..<34: reason = "Recovery \(recovery)% is low — keep today light so you can recover."
+        case ..<67: reason = "Recovery \(recovery)% is moderate — a steady day fits."
+        default: reason = "Recovery \(recovery)% is high — your body can take a hard day."
+        }
+        return AtriaMetricRecommendation(
+            systemImage: "target",
+            action: String(format: "Aim for %.0f–%.0f strain today", low, high),
+            reason: reason
+        )
+    }
+
     struct Guidance: Equatable {
         let headline: String
         let detail: String

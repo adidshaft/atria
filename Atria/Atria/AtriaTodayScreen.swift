@@ -2034,12 +2034,11 @@ struct AtriaTodayScreen: View {
                                   stateTint: fillFraction.map {
                                       AtriaTriRing.zoneTint(.sleep, percent: $0 * 100)
                                   },
-                                  // A marker at 1.0 (ring closure) exactly when there's a real,
-                                  // computed nightly need to close against -- never a fabricated
-                                  // target when `sleepNeedHoursValue` can't be computed yet.
-                                  targetFraction: fillProjection.authority == .nightlyNeed ? 1.0 : nil,
-                                  targetBand: fillProjection.authority == .nightlyNeed
-                                    ? AtriaRingMetricProjection.sleepTargetBand : nil)
+                                  // Owner 2026-10-03: only today's metric (strain)
+                                  // carries a target on the ring. Sleep is last
+                                  // night's result; its need lives in the sheet.
+                                  targetFraction: nil,
+                                  targetBand: nil)
     }
 
     /// Dated prior-night chip caption, e.g. "Aug 19 · 7h 12m" (declutter R22).
@@ -2259,12 +2258,10 @@ struct AtriaTodayScreen: View {
                                   // grade everywhere this ring is projected.
                                   tint: ringRecoveryZone?.tint ?? .secondary,
                                   fill: display.percent.map { Double($0) / 100.0 },
-                                  // The green zone is today's target: notch at its
-                                  // lower bound, zone along the edge (owner 2026-10-02).
-                                  targetFraction: display.percent == nil ? nil : recoveryGreenLower / 100,
-                                  targetBand: display.percent == nil
-                                    ? nil
-                                    : AtriaRingMetricProjection.recoveryTargetBand(greenLower: recoveryGreenLower))
+                                  // Recovery is an outcome, not a target to aim at
+                                  // (owner 2026-10-03: target only on strain).
+                                  targetFraction: nil,
+                                  targetBand: nil)
     }
 
     /// Ready / Calculating / Syncing for a value computed from last night
@@ -2361,8 +2358,10 @@ struct AtriaTodayScreen: View {
                                   // complete today's strain is: show it whenever it
                                   // exists (owner 2026-10-02: "no strain target is
                                   // mentioned or depicted").
+                                  // One notch cutting the ring (owner 2026-10-03);
+                                  // the range and its reason live in the sheet.
                                   targetFraction: AtriaRingMetricProjection.strainTargetFraction(target),
-                                  targetBand: AtriaRingMetricProjection.strainTargetBand(target, greenBand: strainGreenBand))
+                                  targetBand: nil)
     }
 
     /// The ring, compact header, accessibility summary and glance grid all ask
