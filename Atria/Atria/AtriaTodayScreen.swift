@@ -401,8 +401,7 @@ struct AtriaTodayScreen: View {
                 items: AtriaTodayLearningsFeed.items(
                     learned: sessionProjectionStore.state.learnedInsights,
                     behavior: sessionProjectionStore.state.behaviorInsights
-                ),
-                onOpen: { showInsights = true }
+                )
             )
 
             if layoutConfig.showLiveStrip {
