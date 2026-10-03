@@ -948,7 +948,7 @@ struct AtriaResearchConsentSheet: View {
                         Text("I agree — share anonymously")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.glass)
                     .disabled(!hasInspected)
 
                     if !hasInspected {
@@ -1186,7 +1186,7 @@ private struct AtriaResearchShareSheetHost: View {
                     Label("Send to Atria developers", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.glass)
                 Text("Send via any channel you trust — the file itself is the anonymized bundle you inspected.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

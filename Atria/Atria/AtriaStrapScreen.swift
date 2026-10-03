@@ -324,7 +324,7 @@ private struct AtriaStrapConnectionHero: View {
                         .font(.subheadline.weight(.bold))
                         .frame(maxWidth: .infinity, minHeight: 34)
                 }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(.glass)
                 if let onShowConnectionGuide {
                     Button("Connection guide") {
                         onShowConnectionGuide()

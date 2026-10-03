@@ -115,16 +115,13 @@ struct AtriaTodayLearningsFeed: View {
                 .font(.headline)
                 .foregroundStyle(item.tint)
                 .frame(width: 24)
+            // Headline only (owner 2026-10-03: minimal text on Today); the
+            // detail stays in the accessibility label.
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.headline)
                     .font(.subheadline.weight(.semibold))
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(item.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
             }
             Spacer(minLength: 0)
         }

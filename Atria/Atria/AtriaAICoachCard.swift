@@ -49,7 +49,7 @@ struct AtriaAICoachCard: View, Equatable {
                 Text(displayDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
                 HStack(spacing: 12) {
                     if let payload {
                         Button {

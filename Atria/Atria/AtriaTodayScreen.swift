@@ -4245,10 +4245,10 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
         ///
         /// These used to differ (94 / 74), so a row of tall tiles sat beside a
         /// row of short ones and the grid read as ragged rather than as a set.
-        /// The value is the tallest arrangement a tile can hold — icon, value,
-        /// label and a two-line detail — so nothing clips and every card is the
-        /// same size regardless of how much its own detail line says.
-        var minHeight: CGFloat { 100 }
+        /// Icon, value and label (owner 2026-10-03: minimal text). A pending
+        /// tile's short reason line may grow its row slightly; readings never
+        /// carry a detail line, so a filled grid stays uniform.
+        var minHeight: CGFloat { 80 }
     }
 
     let title: String
@@ -4841,7 +4841,10 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            if !item.detail.isEmpty && item.layoutSize != .wideShort {
+            // Owner 2026-10-03: minimal text on Today — a tile with a reading
+            // is icon, number and name; the detail line only explains a
+            // missing reading. The detail sheet carries the rest.
+            if item.isPending && !item.detail.isEmpty && item.layoutSize != .wideShort {
                 // Two lines, not one. The stress tile's honest detail —
                 // "Calm · HR-only estimate · lower confidence" — does not fit a
                 // single compact line and was cropping mid-word to
@@ -4887,12 +4890,13 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
                 Image(systemName: "plus")
                 Text("Start workout")
             }
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 54)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, minHeight: 50)
         }
-        .buttonStyle(.glassProminent)
-        .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
-        .tint(.blue)
+        // Clear native glass capsule (owner 2026-10-03 inspiration), white label.
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
         .accessibilityLabel("Start workout")
     }
 }

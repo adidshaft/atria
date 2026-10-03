@@ -225,7 +225,7 @@ struct AtriaFaceOffView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.glassProminent)
+                        .buttonStyle(.glass)
                     }
 
                     if let storyImage {

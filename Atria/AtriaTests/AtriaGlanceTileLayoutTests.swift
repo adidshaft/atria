@@ -26,7 +26,7 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
         // The sizes used to return 94 for wide and 74 for compact, so a row of
         // tall tiles sat beside a row of short ones and the grid read ragged.
         let source = try todayScreen()
-        XCTAssertTrue(source.contains("var minHeight: CGFloat { 100 }"),
+        XCTAssertTrue(source.contains("var minHeight: CGFloat { 80 }"),
                       "one height for every tile")
         XCTAssertFalse(source.contains("case .wide: return 94"),
                        "the per-size heights must be gone, not shadowed")

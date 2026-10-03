@@ -13924,12 +13924,19 @@ private struct AtriaToolbarIcon: View, Equatable {
     }
 }
 
+/// One segment of the header's shared glass pill (owner 2026-10-03: system
+/// toolbar look). The pill's glass is drawn once by `actionButtons`; each
+/// segment is only a 44pt hit area with a press response.
 private struct AtriaHeaderActionButtonStyle: ButtonStyle {
     private static let size: CGFloat = AtriaHeaderControlMetrics.height
 
     func makeBody(configuration: Configuration) -> some View {
-        AtriaGlassIconButtonStyle(tint: .secondary, size: Self.size)
-            .makeBody(configuration: configuration)
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.primary)
+            .frame(width: Self.size, height: Self.size)
+            .contentShape(Rectangle())
+            .opacity(configuration.isPressed ? 0.55 : 1)
     }
 }
 
@@ -14016,7 +14023,7 @@ private struct AtriaHomeTopChrome: View {
     }
 
     private var actionButtons: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             // One native menu replaces the ambiguous chat bubble. The trigger
             // remains the only new glass surface; both destinations reuse their
             // existing sheets and keep the Today page's in-content actions.
@@ -14047,6 +14054,10 @@ private struct AtriaHomeTopChrome: View {
             .accessibilityLabel("Settings")
             .accessibilityIdentifier("atria.home.settings")
         }
+        .padding(.horizontal, 4)
+        // One shared glass pill for the actions, like the system toolbars
+        // (owner 2026-10-03 inspiration).
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 }
 
@@ -14665,8 +14676,11 @@ private struct AtriaTopStatusChip: View, Equatable {
 
     private var chipLabel: some View {
         HStack(spacing: 5) {
+            // Colour only on the state glyph (owner 2026-10-03); the glass
+            // itself stays neutral.
             Image(systemName: presentation.symbol)
                 .imageScale(.small)
+                .foregroundStyle(presentation.isConnected ? Color.primary : toneColor)
             Text(presentation.label)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
@@ -14679,20 +14693,13 @@ private struct AtriaTopStatusChip: View, Equatable {
             }
         }
         .font(.caption.weight(.bold))
-        // The state hue already lives in the glass surface. Adaptive primary
-        // remains legible when Liquid Glass intensifies a connected tint.
-        .foregroundStyle(presentation.isConnected ? Color.primary : toneColor)
+        .foregroundStyle(Color.primary)
         .padding(.horizontal, 12)
         .frame(minWidth: AtriaHeaderControlMetrics.statusMinWidth,
                maxWidth: 172,
                minHeight: AtriaHeaderControlMetrics.height,
                maxHeight: AtriaHeaderControlMetrics.height)
-        .glassEffect(
-            .regular
-                .tint(toneColor.opacity(colorScheme == .dark ? 0.34 : 0.22))
-                .interactive(),
-            in: .capsule
-        )
+        .glassEffect(.regular.interactive(), in: .capsule)
         .contentShape(Capsule())
         .accessibilityLabel("Strap status \(presentation.accessibilityLabel)")
     }

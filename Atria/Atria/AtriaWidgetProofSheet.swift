@@ -132,7 +132,7 @@ struct AtriaWidgetProofSheet: View {
                         Label("Developer diagnostics", systemImage: "wrench.and.screwdriver")
                             .font(.footnote.weight(.semibold))
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.glass)
                     .padding(.bottom, 8)
                 }
             }

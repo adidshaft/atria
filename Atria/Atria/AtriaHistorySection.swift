@@ -359,7 +359,7 @@ struct AtriaHistorySection: View, Equatable {
         VStack(alignment: .leading, spacing: 14) {
             // The big trailing number duplicated the Sessions chip directly
             // below it (UX audit 2026-07-07) -- the chip keeps the value.
-            AtriaPanelSectionHeader(title: "History", subtitle: "Saved sessions, trends, and local activity evidence")
+            AtriaPanelSectionHeader(title: "History", subtitle: "")
             HStack(spacing: 10) {
                 AtriaHistoryStatChip(label: "Sessions", value: "\(model.sessionsCount)", tint: Metrics.electricStrain)
                 // The detector's event count is diagnostics (it read "20"
@@ -431,7 +431,7 @@ struct AtriaHistorySection: View, Equatable {
     /// zero effect on detection logic. Hidden entirely when the log is empty.
     private var detectionsCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Detections", subtitle: "What the app detected and why")
+            AtriaPanelSectionHeader(title: "Detections", subtitle: "")
             VStack(spacing: 8) {
                 // 3-row preview (UX audit density): the full log lives one
                 // tap away behind "See all".
@@ -1147,7 +1147,7 @@ struct AtriaDetectedActivitiesSection: View {
                                                                         end: window.end)
                         }
                         .font(.caption.weight(.semibold))
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.glass)
                         .tint(.cyan)
                     }
                     .padding(10)

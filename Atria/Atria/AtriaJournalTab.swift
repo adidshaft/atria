@@ -578,7 +578,7 @@ private struct AtriaJournalTypedInsightsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Patterns",
-                                    subtitle: "From your journal entries")
+                                    subtitle: "")
 
             if insights.isEmpty {
                 // Was a padlock captioned "Patterns are locked". Nothing is
@@ -1349,7 +1349,7 @@ private struct AtriaJournalFollowUpSheet: View {
                     } label: {
                         Image(systemName: "plus")
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.glass)
                     .buttonBorderShape(.circle)
                     .frame(width: 56, height: 56)
                     .accessibilityLabel("One more drink")
@@ -1375,7 +1375,7 @@ private struct AtriaJournalFollowUpSheet: View {
                     .font(.body.weight(.bold))
                     .frame(maxWidth: .infinity, minHeight: 52)
             }
-            .buttonStyle(.glassProminent)
+            .buttonStyle(.glass)
             .buttonBorderShape(.capsule)
 
             Button("Skip for now", action: onSkip)

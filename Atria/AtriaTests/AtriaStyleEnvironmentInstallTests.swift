@@ -27,8 +27,9 @@ final class AtriaStyleEnvironmentInstallTests: XCTestCase {
         let names = Set(call.matches(in: all, range: NSRange(all.startIndex..., in: all)).compactMap {
             Range($0.range(at: 1), in: all).map { String(all[$0]) }
         })
-        XCTAssertTrue(names.contains("AtriaGlassIconButtonStyle"),
-                      "The header style still composes the glass icon style; keep this test pointed at it")
+        // 2026-10-03: the header style no longer composes the glass icon
+        // style (the header pill draws one shared glass), so the set may be
+        // empty; any style composed this way must still declare no environment.
 
         for name in names {
             guard let start = all.range(of: "struct \(name):") else { continue }

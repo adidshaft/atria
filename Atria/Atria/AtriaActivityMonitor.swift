@@ -3175,8 +3175,9 @@ struct AtriaActivityMonitorTab: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 6)
         }
-        .buttonStyle(.glassProminent)
-        .tint(Metrics.electricStrain)
+        .buttonStyle(.glass)
+        .buttonBorderShape(.capsule)
+        .foregroundStyle(.primary)
         .accessibilityLabel("Add activity")
         .accessibilityHint("Log a workout, or a sleep/nap the strap missed.")
     }
@@ -5180,7 +5181,7 @@ struct AtriaAddWorkoutSheet: View {
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 4)
                     }
-                    .buttonStyle(.glassProminent)
+                    .buttonStyle(.glass)
                     .tint(Metrics.electricStrain)
                     .disabled(isSaving
                               || endTime <= startTime
