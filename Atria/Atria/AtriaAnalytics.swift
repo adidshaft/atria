@@ -733,7 +733,9 @@ enum AtriaAnalytics {
         /// or display curve changes. Persisted workout cards use this to
         /// re-score from their original HR samples exactly once, without
         /// inventing data for metadata-only rows.
-        static let displayCalibrationVersion = 3
+        /// 4 (owner 2026-10-03): recalibrated toward WHOOP's 0–21 feel; see
+        /// `AtriaStrainLoadModel.displayCalibration`.
+        static let displayCalibrationVersion = 4
 
         /// Shared evidence boundary for every cardiovascular-load integrator.
         /// This matches `SavedSession.workoutContinuityGapLimit`: standard
@@ -2403,7 +2405,8 @@ enum AtriaAnalytics {
 
         static let strainTRIMP = Check(name: "banister_strain_score",
                                        actual: Strain.score(fromTRIMP: 50),
-                                       expected: 5.94,
+                                       // Version 4 (WHOOP-ward) curve, load scale 100.
+                                       expected: 8.26,
                                        tolerance: 0.05)
 
         static let strainEdwards = Check(name: "edwards_strain_score",

@@ -657,6 +657,32 @@ final class AtriaSleepTruthAndReadinessTests: XCTestCase {
                       insight(.hrvDrift), insight(.yesterdayStrain)],
             behavior: [])
         XCTAssertEqual(items.map(\.headline), ["sleepDebt", "hrvDrift"])
+
+        // Tapping removes a card; the same finding stays gone, a changed one
+        // (new numbers) is new information and returns.
+        let raw = AtriaTodayLearningsFeed.remembering(items[0].dismissalKey, in: "")
+        let dismissed = Set(raw.split(separator: "\n").map(String.init))
+        XCTAssertEqual(AtriaTodayLearningsFeed.visible(items, dismissed: dismissed).map(\.headline),
+                       ["hrvDrift"])
+        let changed = AtriaTodayLearningsFeed.items(
+            learned: [AtriaLearnedInsight(id: "sleepDebt", kind: .sleepDebt, headline: "sleepDebt now 2h",
+                                          detail: "", isPositive: false, asOf: Date(timeIntervalSince1970: 0))],
+            behavior: [])
+        XCTAssertEqual(AtriaTodayLearningsFeed.visible(changed, dismissed: dismissed).count, 1)
+    }
+
+    // Owner 2026-10-03: "recalibrate towards WHOOP". Re-expressing a saved
+    // day on the new curve must equal scoring its load on the new curve.
+    func testStrainRecalibrationIsExactForSavedDays() {
+        for load in [20.0, 55.0, 106.0, 122.0, 300.0] {
+            let old = 21 * (1 - exp(-load / 150))
+            let expected = AtriaStrainLoadModel.displayScore(fromLoad: load)
+            XCTAssertEqual(AtriaStrainLoadModel.rescaledDisplayScore(old, fromLoadScale: 150, toLoadScale: 100),
+                           expected, accuracy: 1e-9)
+        }
+        XCTAssertEqual(AtriaStrainLoadModel.displayScore(fromLoad: 55), 8.88, accuracy: 0.01,
+                       "a 49-minute strength hour reads about 9")
+        XCTAssertEqual(AtriaStrainLoadModel.displayScore(fromLoad: 122), 14.80, accuracy: 0.01)
     }
 
     // 2026-10-03 owner: "a lot of UI space is taken by nested cards".

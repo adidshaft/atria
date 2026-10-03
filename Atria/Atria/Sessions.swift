@@ -25054,6 +25054,7 @@ final class SessionStore: ObservableObject {
             self.baseline = restoreInitialization.loadBaseline()
             self.profile = restoreInitialization.loadProfile()
             self.dailyRollupStore = restoreInitialization.loadDailyRollups()
+            Self.migrateDayStrainCalibrationIfNeeded(self.dailyRollupStore)
         }
         self.cachedConfirmedWorkouts = recoveryBlocked ? [] : Self.readConfirmedWorkouts()
         self.cachedConfirmedSleeps = recoveryBlocked ? [] : Self.readConfirmedSleeps()
@@ -25274,6 +25275,34 @@ final class SessionStore: ObservableObject {
             }
         }
         #endif
+    }
+
+    static let dayStrainCalibrationVersionKey = "atria.strain.dayDisplayCalibrationVersion.v1"
+
+    /// Saved day strains are display values, not loads. Re-express them on
+    /// the current curve once, at load, before this process writes any day
+    /// under the new curve (0 = never migrated = saved on the 150 curve).
+    static func migrateDayStrainCalibrationIfNeeded(_ store: DailyRollupStore,
+                                                    defaults: UserDefaults = .standard) {
+        let target = AtriaAnalytics.Strain.displayCalibrationVersion
+        let stored = defaults.integer(forKey: dayStrainCalibrationVersionKey)
+        guard stored < target else { return }
+        if stored < 4 {
+            let entries = store.rollups(last: Int.max)
+            if entries.contains(where: { ($0.strain ?? 0) > 0 }) {
+                store.replaceAll(entries.map { entry in
+                    var next = entry
+                    if let strain = entry.strain, strain > 0 {
+                        next.strain = AtriaStrainLoadModel.rescaledDisplayScore(
+                            strain,
+                            fromLoadScale: AtriaStrainLoadModel.previousDisplayLoadScale,
+                            toLoadScale: AtriaStrainLoadModel.displayCalibration.loadScale)
+                    }
+                    return next
+                })
+            }
+        }
+        defaults.set(target, forKey: dayStrainCalibrationVersionKey)
     }
 
     private func handleSystemTimeZoneChange() {
