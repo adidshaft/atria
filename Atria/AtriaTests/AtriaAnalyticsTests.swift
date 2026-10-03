@@ -153,7 +153,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         // Regression point from a real 64-minute strength window: 3,820 seconds
         // of observed strap HR, mean 131 bpm, peak 170 bpm, rest 68, max 190.
         // The input is the measured Banister integral, not a workout estimate.
-        XCTAssertEqual(Metrics.strain(fromTRIMP: 65.6037), 7.44, accuracy: 0.02)
+        // Version 4 curve (owner 2026-10-03, toward WHOOP): ~10, moderate-high.
+        XCTAssertEqual(Metrics.strain(fromTRIMP: 65.6037), 10.10, accuracy: 0.02)
     }
 
     func testSleepStagesIncludeREMInUserFacingOrder() {

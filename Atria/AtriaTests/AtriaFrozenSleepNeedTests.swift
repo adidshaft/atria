@@ -202,7 +202,7 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
 
     func testNeedAdderConsumesYesterdayTRIMPThroughTheDisplayAuthority() {
         // Equivalent TRIMP anchor for the published 15.0-display-strain point.
-        let t15 = -150.0 * log(1.0 - 15.0 / 21.0)
+        let t15 = -AtriaStrainLoadModel.displayCalibration.loadScale * log(1.0 - 15.0 / 21.0)
         let fromTRIMP = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
                                                              yesterdayTRIMP: t15,
                                                              yesterdayStrainFallback: nil,

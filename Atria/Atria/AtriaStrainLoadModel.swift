@@ -148,8 +148,25 @@ enum AtriaStrainLoadModel {
     /// (21.0 ceiling, 150.0 load scale) so `displayScore(fromLoad:)` output is
     /// byte-identical to the previous inline formula and every pinned strain
     /// score is unchanged.
+    /// Owner 2026-10-03: "recalibrate towards WHOOP". With 150 a 49-minute
+    /// strength hour (load ~55) read 6.3 and gym days 10–12 while a green
+    /// recovery asked for 17. At 100 the same session reads ~9.0 and those
+    /// days ~13.8–14.9, so the 9–17 recovery targets are reachable on the
+    /// scale they are expressed in. Version 4.
     static let displayCalibration = DisplayCalibration(maximumScore: 21.0,
-                                                       loadScale: 150.0)
+                                                       loadScale: 100.0)
+    static let previousDisplayLoadScale: Double = 150.0
+
+    /// Exact re-expression of a saved 0–21 score under a new load scale:
+    /// load = -s_old·ln(1 - x/21), so x_new = 21·(1 - (1 - x/21)^(s_old/s_new)).
+    static func rescaledDisplayScore(_ score: Double,
+                                     fromLoadScale old: Double,
+                                     toLoadScale new: Double,
+                                     maximumScore: Double = 21.0) -> Double {
+        guard score.isFinite, score > 0, old > 0, new > 0 else { return score }
+        let fraction = min(score / maximumScore, 0.999_999)
+        return maximumScore * (1 - pow(1 - fraction, old / new))
+    }
 
     /// O(1)-memory streaming integration. Batch calculation below is defined
     /// in terms of this same accumulator, so replay and live ingestion cannot

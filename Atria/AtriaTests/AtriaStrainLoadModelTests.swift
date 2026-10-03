@@ -167,22 +167,25 @@ final class AtriaStrainLoadModelTests: XCTestCase {
         XCTAssertEqual(Model.displayScore(fromLoad: -1), 0)
         XCTAssertEqual(Model.displayScore(fromLoad: .nan), 0)
         XCTAssertEqual(Model.displayScore(fromLoad: .infinity), 0)
-        XCTAssertEqual(Model.displayScore(fromLoad: 65.6037), 7.44, accuracy: 0.02)
+        XCTAssertEqual(Model.displayScore(fromLoad: 65.6037), 10.10, accuracy: 0.02)
     }
 
     func testDisplayCalibrationUsesPersistedVersionAuthorityWithoutMovingScores() {
         let representativeLoad = 65.6037
         let previousInlineScore = 21.0 * (1 - exp(-representativeLoad / 150.0))
 
-        XCTAssertEqual(AtriaAnalytics.Strain.displayCalibrationVersion, 3,
-                       "the shipped persisted calibration remains version 3")
+        XCTAssertEqual(AtriaAnalytics.Strain.displayCalibrationVersion, 4,
+                       "version 4: recalibrated toward WHOOP (owner 2026-10-03)")
         XCTAssertEqual(Model.displayCalibration.version,
                        AtriaAnalytics.Strain.displayCalibrationVersion)
         XCTAssertEqual(Model.displayCalibration.maximumScore, 21.0)
-        XCTAssertEqual(Model.displayCalibration.loadScale, 150.0)
-        XCTAssertEqual(Model.displayScore(fromLoad: representativeLoad),
-                       previousInlineScore,
-                       accuracy: 1e-12)
+        XCTAssertEqual(Model.displayCalibration.loadScale, 100.0)
+        XCTAssertEqual(Model.previousDisplayLoadScale, 150.0)
+        // Saved scores move exactly once, by the closed-form re-expression.
+        XCTAssertEqual(Model.rescaledDisplayScore(previousInlineScore,
+                                                  fromLoadScale: 150, toLoadScale: 100),
+                       Model.displayScore(fromLoad: representativeLoad),
+                       accuracy: 1e-9)
     }
 
     func testCleanWorkoutRetainsExistingBanisterLoadAndDisplayCalibration() {
