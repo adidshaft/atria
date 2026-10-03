@@ -1473,6 +1473,7 @@ struct AtriaHistoryDayDetailSheet: View {
                     } label: {
                         Image(systemName: "chevron.left")
                             .frame(width: 32, height: 32)
+                            .atriaMinimumHitTarget(width: 32, height: 32)
                     }
                     .disabled(adjacentDay(offset: -1) == nil)
                     .accessibilityLabel("Previous day")
@@ -1482,6 +1483,7 @@ struct AtriaHistoryDayDetailSheet: View {
                     } label: {
                         Image(systemName: "chevron.right")
                             .frame(width: 32, height: 32)
+                            .atriaMinimumHitTarget(width: 32, height: 32)
                     }
                     .disabled(adjacentDay(offset: 1) == nil)
                     .accessibilityLabel("Next day")
@@ -1521,6 +1523,7 @@ struct AtriaHistoryDayDetailSheet: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(Metrics.electricSleep)
                         .frame(width: 24, height: 24)
+                        .atriaMinimumHitTarget(width: 24, height: 24)
                         .background(AtriaIconTileBackground(cornerRadius: 8, tint: Metrics.electricSleep))
                     VStack(alignment: .leading, spacing: 2) {
                         Text(night.confirmationText)

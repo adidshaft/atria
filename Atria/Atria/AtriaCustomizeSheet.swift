@@ -281,6 +281,7 @@ struct AtriaCustomizeSheet: View {
                         Circle()
                             .fill(accent.color)
                             .frame(width: 34, height: 34)
+                            .atriaMinimumHitTarget(width: 34, height: 34)
                             .overlay {
                                 if draft.accent == accent {
                                     Image(systemName: "checkmark")

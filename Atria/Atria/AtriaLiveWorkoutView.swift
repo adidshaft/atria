@@ -1785,6 +1785,7 @@ struct AtriaWorkoutStartSheet: View {
                             HStack(spacing: 12) {
                                 Image(systemName: type.icon)
                                     .frame(width: 28, height: 28)
+                                    .atriaMinimumHitTarget(width: 28, height: 28)
                                 Text(type.rawValue)
                                 Spacer()
                                 if configuration.activityType == type {

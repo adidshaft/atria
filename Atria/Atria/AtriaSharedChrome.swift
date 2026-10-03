@@ -217,6 +217,37 @@ private struct AtriaRaisedCardBackground: View {
     }
 }
 
+extension EnvironmentValues {
+    /// How many inset cards enclose this view.
+    @Entry var atriaCardNestingDepth: Int = 0
+}
+
+/// Owner 2026-10-03: "a lot of UI space is taken by nested cards". An inset
+/// card inside another card draws no surface of its own — its content flows
+/// in the parent. Hue-tinted metric chips keep their identity surface.
+struct AtriaInsetCardModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color
+    let hueTinted: Bool
+    @Environment(\.atriaCardNestingDepth) private var depth
+
+    static func drawsSurface(depth: Int, hueTinted: Bool) -> Bool {
+        depth == 0 || hueTinted
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.atriaCardNestingDepth, depth + 1)
+            .background {
+                if Self.drawsSurface(depth: depth, hueTinted: hueTinted) {
+                    AtriaInsetCardBackground(cornerRadius: cornerRadius,
+                                             tint: tint,
+                                             hueTinted: hueTinted)
+                }
+            }
+    }
+}
+
 private struct AtriaInsetCardBackground: View {
     let cornerRadius: CGFloat
     let tint: Color
@@ -230,14 +261,24 @@ private struct AtriaInsetCardBackground: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(baseFill)
-            .overlay(tintWash)
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(strokeColor, lineWidth: 1)
-            )
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency || hueTinted {
+            shape
+                .fill(baseFill)
+                .overlay(tintWash)
+                .overlay(shape.stroke(strokeColor, lineWidth: 1))
+        } else {
+            // Owner 2026-10-03: more Liquid Glass. A faint identity tint keeps
+            // each card's metric hue without a solid block.
+            shape
+                .fill(Color.clear)
+                .glassEffect(.regular.tint(tint.opacity(colorScheme == .dark ? 0.05 : 0.04)),
+                             in: shape)
+                .overlay(shape.stroke(strokeColor, lineWidth: 1))
+        }
     }
 
     private var baseFill: AnyShapeStyle {
@@ -362,10 +403,15 @@ extension View {
     func atriaInsetCard(cornerRadius: CGFloat = AtriaDesignTokens.Radius.inset,
                         tint: Color,
                         hueTinted: Bool = false) -> some View {
-        self
-            .background {
-                AtriaInsetCardBackground(cornerRadius: cornerRadius, tint: tint, hueTinted: hueTinted)
-            }
+        modifier(AtriaInsetCardModifier(cornerRadius: cornerRadius,
+                                        tint: tint,
+                                        hueTinted: hueTinted))
+    }
+
+    /// Sheets inherit the presenter's environment; a sheet opened from inside
+    /// a card starts its own card hierarchy.
+    func atriaCardHierarchyRoot() -> some View {
+        environment(\.atriaCardNestingDepth, 0)
     }
 
     @ViewBuilder
@@ -431,5 +477,19 @@ private struct AtriaIconChromeBackground: View {
     private var stroke: some View {
         Circle()
             .stroke(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.12), lineWidth: 1)
+    }
+}
+
+
+extension View {
+    /// Owner 2026-10-03: every tappable control answers a 44×44 pt touch
+    /// without changing how it is drawn or laid out — the hit shape extends
+    /// past a smaller visual control.
+    func atriaMinimumHitTarget(width: CGFloat, height: CGFloat) -> some View {
+        let dx = max(0, (44 - width) / 2)
+        let dy = max(0, (44 - height) / 2)
+        return contentShape(.rect.inset(by: 0)
+            .size(width: width + 2 * dx, height: height + 2 * dy)
+            .offset(x: -dx, y: -dy))
     }
 }

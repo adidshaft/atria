@@ -604,6 +604,7 @@ struct AtriaStressDetailView: View {
             Button(action: onDismiss) {
                 Image(systemName: "chevron.left")
                     .frame(width: 40, height: 40)
+                    .atriaMinimumHitTarget(width: 40, height: 40)
             }
             .atriaGlassIconAction(tint: .primary, size: 40)
             .accessibilityLabel("Close \(input.presentation.metricTitle)")
@@ -623,6 +624,7 @@ struct AtriaStressDetailView: View {
             Button { showAbout = true } label: {
                 Image(systemName: "info.circle")
                     .frame(width: 40, height: 40)
+                    .atriaMinimumHitTarget(width: 40, height: 40)
             }
             .atriaGlassIconAction(tint: .primary, size: 40)
             .accessibilityLabel("About physiological stress")
@@ -1090,6 +1092,7 @@ struct AtriaStressDailyTrendCard: View {
                     Image(systemName: "chevron.left")
                         .font(.caption.weight(.bold))
                         .frame(width: 28, height: 28)
+                        .atriaMinimumHitTarget(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canNavigateToPreviousWeek)
@@ -1108,6 +1111,7 @@ struct AtriaStressDailyTrendCard: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                         .frame(width: 28, height: 28)
+                        .atriaMinimumHitTarget(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
                 .disabled(weekOffset == 0)

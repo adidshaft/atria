@@ -871,6 +871,7 @@ private struct AtriaConnectionGuideSheet: View {
                     }
                     .buttonStyle(.plain)
                     .frame(width: 36, height: 36)
+                    .atriaMinimumHitTarget(width: 36, height: 36)
                     .background(Color(uiColor: .secondarySystemBackground), in: Circle())
                     .accessibilityLabel("Close")
                 }

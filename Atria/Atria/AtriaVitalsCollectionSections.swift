@@ -4121,6 +4121,7 @@ struct AtriaHeartRateExplorer: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 36, height: 36)
+                .atriaMinimumHitTarget(width: 36, height: 36)
                 // One visual circle and one 44-point hit frame. Keeping the
                 // glass on the label avoids toolbar/button-style chrome being
                 // wrapped around a second pre-drawn circle.

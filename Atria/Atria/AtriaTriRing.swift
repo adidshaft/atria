@@ -795,7 +795,7 @@ struct AtriaTriRing: View, Equatable {
                     // "it's not mentioned what they are — Sleep, Recovery,
                     // Strain") — value and context alone weren't legible.
                     Text(metric.title)
-                        .font(.caption2.weight(.bold))
+                        .font(.footnote.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -815,8 +815,9 @@ struct AtriaTriRing: View, Equatable {
                                 .fill(stateTint)
                                 .frame(width: 5, height: 5)
                         }
+                        // Owner 2026-10-03: bigger numbers.
                         Text(metric.suppressesValue ? " " : metric.value)
-                            .font(.caption.weight(.bold))
+                            .font(.system(.title3, design: .rounded).weight(.bold))
                             .monospacedDigit()
                             .foregroundStyle(metric.tint)
                             .contentTransition(reduceMotion ? .identity : .numericText())
