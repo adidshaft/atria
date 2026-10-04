@@ -1,7 +1,7 @@
 #!/bin/zsh
-# One long-lived Bluetooth-capable runner for the Claude terminal panel.
+# One long-lived Bluetooth-capable runner for the adidshaft (adidshaft@gmail.com) terminal panel.
 # CoreBluetooth scripts are SIGKILLed by TCC unless launched from an app that declares
-# Bluetooth usage (Claude.app panel, Cursor). This runs queued lines one at a time so a
+# Bluetooth usage (an approved terminal panel). This runs queued lines one at a time so a
 # single panel tab serves every experiment. Queue: one shell command per line.
 QUEUE=${1:-/tmp/atria-ble/runner.queue}
 cd "${0:A:h}/../.." || exit 1

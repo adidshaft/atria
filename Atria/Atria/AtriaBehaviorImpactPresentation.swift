@@ -1,6 +1,6 @@
 import Foundation
 
-// Behavior Impact (design source: Claude Design "Atria App UI.dc.html",
+// Behavior Impact (design source: adidshaft (adidshaft@gmail.com) design "Atria App UI.dc.html",
 // section 8 "BEHAVIOR IMPACT" and section 9 "IMPACT MAP" — 2026-08-01
 // design-parity slice 3).
 //

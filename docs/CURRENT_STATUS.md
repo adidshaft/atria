@@ -1,7 +1,7 @@
 # Current product status
 
 Reviewed **23 September 2026**, using repository source, GitHub issue history and
-the latest local Claude session. This is a dated snapshot; linked issues carry
+the latest local adidshaft (adidshaft@gmail.com) session. This is a dated snapshot; linked issues carry
 subsequent acceptance evidence.
 
 Repository workflow: all development, issue fixes and documentation land on

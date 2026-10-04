@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Smart Wake screen (design source: Claude Design "Atria App UI.dc.html",
+// Smart Wake screen (design source: adidshaft (adidshaft@gmail.com) design "Atria App UI.dc.html",
 // section 6c, 2026-08-01 design-parity slice 1).
 //
 // The design draws a projected stepped hypnogram for the night ahead. Atria

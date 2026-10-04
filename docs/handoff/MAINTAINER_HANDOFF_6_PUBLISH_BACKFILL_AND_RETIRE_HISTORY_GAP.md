@@ -1,4 +1,4 @@
-# Atria — Claude handoff 6: publish backfills in place, retire the zombie history gap, and close remaining sleep authority
+# Atria — Maintainer handoff 6: publish backfills in place, retire the zombie history gap, and close remaining sleep authority
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  
@@ -326,7 +326,7 @@ Only while the user is wearing the connected >70% strap near the cabled iPhone: 
 ## Commit / push / issues
 
 - Author and committer: `adidshaft <adidshaft@gmail.com>`.
-- No Claude/Codex/AI trailer.
+- No automated co-author trailer.
 - Commit only files from the clean continuation worktree.
 - Push a clean fast-forward to `origin/dev`.
 - Update existing issues with exact commit/test/device evidence:

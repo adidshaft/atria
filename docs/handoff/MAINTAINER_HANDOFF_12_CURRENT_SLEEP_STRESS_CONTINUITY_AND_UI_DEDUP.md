@@ -1,4 +1,4 @@
-# Atria — Claude handoff 12: close motion acquisition, publish current sleep, repair Stress gaps, and remove duplicate UI
+# Atria — Maintainer handoff 12: close motion acquisition, publish current sleep, repair Stress gaps, and remove duplicate UI
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  

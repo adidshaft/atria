@@ -342,7 +342,7 @@ Also require:
 ## Checkpoint 9 — commit/push/issue hygiene
 
 1. Stage only the intended isolated hunks and tests; keep all unrelated user chart edits untouched.
-2. Author and committer must be `adidshaft <adidshaft@gmail.com>` with no Codex/Claude/co-author trailer.
+2. Author and committer must be `adidshaft <adidshaft@gmail.com>` with no automated co-author trailer.
 3. Push `dev` and require upstream parity `0 0`.
 4. Update issue #33 with:
    - exact new SHA/provenance;
@@ -364,6 +364,6 @@ Stop and report evidence before further edits if any of these occurs:
 - integrating a fix would overwrite any of the 14 user-owned dirty files;
 - TestFlight, Bluetooth toggling, forget/re-pair, or process termination would be required without explicit user authorization.
 
-## Compact prompt for Claude
+## Compact handoff prompt
 
-> Read `docs/handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` completely. Start from clean commit `422add5`; preserve the 14 dirty user chart files by implementing overlapping UI changes in an isolated worktree and integrating only narrow hunks. Fix live HR gap bridging first. Then coalesce Stress context spans, add a truthful sparse-series Trend grammar, and make saved sleep/day HR and Stress refresh from exact measured canonical/archive evidence. REM/Deep/SWS may appear only from qualified motion evidence that passes the existing integrity gate. Run the listed focused suites and visual fixtures. Exercise the normal motion compact-publication/receipt path without ad hoc BLE commands. Do not force a central rebuild, terminate the app, toggle Bluetooth, forget/re-pair, upload TestFlight, or close issue #33 without explicit authorization.
+> Read `docs/handoff/MAINTAINER_FINAL_ACCEPTANCE_CHECKLIST.md` completely. Start from clean commit `422add5`; preserve the 14 dirty user chart files by implementing overlapping UI changes in an isolated worktree and integrating only narrow hunks. Fix live HR gap bridging first. Then coalesce Stress context spans, add a truthful sparse-series Trend grammar, and make saved sleep/day HR and Stress refresh from exact measured canonical/archive evidence. REM/Deep/SWS may appear only from qualified motion evidence that passes the existing integrity gate. Run the listed focused suites and visual fixtures. Exercise the normal motion compact-publication/receipt path without ad hoc BLE commands. Do not force a central rebuild, terminate the app, toggle Bluetooth, forget/re-pair, upload TestFlight, or close issue #33 without explicit authorization.

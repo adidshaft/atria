@@ -1,4 +1,4 @@
-# Claude handoff — install and physically close `f68c14c9`
+# Maintainer handoff — install and physically close `f68c14c9`
 
 This supersedes the Git/source portions of the older `631fa766` handoff. Do
 not modify source unless a physical run demonstrates a concrete contradiction.

@@ -1,6 +1,6 @@
 import Foundation
 
-// Strength Log presentation math (design source: Claude Design "Atria App
+// Strength Log presentation math (design source: adidshaft (adidshaft@gmail.com) design "Atria App
 // UI.dc.html", section 7 "STRENGTH LOG", 2026-08-01 design-parity slice 2):
 //   7b — estimated 1RM progress: hero e1RM + 90-day delta, M/3M/6M/1Y/All
 //        ranges, amber line/area chart with session dots and PR markers

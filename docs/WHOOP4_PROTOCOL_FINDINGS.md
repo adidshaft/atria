@@ -4819,8 +4819,8 @@ iPhone Bluetooth is OFF.
   not refuted, because no bond happened.
 - **Tooling note:** CoreBluetooth scripts get SIGKILLed by TCC
   (`NSBluetoothAlwaysUsageDescription`) when the responsible app is Terminal
-  or the `claude` CLI. They run from the Claude desktop terminal panel
-  (Claude.app declares Bluetooth) or Cursor. Recorder restarted 11:15 under
+  or another Bluetooth-permitted terminal. They run from an approved terminal panel.
+  Recorder restarted 11:15 under
   `caffeinate -s -i` from that panel.
 
 ### 2026-09-23 — Re-read of Sep 15: a 3F/01 WWR activation DID precede the first `0x33`
@@ -4879,7 +4879,7 @@ mid-serve; listen and keep ACKing.
 
 #### 23 Sep 11:15–12:32 IST — clean on-wrist passive window (TX=0)
 
-The recorder was restarted under `caffeinate -s -i` from the Claude terminal
+The recorder was restarted under `caffeinate -s -i` from the approved terminal
 panel. It stayed on **one connection for 4629 s (~77 min)**, with no Mac sleep
 and no disconnect. 2A37: **4813** samples, max gap 1.6 s, zero `0000`
 readings (on-wrist throughout). 61080004 type `0x30`: 27. 61080007: 2.
@@ -5052,7 +5052,7 @@ read-verified, and the journal is clear. The strap config is identical to the
 13:04 read pass. **Untested:** whether any flag only applies after a reboot
 (`0x1D`), and values other than raw "1"/"2".
 
-Tooling: `tools/strap-mac/runner.sh` is one long-lived Claude-panel tab that
+Tooling: `tools/strap-mac/runner.sh` is one long-lived approved terminal tab that
 runs queued commands from `/tmp/atria-ble/runner.queue`. It works around the
 panel's six-tab limit and the TCC Bluetooth kill for non-panel shells.
 

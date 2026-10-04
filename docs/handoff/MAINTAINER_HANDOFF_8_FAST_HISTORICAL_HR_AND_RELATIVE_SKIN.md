@@ -1,4 +1,4 @@
-# Atria — Claude handoff 8: make historical HR fast, prove backlog convergence, and wire relative skin honestly
+# Atria — Maintainer handoff 8: make historical HR fast, prove backlog convergence, and wire relative skin honestly
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  
@@ -356,7 +356,7 @@ Rules:
 ## Explicitly out of scope
 
 - **More production R10/IMU activation changes.** App sequence is physically complete; protocol reference is missing.
-- **Official WHOOP protocol capture** unless the user separately authorizes/provides the official app/account and capture setup. Never open Passwords or ask Claude to infer credentials.
+- **Official WHOOP protocol capture** unless the user separately authorizes/provides the official app/account and capture setup. Never open Passwords or ask anyone to infer credentials.
 - **SpO₂ approximation or reverse-engineering.** No simultaneous independent oximeter corpus exists.
 - **SWS-HRV wiring.** There are no motion-validated stage nights; never use HR-only estimated stages to select an HR-derived HRV window.
 - **Further graph polish.** Handoff 7 is shipped and physically acceptable.
@@ -409,7 +409,7 @@ Prefer two commits:
 
 Add a third only if the 30-minute measurement proves and motivates one small drain-throughput correction.
 
-Author and committer: `adidshaft <adidshaft@gmail.com>`. No Claude/Codex/AI trailer. Push only to `origin/dev` as a clean fast-forward. No TestFlight.
+Author and committer: `adidshaft <adidshaft@gmail.com>`. No automated co-author trailer. Push only to `origin/dev` as a clean fast-forward. No TestFlight.
 
 Update:
 

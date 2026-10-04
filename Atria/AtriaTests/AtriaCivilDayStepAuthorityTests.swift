@@ -6,7 +6,7 @@ import XCTest
 final class AtriaCivilDayStepAuthorityTests: XCTestCase {
 
     private static let shardDirectory =
-        "/private/tmp/claude-501/-Users-amanpandey-projects-atria/"
+        "/private/tmp/adidshaft-501/-Users-amanpandey-projects-atria/"
         + "90cb7ac0-fd92-46ca-acf1-b136c273c440/scratchpad/devpull/"
         + "Library/Application Support/Atria/whoop4-motion-compact-v1"
     private static let strap = "C125C62E-C432-53E7-BD19-9761251B2C3E"

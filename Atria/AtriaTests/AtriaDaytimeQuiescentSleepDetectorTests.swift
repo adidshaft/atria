@@ -233,10 +233,10 @@ final class AtriaDaytimeQuiescentSleepDetectorTests: XCTestCase {
     // MARK: - Owner's real shards (skips when absent)
 
     func testTheRealTwentySeventhDetects() throws {
-        let dir = "/private/tmp/claude-501/-Users-amanpandey-projects-atria/"
+        let dir = "/private/tmp/adidshaft-501/-Users-amanpandey-projects-atria/"
             + "90cb7ac0-fd92-46ca-acf1-b136c273c440/scratchpad/pull7/"
             + "whoop4-motion-compact-v1"
-        let stress = "/private/tmp/claude-501/-Users-amanpandey-projects-atria/"
+        let stress = "/private/tmp/adidshaft-501/-Users-amanpandey-projects-atria/"
             + "90cb7ac0-fd92-46ca-acf1-b136c273c440/scratchpad/pull7/"
             + "stress-history-v3"
         guard FileManager.default.fileExists(atPath: dir),

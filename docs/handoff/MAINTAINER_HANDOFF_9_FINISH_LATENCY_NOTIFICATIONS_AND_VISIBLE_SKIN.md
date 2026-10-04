@@ -1,4 +1,4 @@
-# Atria — Claude handoff 9: finish cold HR latency, accelerate proven catch-up, verify notifications, and expose relative-skin truth
+# Atria — Maintainer handoff 9: finish cold HR latency, accelerate proven catch-up, verify notifications, and expose relative-skin truth
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  
@@ -45,7 +45,7 @@ HEAD...origin/dev = 0 0
 
 If that worktree is unavailable or dirty, create a fresh detached worktree from `origin/dev`. This handoff file is coordination material; do not add it to an app commit.
 
-The old `/private/tmp/atria-notifications-wt` worktree and `claude/notifications-2026-08-13` branch are historical inputs only. Their commit was already cherry-picked and hardened on the release branch. Do not merge, cherry-pick, rebase, push, or delete that branch/worktree in this pass.
+The old `/private/tmp/atria-notifications-wt` worktree and its archived notifications branch are historical inputs only. Their commit was already cherry-picked and hardened on the release branch. Do not merge, cherry-pick, rebase, push, or delete that branch/worktree in this pass.
 
 ## Verified Handoff-8 state — do not repeat
 
@@ -535,7 +535,7 @@ Author and committer must both be:
 adidshaft <adidshaft@gmail.com>
 ```
 
-No Claude/Codex/AI trailer. Push only as a clean fast-forward from `0bc84fdd` to `origin/dev`. Do not push `claude/notifications-2026-08-13` separately. No TestFlight.
+No automated co-author trailer. Push only as a clean fast-forward from `0bc84fdd` to `origin/dev`. Do not push the archived notifications branch separately. No TestFlight.
 
 ## GitHub issue hygiene
 
@@ -547,7 +547,7 @@ No Claude/Codex/AI trailer. Push only as a clean fast-forward from `0bc84fdd` to
 
 Do not close issues just because a source test passed.
 
-## Final report required from Claude
+## Final report required from the maintainer
 
 Return one concise evidence table plus exact artifact paths:
 

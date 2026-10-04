@@ -51,19 +51,19 @@ validation are different levels of evidence.
 | [WHOOP_REPLACEMENT_ASSESSMENT.md](WHOOP_REPLACEMENT_ASSESSMENT.md) | What Atria does and does not replace |
 | [GOAL_strap_steps_drain.md](GOAL_strap_steps_drain.md) | Historical steps-drain goal and constraints; the current Mac/iPhone split is tracked in current status — see [#21](https://github.com/adidshaft/atria/issues/21) |
 | [UI_DECLUTTER_PLAN_2026-08-20.md](UI_DECLUTTER_PLAN_2026-08-20.md) | UI reduction passes |
-| [CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md](handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md) | Release acceptance checklist |
+| [MAINTAINER_FINAL_ACCEPTANCE_CHECKLIST.md](handoff/MAINTAINER_FINAL_ACCEPTANCE_CHECKLIST.md) | Release acceptance checklist |
 
 ## Session handoffs — historical
 
-Everything under [`handoff/`](handoff/), including `CLAUDE_HANDOFF_6` … `CLAUDE_HANDOFF_13`, is point-in-time working records. They are kept because
+Everything under [`handoff/`](handoff/), including `MAINTAINER_HANDOFF_6` … `MAINTAINER_HANDOFF_13`, is point-in-time working records. They are kept because
 issue threads and commit messages cite them by path, and because they document
 *why* decisions were made — but they are **snapshots, not current truth**. When a
 handoff and the code disagree, the code is right.
 
 The most recent are
-[13 (motion + shifted sleep)](handoff/CLAUDE_HANDOFF_13_MOTION_AND_SHIFTED_SLEEP_CLOSURE.md)
+[13 (motion + shifted sleep)](handoff/MAINTAINER_HANDOFF_13_MOTION_AND_SHIFTED_SLEEP_CLOSURE.md)
 and
-[12 (sleep, stress continuity, UI dedup)](handoff/CLAUDE_HANDOFF_12_CURRENT_SLEEP_STRESS_CONTINUITY_AND_UI_DEDUP.md).
+[12 (sleep, stress continuity, UI dedup)](handoff/MAINTAINER_HANDOFF_12_CURRENT_SLEEP_STRESS_CONTINUITY_AND_UI_DEDUP.md).
 
 ---
 

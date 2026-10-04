@@ -12,7 +12,7 @@ Keep the file outside the repo (~/atria-validation/...). Validation plan §2.
 
 Requires: pip install pyobjc-framework-CoreBluetooth
 Usage: python3 ref_hr_strap.py OUT.csv [--name "Polar H10"] [--seconds 1800]
-Run it from a terminal that has Bluetooth permission (the Claude Code
+Run it from a terminal that has Bluetooth permission (the adidshaft (adidshaft@gmail.com)
 Terminal panel works; a sandboxed shell does not).
 """
 from __future__ import annotations

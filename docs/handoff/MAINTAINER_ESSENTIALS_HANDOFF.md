@@ -1,6 +1,6 @@
-# Atria WHOOP essentials handoff for Claude
+# Atria WHOOP essentials handoff for the maintainer
 
-> **Superseded after implementation:** checkpoints in this document were implemented in `b5e0067f`. Use `docs/handoff/CLAUDE_FINAL_ACCEPTANCE_CHECKLIST.md` for the remaining work.
+> **Superseded after implementation:** checkpoints in this document were implemented in `b5e0067f`. Use `docs/handoff/MAINTAINER_FINAL_ACCEPTANCE_CHECKLIST.md` for the remaining work.
 
 Date: 2026-08-10  
 Repository: `<repo-root>`  
@@ -394,6 +394,6 @@ When all required checkpoints are green:
 - [ ] Focused commit is pushed and issue #33 is updated.
 - [ ] No TestFlight upload is performed.
 
-## Compact prompt to give Claude
+## Compact handoff prompt
 
-> Read `docs/handoff/CLAUDE_ESSENTIALS_HANDOFF.md` completely. Implement only Checkpoints 1 and 2, preserving the unrelated dirty chart files and the existing BLE fence semantics. Run only the focused Checkpoint 3 tests. Create an exact clean candidate and perform the short Checkpoint 5 device smoke. If green, push and update issue #33; do not upload TestFlight. Stop on any PID turnover or new crash and report the exact evidence instead of broadening scope.
+> Read `docs/handoff/MAINTAINER_ESSENTIALS_HANDOFF.md` completely. Implement only Checkpoints 1 and 2, preserving the unrelated dirty chart files and the existing BLE fence semantics. Run only the focused Checkpoint 3 tests. Create an exact clean candidate and perform the short Checkpoint 5 device smoke. If green, push and update issue #33; do not upload TestFlight. Stop on any PID turnover or new crash and report the exact evidence instead of broadening scope.

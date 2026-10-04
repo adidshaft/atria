@@ -1252,7 +1252,7 @@ final class AtriaHistoricalArchiveDurableStore {
     /// The guard belongs here, at the write, not only in the callers — losing
     /// user history to a future wiring mistake is not an acceptable failure
     /// mode. (Compression readiness audit, 2026-08-19; see
-    /// `.claude/compression-readiness-audit.md`.)
+    /// `.adidshaft/compression-readiness-audit.md`.)
     @discardableResult
     static func repairTornJSONLTail(at url: URL) throws -> TailRepair {
         guard url.pathExtension

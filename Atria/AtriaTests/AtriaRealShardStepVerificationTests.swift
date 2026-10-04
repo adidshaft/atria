@@ -14,7 +14,7 @@ import XCTest
 final class AtriaRealShardStepVerificationTests: XCTestCase {
 
     private static let pullDirectory =
-        "/private/tmp/claude-501/-Users-amanpandey-projects-atria/"
+        "/private/tmp/adidshaft-501/-Users-amanpandey-projects-atria/"
         + "90cb7ac0-fd92-46ca-acf1-b136c273c440/scratchpad/pull"
     private static let strap = "C125C62E-C432-53E7-BD19-9761251B2C3E"
 

@@ -1,4 +1,4 @@
-# Claude handoff — finish the installed `631fa766` acceptance only
+# Maintainer handoff — finish the installed `631fa766` acceptance only
 
 ## Scope
 
@@ -57,7 +57,7 @@ Build/install facts:
 
 The install harness intentionally ended its console process with SIGINT after
 45 seconds and then exited 3 because quiet logging yielded zero `ATRIADBG`
-lines. This happened **after** successful build/install/provenance. Codex then
+lines. This happened **after** successful build/install/provenance. The maintainer then
 launched the installed app normally without debug arguments.
 
 ## Completed physical checks
@@ -103,12 +103,12 @@ This exact-build screenshot proves:
 
 ## Why the final check stopped
 
-Codex used the DEBUG-only `--atria-ui-screen vitals` route to prepare the Vitals
+The maintainer used the DEBUG-only `--atria-ui-screen vitals` route to prepare the Vitals
 screen. The phone auto-locked before capture, so the direct device screenshot
 was correctly black. iPhone Mirroring then reported the Mac was locked. Do not
 attempt any credential workaround; the user must unlock the Mac manually.
 
-Codex restored a final normal no-argument launch. The summary pull showed PID
+The maintainer restored a final normal no-argument launch. The summary pull showed PID
 `20561`, provenance/source PASS, connected/notifying/GATT true, and a 54.8-second
 surface age labelled `warming`. A later journal audit established that this was
 **not** a startup deadlock: PID `20561` had ingested dense 2A37 through 22:06:20
@@ -124,7 +124,7 @@ beyond 120 seconds without bounded repair or a disconnect callback.
 ## Only remaining checklist
 
 1. User manually unlocks the Mac and reconnects/unlocks the cabled iPhone. Never
-   access Passwords or ask Claude/Codex to bypass the lock.
+   access Passwords or ask anyone to bypass the lock.
 2. Confirm:
    `xcrun devicectl list devices | rg <your-device-udid>`
    reports `available`.

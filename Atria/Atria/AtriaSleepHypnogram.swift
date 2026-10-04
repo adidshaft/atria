@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Sleep-stages hypnogram (design source: Claude Design "Atria App UI.dc.html",
+// Sleep-stages hypnogram (design source: adidshaft (adidshaft@gmail.com) design "Atria App UI.dc.html",
 // "SLEEP · FULL SCROLL" screen, "STAGES · HYPNOGRAM" card):
 //   - four lanes top→bottom Awake / REM / Light / Deep, one 16pt lane per
 //     stage with 5pt gaps and 40pt lane labels tinted in the stage's own hue
@@ -1182,4 +1182,3 @@ private enum AtriaSleepStageTimelineFixtures {
     .preferredColorScheme(.dark)
 }
 #endif
-

@@ -126,7 +126,7 @@ Required screenshots:
 - `activity-heart-rate.png`
 - `activity-stress.png`
 
-## Claude follow-up — presentation only
+## adidshaft (adidshaft@gmail.com) follow-up — presentation only
 
 Only start this after the exact `99809085` physical gate above is recorded. Work from a fresh detached clean worktree and preserve the 14 user-owned chart edits in the main worktree.
 
@@ -137,4 +137,3 @@ Only start this after the exact `99809085` physical gate above is recorded. Work
 5. Missing motion remains fail-closed: `Stages unavailable` / `Motion data required`.
 6. Do not modify BLE, history preemption, step authority, Recovery/Strain scoring, stage inference, raw stage semantics, or physiological-day ownership.
 7. Require focused tests, full serial suite, parse/diff checks, physical screenshots, `adidshaft` authorship, and no TestFlight.
-

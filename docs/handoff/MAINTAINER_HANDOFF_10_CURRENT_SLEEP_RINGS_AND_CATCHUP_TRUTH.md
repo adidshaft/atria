@@ -1,4 +1,4 @@
-# Atria — Claude handoff 10: publish current sleep from durable live evidence, make Today date-honest, and finish the sparse charts
+# Atria — Maintainer handoff 10: publish current sleep from durable live evidence, make Today date-honest, and finish the sparse charts
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  

@@ -1,4 +1,4 @@
-# Atria — Claude handoff 11: surface current sleep for review when compact motion is incomplete
+# Atria — Maintainer handoff 11: surface current sleep for review when compact motion is incomplete
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  

@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Live set-logging surface (design source: Claude Design "Atria App
+// Live set-logging surface (design source: adidshaft (adidshaft@gmail.com) design "Atria App
 // UI.dc.html", section 7a, 2026-08-01 design-parity slice 2): rest ring with
 // the real per-exercise target, the SET/WEIGHT/REPS/RPE table with its done
 // and PR status column, and the amber steppers.

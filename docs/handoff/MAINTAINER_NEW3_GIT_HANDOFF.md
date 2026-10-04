@@ -1,14 +1,14 @@
-# Codex handoff — correct the NEW-3 commit that swept in user WIP
+# Maintainer handoff — correct the NEW-3 commit that swept in user WIP
 
 **Branch:** `dev`
-**Author/committer for every commit:** `adidshaft <adidshaft@gmail.com>` — **no** `Co-Authored-By` / Claude / Codex trailer.
+**Author/committer for every commit:** `adidshaft <adidshaft@gmail.com>` — no automated co-author trailer.
 **Do NOT** run TestFlight, forced rebuilds, process kills, or Bluetooth mode changes.
 
 ---
 
 ## TL;DR
 
-I (Claude) implemented **NEW-3** (smooth brief telemetry hiccups in the live HR + Stress traces) and, in the commit step, used `git commit --only <paths>` — which commits the **working-tree** content of the named paths, not the staged index. For `AtriaVitalsCollectionSections.swift` the working tree held **my 2 hunks PLUS the user's uncommitted WIP**, so the user's WIP was swept into the commit and pushed. The other 13 dirty files were untouched.
+adidshaft (adidshaft@gmail.com) implemented **NEW-3** (smooth brief telemetry hiccups in the live HR + Stress traces) and, in the commit step, used `git commit --only <paths>` — which commits the **working-tree** content of the named paths, not the staged index. For `AtriaVitalsCollectionSections.swift` the working tree held **my 2 hunks PLUS the user's uncommitted WIP**, so the user's WIP was swept into the commit and pushed. The other 13 dirty files were untouched.
 
 - **Remote HEAD (BAD, pushed):** `8ad9993903a3445538c6a56fb17adc0712dbecca`
   Contains my correct NEW-3 change **and** the user's 2 Vitals WIP hunks (should not be there).
@@ -16,7 +16,7 @@ I (Claude) implemented **NEW-3** (smooth brief telemetry hiccups in the live HR 
   Contains **only** the NEW-3 change; the user's Vitals WIP is back as an **uncommitted** working-tree change.
 - **Base (pre-NEW-3 tip):** `cf06696cfa01781e1a309e157bf124137e362a3d`
 
-The user asked that **you (Codex) handle the git correction** rather than have me force-push. Two clean recipes below. Recipe A (rewrite + force-push) is recommended and produces identical history to what should have happened.
+The user asked that **you handle the git correction** rather than have me force-push. Two clean recipes below. Recipe A (rewrite + force-push) is recommended and produces identical history to what should have happened.
 
 > ⚠️ The local checkout is currently at `18181f46` (the fixed commit) with the user's Vitals WIP uncommitted on top. Local and remote have **diverged by 1 commit each**. **Do not `git pull`/merge** — it would knit the bad and good commits together. Pick a recipe below.
 

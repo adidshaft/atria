@@ -1,4 +1,4 @@
-# Atria — Claude handoff 13: close live motion and surface the shifted sleep
+# Atria — Maintainer handoff 13: close live motion and surface the shifted sleep
 
 Date: 2026-08-13 IST
 Repository: `adidshaft/atria`
@@ -46,7 +46,7 @@ Timebox: **6 hours**, maximum **three implementation commits**. CP0 gets at most
 - Do not touch the user's dirty checkout at `<repo-root>`.
 - Preserve the evidence corpus byte-for-byte; use guarded temporary symlinks only if an existing test requires one.
 - Author and committer: `adidshaft <adidshaft@gmail.com>`.
-- No AI/Codex/Claude trailers.
+- No automated co-author trailers.
 - Fetch and prove the remote tip has not moved before each push.
 - Push only a clean fast-forward to `origin/dev`.
 - No TestFlight.

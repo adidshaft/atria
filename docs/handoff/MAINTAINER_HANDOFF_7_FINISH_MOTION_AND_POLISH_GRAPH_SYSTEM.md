@@ -1,4 +1,4 @@
-# Atria — Claude handoff 7: finish protected-v9 motion and make the graph system readable
+# Atria — Maintainer handoff 7: finish protected-v9 motion and make the graph system readable
 
 Date: 2026-08-13 (Asia/Kolkata)  
 Release branch: `dev`  
@@ -374,7 +374,7 @@ Use small commits, preferably:
 2. `Polish the shared chart and sleep-stage presentation`
 3. A separate optional relative-skin wiring commit, only if completed.
 
-Author and committer must be `adidshaft <adidshaft@gmail.com>` with no Claude/Codex/AI trailer. Push only to `origin/dev`, clean fast-forward, and report exact hashes/parity. No TestFlight.
+Author and committer must be `adidshaft <adidshaft@gmail.com>` with no automated co-author trailer. Push only to `origin/dev`, clean fast-forward, and report exact hashes/parity. No TestFlight.
 
 Update existing issues with exact evidence:
 

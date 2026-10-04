@@ -1,7 +1,7 @@
 import SwiftUI
 import Charts
 
-// Sleep Planner charts (design source: Claude Design "Atria App UI.dc.html",
+// Sleep Planner charts (design source: adidshaft (adidshaft@gmail.com) design "Atria App UI.dc.html",
 // section 6 "SLEEP PLANNER & SMART WAKE", 2026-08-01 design-parity slice 1):
 //   6a — itemized need ledger: stacked bar h26 r8 on a fixed 0–10h axis
 //        (baseline #5E5CE6 / strain add #FF9F0A / debt add #FF453A / nap

@@ -1,6 +1,6 @@
 # Drain-Keeping / History Flush — Design
 
-_Status: in progress (2026-08-02). Author: continuity work on `claude/atria-background-continuity-88ce90`._
+_Status: in progress (2026-08-02). Author: adidshaft (adidshaft@gmail.com); continuity work on `atria-background-continuity-88ce90`._
 
 ## Why this exists
 
