@@ -266,10 +266,23 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         // Lower tiles live in lazy grids and only exist once scrolled to.
         var swipes = 0
         while (!control.waitForExistence(timeout: swipes == 0 ? 4 : 1) || !control.isHittable), swipes < 4 {
-            // Scroll from below the charts: a swipe through a chart scrubs it.
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
-                .press(forDuration: 0.05,
-                       thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+            if identifier.hasPrefix("atria.vitals."), control.exists {
+                // Vitals' live chart captures center drags for inspection.
+                // Once a metric is mounted, reveal it using the padding rail.
+                let scroll = app.scrollViews.allElementsBoundByIndex.first {
+                    $0.isHittable && $0.frame.width > app.windows.firstMatch.frame.width * 0.8
+                }
+                XCTAssertNotNil(scroll, "Missing active dashboard scroll view")
+                guard let scroll else { return }
+                scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.985, dy: 0.70))
+                    .press(forDuration: 0.05,
+                           thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.985, dy: 0.35)))
+            } else {
+                // Retain the existing input until lazy metric rows mount.
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
+                    .press(forDuration: 0.05,
+                           thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+            }
             swipes += 1
         }
         XCTAssertTrue(control.exists, "Missing control \(identifier)")

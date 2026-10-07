@@ -3,17 +3,31 @@
 Updated for the October 6 rejection of 1.0 (54), tracked in #72. Paste these
 notes only with the new tested build; they do not describe rejected build 54.
 
-Status on October 7: App Review clarification sent; resubmission remains
-pending the private physical-iPhone GPS recording and replacement-build
-verification. Builds 95 and 96 succeeded on GA Xcode Cloud and are available
-to the existing internal TestFlight group. 290 focused unit/regression tests
-passed. The Steps/Insights tap defect was traced to sparse Button-label hit
-regions, not missing routes. Both card labels now define a full interaction
-shape; editing/reordering and metric formulas are unchanged. A freshly built
-native-iPhone Release functional test passes the complete demo navigation and
-immediate erase-to-setup workflow. Functional UI tests use `-Onone`; the Cloud
-distribution archive retains optimized Release settings. Follow #72 and #73
-for the latest remaining-device checks and replacement-build availability.
+Status on October 7: App Review clarification sent; no replacement review
+submission has been made. GA Xcode Cloud build **99**, from app commit
+`1c8b5f05`, passed archive/App Store export and Apple processing. It is
+**Testing** in the existing internal TestFlight group and is selected in the
+saved App Store draft. The draft explicitly marks the new GPS video pending.
+
+Earlier same-day 290 focused unit/regression tests passed. The Steps/Insights
+tap defect was traced to sparse Button-label hit regions, not missing routes.
+Both labels now define a full interaction shape; editing/reordering and
+metric formulas are unchanged. The current app passed all five native-iPhone
+demo checks and four iPad checks. The remaining complete iPad workflow was
+then verified with corrected real scrolling input: a center drag over the
+Vitals chart scrubs its data, while a padding-rail drag reveals the mounted
+respiratory card. The final test-only helper preserves the old input until
+lazy rows mount; it does not bypass state or weaken assertions. Fresh focused
+complete workflow reruns passed on iPad (137.353s) and iPhone (134.597s),
+including every tab, metric detail and immediate erase-to-setup.
+
+Functional UI tests use Release with `-Onone`; the Cloud distribution archive
+retains optimized Release settings. These simulator checks do not establish
+physical pairing or background-GPS continuity. Record those on TestFlight 99
+and keep the video private to App Review. Apple's medical/IP documentation
+requests have not been waived. Follow #72/#73 for remaining physical proof;
+ordinary vertical scrolling over chart plots remains UI polish tracked in
+#48, not a production gesture change in this release.
 
 ## How to review without hardware
 
