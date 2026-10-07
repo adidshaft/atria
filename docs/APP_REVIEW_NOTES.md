@@ -19,10 +19,13 @@ physical Apple device pairing with and using a WHOOP 4.0 strap.
 
 ## October 6 review changes
 
-- **2.5.4:** removed `location` from `UIBackgroundModes`. Outdoor workout
-  route capture is now foreground-only and pauses when Atria is not active.
-  Workout recording and the permitted Bluetooth background mode remain
-  separate from GPS.
+- **2.5.4:** background GPS is retained for active outdoor workouts. Open
+  Activity → Start workout, choose Walking, Running, Hiking or Cycling, grant
+  Location access, and start. Route, distance, pace and elevation continue
+  with the screen locked or another app open until the workout is paused or
+  finished. This is user-initiated workout recording, not general tracking.
+  Apple requested a physical-device recording demonstrating this feature;
+  the earlier pairing video does not establish the new GPS workflow.
 - **2.5.1:** Settings now identifies **Apple Health (HealthKit)** as its own
   destination. It explains optional Health reads and writes before permission
   is requested. The explanation is visible in demo mode; authorization and

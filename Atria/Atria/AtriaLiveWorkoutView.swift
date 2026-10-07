@@ -1764,6 +1764,18 @@ struct AtriaWorkoutStartSheet: View {
                         }
                     }
 
+                    if configuration.activityType.supportsRouteRecording {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Outdoor route · GPS", systemImage: "location.fill")
+                                .font(.headline)
+                            Text("Records your route, distance, pace, and elevation during this workout, including with the screen locked or while you use another app. Allow Location when prompted. Pause or end the workout to stop route recording.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("atria.workout.background-gps-disclosure")
+                    }
+
                     workoutTargetsHeader
                     strainTargetCard
                     heartRateTargetCard
@@ -2617,11 +2629,11 @@ struct AtriaLiveWorkoutView: View {
             VStack(spacing: 10) {
                 header
                 AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
-                Text("GPS records while Atria is open. Locking the screen or switching apps pauses GPS; your workout continues.")
+                Text("Outdoor GPS continues with the screen locked or while you use another app. Pause or end this workout to stop route recording.")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.8))
                     .multilineTextAlignment(.center)
-                    .accessibilityIdentifier("atria.workout.foreground-gps-note")
+                    .accessibilityIdentifier("atria.workout.background-gps-note")
                 Spacer(minLength: 24)
                 AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,
                                                  pulseStore: pulseStore,

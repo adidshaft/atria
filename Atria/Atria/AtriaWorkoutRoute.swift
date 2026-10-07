@@ -1,6 +1,5 @@
 @preconcurrency import CoreLocation
 import Foundation
-import UIKit
 
 struct AtriaWorkoutRoute: Codable, Identifiable, Equatable, Sendable {
     struct Point: Codable, Equatable, Sendable {
@@ -274,8 +273,6 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     private var lastCheckpointAt: Date?
     private var coverageStartedAt: Date?
     private var needsNewRouteSegment = true
-    private var applicationIsForeground = UIApplication.shared.applicationState != .background
-    private var foregroundRecordingStartedAt: Date?
     private var lastEnqueuedCheckpointPointCount = 0
     private var checkpointNeedsFullRewrite = true
     private var checkpointRestoreTask: Task<Void, Never>?
@@ -293,47 +290,9 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         manager.distanceFilter = 3
         manager.activityType = .fitness
         manager.pausesLocationUpdatesAutomatically = false
-        // This release records GPS only while Atria is open. Keeping this
-        // false also avoids Core Location's assertion without a location
-        // UIBackgroundModes entitlement.
-        manager.allowsBackgroundLocationUpdates = false
-        manager.showsBackgroundLocationIndicator = false
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(applicationDidEnterBackground),
-                                               name: UIApplication.didEnterBackgroundNotification,
-                                               object: nil)
-        NotificationCenter.default.addObserver(self,
-                                               selector: #selector(applicationDidBecomeActive),
-                                               name: UIApplication.didBecomeActiveNotification,
-                                               object: nil)
+        manager.allowsBackgroundLocationUpdates = true
+        manager.showsBackgroundLocationIndicator = true
         snapshot.authorizationStatus = manager.authorizationStatus
-    }
-
-    @objc private func applicationDidEnterBackground() {
-        setApplicationForeground(false)
-    }
-
-    @objc private func applicationDidBecomeActive() {
-        setApplicationForeground(true)
-    }
-
-    /// A GPS suspension is not a workout pause: heart-rate recording and the
-    /// durable workout intent continue. The next foreground fix starts a new
-    /// segment so distance never includes an unobserved straight-line gap.
-    func setApplicationForeground(_ foreground: Bool) {
-        guard applicationIsForeground != foreground else { return }
-        applicationIsForeground = foreground
-        if foreground {
-            guard checkpointRestoreTask == nil else { return }
-            beginLocationAccessIfAvailable()
-        } else {
-            needsNewRouteSegment = true
-            foregroundRecordingStartedAt = nil
-            manager.stopUpdatingLocation()
-            snapshot.isRecording = false
-            snapshot.currentSpeedMetersPerSecond = nil
-            flushCheckpoint(reason: "foreground_gps_suspended")
-        }
     }
 
     func start(activityType: AtriaWorkoutActivityType, startedAt: Date) {
@@ -513,16 +472,18 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard applicationIsForeground, snapshot.isRecording, !snapshot.isPaused,
-              let startedAt else { return }
+        guard snapshot.isRecording, !snapshot.isPaused, let startedAt else { return }
         let now = Date()
         for location in locations {
+            // Core Location may batch valid fixes while the app is locked or in
+            // another app. Judge them against the workout window, not delivery
+            // time; the old 15-second wall-clock gate discarded those batches
+            // and produced straight-line gaps in otherwise valid routes.
             guard Self.shouldAcceptRouteLocation(
                 horizontalAccuracy: location.horizontalAccuracy,
                 timestamp: location.timestamp,
                 workoutStartedAt: startedAt,
-                deliveredAt: now,
-                foregroundRecordingStartedAt: foregroundRecordingStartedAt
+                deliveredAt: now
             ) else { continue }
             // Speed belongs to the accepted GPS fix, not to a distance segment.
             // In particular, a standing user can produce an accurate zero-speed
@@ -584,11 +545,10 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     }
 
     private func beginUpdatesIfNeeded() {
-        guard applicationIsForeground, !AtriaAppReviewDemo.isActive,
+        guard !AtriaAppReviewDemo.isActive,
               activeType != nil, pauseStartedAt == nil, !snapshot.isRecording else { return }
         snapshot.lastError = nil
         snapshot.isRecording = true
-        foregroundRecordingStartedAt = Date()
         manager.startUpdatingLocation()
     }
 
@@ -596,14 +556,12 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
         horizontalAccuracy: CLLocationAccuracy,
         timestamp: Date,
         workoutStartedAt: Date,
-        deliveredAt: Date,
-        foregroundRecordingStartedAt: Date? = nil
+        deliveredAt: Date
     ) -> Bool {
         horizontalAccuracy >= 0
             && horizontalAccuracy <= 35
             && timestamp >= workoutStartedAt.addingTimeInterval(-5)
             && timestamp <= deliveredAt.addingTimeInterval(5)
-            && (foregroundRecordingStartedAt.map { timestamp >= $0 } ?? true)
     }
 
     nonisolated static func shouldAccumulateRouteDelta(distance: CLLocationDistance,
@@ -763,8 +721,7 @@ final class AtriaWorkoutRouteRecorder: NSObject, ObservableObject, @preconcurren
     }
 
     private func beginLocationAccessIfAvailable() {
-        guard applicationIsForeground, !AtriaAppReviewDemo.isActive,
-              activeType != nil, pauseStartedAt == nil else { return }
+        guard !AtriaAppReviewDemo.isActive, activeType != nil, pauseStartedAt == nil else { return }
         guard manager.authorizationStatus == .authorizedAlways
                 || manager.authorizationStatus == .authorizedWhenInUse else { return }
         requestTemporaryFullAccuracyIfNeeded()
