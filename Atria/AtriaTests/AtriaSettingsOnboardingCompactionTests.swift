@@ -7,21 +7,21 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         return try String(contentsOf: appURL.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testSettingsRootIsFiveRowNavigationHubInsteadOfExpandableWall() throws {
+    func testSettingsRootIsNavigationHubWithVisibleAppleHealthInsteadOfExpandableWall() throws {
         let source = try source("AtriaSettingsView.swift")
         let start = try XCTUnwrap(source.range(of: "private var settingsHub"))
         let end = try XCTUnwrap(source.range(of: "private var personalSettingsPage",
                                               range: start.upperBound..<source.endIndex))
         let hub = String(source[start.lowerBound..<end.lowerBound])
 
-        for title in ["Personal", "Strap", "Alerts", "Data", "Privacy & About"] {
+        for title in ["Personal", "Apple Health", "Strap", "Alerts", "Data", "Privacy & About"] {
             XCTAssertTrue(source.contains("\"\(title)\""))
         }
         XCTAssertTrue(hub.contains("ForEach(visibleDestinations)"))
         XCTAssertEqual(hub.components(separatedBy: "NavigationLink(value:").count - 1, 1,
                        "One reused link type prevents the on-device Swift metadata stack overflow")
         XCTAssertTrue(hub.contains("destination != .developer"),
-                      "The sixth destination remains developer-only")
+                      "The developer destination remains developer-only")
         XCTAssertTrue(source.contains(".navigationDestination(for: Destination.self)"),
                       "The first Settings frame must not construct every destination")
         XCTAssertTrue(source.contains("destinationPage(for: destination)"))
@@ -51,11 +51,11 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
                        "The first-frame navigation closure must keep a shallow concrete return type")
         for page in [
             "personalSettingsPage", "strapSettingsPage", "alertsSettingsPage",
-            "dataSettingsPage", "privacySettingsPage", "developerSettingsPage"
+            "dataSettingsPage", "appleHealthSettingsPage", "privacySettingsPage", "developerSettingsPage"
         ] {
             XCTAssertTrue(factory.contains("AnyView(\(page))"), "Missing lazy erased page: \(page)")
         }
-        XCTAssertEqual(factory.components(separatedBy: "AnyView(").count - 1, 6)
+        XCTAssertEqual(factory.components(separatedBy: "AnyView(").count - 1, 7)
     }
 
     func testSettingsDestinationsPreserveEveryFunctionalSection() throws {

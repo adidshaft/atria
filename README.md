@@ -5,8 +5,8 @@
 <h1 align="center">Atria</h1>
 
 <p align="center">
-  <b>Your WHOOP strap. Your iPhone. No subscription.</b><br>
-  An open-source iOS app that reads a WHOOP 4.0 over Bluetooth and keeps every number on your phone.
+  <b>Your unused strap. Your iPhone. Your choice.</b><br>
+  An independent, open-source fitness app for a WHOOP 4.0 you already own, with local processing on your phone.
 </p>
 
 <p align="center">
@@ -27,13 +27,15 @@
 
 ---
 
-Got a WHOOP 4.0 in a drawer? Atria turns it back into a working wearable:
+Got an unused WHOOP 4.0 in a drawer? Atria is an optional way to explore its signals:
 live heart rate, sleep, recovery, strain, steps and more, computed on your
 iPhone. No WHOOP account, no cloud, no subscription.
 
-> Independent project, not affiliated with WHOOP. It talks only to your own
-> strap over Bluetooth, does not touch WHOOP's paid cloud, and is not medical
-> software.
+> Independent project, not affiliated with or endorsed by WHOOP. Use with
+> hardware you own is voluntary; Atria does not require replacing the official
+> app or services and does not claim to be better than them. Strap data is
+> processed locally and the developer cannot remotely access it. Atria provides
+> fitness estimates; seek a doctor's advice before making medical decisions.
 
 <p align="center">
   <img src="assets/screenshots/atria-today-overview.png" alt="Today" width="190">

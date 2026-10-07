@@ -90,8 +90,30 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertTrue(explore.waitForExistence(timeout: 20), "Exit should return to first-run setup")
     }
 
+    func testSampleDataIsImmediatelyAccessibleAndAvailableFromUnpairedSetup() {
+        let app = XCUIApplication()
+        let explore = launchAtFirstRunSetup(app)
+        XCTAssertTrue(explore.isHittable, "Demo access must be visible without scrolling, including on iPad")
+        XCTAssertTrue(app.staticTexts["Demo mode · No hardware or sign-in required"].exists)
+        XCTAssertFalse(app.alerts.firstMatch.exists, "First launch must not block demo with a permission alert")
+
+        app.buttons["atria.onboarding.primary"].tap()
+        XCTAssertTrue(explore.waitForExistence(timeout: 5))
+        XCTAssertTrue(explore.isHittable, "Unpaired strap setup must keep a hardware-free exit into demo")
+        explore.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["atria.demo.sample-data-badge"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.tabBars.buttons["Vitals"].waitForExistence(timeout: 10))
+        app.tabBars.buttons["Vitals"].tap()
+        XCTAssertFalse(app.staticTexts["Rhythm"].exists, "Standard demo must not expose clinical rhythm research")
+        XCTAssertFalse(app.staticTexts["Irregular rhythm"].exists)
+        let erase = app.buttons["atria.demo.erase-and-return"]
+        if !erase.isHittable { app.tabBars.buttons["Today"].tap() }
+        erase.tap()
+        XCTAssertTrue(explore.waitForExistence(timeout: 20))
+    }
+
     /// App Review: sample data must never reach HealthKit. From a fresh
-    /// install, enter sample data, confirm the Settings Health controls cannot
+    /// install, enter sample data, confirm Settings > Apple Health cannot
     /// authorize, visit every tab, then exit back to onboarding.
     func testFreshInstallSampleDataCannotAuthorizeHealthKit() {
         let app = XCUIApplication()
@@ -103,9 +125,11 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         let settings = app.buttons["atria.home.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 8), "Missing Settings button")
         settings.tap()
-        let data = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Data'")).firstMatch
-        XCTAssertTrue(data.waitForExistence(timeout: 8), "Missing Settings > Data")
-        data.tap()
+        let health = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Apple Health'")).firstMatch
+        XCTAssertTrue(health.waitForExistence(timeout: 8), "Missing Settings > Apple Health")
+        health.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["atria.settings.health-disclosure"].waitForExistence(timeout: 8),
+                      "The Apple Health destination must identify HealthKit integration")
 
         let nutrition = app.switches["atria.settings.health-nutrition"]
         var swipes = 0
@@ -130,7 +154,7 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Turn On All"].exists)
         XCTAssertEqual(nutrition.value as? String, "0")
 
-        // Back from Data to the Settings hub, where Close lives.
+        // Back from Apple Health to the Settings hub, where Close lives.
         let back = app.navigationBars.buttons.element(boundBy: 0)
         if back.waitForExistence(timeout: 3), !app.buttons["Close"].exists { back.tap() }
         let close = app.buttons["Close"].firstMatch

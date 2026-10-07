@@ -25,13 +25,13 @@ enum AtriaFitnessAge {
         }
     }
 
-    /// Honest "pace of aging" summary: clock pace plus the slope of the
+    /// Fitness-age trend: clock pace plus the slope of the
     /// persisted weekly fitness-age observations over calendar time. Four
     /// weekly checks cover the same initial 28-day calibration window.
     struct PaceOfAging: Codable, Equatable, Sendable {
         let isReady: Bool
-        /// Years of biological aging per one calendar year, e.g. `0.8` means
-        /// slower than the clock, `1.2` means faster. `nil` while not ready.
+        /// Estimated fitness-index years per calendar year, not measured
+        /// biological aging. `nil` while not ready.
         let yearsPerCalendarYear: Double?
         let copyText: String
     }
@@ -48,7 +48,7 @@ enum AtriaFitnessAge {
         let cachedAt: Date?
     }
 
-    static let footnoteText = "Estimate from heart data — not a medical measurement."
+    static let footnoteText = "Experimental fitness index from heart data, not a measurement of biological age, disease risk, or lifespan."
     static let paceMinimumEntries = 4
     static let paceCalibratingCopy = "Calibrating 28-day baseline"
     /// Fewest days of heart history before any fitness-age estimate appears.
@@ -109,7 +109,7 @@ enum AtriaFitnessAge {
         return latestByWeek.values.sorted { $0.day < $1.day }
     }
 
-    /// Biological years aged per calendar year: the clock's 1.0 y/year plus
+    /// Estimated fitness-index years per calendar year: the clock's 1.0 y/year plus
     /// the least-squares slope of fitness-age delta against calendar time.
     /// Sorted ascending by day. Fewer than two distinct days -> 1.
     static func agingSlopeYearsPerCalendarYear(deltas: [DailyDelta]) -> Double {
@@ -132,11 +132,7 @@ enum AtriaFitnessAge {
     static func paceCopy(forPace pace: Double) -> String {
         let rounded = (pace * 10).rounded() / 10
         let magnitudeText = String(format: "%.1f", rounded)
-        if rounded == 1 {
-            return "Aging ~\(magnitudeText) y per calendar year, same as the clock"
-        }
-        let direction = rounded < 1 ? "slower" : "faster"
-        return "Aging ~\(magnitudeText) y per calendar year \(direction) than the clock"
+        return "Estimated fitness-age trend: ~\(magnitudeText) index years per calendar year. This does not measure biological aging."
     }
 
     static func summary(inputs: Inputs) -> BiologicalAgeSummary {
@@ -289,13 +285,13 @@ enum AtriaFitnessAge {
             .max { $0.deltaVsChronological < $1.deltaVsChronological }
         switch (helping, aging) {
         case let (helping?, aging?):
-            return "Your \(helping.label) is helping · your \(aging.label.lowercased()) is aging you"
+            return "Your \(helping.label) lowers the fitness-age estimate · your \(aging.label.lowercased()) raises it"
         case let (helping?, nil):
-            return "Your \(helping.label) is helping"
+            return "Your \(helping.label) lowers the fitness-age estimate"
         case let (nil, aging?):
-            return "Your \(aging.label.lowercased()) is aging you"
+            return "Your \(aging.label.lowercased()) raises the fitness-age estimate"
         default:
-            return "Your heart-health inputs are close to age baseline"
+            return "Your fitness inputs are close to this model's age reference"
         }
     }
 

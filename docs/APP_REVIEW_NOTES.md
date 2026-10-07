@@ -1,18 +1,60 @@
 # App Review notes (paste into App Store Connect → App Review Information)
 
-Draft for #72. Keep it factual and in step with the build being submitted.
+Updated for the October 6 rejection of 1.0 (54), tracked in #72. Paste these
+notes only with the new tested build; they do not describe rejected build 54.
 
 ## How to review without hardware
 
-On the first screen tap **Explore sample data**. The app loads 21 days of
+On the first screen, use the pinned **Demo mode** control at the bottom and tap
+**Explore sample data**. It is also available throughout setup; do not choose
+hardware pairing. The app loads 21 days of
 labelled sample data, entirely on the device, with no account, password,
 Bluetooth or internet. Every screen shows a "Sample data" mark. **Erase sample
 data and return to setup** at the top returns to first-run setup.
 
 Physical-device pairing video: attached directly to this App Review submission as
 **Final video Atria 2.mov**. It is available only to App Review, not published
-on the product page or a public video service. It shows the current app on a
+on the product page or a public video service. It shows the earlier app on a
 physical Apple device pairing with and using a WHOOP 4.0 strap.
+
+## October 6 review changes
+
+- **2.5.4:** removed `location` from `UIBackgroundModes`. Outdoor workout
+  route capture is now foreground-only and pauses when Atria is not active.
+  Workout recording and the permitted Bluetooth background mode remain
+  separate from GPS.
+- **2.5.1:** Settings now identifies **Apple Health (HealthKit)** as its own
+  destination. It explains optional Health reads and writes before permission
+  is requested. The explanation is visible in demo mode; authorization and
+  data operations are disabled while using sample data. Atria does not use
+  CareKit.
+- **2.1:** the hardware-free demo action is pinned at the bottom of every setup
+  step, including the first screen, and verified on an iPad simulator.
+- **1.4.1:** the App Store description and in-app information remind users to
+  seek a doctor's advice in addition to using Atria and before making medical
+  decisions. The Release build excludes the developer-only rhythm assessment
+  and physician-note interface. Atria's fitness metrics are estimates; no
+  regulatory approval is claimed or attached.
+
+## Independent use of user-owned hardware (5.2.1)
+
+Atria is intended for people who already own compatible hardware, including
+unused WHOOP 4.0 straps. The owner voluntarily chooses to connect their own
+strap. Atria does not require users to stop using or replace the manufacturer's
+app or services, and does not claim superiority over the official WHOOP app.
+The hardware remains the user's property; WHOOP, Inc. is its manufacturer and
+seller. The WHOOP name is used to accurately identify compatibility and the
+manufacturer, rather than to imply endorsement.
+
+Atria computes its own local fitness estimates from sensor data obtained from
+the user's strap. It does not retrieve the user's WHOOP account, cloud history,
+paid service content or official recovery/strain scores. It communicates with
+the strap directly, including requests for sensor streams and stored history.
+We respectfully request reconsideration of this independent, voluntary
+use of user-owned hardware and ask App Review to identify any specific content
+or hardware interaction that still requires documentary authorization. We
+do not claim to hold WHOOP authorization, and ownership of a strap is not
+presented as documentary authorization.
 
 ## Hardware
 
@@ -48,7 +90,8 @@ body temperature.
 ## Health and safety
 
 Atria gives wellness estimates and is not a medical device. It makes no
-diagnosis. Trend alerts are optional, compare only with the user's own range,
+diagnosis. Seek a doctor's advice in addition to using Atria and before making
+any medical decisions. Trend alerts are optional, compare only with the user's own range,
 and say "not a medical reading". The methodology and sources for each metric are
 in Settings → About → Sources and in each metric's (i) sheet.
 
@@ -57,6 +100,9 @@ analytics, location profiling, or automatic research upload. The optional
 research feature can only prepare an inspectable, anonymized local bundle; it
 leaves the device only if the user explicitly selects a recipient through the
 iOS share sheet. Sample-data mode disables that feature completely.
+The developer has no remote access to the user's sensor readings, history,
+journal, or local files. Apple Health access is controlled by the user's iOS
+permissions, and user-initiated exports remain the user's choice.
 
 - Privacy policy: https://atria.zookfit.in/privacy/
 - Support: https://github.com/adidshaft/atria/issues

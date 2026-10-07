@@ -577,7 +577,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         ))
     }
 
-    func testBackgroundLocationBatchUsesWorkoutWindowInsteadOfDeliveryAge() {
+    func testDelayedForegroundLocationUsesWorkoutWindowInsteadOfDeliveryAge() {
         let workoutStart = Date(timeIntervalSince1970: 10_000)
         let deliveredAt = workoutStart.addingTimeInterval(20 * 60)
 
@@ -586,7 +586,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
             timestamp: workoutStart.addingTimeInterval(2 * 60),
             workoutStartedAt: workoutStart,
             deliveredAt: deliveredAt
-        ), "A valid location batched in the background must not be discarded merely because delivery was delayed")
+        ), "Delayed delivery is allowed within the current foreground recording segment")
         XCTAssertFalse(AtriaWorkoutRouteRecorder.shouldAcceptRouteLocation(
             horizontalAccuracy: 8,
             timestamp: workoutStart.addingTimeInterval(-60),
@@ -605,6 +605,31 @@ final class AtriaWorkoutRouteTests: XCTestCase {
             workoutStartedAt: workoutStart,
             deliveredAt: deliveredAt
         ))
+    }
+
+    func testForegroundResumeRejectsCachedLocationsFromUnrecordedGap() {
+        let start = Date(timeIntervalSince1970: 10_000)
+        let resumedAt = start.addingTimeInterval(600)
+        XCTAssertFalse(AtriaWorkoutRouteRecorder.shouldAcceptRouteLocation(
+            horizontalAccuracy: 8,
+            timestamp: resumedAt.addingTimeInterval(-1),
+            workoutStartedAt: start,
+            deliveredAt: resumedAt.addingTimeInterval(2),
+            foregroundRecordingStartedAt: resumedAt
+        ))
+        XCTAssertTrue(AtriaWorkoutRouteRecorder.shouldAcceptRouteLocation(
+            horizontalAccuracy: 8,
+            timestamp: resumedAt.addingTimeInterval(1),
+            workoutStartedAt: start,
+            deliveredAt: resumedAt.addingTimeInterval(2),
+            foregroundRecordingStartedAt: resumedAt
+        ))
+    }
+
+    func testReleaseDoesNotDeclareBackgroundLocationOrAlwaysLocationAccess() {
+        let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? []
+        XCTAssertFalse(modes.contains("location"))
+        XCTAssertNil(Bundle.main.object(forInfoDictionaryKey: "NSLocationAlwaysAndWhenInUseUsageDescription"))
     }
 
     func testReducedAccuracyRequestsTemporaryPreciseLocationOnlyWhenAuthorized() {

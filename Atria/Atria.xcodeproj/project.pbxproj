@@ -403,7 +403,7 @@
 				CODE_SIGN_ENTITLEMENTS = Atria/Atria.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -411,8 +411,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you approve access.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "With your permission, Atria reads Apple Health heart rate and sleep to check exported records and compare references, existing blood-pressure and sleeping-wrist-temperature records for reference availability, and optional nutrition and body mass for fitness context.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "When you choose export and grant permission, Atria writes eligible heart rate, resting heart rate, HRV (SDNN), respiratory rate, active energy, cardio fitness estimates, workouts, and user-confirmed sleep to Apple Health.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -439,7 +439,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = Atria/Atria.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -447,8 +447,8 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you approve access.";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "With your permission, Atria reads Apple Health heart rate and sleep to check exported records and compare references, existing blood-pressure and sleeping-wrist-temperature records for reference availability, and optional nutrition and body mass for fitness context.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "When you choose export and grant permission, Atria writes eligible heart rate, resting heart rate, HRV (SDNN), respiratory rate, active energy, cardio fitness estimates, workouts, and user-confirmed sleep to Apple Health.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -475,7 +475,7 @@
 				CODE_SIGN_ENTITLEMENTS = AtriaWidget.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -504,7 +504,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = AtriaWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -531,7 +531,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -556,7 +556,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -579,7 +579,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -597,7 +597,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 267;
+				CURRENT_PROJECT_VERSION = 268;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;

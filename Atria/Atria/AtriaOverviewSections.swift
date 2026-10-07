@@ -5086,7 +5086,7 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 if preparedHistory.paceOfAging.isReady {
                     chartSlot {
-                        metricChart(title: "Pace of aging",
+                        metricChart(title: "Fitness-age trend",
                                     unit: "y",
                                     tint: fitnessAgeTint,
                                     points: preparedHistory.fitnessAge[range] ?? [],
@@ -5099,7 +5099,7 @@ struct AtriaMetricDetailSheet: View {
                     }
                 } else {
                     honestPartialCard(tint: fitnessAgeTint,
-                                      bodyText: "Calibrating a 28-day baseline before showing your pace of aging \u{2014} \(preparedHistory.fitnessAgeEntryCount) of 4 weekly checks saved so far.")
+                                      bodyText: "Calibrating a 28-day baseline before showing your estimated fitness-age trend \u{2014} \(preparedHistory.fitnessAgeEntryCount) of 4 weekly checks saved so far.")
                 }
             } about: {
                 aboutSection
@@ -6855,7 +6855,7 @@ struct AtriaMetricDetailSheet: View {
             return ("Sleep sufficiency", "%", Metrics.electricSleep,
                     preparedHistory.sleepPerformance[range] ?? [], [], nil)
         case .fitnessAge:
-            return ("Pace of aging", "y", fitnessAgeTint,
+            return ("Fitness-age trend", "y", fitnessAgeTint,
                     preparedHistory.fitnessAge[range] ?? [], [], nil)
         default:
             return nil
@@ -8410,9 +8410,9 @@ enum AtriaMetricMeaningCopy {
         case .sleepEfficiency:
             return "Sleep efficiency estimates time asleep versus time in bed from duration, not a clinical sleep study. See Sources."
         case .skinTemperature:
-            return "There is no temperature reading. The decoder is not verified."
+            return "Atria shows only change from this strap's own overnight baseline. It is not an absolute or core temperature, a fever check, or a clinically validated thermometer. See Sources."
         case .fitnessAge:
-            return "Fitness age is a derived estimate from VO2max-adjacent signals. See Sources."
+            return "Fitness age is an experimental index from fitness signals, not a measurement of biological age, disease risk, or lifespan. See Sources."
         case .hrZones:
             return "Zone minutes split today's elevated heart rate into intensity bands. See Sources for how strain and heart-rate load are defined."
         case .bloodOxygen:
@@ -8725,9 +8725,9 @@ private struct AtriaMetricMeaningSheet: View {
         case .sleepEfficiency:
             return "Sleep efficiency estimates how much of your time in bed was spent asleep."
         case .skinTemperature:
-            return "Skin-temperature decoder not verified."
+            return "Skin temperature shows relative overnight changes from the same strap."
         case .fitnessAge:
-            return "Fitness age turns your training and recovery signals into a younger/older-than-your-years estimate."
+            return "Fitness age compares your fitness inputs with this model's age reference."
         case .hrZones:
             return "HR zones split today's elevated heart rate into effort bands."
         case .bloodOxygen:

@@ -10,15 +10,15 @@ struct AtriaCompatibleHardwareScreen: View {
                     .font(AtriaDesignTokens.Typography.pageTitle)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("This review build is validated with WHOOP 4.0. Other WHOOP generations are not claimed as equally validated here.")
+                Text("Atria can connect to a WHOOP 4.0 strap you already own, including an unused strap. Connecting is optional: you can explore sample data without hardware. Compatibility with other generations is not claimed here.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 disclosureCard(
-                    title: "Validated hardware",
+                    title: "Compatible hardware",
                     rows: [
-                        ("WHOOP 4.0", "The model used for this review build.")
+                        ("WHOOP 4.0", "The user-owned model used for pairing verification.")
                     ]
                 )
 
@@ -33,7 +33,7 @@ struct AtriaCompatibleHardwareScreen: View {
                         ("Battery", "On-strap charge when the device reports it."),
                         ("Heart rate", "Live beats per minute from the optical sensor."),
                         ("Beat-to-beat / RR timing", "Shown when the strap provides usable intervals."),
-                        ("Motion / step evidence", "Validated IMU evidence from the strap, not the iPhone pedometer.")
+                        ("Motion / step evidence", "IMU evidence from the strap; confidence and coverage are shown with estimates.")
                     ]
                 )
 
@@ -47,7 +47,8 @@ struct AtriaCompatibleHardwareScreen: View {
                         ("Strain", "Display skin over daily training impulse from heart rate."),
                         ("Sleep", "Duration and timing from overnight heart-rate evidence."),
                         ("Training load", "Rolling strain across recent days."),
-                        ("Calories", "Active energy estimated from heart-rate sessions.")
+                        ("Calories", "Active energy estimated from heart-rate sessions."),
+                        ("Relative skin-temperature change", "An overnight strap-signal change against your own baseline. It is not a calibrated body-temperature reading.")
                     ]
                 )
 
@@ -57,12 +58,17 @@ struct AtriaCompatibleHardwareScreen: View {
                         ("ECG", "Atria does not record or display an electrocardiogram."),
                         ("Blood pressure", "Not measured or estimated."),
                         ("SpO₂", "The decoder is not verified; no percentage is shown."),
-                        ("Skin temperature", "The decoder is not verified; no deviation is shown.")
+                        ("Body temperature", "No calibrated absolute temperature, fever assessment, or medical interpretation.")
                     ]
                 )
 
                 Text("Atria is independent and is not affiliated with, endorsed by, or sponsored by WHOOP.")
                     .font(.footnote.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text("Use is voluntary. Atria does not require you to replace or stop using the manufacturer's app or services, and makes no claim of superiority over them. Your strap data is processed on this device; the developer cannot remotely access it.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 NavigationLink {

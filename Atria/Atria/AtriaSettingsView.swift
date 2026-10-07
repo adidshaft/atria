@@ -210,6 +210,7 @@ struct AtriaSettingsView: View {
 
     private enum Destination: String, CaseIterable, Hashable, Identifiable {
         case personal
+        case health
         case strap
         case alerts
         case data
@@ -221,6 +222,7 @@ struct AtriaSettingsView: View {
         var title: String {
             switch self {
             case .personal: "Personal"
+            case .health: "Apple Health"
             case .strap: "Strap"
             case .alerts: "Alerts"
             case .data: "Data"
@@ -232,6 +234,7 @@ struct AtriaSettingsView: View {
         var systemImage: String {
             switch self {
             case .personal: "person.crop.circle.fill"
+            case .health: "heart.text.square.fill"
             case .strap: "antenna.radiowaves.left.and.right.circle.fill"
             case .alerts: "bell.badge.fill"
             case .data: "internaldrive.fill"
@@ -243,6 +246,7 @@ struct AtriaSettingsView: View {
         var tint: Color {
             switch self {
             case .personal: .pink
+            case .health: .red
             case .strap: .cyan
             case .alerts: .orange
             case .data: .blue
@@ -254,9 +258,10 @@ struct AtriaSettingsView: View {
         var accessibilityHint: String {
             switch self {
             case .personal: "Daily goals, profile, appearance, and Today layout"
+            case .health: "HealthKit permissions, data read, and fitness exports"
             case .strap: "Device, radio mode, broadcast, and sensor support"
             case .alerts: "Haptic and notification preferences"
-            case .data: "Backup, Apple Health, strap sync, and storage"
+            case .data: "Backup, strap sync, and storage"
             case .privacy: "Research sharing, previews, version, and support"
             case .developer: "Research and validation tools"
             }
@@ -570,7 +575,7 @@ struct AtriaSettingsView: View {
 
     // MARK: Settings hub
     //
-    // Keep the first screen to five plain-language destinations. Each one owns
+    // Keep the first screen to plain-language destinations. Each one owns
     // a native grouped Form, so opening Strap or Data no longer expands several
     // nested sections into one long, spatially unstable settings wall.
 
@@ -633,6 +638,8 @@ struct AtriaSettingsView: View {
         switch destination {
         case .personal:
             return AnyView(personalSettingsPage)
+        case .health:
+            return AnyView(appleHealthSettingsPage)
         case .strap:
             return AnyView(strapSettingsPage)
         case .alerts:
@@ -871,6 +878,15 @@ struct AtriaSettingsView: View {
         .task { await refreshDataDestinationStatusIfNeeded() }
     }
 
+    private var appleHealthSettingsPage: some View {
+        AtriaDataSettingsDefaultsScope(onNutritionHealthToggle: onNutritionHealthToggle) {
+            _, useHealthNutrition in
+            compactSettingsForm(title: "Apple Health") {
+                appleHealthSection(useHealthNutrition: useHealthNutrition)
+            }
+        }
+    }
+
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
             if !AtriaAppReviewDemo.isActive {
@@ -1042,10 +1058,18 @@ struct AtriaSettingsView: View {
 
     // MARK: Data & privacy
 
-    private func dataSection(iCloudBackupEnabled: Binding<Bool>,
-                             useHealthNutrition: Binding<Bool>) -> some View {
+    private func appleHealthSection(useHealthNutrition: Binding<Bool>) -> some View {
         Section {
-            backupArchiveRow(iCloudBackupEnabled: iCloudBackupEnabled)
+            settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
+                            title: "Apple Health integration (HealthKit)",
+                            detail: "Atria uses Apple's HealthKit framework to exchange fitness records with Apple Health only with your permission. You choose each data type in the Health access sheet.")
+                .accessibilityIdentifier("atria.settings.health-disclosure")
+            settingsInfoRow(icon: "square.and.arrow.down", tint: .blue,
+                            title: "What Atria reads",
+                            detail: "Heart rate and sleep for export checks and independent reference comparisons; existing cuff blood pressure and Apple sleeping-wrist temperature for reference availability checks. Optional nutrition reads calories, protein, carbohydrates, fat, water, caffeine, alcohol, and body mass for fitness context.")
+            settingsInfoRow(icon: "square.and.arrow.up", tint: .red,
+                            title: "What Atria can write",
+                            detail: "Eligible heart rate, resting heart rate, HRV (SDNN), respiratory-rate estimates, active energy, cardio fitness estimates, workouts, and user-confirmed sleep. Availability and validation gates determine which records are eligible. Atria does not write blood pressure, SpO₂, or skin temperature.")
             if let onExportHealth {
                 Button {
                     onExportHealth()
@@ -1079,6 +1103,20 @@ struct AtriaSettingsView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("atria.settings.health-demo-note")
+            }
+        } header: {
+            Text("Apple Health · HealthKit")
+        } footer: {
+            Text("Nutrition access is read-only. Atria processes Apple Health records on this device. Manage or revoke individual permissions in Apple Health → your profile → Apps → Atria. Sample data never requests access, reads, or writes Apple Health.")
+        }
+    }
+
+    private func dataSection(iCloudBackupEnabled: Binding<Bool>,
+                             useHealthNutrition: Binding<Bool>) -> some View {
+        Section {
+            backupArchiveRow(iCloudBackupEnabled: iCloudBackupEnabled)
+            NavigationLink(value: Destination.health) {
+                Label("Apple Health", systemImage: "heart.text.square.fill")
             }
 
             if let onSyncMissedData {
@@ -1172,14 +1210,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Your data")
         } footer: {
-            // Two facts about this section were written only into VoiceOver
-            // hints. One is a reassurance that decides whether anyone enables
-            // nutrition at all; the other is a CONSEQUENCE of tapping Sync,
-            // which a wearer needs before the tap rather than after it. A
-            // Section footer is where a Form states this — putting the text
-            // inside the rows themselves broke the native icon column on the
-            // toggle and inherited the button's tint on the sync row.
-            Text("Nutrition is read-only — Atria never asks you to log meals. Missed-data sync asks the strap for stored rows and reports whether a transfer actually starts.")
+            Text("Missed-data sync asks the strap for stored rows and reports whether a transfer actually starts. Apple Health permissions and exports are in Apple Health settings.")
         }
     }
 

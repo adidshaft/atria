@@ -139,7 +139,7 @@ struct AtriaMetricZone: Equatable {
         return head.isEmpty ? "Target zone" : head
     }
 
-    static let nonMedicalDisclaimer = "General wellness guidance only, not medical advice."
+    static let nonMedicalDisclaimer = "Atria provides general fitness and wellness estimates, not diagnosis or treatment. Seek a doctor's advice in addition to using this app and before making any medical decisions."
 
     /// W3-B (strain-targets fix 2), labels only: the source line for a strain
     /// target minted from a numeric authoritative `.unverified` recovery. The

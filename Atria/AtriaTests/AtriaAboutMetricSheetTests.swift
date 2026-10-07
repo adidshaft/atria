@@ -6,6 +6,24 @@ import XCTest
 /// model is asserted so a future edit can't quietly ship an empty card or drop
 /// the canonical unverified-decoder copy.
 final class AtriaAboutMetricSheetTests: XCTestCase {
+    func testWellnessCopyRequestsDoctorAdviceBeforeMedicalDecisions() {
+        XCTAssertTrue(AtriaMetricZone.nonMedicalDisclaimer.contains("Seek a doctor's advice"))
+        XCTAssertTrue(AtriaMetricZone.nonMedicalDisclaimer.contains("before making any medical decisions"))
+        XCTAssertTrue(AtriaMetricZone.nonMedicalDisclaimer.contains("not diagnosis or treatment"))
+        XCTAssertFalse(AtriaAboutMetric.respiration.definition.contains("first sign something is off"))
+    }
+
+    func testFitnessAgeCopyDescribesAnIndexRatherThanBiologicalAging() {
+        XCTAssertTrue(AtriaFitnessAge.footnoteText.contains("not a measurement of biological age"))
+        for pace in [-1.0, 0.0, 0.8, 1.0, 1.2, 2.0] {
+            let copy = AtriaFitnessAge.paceCopy(forPace: pace)
+            XCTAssertTrue(copy.hasPrefix("Estimated fitness-age trend:"))
+            XCTAssertTrue(copy.contains("does not measure biological aging"))
+            XCTAssertFalse(copy.hasPrefix("Aging ~"))
+        }
+        XCTAssertTrue(AtriaAboutMetric.vo2max.definition.contains("not lab tests or a measurement of biological age"))
+    }
+
     func testEveryMetricHasNonEmptyEducationCopy() {
         for metric in AtriaAboutMetric.allCases {
             XCTAssertFalse(metric.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

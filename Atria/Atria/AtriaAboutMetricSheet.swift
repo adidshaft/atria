@@ -130,11 +130,11 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .restingHeartRate:
             return "How many times your heart beats per minute at full rest, taken from overnight wear. It tracks cardiovascular fitness over months and day-to-day strain in the short term."
         case .respiration:
-            return "How many breaths you take per minute while asleep. It is normally stable night to night, so shifts outside your own usual range are often the first sign something is off."
+            return "An estimate of breaths per minute during sleep, derived from pulse timing. Compare it with your own recent nights as fitness and wellness context; a change does not establish a health condition."
         case .sleep:
             return "How long you slept against your personal goal, plus how consistent your recent sleep timing has been. It is a duration and consistency estimate, not a clinical sleep study."
         case .vo2max:
-            return "An estimate of your cardiorespiratory fitness (VO₂max) and how old your heart data reads versus your calendar age. It is a fitness signal from everyday wear, not a lab test."
+            return "An estimate of your cardiorespiratory fitness (VO₂max), with an experimental fitness-age index from several fitness inputs. These are wellness estimates from everyday wear, not lab tests or a measurement of biological age."
         case .skinTemperature:
             return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria shows how tonight compares with your own recent nights, not an absolute temperature."
         case .bloodOxygen:
@@ -507,14 +507,17 @@ struct AtriaAboutMetricSheet: View {
             }
             computeCard
             honestyCard
+#if DEBUG
             if metric == .irregularRhythm {
                 AtriaIrregularRhythmNoteCard()
             }
+#endif
 
-            Text("General guidance, not medical advice.")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.tertiary)
+            Text(AtriaMetricZone.nonMedicalDisclaimer)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("atria.metric.wellness-disclaimer")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(AtriaDesignTokens.Spacing.xl)

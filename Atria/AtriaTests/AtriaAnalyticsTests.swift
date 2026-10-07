@@ -4745,7 +4745,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(ready.ageDelta, -12)
         XCTAssertEqual(ready.factors.map(\.id), ["vo2max", "rhr", "lnrmssd", "zone2", "sleep_consistency"])
         XCTAssertEqual(ready.footnote, AtriaFitnessAge.footnoteText)
-        XCTAssertTrue(ready.agingPaceDetail.contains("helping"))
+        XCTAssertTrue(ready.agingPaceDetail.contains("lowers the fitness-age estimate"))
         XCTAssertNil(ready.earlyEstimateDayCount)
         XCTAssertFalse(ready.isEarlyEstimate)
         XCTAssertNil(ready.earlyEstimateQualifierText)
@@ -4888,7 +4888,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         let calendar = Calendar(identifier: .gregorian)
         let start = Date(timeIntervalSince1970: 1_780_000_000)
         // Fitness-age delta drifting up by exactly 1 year every 365.25 days
-        // produces a 2.0 y/year biological pace, 1.0 faster than the clock.
+        // produces an estimated index trend of 2.0 y/year.
         let agingFaster: [AtriaFitnessAge.DailyDelta] = (0..<40).map { offset in
             let day = calendar.date(byAdding: .day, value: offset * 30, to: start)!
             let delta = Int((Double(offset) * 30.0 / 365.25).rounded())
@@ -4898,11 +4898,12 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(faster.isReady)
         let fasterSlope = try XCTUnwrap(faster.yearsPerCalendarYear)
         XCTAssertEqual(fasterSlope, 2.0, accuracy: 0.15)
-        XCTAssertTrue(faster.copyText.contains("faster than the clock"), faster.copyText)
-        XCTAssertTrue(faster.copyText.hasPrefix("Aging ~"), faster.copyText)
+        XCTAssertTrue(faster.copyText.hasPrefix("Estimated fitness-age trend:"), faster.copyText)
+        XCTAssertTrue(faster.copyText.contains("does not measure biological aging"), faster.copyText)
+        XCTAssertFalse(faster.copyText.hasPrefix("Aging ~"))
 
         // A flat -1 delta means fitness age remains one year younger while both
-        // ages advance together, so biological aging matches the clock at 1 y/year.
+        // index and calendar age advance together at 1 index y/year.
         let steadyYounger: [AtriaFitnessAge.DailyDelta] = (0..<40).map { offset in
             let day = calendar.date(byAdding: .day, value: offset, to: start)!
             return AtriaFitnessAge.DailyDelta(day: day, delta: -1)
@@ -4911,7 +4912,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(sameAsClock.isReady)
         XCTAssertEqual(sameAsClock.yearsPerCalendarYear ?? .nan, 1, accuracy: 0.01)
         XCTAssertEqual(sameAsClock.copyText,
-                       "Aging ~1.0 y per calendar year, same as the clock")
+                       "Estimated fitness-age trend: ~1.0 index years per calendar year. This does not measure biological aging.")
     }
 
     @MainActor

@@ -460,6 +460,7 @@ struct AtriaOnboardingFlow: View {
                                         step: step) {
                         primaryAction()
                     }
+                    sampleDataAction
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -587,21 +588,38 @@ struct AtriaOnboardingFlow: View {
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text(AtriaMetricZone.nonMedicalDisclaimer)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("atria.onboarding.wellness-disclaimer")
             }
             welcomeLinks
         }
     }
 
-    /// Quiet secondary paths, one line: explore without a strap, restore,
-    /// or check which straps work.
+    /// Always visible, including if a reviewer has already entered strap
+    /// setup. Keeping this outside the page's ScrollView avoids hiding demo
+    /// access below the large welcome image on an iPad or at large text sizes.
+    private var sampleDataAction: some View {
+        Button(action: onAppReviewDemo) {
+            VStack(spacing: 3) {
+                Label(AtriaAppReviewDemo.exploreButtonTitle, systemImage: "play.rectangle")
+                    .font(.subheadline.weight(.semibold))
+                Text("Demo mode · No hardware or sign-in required")
+                    .font(.caption)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(.bordered)
+        .tint(.blue)
+        .accessibilityIdentifier("atria.onboarding.explore-sample-data")
+        .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
+    }
+
+    /// Secondary paths to restore a backup or check which straps work.
     private var welcomeLinks: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Button(AtriaAppReviewDemo.exploreButtonTitle) {
-                onAppReviewDemo()
-            }
-            .frame(minHeight: 44)
-            .accessibilityIdentifier("atria.onboarding.explore-sample-data")
-            .accessibilityHint("Loads local sample data with no account, password, strap, Bluetooth, or internet.")
             if onRestoreBackup != nil {
                 restoreBackupRow
             }

@@ -2617,6 +2617,11 @@ struct AtriaLiveWorkoutView: View {
             VStack(spacing: 10) {
                 header
                 AtriaLiveWorkoutMotionStatusHost(metricStore: metricStore)
+                Text("GPS records while Atria is open. Locking the screen or switching apps pauses GPS; your workout continues.")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.8))
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("atria.workout.foreground-gps-note")
                 Spacer(minLength: 24)
                 AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,
                                                  pulseStore: pulseStore,

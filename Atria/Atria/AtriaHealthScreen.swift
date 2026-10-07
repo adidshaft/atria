@@ -1590,9 +1590,11 @@ struct AtriaHealthScreen: View {
         .accessibilityHint("Opens a guided paced-breathing session tracked from heart rate.")
     }
 
+#if DEBUG
     private var irregularRhythmAssessment: AtriaIrregularRhythmAssessment.Result {
         AtriaIrregularRhythmAssessment.evaluate(samples: pulseStore.state.recentRRSamples)
     }
+#endif
 
     private func healthMonitorCard(live: AtriaHealthMonitorLiveProjection) -> some View {
         let currentMetrics = currentMetricProjection(live: live)
@@ -1734,9 +1736,9 @@ struct AtriaHealthScreen: View {
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })
-                // Developer builds only (2026-09-28, #72): an irregular-rhythm
-                // readout is a regulated medical claim (AFib-style) that a
-                // wellness app with unvalidated pulse timing cannot make.
+#if DEBUG
+                // Compile clinical research UI out of distribution builds:
+                // a persisted developer-mode lease is not a release gate.
                 if AtriaDeveloperMode.isEnabled {
                     // "Rhythm" fits a third-width tile; "Irregular rhythm" was cut
                     // to "Irregular rhy…" on device. The sheet keeps the full name.
@@ -1748,10 +1750,17 @@ struct AtriaHealthScreen: View {
                                          layout: .compactTile,
                                          onTap: { educationTopic = .irregularRhythm })
                 }
+#endif
             }
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
+
+            Text(AtriaMetricZone.nonMedicalDisclaimer)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("atria.vitals.wellness-disclaimer")
 
             // No separate "Relative skin signal" card (2026-09-27): with the
             // relative decoder on, the Skin temp tile above is that signal; the
