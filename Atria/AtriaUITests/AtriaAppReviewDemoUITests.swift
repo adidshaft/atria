@@ -3,6 +3,29 @@ import XCTest
 final class AtriaAppReviewDemoUITests: XCTestCase {
     private var openDetailIdentifier: String?
 
+    func testSampleDataGlanceCardsOpenFromCenterAndBlankSurface() {
+        let app = XCUIApplication()
+        launchAtFirstRunSetup(app).tap()
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 15))
+        for (identifier, detail) in [("atria.today.metric.steps", "atria.metric.detail.steps"),
+                                     ("atria.today.metric.insights", "atria.insights.lookback")] {
+            let tile = app.buttons[identifier]
+            // The right side deliberately contains no text/icon. A visible
+            // card's whole surface must activate its existing Button action.
+            for point in [CGVector(dx: 0.5, dy: 0.5), CGVector(dx: 0.85, dy: 0.75)] {
+                for _ in 0..<6 where !tile.exists || !tile.isHittable { app.swipeUp() }
+                for _ in 0..<6 where !tile.exists || !tile.isHittable { app.swipeDown() }
+                XCTAssertTrue(tile.exists, "Missing sample-data glance card \(identifier)")
+                XCTAssertTrue(tile.isHittable)
+                tile.coordinate(withNormalizedOffset: point).tap()
+                XCTAssertTrue(app.descendants(matching: .any)[detail].waitForExistence(timeout: 8),
+                              "The whole \(identifier) card must open detail at \(point)")
+                openDetailIdentifier = detail
+                dismissOpenSheet(in: app)
+            }
+        }
+    }
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -65,13 +88,11 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         // The tab bar is Today, Vitals, Journal, Activity (Assistant and Strap
         // moved into Today's actions menu).
         for tab in ["Vitals", "Journal", "Activity"] {
-            let button = app.tabBars.buttons[tab]
-            XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(tab)")
-            button.tap()
+            tapTab(tab, in: app)
             assertDemoSurfaceAlive(in: app, badge: badge, name: tab)
         }
 
-        app.tabBars.buttons["Vitals"].tap()
+        tapTab("Vitals", in: app)
         openMetric(in: app, identifier: "atria.vitals.hrv", detail: "atria.metric.detail.hrv")
         assertDemoSurfaceAlive(in: app, badge: badge, name: "HRV detail")
         dismissOpenSheet(in: app)
@@ -82,14 +103,7 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         assertDemoSurfaceAlive(in: app, badge: badge, name: "Respiratory detail")
         dismissOpenSheet(in: app)
 
-        // The tab bar minimizes after scrolling; scroll back to expand it.
-        let todayTab = app.tabBars.buttons["Today"]
-        for _ in 0..<4 where !todayTab.waitForExistence(timeout: 1) {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
-                .press(forDuration: 0.05,
-                       thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)))
-        }
-        todayTab.tap()
+        tapTab("Today", in: app)
         let erase = app.buttons["atria.demo.erase-and-return"]
         XCTAssertTrue(erase.waitForExistence(timeout: 8))
         erase.tap()
@@ -180,13 +194,11 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         close.tap()
 
         for tab in ["Today", "Vitals", "Journal", "Activity"] {
-            let button = app.tabBars.buttons[tab]
-            XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(tab)")
-            button.tap()
+            tapTab(tab, in: app)
             assertDemoSurfaceAlive(in: app, badge: badge, name: tab)
         }
 
-        app.tabBars.buttons["Today"].tap()
+        tapTab("Today", in: app)
         let erase = app.buttons["atria.demo.erase-and-return"]
         XCTAssertTrue(erase.waitForExistence(timeout: 8))
         erase.tap()
@@ -329,5 +341,19 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             predicate: NSPredicate(format: "exists == true AND isHittable == true"), object: element
         )
         return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    private func tapTab(_ title: String, in app: XCUIApplication) {
+        let button = app.tabBars.buttons[title]
+        // iOS minimizes the tab bar after scrolling down to the glance
+        // cards. Scroll toward the top to restore the other tab buttons.
+        for _ in 0..<4 where !button.exists || !button.isHittable {
+            let scroll = app.scrollViews.firstMatch
+            if scroll.exists { scroll.swipeDown() }
+            else { app.swipeDown() }
+        }
+        XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(title)")
+        XCTAssertTrue(waitUntilHittable(button, timeout: 5), "Tab \(title) must be accessible")
+        button.tap()
     }
 }

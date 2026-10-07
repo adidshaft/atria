@@ -4777,6 +4777,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
                         tint: item.tint,
                         hueTinted: true)
+        .contentShape(.interaction, RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
         .accessibilityIdentifier("atria.today.metric.\(item.metricKey)")
@@ -4870,6 +4871,7 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.chip,
                         tint: item.tint,
                         hueTinted: true)
+        .contentShape(.interaction, RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(item.title). \(item.value). \(item.detail).")
         .accessibilityIdentifier("atria.today.metric.\(item.metricKey)")

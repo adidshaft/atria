@@ -4,12 +4,16 @@ Updated for the October 6 rejection of 1.0 (54), tracked in #72. Paste these
 notes only with the new tested build; they do not describe rejected build 54.
 
 Status on October 7: App Review clarification sent; resubmission remains
-pending the private physical-iPhone GPS recording. Builds 95 and 96 succeeded
-on GA Xcode Cloud and are available to the existing internal TestFlight group.
-290 focused unit/regression tests passed. Demo entry and HealthKit isolation
-UI tests passed on iPad and iPhone. The broader navigation UI test still fails
-at Steps/Insights card taps; it is not a green end-to-end demo sign-off.
-Exploratory gesture changes did not resolve that check and were reverted.
+pending the private physical-iPhone GPS recording and replacement-build
+verification. Builds 95 and 96 succeeded on GA Xcode Cloud and are available
+to the existing internal TestFlight group. 290 focused unit/regression tests
+passed. The Steps/Insights tap defect was traced to sparse Button-label hit
+regions, not missing routes. Both card labels now define a full interaction
+shape; editing/reordering and metric formulas are unchanged. A freshly built
+native-iPhone Release functional test passes the complete demo navigation and
+immediate erase-to-setup workflow. Functional UI tests use `-Onone`; the Cloud
+distribution archive retains optimized Release settings. Follow #72 and #73
+for the latest remaining-device checks and replacement-build availability.
 
 ## How to review without hardware
 
