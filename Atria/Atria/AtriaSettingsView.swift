@@ -1607,8 +1607,8 @@ struct AtriaSettingsView: View {
             if strapGenerationDetail.contains("unknown") || strapGenerationDetail.contains("unverified") {
                 settingsInfoRow(icon: "exclamationmark.triangle",
                                 tint: .orange,
-                                title: "WHOOP 5.0 support is early",
-                                detail: "Heart rate works. Other metrics stay conservative until this strap is checked.")
+                                title: "Unsupported strap generation",
+                                detail: "This release supports WHOOP 4.0 only. A connection or a heart-rate value does not establish support for another generation.")
             }
             if !strapFirmware.isEmpty {
                 LabeledContent("Firmware") {

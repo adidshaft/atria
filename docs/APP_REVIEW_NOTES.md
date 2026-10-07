@@ -41,8 +41,9 @@ physical Apple device pairing with and using a WHOOP 4.0 strap.
 
 ## Independent use of user-owned hardware (5.2.1)
 
-Atria is intended for people who already own compatible hardware, including
-unused WHOOP 4.0 straps. The owner voluntarily chooses to connect their own
+Atria currently supports WHOOP 4.0 only, including unused straps owners may
+have set aside after upgrading to newer hardware. No support for WHOOP 5.0,
+MG, or subsequent generations is claimed. The owner voluntarily chooses to connect their own
 strap. Atria does not require users to stop using or replace the manufacturer's
 app or services, and does not claim superiority over the official WHOOP app.
 The hardware remains the user's property; WHOOP, Inc. is its manufacturer and

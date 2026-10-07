@@ -10,7 +10,7 @@ struct AtriaCompatibleHardwareScreen: View {
                     .font(AtriaDesignTokens.Typography.pageTitle)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Atria can connect to a WHOOP 4.0 strap you already own, including an unused strap. Connecting is optional: you can explore sample data without hardware. Compatibility with other generations is not claimed here.")
+                Text("This release supports WHOOP 4.0 only: a strap you already own, including an unused strap. Connecting is optional: you can explore sample data without hardware. Compatibility with other generations is not claimed here.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
