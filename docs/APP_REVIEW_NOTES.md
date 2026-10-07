@@ -3,6 +3,14 @@
 Updated for the October 6 rejection of 1.0 (54), tracked in #72. Paste these
 notes only with the new tested build; they do not describe rejected build 54.
 
+Status on October 7: App Review clarification sent; resubmission remains
+pending the private physical-iPhone GPS recording. Builds 95 and 96 succeeded
+on GA Xcode Cloud and are available to the existing internal TestFlight group.
+290 focused unit/regression tests passed. Demo entry and HealthKit isolation
+UI tests passed on iPad and iPhone. The broader navigation UI test still fails
+at Steps/Insights card taps; it is not a green end-to-end demo sign-off.
+Exploratory gesture changes did not resolve that check and were reverted.
+
 ## How to review without hardware
 
 On the first screen, use the pinned **Demo mode** control at the bottom and tap
@@ -20,7 +28,7 @@ physical Apple device pairing with and using a WHOOP 4.0 strap.
 ## October 6 review changes
 
 - **2.5.4:** background GPS is retained for active outdoor workouts. Open
-  Activity → Start workout, choose Walking, Running, Hiking or Cycling, grant
+  Today → plus → Start workout, choose Walking, Running, Hiking or Cycling, grant
   Location access, and start. Route, distance, pace and elevation continue
   with the screen locked or another app open until the workout is paused or
   finished. This is user-initiated workout recording, not general tracking.

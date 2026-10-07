@@ -49,11 +49,15 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         )
         let insightsGlance = app.descendants(matching: .any)["atria.today.metric.insights"]
         if insightsGlance.waitForExistence(timeout: 2) {
+            XCTAssertTrue(waitUntilHittable(insightsGlance, timeout: 5), "Insights tile must be accessible")
             insightsGlance.tap()
-            XCTAssertTrue(
-                app.descendants(matching: .any)["atria.insights.lookback"].waitForExistence(timeout: 6),
-                "Insights must expose Day/Week/Month"
-            )
+            XCTAssertTrue(app.navigationBars["Today's read"].waitForExistence(timeout: 8),
+                          "Insights must open its ranked local-read sheet")
+            let lookback = app.segmentedControls.firstMatch
+            XCTAssertTrue(lookback.waitForExistence(timeout: 5), "Insights must expose its supported lookback control")
+            for range in ["Day", "Week", "Month"] {
+                XCTAssertTrue(lookback.buttons[range].exists, "Missing Insights range \(range)")
+            }
             assertDemoSurfaceAlive(in: app, badge: badge, name: "Today's read")
             dismissOpenSheet(in: app)
         }
@@ -112,6 +116,18 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         if !erase.isHittable { app.tabBars.buttons["Today"].tap() }
         erase.tap()
         XCTAssertTrue(explore.waitForExistence(timeout: 20))
+    }
+
+    func testSampleDataInsightsOpensFromTodayActionMenu() {
+        let app = XCUIApplication()
+        launchAtFirstRunSetup(app).tap()
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 15))
+        app.buttons["Today actions"].tap()
+        let read = app.buttons["Today's read"]
+        XCTAssertTrue(read.waitForExistence(timeout: 5))
+        read.tap()
+        XCTAssertTrue(app.navigationBars["Today's read"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.segmentedControls.firstMatch.waitForExistence(timeout: 5))
     }
 
     /// App Review: sample data must never reach HealthKit. From a fresh
@@ -186,19 +202,30 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         app.launchArguments = []
         app.launch()
         let explore = app.buttons["atria.onboarding.explore-sample-data"]
-        if !explore.waitForExistence(timeout: 4) {
-            let erase = app.buttons["atria.demo.erase-and-return"]
-            XCTAssertTrue(erase.waitForExistence(timeout: 12), "An existing demo must provide its erase control")
-            if !erase.isHittable {
-                let today = app.tabBars.buttons["Today"]
-                XCTAssertTrue(today.waitForExistence(timeout: 5))
-                today.tap()
+        for attempt in 0..<2 {
+            if explore.waitForExistence(timeout: 4), waitUntilHittable(explore, timeout: 5) {
+                return explore
             }
-            XCTAssertTrue(erase.isHittable, "Erase must be accessible before resetting the next test")
-            erase.tap()
+            let erase = app.buttons["atria.demo.erase-and-return"]
+            if erase.waitForExistence(timeout: 8), !waitUntilHittable(erase, timeout: 5) {
+                let today = app.tabBars.buttons["Today"]
+                if waitUntilHittable(today, timeout: 5) { today.tap() }
+            }
+            if erase.exists, waitUntilHittable(erase, timeout: 8) {
+                erase.tap()
+                XCTAssertTrue(explore.waitForExistence(timeout: 20), "Erasing sample data must return to setup")
+                XCTAssertTrue(waitUntilHittable(explore, timeout: 5), "Setup must be ready for interaction after erasing")
+                return explore
+            }
+            if attempt == 0 {
+                // A test-runner reconnect can temporarily retain the prior
+                // compatibility-window hit map. Reacquire a real launch;
+                // data is still reset only through the app's visible control.
+                app.terminate()
+                app.launch()
+            }
         }
-        XCTAssertTrue(explore.waitForExistence(timeout: 20), "First-run setup should offer Explore sample data")
-        XCTAssertTrue(explore.isHittable, "Setup must be ready for interaction after sample data is erased")
+        XCTFail("First-run setup or the sample-data erase control must be accessible after a clean relaunch")
         return explore
     }
 
@@ -240,6 +267,11 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             app.descendants(matching: .any)[detail].waitForExistence(timeout: 8),
             "Missing detail \(detail)"
         )
+        if detail != "atria.metric.detail.steps" {
+            let close = app.buttons["atria.metric.detail.close"]
+            XCTAssertTrue(close.waitForExistence(timeout: 5), "Metric detail must expose its explicit Close control")
+            XCTAssertTrue(close.isHittable, "Metric Close control must be accessible")
+        }
         openDetailIdentifier = detail
     }
 
@@ -252,38 +284,29 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             }
         }
 
-        // iPad sheets are centered rather than starting at 8% of the display.
-        // Locate the presented sheet (or its known detail ScrollView) and drag
-        // its top chrome, never an unrelated point on the underlying screen.
+        // Keep coordinates relative to the presented element. Compatibility
+        // mode can report its app frame in iPhone points and the sheet frame
+        // in iPad screen points, so mixing those frames is incorrect.
         for attempt in 0..<3 {
             let sheet = app.sheets.firstMatch
             let detail = openDetailIdentifier.map { app.descendants(matching: .any)[$0] }
-            let frame: CGRect
-            let topInset: CGFloat
+            let presentation: XCUIElement
+            let topFraction: CGFloat
             if sheet.exists {
-                frame = sheet.frame
-                topInset = 10
+                presentation = sheet
+                topFraction = 0.02
             } else if let detail, detail.exists {
-                frame = detail.frame
-                topInset = -24 + CGFloat(attempt) * 12
+                presentation = detail
+                topFraction = -0.03 + CGFloat(attempt) * 0.015
             } else if let scroll = app.scrollViews.allElementsBoundByIndex.last(where: { $0.isHittable }) {
-                // Weekly-plan and insights sheets do not carry a metric ID.
-                // Their frontmost hittable scroll view still supplies the
-                // centered presentation's real bounds.
-                frame = scroll.frame
-                topInset = -24 + CGFloat(attempt) * 12
+                presentation = scroll
+                topFraction = -0.03 + CGFloat(attempt) * 0.015
             } else {
                 XCTFail("Cannot locate the presented sheet for dismissal")
                 return
             }
-            let appFrame = app.frame
-            let startY = max(appFrame.minY + 12, frame.minY + topInset)
-            let endY = min(appFrame.maxY - 16, frame.maxY + 80)
-            let origin = app.coordinate(withNormalizedOffset: .zero)
-            let grabber = origin.withOffset(CGVector(dx: frame.midX - appFrame.minX,
-                                                    dy: startY - appFrame.minY))
-            let destination = origin.withOffset(CGVector(dx: frame.midX - appFrame.minX,
-                                                        dy: endY - appFrame.minY))
+            let grabber = presentation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: topFraction))
+            let destination = presentation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98))
             grabber.press(forDuration: 0.1, thenDragTo: destination)
             if waitForSheetDismissal(in: app) { return }
         }
@@ -293,16 +316,18 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
     private func waitForSheetDismissal(in app: XCUIApplication) -> Bool {
         if let openDetailIdentifier {
             let detail = app.descendants(matching: .any)[openDetailIdentifier]
-            if detail.waitForNonExistence(timeout: 3) {
-                self.openDetailIdentifier = nil
-                return true
-            }
-            return false
+            guard detail.waitForNonExistence(timeout: 3) else { return false }
         }
         let tab = app.tabBars.buttons.firstMatch
+        guard waitUntilHittable(tab, timeout: 5) else { return false }
+        self.openDetailIdentifier = nil
+        return true
+    }
+
+    private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
         let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "isHittable == true"), object: tab
+            predicate: NSPredicate(format: "exists == true AND isHittable == true"), object: element
         )
-        return XCTWaiter.wait(for: [expectation], timeout: 3) == .completed
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
     }
 }
