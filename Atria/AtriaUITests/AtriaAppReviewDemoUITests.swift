@@ -1,6 +1,8 @@
 import XCTest
 
 final class AtriaAppReviewDemoUITests: XCTestCase {
+    private var openDetailIdentifier: String?
+
     override func setUpWithError() throws {
         continueAfterFailure = false
     }
@@ -175,19 +177,28 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertTrue(explore.waitForExistence(timeout: 20), "Exit should return to first-run setup")
     }
 
-    /// Launches at the welcome page. The runner kills the previous test's app
-    /// the moment it returns to setup, which can leave sample data active on
-    /// the next launch; a reviewer who force-quits after erasing lands on
-    /// setup, so undo that runner artifact here rather than in the app.
+    /// Each Release test uses the real erase flow. Relaunch first so a failed
+    /// prior test cannot leave an in-memory sheet covering the erase control.
+    /// Release intentionally has no launch-argument reset backdoor.
     private func launchAtFirstRunSetup(_ app: XCUIApplication) -> XCUIElement {
-        app.launchArguments.append("--atria-ui-fresh-install")
+        openDetailIdentifier = nil
+        app.terminate()
+        app.launchArguments = []
         app.launch()
         let explore = app.buttons["atria.onboarding.explore-sample-data"]
-        if !explore.waitForExistence(timeout: 12) {
+        if !explore.waitForExistence(timeout: 4) {
             let erase = app.buttons["atria.demo.erase-and-return"]
-            if erase.waitForExistence(timeout: 5) { erase.tap() }
+            XCTAssertTrue(erase.waitForExistence(timeout: 12), "An existing demo must provide its erase control")
+            if !erase.isHittable {
+                let today = app.tabBars.buttons["Today"]
+                XCTAssertTrue(today.waitForExistence(timeout: 5))
+                today.tap()
+            }
+            XCTAssertTrue(erase.isHittable, "Erase must be accessible before resetting the next test")
+            erase.tap()
         }
         XCTAssertTrue(explore.waitForExistence(timeout: 20), "First-run setup should offer Explore sample data")
+        XCTAssertTrue(explore.isHittable, "Setup must be ready for interaction after sample data is erased")
         return explore
     }
 
@@ -215,7 +226,7 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         let control = app.descendants(matching: .any)[identifier]
         // Lower tiles live in lazy grids and only exist once scrolled to.
         var swipes = 0
-        while !control.waitForExistence(timeout: swipes == 0 ? 4 : 1), swipes < 4 {
+        while (!control.waitForExistence(timeout: swipes == 0 ? 4 : 1) || !control.isHittable), swipes < 4 {
             // Scroll from below the charts: a swipe through a chart scrubs it.
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.78))
                 .press(forDuration: 0.05,
@@ -223,33 +234,75 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             swipes += 1
         }
         XCTAssertTrue(control.exists, "Missing control \(identifier)")
+        XCTAssertTrue(control.isHittable, "Metric \(identifier) must be visible and uncovered")
         control.tap()
         XCTAssertTrue(
             app.descendants(matching: .any)[detail].waitForExistence(timeout: 8),
             "Missing detail \(detail)"
         )
+        openDetailIdentifier = detail
     }
 
     private func dismissOpenSheet(in app: XCUIApplication) {
-        if app.buttons["Close"].waitForExistence(timeout: 1) {
-            app.buttons["Close"].tap()
-            return
+        for title in ["Close", "Done"] {
+            let close = app.buttons[title].firstMatch
+            if close.exists, close.isHittable {
+                close.tap()
+                if waitForSheetDismissal(in: app) { return }
+            }
         }
-        if app.navigationBars.buttons["Close"].waitForExistence(timeout: 1) {
-            app.navigationBars.buttons["Close"].tap()
-            return
+
+        // iPad sheets are centered rather than starting at 8% of the display.
+        // Locate the presented sheet (or its known detail ScrollView) and drag
+        // its top chrome, never an unrelated point on the underlying screen.
+        for attempt in 0..<3 {
+            let sheet = app.sheets.firstMatch
+            let detail = openDetailIdentifier.map { app.descendants(matching: .any)[$0] }
+            let frame: CGRect
+            let topInset: CGFloat
+            if sheet.exists {
+                frame = sheet.frame
+                topInset = 10
+            } else if let detail, detail.exists {
+                frame = detail.frame
+                topInset = -24 + CGFloat(attempt) * 12
+            } else if let scroll = app.scrollViews.allElementsBoundByIndex.last(where: { $0.isHittable }) {
+                // Weekly-plan and insights sheets do not carry a metric ID.
+                // Their frontmost hittable scroll view still supplies the
+                // centered presentation's real bounds.
+                frame = scroll.frame
+                topInset = -24 + CGFloat(attempt) * 12
+            } else {
+                XCTFail("Cannot locate the presented sheet for dismissal")
+                return
+            }
+            let appFrame = app.frame
+            let startY = max(appFrame.minY + 12, frame.minY + topInset)
+            let endY = min(appFrame.maxY - 16, frame.maxY + 80)
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let grabber = origin.withOffset(CGVector(dx: frame.midX - appFrame.minX,
+                                                    dy: startY - appFrame.minY))
+            let destination = origin.withOffset(CGVector(dx: frame.midX - appFrame.minX,
+                                                        dy: endY - appFrame.minY))
+            grabber.press(forDuration: 0.1, thenDragTo: destination)
+            if waitForSheetDismissal(in: app) { return }
         }
-        // Detail sheets have no Close button. A swipe in the middle scrolls
-        // the sheet's content instead of dismissing it, so drag from the
-        // grabber the way a person would, and wait for the sheet to go.
-        let tabBar = app.tabBars.firstMatch
-        for _ in 0..<3 {
-            let grabber = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.08))
-            grabber.press(forDuration: 0.05,
-                          thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95)))
-            if tabBar.isHittable { return }
-            _ = tabBar.waitForExistence(timeout: 1)
-            if tabBar.isHittable { return }
+        XCTFail("Presented sheet must dismiss before the next interaction")
+    }
+
+    private func waitForSheetDismissal(in app: XCUIApplication) -> Bool {
+        if let openDetailIdentifier {
+            let detail = app.descendants(matching: .any)[openDetailIdentifier]
+            if detail.waitForNonExistence(timeout: 3) {
+                self.openDetailIdentifier = nil
+                return true
+            }
+            return false
         }
+        let tab = app.tabBars.buttons.firstMatch
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "isHittable == true"), object: tab
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: 3) == .completed
     }
 }

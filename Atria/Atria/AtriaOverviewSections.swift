@@ -4322,6 +4322,7 @@ private actor AtriaMetricDetailPreparationCache {
 }
 
 struct AtriaMetricDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var recommendationWakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var recommendationWakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
     @AtriaDefault("atria.sleepPlanner.goal") private var recommendationPlannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
@@ -4584,6 +4585,18 @@ struct AtriaMetricDetailSheet: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(metric.title) meaning and coaching")
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, height: 44)
+                            .background(.quaternary.opacity(0.22), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("atria.metric.detail.close")
                 }
                 // The sheet's top inset already badges sample data.
                 AtriaSourcesLink(metricID: metric.rawValue, compact: true)

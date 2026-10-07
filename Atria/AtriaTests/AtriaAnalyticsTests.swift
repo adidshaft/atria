@@ -928,7 +928,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(summary.biologicalAge, 25)
         XCTAssertEqual(summary.ageDelta, -20)
         XCTAssertEqual(summary.agingPaceText, "Younger pace")
-        XCTAssertTrue(summary.footnote.lowercased().contains("estimate"))
+        XCTAssertTrue(summary.footnote.lowercased().contains("experimental fitness index"))
+        XCTAssertTrue(summary.footnote.lowercased().contains("not a measurement of biological age"))
     }
 
     func testBiologicalAgePaceUsesTrendDeltaWhenPresent() {
@@ -4100,7 +4101,8 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(33)?.level, .red)
         XCTAssertEqual(AtriaAnalytics.TargetZones.recovery(33)?.warningSystemImage,
                        "exclamationmark.triangle.fill")
-        XCTAssertTrue(AtriaAnalytics.TargetZones.recovery(33)?.disclaimer.lowercased().contains("not medical advice") == true)
+        XCTAssertTrue(AtriaAnalytics.TargetZones.recovery(33)?.disclaimer.lowercased().contains("not diagnosis or treatment") == true)
+        XCTAssertTrue(AtriaAnalytics.TargetZones.recovery(33)?.disclaimer.lowercased().contains("doctor's advice") == true)
 
         XCTAssertNil(AtriaAnalytics.TargetZones.hrv(70,
                                                     baseline: 80,
@@ -4262,7 +4264,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                    greenOlderDelta: 0,
                                                                    yellowOlderDelta: 3)
         XCTAssertEqual(bodyAgeZone?.level, .red)
-        XCTAssertTrue(bodyAgeZone?.disclaimer.lowercased().contains("estimate") == true)
+        XCTAssertTrue(bodyAgeZone?.disclaimer.lowercased().contains("experimental fitness index") == true)
+        XCTAssertTrue(bodyAgeZone?.disclaimer.lowercased().contains("not a measurement of biological age") == true)
 
         let building = BiologicalAgeSummary.building(chronologicalAge: 40,
                                                      blockers: ["14 fresh HRV baseline nights"])
