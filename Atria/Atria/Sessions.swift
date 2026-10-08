@@ -4442,6 +4442,45 @@ struct BehaviorJournalEntry: Codable, Identifiable, Equatable {
             case .selfPleasure: return "heart.fill"
             }
         }
+
+        /// What tagging this behavior is expected to do to recovery
+        /// (2026-10-08). Insight copy routes on this TOGETHER with the
+        /// measured direction: a supportive habit that measures better is a
+        /// win to keep, a disruptive one that measures worse is a cost, and a
+        /// result that runs against expectation ("HRV higher on alcohol
+        /// days") is reported as "isn't hurting so far" / "isn't lifting
+        /// yet", never as a reason to drink more or hydrate less.
+        enum ExpectedEffect: Equatable {
+            case supportive
+            case disruptive
+            /// No expected direction: load (training), timing choices, and
+            /// intimacy. Reported plainly in whichever direction it measures.
+            case neutral
+        }
+
+        var expectedEffect: ExpectedEffect {
+            switch self {
+            case .sleep, .protein, .hydration, .morningLight, .meditation,
+                 .vegetables, .supplements, .magnesium, .sauna, .coldExposure,
+                 .stretching, .massage, .readBeforeBed, .consistentBedtime,
+                 .gratitude, .outdoors, .socialTime, .activeDay:
+                return .supportive
+            case .alcohol, .caffeine, .stress, .lateMeal, .nicotine, .cannabis,
+                 .bigMeal, .addedSugar, .screenInBed, .warmRoom, .anxious,
+                 .travel, .unwell, .soreness:
+                return .disruptive
+            case .training, .fasted, .melatonin, .medication, .nap, .sharedBed,
+                 .sexualActivity, .selfPleasure:
+                return .neutral
+            }
+        }
+
+        /// Intimacy tags stay off glanceable surfaces (Today's stacked cards,
+        /// the Overview card) and only appear where the wearer opens the tag
+        /// list deliberately.
+        var isPrivate: Bool {
+            self == .sexualActivity || self == .selfPleasure
+        }
     }
 
     let id: String
@@ -4488,6 +4527,14 @@ struct BehaviorCorrelationSummary: Equatable {
     /// Assessment P1.9 (2026-08-14): tags pair to measured signals first.
     /// Raw-signed Δ mean overnight RHR (bpm) on tagged vs untagged days.
     let rhrDelta: Double?
+    /// Evidence (2026-10-08): the untagged days in the contrast and a Welch
+    /// two-sided p-value per lane (nil until both sides carry a spread).
+    /// Defaulted so the per-tag Journal table keeps its lighter shape; the
+    /// ranked insight list refuses a lane that has no p-value.
+    var comparisonDays: Int = 0
+    var recoveryPValue: Double? = nil
+    var hrvPValue: Double? = nil
+    var rhrPValue: Double? = nil
 
     var recoveryText: String {
         recoveryDelta.map { String(format: "%+.0f%%", $0) } ?? "Learning"
@@ -4556,17 +4603,94 @@ struct BehaviorCorrelationSummary: Equatable {
 }
 
 /// A plain-language, effect-size-ranked finding derived from behavior tags vs
-/// recovery/HRV. Confidence-gated (needs enough tagged days); never medical.
+/// recovery/HRV/RHR. Evidence-gated (enough days on both sides and a Welch
+/// p-value); never medical.
+///
+/// 2026-10-08: the copy routes on the tag's EXPECTED effect meeting the
+/// MEASURED direction. "HRV 3 ms higher on alcohol days" used to read as a
+/// licence to drink; it now reads "Alcohol isn't hurting HRV so far". A
+/// supportive habit measuring worse reads "isn't lifting HRV yet", not as a
+/// reason to stop.
 struct AtriaInsight: Identifiable, Equatable {
     enum Metric { case recovery, hrv, rhr }
+
+    /// Expected effect × measured direction.
+    enum Reading: Equatable {
+        /// Supportive tag, body measured better: a habit worth keeping.
+        case helps
+        /// Disruptive tag, body measured worse: a cost worth knowing.
+        case costs
+        /// Disruptive tag, body measured better: not evidence of a benefit.
+        case noCostYet
+        /// Supportive tag, body measured worse: not a reason to stop.
+        case notHelpingYet
+        /// Tag with no expected direction, reported plainly.
+        case neutralBetter
+        case neutralWorse
+    }
+
+    /// Colour carries only the state of the wearer's numbers: green when the
+    /// body ran better, red when worse, and NO hue for a finding that runs
+    /// against expectation, so alcohol never earns a green row.
+    enum Tone: Equatable { case supportive, unsupportive, neutral }
+
     let id: String
     let tagLabel: String
     let metric: Metric
     let delta: Double        // recovery: % points; hrv: ms; rhr: bpm (raw sign)
     let days: Int
+    var comparisonDays: Int = 0
+    var pValue: Double? = nil
+    var expectedEffect: BehaviorJournalEntry.Tag.ExpectedEffect = .neutral
+    var isPrivate: Bool = false
+    /// True when the lane's p-value also clears the family-wise threshold
+    /// over every lane searched this run (`AtriaBehaviorImpact.correctedThreshold`).
+    var survivesCorrection: Bool = false
 
     /// Rank key: bigger absolute effect first.
     var magnitude: Double { abs(delta) }
+
+    /// Metric-aware goodness: a LOWER resting HR on tagged days is the
+    /// supportive direction.
+    var bodyRanBetter: Bool { metric == .rhr ? delta <= 0 : delta >= 0 }
+
+    /// Kept for direction consumers; equals `bodyRanBetter`.
+    var isPositive: Bool { bodyRanBetter }
+
+    var reading: Reading {
+        switch (expectedEffect, bodyRanBetter) {
+        case (.supportive, true): return .helps
+        case (.supportive, false): return .notHelpingYet
+        case (.disruptive, false): return .costs
+        case (.disruptive, true): return .noCostYet
+        case (.neutral, true): return .neutralBetter
+        case (.neutral, false): return .neutralWorse
+        }
+    }
+
+    var tone: Tone {
+        switch reading {
+        case .helps, .neutralBetter: return .supportive
+        case .costs, .neutralWorse: return .unsupportive
+        case .noCostYet, .notHelpingYet: return .neutral
+        }
+    }
+
+    /// Findings the wearer can act on rank first; a result that runs against
+    /// expectation carries little information and trails.
+    var routingRank: Int {
+        switch reading {
+        case .helps, .costs: return 0
+        case .neutralBetter, .neutralWorse: return 1
+        case .noCostYet, .notHelpingYet: return 2
+        }
+    }
+
+    /// Today's stacked cards are glanceable and keep a claim in front of the
+    /// wearer all day, so only a finding that survives the family-wise
+    /// correction, and is not an intimacy tag, rides there. The Overview
+    /// card and the tag sheet show the fuller p ≤ 0.10 list.
+    var isHeadlineGrade: Bool { survivesCorrection && !isPrivate }
 
     var symbolName: String {
         let tagRaw = String(id.split(separator: "-").first ?? "")
@@ -4582,30 +4706,66 @@ struct AtriaInsight: Identifiable, Equatable {
         }
     }
 
-    /// Assessment P1.9: goodness is metric-aware — a LOWER resting HR on
-    /// tagged days is the supportive direction.
-    var isPositive: Bool { metric == .rhr ? delta <= 0 : delta >= 0 }
-
-    var headline: String {
-        let n = abs(Int(delta.rounded()))
+    private var metricNoun: String {
         switch metric {
-        case .recovery:
-            return delta < 0
-                ? "Recovery averages \(n)% lower on \(tagLabel.lowercased()) days"
-                : "Recovery averages \(n)% higher on \(tagLabel.lowercased()) days"
-        case .hrv:
-            return delta < 0
-                ? "HRV averages \(n) ms lower on \(tagLabel.lowercased()) days"
-                : "HRV averages \(n) ms higher on \(tagLabel.lowercased()) days"
-        case .rhr:
-            return delta < 0
-                ? "Resting HR averages \(n) bpm lower on \(tagLabel.lowercased()) days"
-                : "Resting HR averages \(n) bpm higher on \(tagLabel.lowercased()) days"
+        case .recovery: return "Recovery"
+        case .hrv: return "HRV"
+        case .rhr: return "Resting HR"
         }
     }
 
+    private var amountText: String {
+        let n = abs(Int(delta.rounded()))
+        switch metric {
+        case .recovery: return "\(n)%"
+        case .hrv: return "\(n) ms"
+        case .rhr: return "\(n) bpm"
+        }
+    }
+
+    private var directionWord: String { delta < 0 ? "lower" : "higher" }
+
+    private var metricInSentence: String {
+        switch metric {
+        case .recovery: return "recovery"
+        case .hrv: return "HRV"
+        case .rhr: return "resting HR"
+        }
+    }
+
+    private var tagNoun: String { tagLabel.lowercased() }
+
+    var headline: String {
+        switch reading {
+        case .helps, .costs, .neutralBetter, .neutralWorse:
+            return "\(metricNoun) \(amountText) \(directionWord) on \(tagNoun) days"
+        case .noCostYet:
+            return "\(tagLabel) isn't hurting \(metricInSentence) so far"
+        case .notHelpingYet:
+            switch metric {
+            case .rhr: return "\(tagLabel) isn't lowering resting HR yet"
+            case .hrv: return "\(tagLabel) isn't lifting HRV yet"
+            case .recovery: return "\(tagLabel) isn't lifting recovery yet"
+            }
+        }
+    }
+
+    private var evidenceText: String {
+        let tagged = "\(days) \(tagNoun) day\(days == 1 ? "" : "s")"
+        if comparisonDays > 0 {
+            return "\(tagged) vs \(comparisonDays) others"
+        }
+        return "\(tagged) vs your other days"
+    }
+
     var detail: String {
-        "Compared with \(days) tagged day\(days == 1 ? "" : "s") versus your other days."
+        let measured = "\(metricNoun) ran \(amountText) \(directionWord) across \(evidenceText)."
+        switch reading {
+        case .helps: return "Keep it up. \(measured)"
+        case .costs, .neutralBetter, .neutralWorse: return measured
+        case .noCostYet: return "\(measured) Too few to call it a benefit."
+        case .notHelpingYet: return "\(measured) Not a reason to stop."
+        }
     }
 }
 
@@ -24843,9 +25003,21 @@ final class SessionStore: ObservableObject {
     }
     #endif
 
+    /// Evidence bar for a ranked tag finding (2026-10-08), mirroring the
+    /// AtriaBehaviorImpact lane: enough days on BOTH sides, an effect floor
+    /// (recovery ≥2 pts, HRV ≥2 ms, RHR ≥2 bpm), and a Welch p ≤ 0.10. Three
+    /// tagged days and 2 ms were producing "HRV 3 ms higher on self-pleasure
+    /// days" out of noise. A lane that also clears the family-wise threshold
+    /// over every lane searched is `survivesCorrection` and may headline Today.
+    nonisolated static let behaviorInsightMinimumTaggedDays = AtriaBehaviorImpact.minimumLoggedDays
+    nonisolated static let behaviorInsightMinimumComparisonDays = AtriaBehaviorImpact.minimumComparisonDays
+    nonisolated static let behaviorInsightMinimumEffect = 2.0
+
     /// Turn per-tag correlation deltas into ranked, plain-language findings.
-    /// Only surfaces a meaningful effect (recovery ≥2 pts, HRV ≥2 ms); the deltas
-    /// already require ≥3 tagged days. Recovery findings rank above HRV.
+    /// Routed: actionable readings (a supportive habit that helps, a
+    /// disruptive one that costs) lead, neutral tags follow, and findings
+    /// that run against expectation trail. Measured signals (HRV, then RHR)
+    /// rank above the Recovery composite within a group.
     nonisolated static func deriveInsights(from summaries: [BehaviorCorrelationSummary]) -> [AtriaInsight] {
         deriveInsightsCancellable(
             from: summaries,
@@ -24857,30 +25029,53 @@ final class SessionStore: ObservableObject {
         from summaries: [BehaviorCorrelationSummary],
         shouldContinue: () -> Bool
     ) -> [AtriaInsight]? {
-        var insights: [AtriaInsight] = []
+        struct Lane {
+            let summary: BehaviorCorrelationSummary
+            let metric: AtriaInsight.Metric
+            let delta: Double
+            let pValue: Double?
+        }
+        // Every lane with enough days on both sides is a hypothesis searched,
+        // and counts toward the correction whether or not it survives.
+        var lanes: [Lane] = []
         for (index, s) in summaries.enumerated() {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
-            if let rd = s.recoveryDelta, abs(rd) >= 2 {
-                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-recovery",
-                                             tagLabel: s.tag.label,
-                                             metric: .recovery,
-                                             delta: rd,
-                                             days: s.days))
+            guard s.days >= behaviorInsightMinimumTaggedDays,
+                  s.comparisonDays >= behaviorInsightMinimumComparisonDays else { continue }
+            if let rd = s.recoveryDelta {
+                lanes.append(Lane(summary: s, metric: .recovery, delta: rd, pValue: s.recoveryPValue))
             }
-            if let hd = s.hrvDelta, abs(hd) >= 2 {
-                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-hrv",
-                                             tagLabel: s.tag.label,
-                                             metric: .hrv,
-                                             delta: hd,
-                                             days: s.days))
+            if let hd = s.hrvDelta {
+                lanes.append(Lane(summary: s, metric: .hrv, delta: hd, pValue: s.hrvPValue))
             }
-            if let rd = s.rhrDelta, abs(rd) >= 2 {
-                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-rhr",
-                                             tagLabel: s.tag.label,
-                                             metric: .rhr,
-                                             delta: rd,
-                                             days: s.days))
+            if let rd = s.rhrDelta {
+                lanes.append(Lane(summary: s, metric: .rhr, delta: rd, pValue: s.rhrPValue))
             }
+        }
+        guard shouldContinue() else { return nil }
+        let correctedThreshold = AtriaBehaviorImpact.correctedThreshold(testedCount: lanes.count)
+        var insights: [AtriaInsight] = []
+        for (index, lane) in lanes.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard abs(lane.delta) >= behaviorInsightMinimumEffect,
+                  let pValue = lane.pValue,
+                  pValue <= AtriaBehaviorImpact.maximumPValue else { continue }
+            let suffix: String
+            switch lane.metric {
+            case .recovery: suffix = "recovery"
+            case .hrv: suffix = "hrv"
+            case .rhr: suffix = "rhr"
+            }
+            insights.append(AtriaInsight(id: "\(lane.summary.tag.rawValue)-\(suffix)",
+                                         tagLabel: lane.summary.tag.label,
+                                         metric: lane.metric,
+                                         delta: lane.delta,
+                                         days: lane.summary.days,
+                                         comparisonDays: lane.summary.comparisonDays,
+                                         pValue: pValue,
+                                         expectedEffect: lane.summary.tag.expectedEffect,
+                                         isPrivate: lane.summary.tag.isPrivate,
+                                         survivesCorrection: pValue <= correctedThreshold))
         }
         guard shouldContinue() else { return nil }
         // Assessment P1.9: measured signals lead — HRV, then RHR — so the
@@ -24893,8 +25088,14 @@ final class SessionStore: ObservableObject {
             }
         }
         return insights.sorted { lhs, rhs in
+            if lhs.routingRank != rhs.routingRank {
+                return lhs.routingRank < rhs.routingRank
+            }
             if rank(lhs.metric) != rank(rhs.metric) {
                 return rank(lhs.metric) < rank(rhs.metric)
+            }
+            if lhs.survivesCorrection != rhs.survivesCorrection {
+                return lhs.survivesCorrection
             }
             return lhs.magnitude > rhs.magnitude
         }
@@ -47096,8 +47297,25 @@ final class SessionStore: ObservableObject {
                                               days: tagged.count,
                                               recoveryDelta: recoveryDelta,
                                               hrvDelta: hrvDelta,
-                                              rhrDelta: rhrDelta)
+                                              rhrDelta: rhrDelta,
+                                              comparisonDays: untagged.count,
+                                              recoveryPValue: recoveryDelta == nil ? nil
+                                                  : lanePValue(tagged.compactMap(\.recovery),
+                                                               untagged.compactMap(\.recovery)),
+                                              hrvPValue: hrvDelta == nil ? nil
+                                                  : lanePValue(tagged.compactMap(\.hrv),
+                                                               untagged.compactMap(\.hrv)),
+                                              rhrPValue: rhrDelta == nil ? nil
+                                                  : lanePValue(tagged.compactMap(\.rhr),
+                                                               untagged.compactMap(\.rhr)))
         }
+    }
+
+    /// Welch two-sided p-value for one tagged-vs-untagged lane; nil until both
+    /// sides carry a spread (two or more days each).
+    nonisolated static func lanePValue(_ tagged: [Double], _ untagged: [Double]) -> Double? {
+        guard tagged.count >= 2, untagged.count >= 2 else { return nil }
+        return AtriaBehaviorImpact.welchTwoSidedPValue(tagged, untagged)
     }
 
     nonisolated static func makeBehaviorCorrelationSummariesCancellable(
@@ -47211,25 +47429,41 @@ final class SessionStore: ObservableObject {
             let untaggedRecovery = averageDoubleSnapshot(
                 untagged.compactMap(\.recovery)
             )
-            let taggedHRV = averageDoubleSnapshot(tagged.compactMap(\.hrv))
-            let untaggedHRV = averageDoubleSnapshot(untagged.compactMap(\.hrv))
-            let taggedRHR = averageDoubleSnapshot(tagged.compactMap(\.rhr))
-            let untaggedRHR = averageDoubleSnapshot(untagged.compactMap(\.rhr))
+            let taggedHRVValues = tagged.compactMap(\.hrv)
+            let untaggedHRVValues = untagged.compactMap(\.hrv)
+            let taggedRHRValues = tagged.compactMap(\.rhr)
+            let untaggedRHRValues = untagged.compactMap(\.rhr)
+            let taggedHRV = averageDoubleSnapshot(taggedHRVValues)
+            let untaggedHRV = averageDoubleSnapshot(untaggedHRVValues)
+            let taggedRHR = averageDoubleSnapshot(taggedRHRValues)
+            let untaggedRHR = averageDoubleSnapshot(untaggedRHRValues)
+            let recoveryDelta: Double? = tagged.count >= 3
+                ? taggedRecovery.flatMap { taggedValue in
+                    untaggedRecovery.map { taggedValue - $0 }
+                } : nil
+            let hrvDelta: Double? = tagged.count >= 3
+                ? taggedHRV.flatMap { taggedValue in
+                    untaggedHRV.map { taggedValue - $0 }
+                } : nil
+            let rhrDelta: Double? = tagged.count >= 3
+                ? taggedRHR.flatMap { taggedValue in
+                    untaggedRHR.map { taggedValue - $0 }
+                } : nil
+            guard shouldContinue() else { return nil }
             result.append(.init(
                 tag: tag,
                 days: tagged.count,
-                recoveryDelta: tagged.count >= 3
-                    ? taggedRecovery.flatMap { taggedValue in
-                        untaggedRecovery.map { taggedValue - $0 }
-                    } : nil,
-                hrvDelta: tagged.count >= 3
-                    ? taggedHRV.flatMap { taggedValue in
-                        untaggedHRV.map { taggedValue - $0 }
-                    } : nil,
-                rhrDelta: tagged.count >= 3
-                    ? taggedRHR.flatMap { taggedValue in
-                        untaggedRHR.map { taggedValue - $0 }
-                    } : nil
+                recoveryDelta: recoveryDelta,
+                hrvDelta: hrvDelta,
+                rhrDelta: rhrDelta,
+                comparisonDays: untagged.count,
+                recoveryPValue: recoveryDelta == nil ? nil
+                    : lanePValue(tagged.compactMap(\.recovery),
+                                 untagged.compactMap(\.recovery)),
+                hrvPValue: hrvDelta == nil ? nil
+                    : lanePValue(taggedHRVValues, untaggedHRVValues),
+                rhrPValue: rhrDelta == nil ? nil
+                    : lanePValue(taggedRHRValues, untaggedRHRValues)
             ))
         }
         return shouldContinue() ? result : nil

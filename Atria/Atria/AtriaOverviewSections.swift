@@ -10388,7 +10388,7 @@ struct AtriaInsightsCard: View, Equatable {
                         lookback: .month
                     )
                 }
-                ForEach(insights.prefix(3)) { insight in
+                ForEach(insights.filter { !$0.isPrivate }.prefix(3)) { insight in
                     insightRow(insight)
                 }
             }
@@ -10398,7 +10398,7 @@ struct AtriaInsightsCard: View, Equatable {
 
     private func insightRow(_ i: AtriaInsight) -> some View {
         let up = i.isPositive
-        let tint: Color = up ? Metrics.electricGreen : Metrics.electricRed
+        let tint = AtriaTodayLearningsFeed.tint(for: i.tone)
         return HStack(spacing: 12) {
             Image(systemName: i.symbolName)
                 .font(.title2.weight(.semibold))
@@ -10411,7 +10411,8 @@ struct AtriaInsightsCard: View, Equatable {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Spacer(minLength: 8)
-            Image(systemName: up ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+            Image(systemName: i.tone == .neutral ? "minus.circle.fill"
+                              : (up ? "arrow.up.circle.fill" : "arrow.down.circle.fill"))
                 .font(.title3)
                 .foregroundStyle(tint)
                 .symbolRenderingMode(.hierarchical)

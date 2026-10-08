@@ -42,14 +42,27 @@ struct AtriaTodayLearningsFeed: View {
                      detail: insight.detail,
                      tint: insight.pictureTint)
             }
-        let behaviorItems = behavior.prefix(3).map { insight in
+        // 2026-10-08: only headline-grade tag findings ride the glanceable
+        // deck (survive the family-wise correction, never an intimacy tag);
+        // the Overview card and the tag sheet carry the fuller list.
+        let behaviorItems = behavior.filter(\.isHeadlineGrade).prefix(3).map { insight in
             Item(id: "behavior-\(insight.id)",
                  systemImage: insight.symbolName,
                  headline: insight.headline,
                  detail: insight.detail,
-                 tint: insight.isPositive ? Metrics.electricGreen : Metrics.electricRed)
+                 tint: Self.tint(for: insight.tone))
         }
         return learnedItems + behaviorItems
+    }
+
+    /// Hue only for the state of the wearer's numbers; a finding that runs
+    /// against expectation ("alcohol isn't hurting HRV so far") stays neutral.
+    static func tint(for tone: AtriaInsight.Tone) -> Color {
+        switch tone {
+        case .supportive: return Metrics.electricGreen
+        case .unsupportive: return Metrics.electricRed
+        case .neutral: return .secondary
+        }
     }
 
     static func visible(_ items: [Item], dismissed: Set<String>) -> [Item] {

@@ -243,8 +243,7 @@ struct AtriaLearnedInsightsSheet: View {
     }
 
     private func taggedInsightRow(_ insight: AtriaInsight) -> some View {
-        let up = insight.isPositive
-        let tint = up ? Metrics.electricGreen : Metrics.electricRed
+        let tint = AtriaTodayLearningsFeed.tint(for: insight.tone)
         return HStack(alignment: .top, spacing: 12) {
             Image(systemName: insight.symbolName)
                 .font(.body.weight(.semibold))
