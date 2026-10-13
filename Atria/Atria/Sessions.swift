@@ -45536,6 +45536,7 @@ final class SessionStore: ObservableObject {
         let known = Set(previous.map(\.id))
         return saved.contains {
             !known.contains($0.id) && $0.end.timeIntervalSince($0.start) >= 3 * 3600
+                && HealthKitExporter.sleepIsExportable($0)
         }
     }
 
