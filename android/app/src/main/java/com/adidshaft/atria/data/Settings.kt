@@ -133,6 +133,8 @@ data class StrapState(
     val parkedAt: Long? = null,
     /** Last time a drain slice durably saved rows. */
     val lastProductiveSliceAt: Long? = null,
+    /** User-started "catch up faster" boost (auto-reverts when caught up). */
+    val catchUpBoost: Boolean = false,
 )
 
 class SettingsRepository(private val context: Context) {

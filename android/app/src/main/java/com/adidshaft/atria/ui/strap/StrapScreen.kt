@@ -110,6 +110,18 @@ fun StrapScreen(vm: AppViewModel, onBack: () -> Unit) {
                     strap.lastHistorySyncAt?.let { KeyValueRow("Last sync", "${clock(it)} (${ago(it)})") }
                     KeyValueRow("Records saved", "${strap.historyRecordsSaved}")
                     KeyValueRow("Clock offset", "${strap.clockOffsetSeconds} s")
+                    when (live.boost) {
+                        com.adidshaft.atria.analytics.CatchUpBoost.Decision.SUGGEST -> {
+                            Spacer(Modifier.height(8.dp))
+                            PillButton("Catch up faster ${com.adidshaft.atria.analytics.CatchUpBoost.behindDescription(live.pendingRecords) ?: ""}", Modifier.fillMaxWidth(), color = AtriaColors.stress, height = 44.dp) { g.strap.setCatchUpBoost(true) }
+                            Text("Pauses live motion and syncs back-to-back until caught up, then switches itself off. Fastest on a charger.", style = MaterialTheme.typography.bodySmall, color = s.textTertiary)
+                        }
+                        com.adidshaft.atria.analytics.CatchUpBoost.Decision.ACTIVE -> {
+                            Spacer(Modifier.height(8.dp))
+                            PillButton("Stop catching up", Modifier.fillMaxWidth(), color = s.inset, contentColor = s.textPrimary, height = 44.dp) { g.strap.setCatchUpBoost(false) }
+                        }
+                        else -> {}
+                    }
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         PillButton("Sync now", Modifier.weight(1f), color = AtriaColors.strain, height = 46.dp) { StrapService.start(ctx, StrapService.ACTION_SYNC) }

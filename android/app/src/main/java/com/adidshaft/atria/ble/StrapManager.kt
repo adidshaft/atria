@@ -69,6 +69,9 @@ data class LiveState(
     val pendingRecords: Long? = null,
     val packets: Long = 0,
     val lastError: String? = null,
+    /** AtriaLiveDataNote: why live data is deliberately paused (null when live). */
+    val powerNote: String? = null,
+    val boost: com.adidshaft.atria.analytics.CatchUpBoost.Decision = com.adidshaft.atria.analytics.CatchUpBoost.Decision.IDLE,
     val discovered: List<DiscoveredStrap> = emptyList(),
 ) {
     val hrFresh get() = heartRate > 0 && System.currentTimeMillis() - heartRateAt < 15_000
@@ -117,6 +120,8 @@ class StrapManager(private val context: Context, private val repo: Repository) {
     private var clockOffsetSeconds = 0L
     private val liveBuffer = LiveSampleBuffer(repo)
     private var rawPackets = 0L
+    private var powerDecision: com.adidshaft.atria.analytics.PowerPolicy.Decision? = null
+    private var boostActive = false
     /** Rolling raw-frame log for the developer screen (AtriaIMUDiagnosticTransport evidence). */
     private val frameLog = java.util.ArrayDeque<String>()
     fun recentFrames(): List<String> = synchronized(frameLog) { frameLog.toList() }
@@ -152,6 +157,7 @@ class StrapManager(private val context: Context, private val repo: Repository) {
         scope.launch {
             val s = repo.settings.currentStrap()
             clockOffsetSeconds = s.clockOffsetSeconds
+            boostActive = s.catchUpBoost
             allDayMotion = repo.settings.current().allDayMotion
             _state.update { it.copy(battery = s.batteryLevel, firmware = s.firmware, pendingRecords = s.pendingRecords) }
         }
@@ -242,10 +248,63 @@ class StrapManager(private val context: Context, private val repo: Repository) {
 
     /** Workout lease: make sure compact IMU is on for the duration regardless of the all-day choice. */
     fun setWorkoutMotion(active: Boolean) = handler.post {
-        if (active) { motion.resetSession(); setImu(true) } else if (!allDayMotion) setImu(false)
+        workoutLease = active
+        if (active) { motion.resetSession(); if (powerDecision?.reason != "strap_critical") setImu(true) } else if (!allDayMotion || powerDecision?.liveMotionAllowed == false) setImu(false)
     }
 
     fun sessionSteps() = motion.sessionSteps
+    private var workoutLease = false
+
+    /** "Catch up faster": back-to-back history slices with live motion off until caught up. */
+    fun setCatchUpBoost(on: Boolean) = handler.post {
+        boostActive = on
+        scope.launch { repo.settings.updateStrap { it.copy(catchUpBoost = on) } }
+        if (on) { setImu(false); startDrainIfIdle() } else if (allDayMotion && powerDecision?.liveMotionAllowed != false) setImu(true)
+        evaluatePower()
+    }
+
+    private fun phoneInputs(): com.adidshaft.atria.analytics.PowerPolicy.Inputs {
+        val bm = context.getSystemService(android.os.BatteryManager::class.java)
+        val pm = context.getSystemService(android.os.PowerManager::class.java)
+        val thermal = if (Build.VERSION.SDK_INT >= 29) when (pm.currentThermalStatus) {
+            android.os.PowerManager.THERMAL_STATUS_NONE -> com.adidshaft.atria.analytics.PowerPolicy.Thermal.NOMINAL
+            android.os.PowerManager.THERMAL_STATUS_LIGHT -> com.adidshaft.atria.analytics.PowerPolicy.Thermal.FAIR
+            android.os.PowerManager.THERMAL_STATUS_MODERATE, android.os.PowerManager.THERMAL_STATUS_SEVERE -> com.adidshaft.atria.analytics.PowerPolicy.Thermal.SERIOUS
+            else -> com.adidshaft.atria.analytics.PowerPolicy.Thermal.CRITICAL
+        } else com.adidshaft.atria.analytics.PowerPolicy.Thermal.NOMINAL
+        val s = _state.value
+        return com.adidshaft.atria.analytics.PowerPolicy.Inputs(
+            s.battery, s.charging, bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 },
+            bm?.isCharging == true, pm?.isPowerSaveMode == true, thermal,
+        )
+    }
+
+    /** AtriaWhoop4PowerPolicy applied to the link: IMU on/off, sync cadence, user-visible note. */
+    private fun evaluatePower() {
+        val inputs = phoneInputs()
+        val d = com.adidshaft.atria.analytics.PowerPolicy.evaluate(inputs, powerDecision)
+        powerDecision = d
+        val connected = _state.value.status == LinkStatus.CONNECTED
+        val wantImu = (allDayMotion && d.liveMotionAllowed && !boostActive) || (workoutLease && d.reason != "strap_critical")
+        if (connected && wantImu != imuEnabled) setImu(wantImu)
+        val pending = _state.value.pendingRecords
+        val boost = com.adidshaft.atria.analytics.CatchUpBoost.decide(pending, (pending ?: 0) > 0, boostActive)
+        if (boost == com.adidshaft.atria.analytics.CatchUpBoost.Decision.AUTO_REVERT) {
+            boostActive = false
+            scope.launch { repo.settings.updateStrap { it.copy(catchUpBoost = false) } }
+            log("power", "catch-up boost auto-reverted")
+        }
+        val note = if (boostActive) "Catching up history · live motion paused" else com.adidshaft.atria.analytics.PowerPolicy.note(d, inputs)
+        _state.update { it.copy(powerNote = note, boost = if (boostActive) com.adidshaft.atria.analytics.CatchUpBoost.Decision.ACTIVE else com.adidshaft.atria.analytics.CatchUpBoost.decide(pending, (pending ?: 0) > 0, false)) }
+        // Sync cadence: paused / every 5 or 30 min / ASAP on a charger / back-to-back while boosting.
+        val interval = when {
+            boostActive -> 0L
+            d.flush is com.adidshaft.atria.analytics.PowerPolicy.Flush.Paused -> Long.MAX_VALUE
+            d.flush is com.adidshaft.atria.analytics.PowerPolicy.Flush.Asap -> 60_000L
+            else -> (d.flush as com.adidshaft.atria.analytics.PowerPolicy.Flush.Periodic).intervalMs
+        }
+        if (connected && !drain.isActive && (pending ?: 1) > 0 && interval != Long.MAX_VALUE && System.currentTimeMillis() - lastDrainAt >= interval) startDrainIfIdle()
+    }
 
     /**
      * Developer diagnostics: an explicit allowlist of read-only / reversible commands
@@ -445,7 +504,7 @@ class StrapManager(private val context: Context, private val repo: Repository) {
         handler.postDelayed({
             if (_state.value.status != LinkStatus.CONNECTED) return@postDelayed
             sendCommand(Cmd.GET_CLOCK, byteArrayOf(0x00))
-            if (allDayMotion) setImu(true)
+            if (allDayMotion && !boostActive && powerDecision?.liveMotionAllowed != false) setImu(true)
             if (drainRequested || System.currentTimeMillis() - lastDrainAt > 30 * 60_000) startDrainIfIdle()
         }, 1_500)
     }
@@ -669,6 +728,7 @@ class StrapManager(private val context: Context, private val repo: Repository) {
             enqueue(Op.Notify(WhoopUuids.heartRateMeasurement, true))
             if (now - s.heartRateAt > 240_000) { teardown(); setStatus(LinkStatus.DISCONNECTED); scheduleReconnect() }
         }
+        evaluatePower()
         liveBuffer.flushIfDue(now)
         motion.flushIfStale(now)?.let { m -> scope.launch { repo.insertMotion(listOf(m)) } }
         handler.postDelayed(::watchdog, 10_000)

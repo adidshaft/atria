@@ -86,3 +86,30 @@ class DeviceUseTest {
         assertTrue(scrolling.isEmpty())
     }
 }
+
+class PowerPolicyTest {
+    private fun i(strap: Int?, strapChg: Boolean = false, phone: Int? = 80, phoneChg: Boolean = false, save: Boolean = false, t: com.adidshaft.atria.analytics.PowerPolicy.Thermal = com.adidshaft.atria.analytics.PowerPolicy.Thermal.NOMINAL) =
+        com.adidshaft.atria.analytics.PowerPolicy.Inputs(strap, strapChg, phone, phoneChg, save, t)
+
+    @Test fun hysteresisAndPriorities() {
+        val P = com.adidshaft.atria.analytics.PowerPolicy
+        assertEquals("normal", P.evaluate(i(60), null).reason)
+        val low = P.evaluate(i(14), null); assertEquals("strap_low_live_off", low.reason)
+        // Blocked below 15 stays blocked until 18 (hysteresis).
+        assertEquals("strap_low_live_off", P.evaluate(i(16), low).reason)
+        assertEquals("normal", P.evaluate(i(18), low).reason)
+        assertEquals("strap_critical", P.evaluate(i(5), null).reason)
+        assertEquals("charging", P.evaluate(i(5, strapChg = true), null).reason)
+        assertEquals("phone_conserving", P.evaluate(i(60, save = true), null).reason)
+        assertEquals(com.adidshaft.atria.analytics.PowerPolicy.Flush.Periodic(P.CONSERVING_FLUSH_MS), P.evaluate(i(60, phone = 15), null).flush)
+    }
+
+    @Test fun boostSuggestsAndAutoReverts() {
+        val B = com.adidshaft.atria.analytics.CatchUpBoost
+        assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.IDLE, B.decide(3600, true, false))
+        assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.SUGGEST, B.decide(5 * 3600, true, false))
+        assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.ACTIVE, B.decide(5 * 3600, true, true))
+        assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.AUTO_REVERT, B.decide(0, false, true))
+        assertEquals("~5h behind", B.behindDescription(5 * 3600))
+    }
+}

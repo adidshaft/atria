@@ -205,6 +205,9 @@ fun TabPage(vm: AppViewModel, nav: NavHostController, onQuick: () -> Unit, conte
                 com.adidshaft.atria.ui.components.CircleButton(Icons.Filled.Settings, "Settings") { nav.navigate("settings") }
             }
         }
+        live.powerNote?.let { note ->
+            item { Text(note, style = MaterialTheme.typography.bodySmall, color = s.textSecondary, modifier = Modifier.padding(start = 8.dp)) }
+        }
         if (live.drainActive || live.status == LinkStatus.CONNECTING || live.status == LinkStatus.DISCONNECTED) {
             item {
                 Row(
