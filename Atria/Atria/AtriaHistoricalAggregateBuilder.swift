@@ -250,6 +250,13 @@ enum AtriaHistoricalAggregateBuilder {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let content = (try? encoder.encode(aggregate)) ?? Data()
+        return semanticParityReceipt(forCanonicalEncoding: content)
+    }
+
+    /// Receipt for bytes already produced by the canonical encoder
+    /// (iso8601 dates, sorted keys, unescaped slashes) — lets a caller that
+    /// needs the canonical encoding anyway avoid a second encode.
+    static func semanticParityReceipt(forCanonicalEncoding content: Data) -> String {
         let digest = SHA256.hash(data: content).map { String(format: "%02x", $0) }.joined()
         return "historical-semantic-parity-v2-\(digest)"
     }

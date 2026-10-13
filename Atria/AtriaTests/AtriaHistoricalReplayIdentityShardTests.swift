@@ -315,6 +315,17 @@ final class AtriaHistoricalReplayIdentityShardTests: XCTestCase {
         XCTAssertLessThanOrEqual(replay.bytesAfter, replay.bytesBefore)
     }
 
+    /// Build 99: integrity scans + VACUUM ran on every compaction even with
+    /// nothing deleted. Rewrite only after a real prune or a large free list.
+    func testStorageRewriteRunsOnlyWhenItCanReclaimSomething() {
+        typealias Index = AtriaHistoricalRetiredReplayIndex
+        XCTAssertTrue(Index.storageRewriteIsDue(removedRows: true, freelistPages: 0, totalPages: 100))
+        XCTAssertFalse(Index.storageRewriteIsDue(removedRows: false, freelistPages: 0, totalPages: 100))
+        XCTAssertFalse(Index.storageRewriteIsDue(removedRows: false, freelistPages: 24, totalPages: 100))
+        XCTAssertTrue(Index.storageRewriteIsDue(removedRows: false, freelistPages: 25, totalPages: 100),
+                      "an interrupted earlier pass still gets its pages back")
+    }
+
     func testSyntheticMultiYearExpiredReplayPlateausAfterVacuum() throws {
         let root = try makeRoot(named: "AtriaHistoricalReplayMultiYearTests")
         let database = root.appendingPathComponent("retired.sqlite")

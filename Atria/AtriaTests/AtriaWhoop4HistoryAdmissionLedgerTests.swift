@@ -787,6 +787,29 @@ final class AtriaWhoop4HistoryAdmissionLedgerTests: XCTestCase {
                        "repeated full-flash drains remain exact across attempts")
     }
 
+    /// Build 99 diskwrites_resource (4.3 GB / 4.6 h): FULL fsync per batch,
+    /// 1 MB autocheckpoints and a TRUNCATE + vacuum on every prune. Heavy
+    /// maintenance now waits for the daily charging window (72 h backstop).
+    func testFullLedgerMaintenanceWaitsForChargingWindowWithBackstop() throws {
+        typealias Ledger = AtriaWhoop4HistoryAdmissionLedger
+        let hour: TimeInterval = 3_600
+        XCTAssertTrue(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: nil, now: 0, phoneCharging: false))
+        XCTAssertFalse(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: 0, now: 2 * hour, phoneCharging: true))
+        XCTAssertFalse(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: 0, now: 30 * hour, phoneCharging: false))
+        XCTAssertTrue(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: 0, now: 21 * hour, phoneCharging: true))
+        XCTAssertTrue(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: 0, now: 72 * hour, phoneCharging: false))
+        XCTAssertTrue(Ledger.fullMaintenanceIsDue(lastFullMaintenanceUnix: 100, now: 50, phoneCharging: false),
+                      "a clock moved backwards never strands maintenance")
+        XCTAssertEqual(Ledger.walAutocheckpointPages, 4_096)
+
+        let fixture = try Fixture()
+        let ledger = try fixture.ledger()
+        _ = try ledger.prune(now: Date(timeIntervalSince1970: 1_000))
+        // The first pass recorded its full maintenance; the next unplugged
+        // pass an hour later must stay on the PASSIVE path and still succeed.
+        _ = try ledger.prune(now: Date(timeIntervalSince1970: 1_000 + hour))
+    }
+
     func testRetentionNeverPrunesActiveOrUndurableRowsAndReplayIsRePersisted() throws {
         let fixture = try Fixture()
         let ledger = try fixture.ledger()

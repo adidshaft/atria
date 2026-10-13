@@ -37,6 +37,9 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
         // response. Scheduling-time registration is too late and can leave the
         // app open on its launch surface without applying the requested route.
         LocalNotificationScheduler.configureForApplicationLaunch()
+        // Debug/TestFlight only: main-thread stall log + MetricKit diagnostic
+        // payloads (hang/CPU/disk-write/crash stacks) into the container.
+        AtriaMainThreadWatchdog.shared.install()
         // 2026-08-06 sleep-onset device-use journal: lock/unlock observation
         // must span the whole process lifetime, so register exactly once at
         // launch. Protected-data notifications are the primary in-use signal

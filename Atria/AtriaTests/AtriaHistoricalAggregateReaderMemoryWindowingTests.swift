@@ -77,6 +77,56 @@ final class AtriaHistoricalAggregateReaderMemoryWindowingTests: XCTestCase {
                        "the tampered aggregate must be rejected, not silently dropped")
     }
 
+    /// Build 99: 20 of 23 cpu_resource_fatal kills were this digest decoding and
+    /// re-encoding every committed aggregate twice per call. A warm call must
+    /// reuse the per-process verdict and still produce the identical digest.
+    func testWarmDigestReusesVerifiedAggregatesAndStaysByteIdentical() throws {
+        let fixture = try multiChunkFixture()
+        let reader = AtriaHistoricalAggregateReader(aggregateDirectoryURL: fixture.aggregates,
+                                                    manifestDirectoryURL: fixture.manifests)
+        VerifiedAggregateMemo.shared.removeAll()
+
+        let cold = try XCTUnwrap(reader.streamedWholeArchiveDigest(limits: limits))
+        XCTAssertEqual(VerifiedAggregateMemo.shared.count, 3,
+                       "only the three accepted aggregates are memoized; the tampered one is not")
+        let warm = try XCTUnwrap(reader.streamedWholeArchiveDigest(limits: limits))
+        XCTAssertEqual(warm.digest, cold.digest)
+        XCTAssertEqual(warm.sources, cold.sources)
+        XCTAssertEqual(warm.diagnostics, cold.diagnostics)
+
+        let whole = reader.load(limits: limits)
+        let wholeBufferDigest = AtriaHistoricalDrainCompletionGenerationStore.sha256(
+            try AtriaHistoricalActivityInspectionProofFactory.canonicalAggregateSnapshotData(whole)
+        )
+        XCTAssertEqual(warm.digest, wholeBufferDigest)
+    }
+
+    /// A memo hit must never vouch for bytes that changed after validation:
+    /// the SHA-256 is re-checked against the manifest on every pass.
+    func testWarmDigestStillRejectsAnAggregateTamperedAfterItWasMemoized() throws {
+        let fixture = try multiChunkFixture()
+        let reader = AtriaHistoricalAggregateReader(aggregateDirectoryURL: fixture.aggregates,
+                                                    manifestDirectoryURL: fixture.manifests)
+        VerifiedAggregateMemo.shared.removeAll()
+        let cold = try XCTUnwrap(reader.streamedWholeArchiveDigest(limits: limits))
+        XCTAssertEqual(cold.diagnostics.acceptedAggregates, 3)
+
+        let first = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: fixture.aggregates, includingPropertiesForKeys: nil)
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                .first
+        )
+        var bytes = try Data(contentsOf: first)
+        let last = bytes.index(before: bytes.endIndex)
+        bytes[last] = bytes[last] == 0x7D ? 0x5D : 0x7D
+        try bytes.write(to: first)
+
+        let warm = try XCTUnwrap(reader.streamedWholeArchiveDigest(limits: limits))
+        XCTAssertEqual(warm.diagnostics.acceptedAggregates, 2)
+        XCTAssertEqual(warm.diagnostics.rejectedManifests, 2)
+        XCTAssertNotEqual(warm.digest, cold.digest)
+    }
+
     func testWindowedLoadMatchesWholeLoadFilteredToTheSameRange() throws {
         let fixture = try multiChunkFixture()
         let reader = AtriaHistoricalAggregateReader(aggregateDirectoryURL: fixture.aggregates,

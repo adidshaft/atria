@@ -314,6 +314,14 @@ final class AtriaHistoricalArchiveDurableStore {
     private var lastPruneAtUnix: TimeInterval
     /// Consecutive prunes whose compaction was cut short by a process death.
     private var interruptedCompactionRetries: Int = 0
+    /// Last streaming identity compaction (`at`, resulting index bytes). The
+    /// stream pass rewrites the whole oversized index under `lock`, and
+    /// `flush` reaches it on every drain-effect batch; build 99's 0x8BADF00D
+    /// caught the main thread waiting behind exactly this pass. Nothing new can
+    /// age out between back-to-back flushes, so repeat passes are gated.
+    private var lastIdentityStreamCompaction: (at: TimeInterval, bytes: UInt64)?
+    static let identityStreamCompactionMinimumInterval: TimeInterval = 60 * 60
+    static let identityStreamCompactionGrowthAllowanceBytes: UInt64 = 4 * 1_024 * 1_024
     private var durableSequence: UInt64 = 0
     private var receiptChainSHA256 = String(repeating: "0", count: 64)
 
@@ -973,10 +981,21 @@ final class AtriaHistoricalArchiveDurableStore {
             // once the file drops back under the eager threshold the next
             // launch materializes normally and `rebuildDerivedIndex` performs
             // the per-key dedupe this pass deliberately does not attempt.
-            let compacted = (try? compactIdentityIndexOutsideHorizonLocked(
-                cutoff: cutoff,
-                protectedKeys: protectedKeys
-            )) ?? 0
+            let compacted: Int
+            if Self.identityStreamCompactionIsDue(
+                last: lastIdentityStreamCompaction,
+                now: pruningDate.timeIntervalSince1970,
+                currentBytes: identityIndexByteCount()
+            ) {
+                compacted = (try? compactIdentityIndexOutsideHorizonLocked(
+                    cutoff: cutoff,
+                    protectedKeys: protectedKeys
+                )) ?? 0
+                lastIdentityStreamCompaction = (pruningDate.timeIntervalSince1970,
+                                                identityIndexByteCount())
+            } else {
+                compacted = 0
+            }
             return max(max(lookupRemoved, expired.count), compacted)
         }
         guard !expired.isEmpty else { return 0 }
@@ -986,6 +1005,21 @@ final class AtriaHistoricalArchiveDurableStore {
         statesByKey = retained
         persistDerivedIndexSnapshotBestEffort()
         return expired.count
+    }
+
+    nonisolated static func identityStreamCompactionIsDue(
+        last: (at: TimeInterval, bytes: UInt64)?,
+        now: TimeInterval,
+        currentBytes: UInt64
+    ) -> Bool {
+        guard let last else { return true }
+        if now < last.at || now - last.at >= identityStreamCompactionMinimumInterval { return true }
+        return currentBytes >= last.bytes &+ identityStreamCompactionGrowthAllowanceBytes
+    }
+
+    private func identityIndexByteCount() -> UInt64 {
+        ((try? fileManager.attributesOfItem(atPath: indexURL.path)[.size]) as? NSNumber)?
+            .uint64Value ?? 0
     }
 
     /// Streaming, bounded-memory compaction of the canonical identity JSONL.

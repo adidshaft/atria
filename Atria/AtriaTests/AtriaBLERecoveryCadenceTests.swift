@@ -3662,8 +3662,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let protectedDiscoveryStart = try XCTUnwrap(source.range(
             of: "if discoveryUsesProtectedStandardHR,\n                   (!protectedR10StreamSuppressed || compactIMURecoveryActive),\n                   ch.uuid == Self.UUIDs.strapStream5"
         ))
+        // The next branch is the connect-time diagnostic extra-notify lane
+        // (a13f8fe9); the protected stream-5 branch ends where it begins.
         let protectedDiscoveryEnd = try XCTUnwrap(source.range(
-            of: "} else if discoveryUsesProtectedStandardHR, UUIDs.allNotify.contains(ch.uuid)",
+            of: "} else if AtriaIMUDiagnosticTransport.isExtraNotifyLinkUpActive()",
             range: protectedDiscoveryStart.upperBound..<source.endIndex
         ))
         let protectedDiscovery = String(source[
@@ -14629,10 +14631,40 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertGreaterThan(AtriaBLEManager.reconnectLeaseTrailByteBudget, needed,
                             "trail must outlast the run it is used to judge")
 
-        // And the writer must actually use the budget rather than a literal.
+        // And the writer must actually use the budget rather than a literal,
+        // in its append-only file rather than the defaults plist (build 99
+        // diskwrites_resource: every stage rewrote the whole plist).
         let source = try leaseManagerSource()
-        XCTAssertTrue(source.contains("combined.suffix(Self.reconnectLeaseTrailByteBudget)"))
-        XCTAssertFalse(source.contains("combined.suffix(1600)"))
+        XCTAssertTrue(source.contains("AtriaReconnectLeaseTrail.shared.record("))
+        XCTAssertFalse(source.contains("forKey: ReconnectLeaseDefaults.trail)"))
+        XCTAssertEqual(AtriaReconnectLeaseTrail.shared.byteBudget,
+                       AtriaBLEManager.reconnectLeaseTrailByteBudget)
+    }
+
+    func testReconnectLeaseTrailFileKeepsTheNewestWholeLinesWithinBudget() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lease-trail-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suite = "lease-trail-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("legacy", forKey: AtriaBLEManager.ReconnectLeaseDefaults.trail)
+
+        let trail = AtriaReconnectLeaseTrail(
+            fileURL: directory.appendingPathComponent("trail.log"),
+            byteBudget: 512
+        )
+        for index in 0..<200 {
+            trail.record("\(1_800_000_000 + index)|stage_\(index)|detail", defaults: defaults)
+        }
+        XCTAssertNil(defaults.string(forKey: AtriaBLEManager.ReconnectLeaseDefaults.trail),
+                     "the legacy plist copy is dropped on first write")
+        let fileBytes = try Data(contentsOf: trail.fileURL).count
+        XCTAssertLessThan(fileBytes, 2 * 512)
+        let lines = trail.contents().split(separator: "\n")
+        XCTAssertEqual(lines.last, "1800000199|stage_199|detail")
+        XCTAssertTrue(lines.allSatisfy { $0.split(separator: "|").count == 3 },
+                      "no torn entries survive trimming")
     }
 
     func testWatchdogPeripheralReleasedRearmsPassivelyWithoutTheRevertedChurn() throws {

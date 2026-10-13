@@ -351,6 +351,14 @@ final class AtriaHistoricalRetiredReplayIndex: @unchecked Sendable {
         }
     }
 
+    static func storageRewriteIsDue(removedRows: Bool,
+                                    freelistPages: Int,
+                                    totalPages: Int) -> Bool {
+        if removedRows { return true }
+        guard totalPages > 0, freelistPages > 0 else { return false }
+        return freelistPages * 4 >= totalPages
+    }
+
     /// Bounds lifetime replay storage without loading keys into memory.
     /// SQLite performs both deletes and VACUUM as crash-safe disk transactions;
     /// a process death after the logical prune but before VACUUM merely leaves
@@ -432,16 +440,29 @@ final class AtriaHistoricalRetiredReplayIndex: @unchecked Sendable {
             )
             try execute("COMMIT")
             try maintenanceCheckpoint(.logicalPruneCommitted)
-            try checkpointTruncateLocked()
-            guard try scalarText("PRAGMA integrity_check") == "ok" else {
-                throw IndexError.importVerificationFailed
-            }
-            // VACUUM uses SQLite's own rollback-safe temporary database and is
-            // streaming/page-bounded; it never materializes the key set in RAM.
-            try execute("VACUUM")
-            try checkpointTruncateLocked()
-            guard try scalarText("PRAGMA integrity_check") == "ok" else {
-                throw IndexError.importVerificationFailed
+            // Two whole-file integrity scans plus a whole-file VACUUM ran on
+            // every archive compaction even when nothing was deleted (build 99
+            // cpu_resource_fatal x2). Rewrite only when this pass freed rows or
+            // an earlier interrupted pass left a meaningful free list.
+            let removedRows = membershipsAfter != membershipsBefore
+                || identitiesAfter != identitiesBefore
+                || sourcesAfter != sourcesBefore
+            if Self.storageRewriteIsDue(
+                removedRows: removedRows,
+                freelistPages: try scalarInt("PRAGMA freelist_count", bindings: []),
+                totalPages: try scalarInt("PRAGMA page_count", bindings: [])
+            ) {
+                try checkpointTruncateLocked()
+                guard try scalarText("PRAGMA integrity_check") == "ok" else {
+                    throw IndexError.importVerificationFailed
+                }
+                // VACUUM uses SQLite's own rollback-safe temporary database and is
+                // streaming/page-bounded; it never materializes the key set in RAM.
+                try execute("VACUUM")
+                try checkpointTruncateLocked()
+                guard try scalarText("PRAGMA integrity_check") == "ok" else {
+                    throw IndexError.importVerificationFailed
+                }
             }
             try maintenanceCheckpoint(.vacuumCompleted)
             return .init(

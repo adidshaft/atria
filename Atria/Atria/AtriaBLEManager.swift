@@ -29049,19 +29049,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private nonisolated func recordReconnectLeaseStage(_ stage: String,
                                                        detail: String) {
-        let defaults = UserDefaults.standard
-        let now = Date().timeIntervalSince1970
-        let entry = "\(Int(now))|\(stage)|\(detail)"
-        let previous = defaults.string(forKey: ReconnectLeaseDefaults.trail) ?? ""
-        let combined = previous.isEmpty ? entry : previous + "\n" + entry
         // 1600 bytes held about four minutes of a churning link, which is less
         // than one locked out-of-range run: on 2026-07-25 the first two of
         // three 90 s cycles had already rotated out before the trail could be
-        // pulled, making that run unreadable rather than merely failed. This
-        // is the only forensic channel for a backgrounded process, so it has
-        // to outlast the longest evidence window it is used to judge.
-        defaults.set(String(combined.suffix(Self.reconnectLeaseTrailByteBudget)),
-                     forKey: ReconnectLeaseDefaults.trail)
+        // pulled. This is the only forensic channel for a backgrounded
+        // process, so it keeps `reconnectLeaseTrailByteBudget`; it lives in an
+        // append-only file because rewriting it into the defaults plist on
+        // every stage was a disk-write cost (build 99 diskwrites_resource).
+        let now = Date().timeIntervalSince1970
+        AtriaReconnectLeaseTrail.shared.record("\(Int(now))|\(stage)|\(detail)")
     }
 
     private func endBackgroundReconnectLease(reason: String) {
@@ -46513,12 +46509,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             return
         }
         historicalAdmissionMaintenanceScheduled = true
+        let phoneCharging = Self.phoneStateIsCharging(UIDevice.current.batteryState)
         historicalArchiveQueue.asyncAfter(deadline: .now() + .milliseconds(500)) {
-            [weak self, ledger, protectedAttemptIdentifiers] in
+            [weak self, ledger, protectedAttemptIdentifiers, phoneCharging] in
             let result: Result<AtriaWhoop4HistoryAdmissionLedger.PruneResult, Error>
             do {
                 result = .success(try ledger.prune(
-                    protectedAttemptIdentifiers: protectedAttemptIdentifiers
+                    protectedAttemptIdentifiers: protectedAttemptIdentifiers,
+                    phoneCharging: phoneCharging
                 ))
             } catch {
                 result = .failure(error)

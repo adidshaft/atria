@@ -216,6 +216,29 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         XCTAssertFalse(handler.contains("await MainActor.run"))
     }
 
+    /// Build 99 SIGABRT (2026-10-09): the `async` delegate's @objc thunk ran
+    /// UIKit's completion block on the cooperative pool. Keep the
+    /// completion-handler forms and finish on the main thread.
+    func testNotificationDelegateCompletesOnMainNotFromAsyncThunk() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/LocalNotificationScheduler.swift"), encoding: .utf8)
+
+        XCTAssertFalse(source.contains("didReceive response: UNNotificationResponse) async"))
+        XCTAssertFalse(source.contains("willPresent notification: UNNotification) async"))
+        XCTAssertTrue(source.contains("withCompletionHandler completionHandler: @escaping () -> Void)"))
+        XCTAssertTrue(source.contains("Self.completeOnMain(completionHandler)"))
+
+        let finished = expectation(description: "completion ran on main")
+        DispatchQueue.global().async {
+            NotificationDeliveryLogger.completeOnMain {
+                XCTAssertTrue(Thread.isMainThread)
+                finished.fulfill()
+            }
+        }
+        wait(for: [finished], timeout: 2)
+    }
+
     func testColdCacheSleepReviewRouteWaitsForResolvedCandidate() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let home = try String(contentsOf: testsDirectory.deletingLastPathComponent()

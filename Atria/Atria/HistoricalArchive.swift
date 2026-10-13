@@ -37,6 +37,10 @@ enum HistoricalArchive {
     private static let segmentsDirectoryName = "segments"
     private static let promotionLock = NSLock()
     private static let durableStoreLock = NSLock()
+    private static let durableLifecycleQueue = DispatchQueue(
+        label: "com.adidshaft.atria.historical-durable-lifecycle",
+        qos: .utility
+    )
     private static let archiveCatalogInitializationLock = NSLock()
     private static var durableStore: AtriaHistoricalArchiveDurableStore?
     private static var archiveCatalogStore: AtriaHistoricalArchiveCatalogStore?
@@ -3074,8 +3078,21 @@ enum HistoricalArchive {
         case resumeCompletionMismatch
     }
 
+    /// Main-thread callers never wait here: the archive queue holds
+    /// `durableStoreLock` across fsync and identity-index compaction, and a
+    /// background launch that blocked on it tripped the scene-create watchdog
+    /// (build 99, 0x8BADF00D). A contended main-thread call hands the release
+    /// to `durableLifecycleQueue`; batches are keyed by unique generation, so
+    /// releasing slightly later only delays when its keys stop being protected.
     static func endDurableDrain(generation: UInt64) {
-        durableStoreLock.lock()
+        if Thread.isMainThread {
+            guard durableStoreLock.try() else {
+                durableLifecycleQueue.async { endDurableDrain(generation: generation) }
+                return
+            }
+        } else {
+            durableStoreLock.lock()
+        }
         let batch = durableDrainBatches.removeValue(forKey: generation)
         if let batch {
             durableStore?.abandon(batch)

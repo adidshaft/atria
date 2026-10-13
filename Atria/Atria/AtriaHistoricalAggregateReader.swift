@@ -302,6 +302,7 @@ struct AtriaHistoricalAggregateReader {
             let manifest: AtriaHistoricalRetentionTransaction.Manifest
             let aggregateURL: URL
             let source: AtriaHistoricalAggregateChunk.Source
+            let memoKey: String
         }
         enum PassValidationFailed: Error { case mismatch }
 
@@ -352,6 +353,20 @@ struct AtriaHistoricalAggregateReader {
                     continue
                 }
                 totalAggregateBytes = nextTotal
+                let memoKey = VerifiedAggregateMemo.key(aggregateURL: aggregateURL,
+                                                        aggregateSHA256: manifest.aggregateSHA256,
+                                                        manifestData: manifestData)
+                if let verified = VerifiedAggregateMemo.shared.entry(for: memoKey) {
+                    // Same manifest bytes and same aggregate bytes (SHA-256
+                    // re-checked just above) as an earlier full validation in
+                    // this process: decode/validate/re-encode is
+                    // deterministic, so its verdict cannot differ.
+                    acceptedInFilenameOrder.append(.init(manifest: manifest,
+                                                         aggregateURL: aggregateURL,
+                                                         source: verified.source,
+                                                         memoKey: memoKey))
+                    continue
+                }
                 do {
                     let source = try autoreleasepool {
                         () throws -> AtriaHistoricalAggregateChunk.Source in
@@ -367,16 +382,30 @@ struct AtriaHistoricalAggregateReader {
                               aggregate.source.lastTimestamp == manifest.sourceLastTimestamp,
                               aggregate.heartRateMinutes.count == manifest.heartRateMinuteCount,
                               aggregate.rrEpochs.count == manifest.rrEpochCount,
-                              aggregate.motionEpochs.count == manifest.motionEpochCount,
-                              AtriaHistoricalAggregateBuilder.semanticParityReceipt(for: aggregate)
-                                == manifest.semanticParityReceipt else {
+                              aggregate.motionEpochs.count == manifest.motionEpochCount else {
                             throw PassValidationFailed.mismatch
                         }
+                        // One canonical encode serves both the semantic parity
+                        // receipt and the byte-identity check that lets later
+                        // passes hash the file bytes without decoding.
+                        let canonical = try AtriaHistoricalActivityInspectionProofFactory
+                            .canonicalAggregateElementData(aggregate)
+                        guard AtriaHistoricalAggregateBuilder.semanticParityReceipt(
+                            forCanonicalEncoding: canonical
+                        ) == manifest.semanticParityReceipt else {
+                            throw PassValidationFailed.mismatch
+                        }
+                        VerifiedAggregateMemo.shared.record(
+                            .init(source: aggregate.source,
+                                  canonicalBytesAreFileBytes: canonical == aggregateData),
+                            for: memoKey
+                        )
                         return aggregate.source
                     }
                     acceptedInFilenameOrder.append(.init(manifest: manifest,
                                                          aggregateURL: aggregateURL,
-                                                         source: source))
+                                                         source: source,
+                                                         memoKey: memoKey))
                 } catch {
                     rejected += 1
                 }
@@ -442,6 +471,16 @@ struct AtriaHistoricalAggregateReader {
                           AtriaHistoricalRetentionTransaction.sha256(of: data)
                             == entry.manifest.aggregateSHA256 else {
                         throw PassValidationFailed.mismatch
+                    }
+                    AtriaBackgroundWorkPacer.checkpoint()
+                    if let verified = VerifiedAggregateMemo.shared.entry(for: entry.memoKey),
+                       verified.canonicalBytesAreFileBytes,
+                       verified.source == entry.source {
+                        // The file IS the canonical element encoding (proven
+                        // byte-for-byte when it was first validated) and its
+                        // SHA-256 still matches, so hashing it directly is
+                        // byte-identical to decode + re-encode.
+                        return data
                     }
                     let aggregate = try decoder.decode(AtriaHistoricalAggregateChunk.self, from: data)
                     try aggregate.validateForCommit()
@@ -821,5 +860,63 @@ struct AtriaHistoricalAggregateReader {
     private func fileByteCount(at url: URL) throws -> UInt64 {
         let attributes = try fileManager.attributesOfItem(atPath: url.path)
         return (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+    }
+}
+
+/// Process-wide memo of committed manifest/aggregate pairs that already passed
+/// the full `streamedWholeArchiveDigest` validation (decode, `validateForCommit`,
+/// manifest field parity and semantic parity receipt). Build 99 spent 20 of 23
+/// `cpu_resource_fatal` kills re-decoding and re-encoding every committed
+/// aggregate twice per digest call; with this memo each pair is decoded once
+/// per process and later calls only re-hash the bytes.
+///
+/// The key binds the aggregate path, the aggregate SHA-256 the manifest
+/// commits to (re-verified against the file bytes on every pass) and the
+/// SHA-256 of the manifest bytes themselves, so every input of the cached
+/// verdict is pinned. Only successful verdicts are stored.
+final class VerifiedAggregateMemo: @unchecked Sendable {
+    struct Entry: Sendable {
+        let source: AtriaHistoricalAggregateChunk.Source
+        let canonicalBytesAreFileBytes: Bool
+    }
+
+    static let shared = VerifiedAggregateMemo()
+    static let maximumEntries = 8_192
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    static func key(aggregateURL: URL, aggregateSHA256: String, manifestData: Data) -> String {
+        let manifestDigest = SHA256.hash(data: manifestData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "\(aggregateURL.standardizedFileURL.path)|\(aggregateSHA256)|\(manifestDigest)"
+    }
+
+    func entry(for key: String) -> Entry? {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries[key]
+    }
+
+    func record(_ entry: Entry, for key: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if entries.count >= Self.maximumEntries, entries[key] == nil {
+            entries.removeAll(keepingCapacity: true)
+        }
+        entries[key] = entry
+    }
+
+    func removeAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.count
     }
 }

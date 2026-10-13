@@ -12,8 +12,12 @@ import SQLite3
 /// This ledger stores the complete payload as a SQLite BLOB, scoped by strap.
 /// SQLite's B-tree performs exact equality (the SHA-256-sized shortcuts used by
 /// other stores are deliberately not sufficient here), while a small negative
-/// page cache keeps resident memory bounded.  `synchronous=FULL` makes a newly
-/// inserted admission durable before `classify` returns `.firstSeen`.
+/// page cache keeps resident memory bounded.  WAL with `synchronous=NORMAL`
+/// makes a newly inserted admission survive any app crash or kill before
+/// `classify` returns `.firstSeen`; only an OS crash/power loss can roll back
+/// the last un-checkpointed commits, and every such frame is either un-ACKed
+/// (re-served by the strap) or already fsynced in the raw archive. FULL fsynced
+/// every batch commit and was build 99's 4.3 GB / 4.6 h diskwrites report.
 ///
 /// Raw archive durability remains a separate state.  A row is promoted to
 /// `archiveDurable` only after the archive and its identity index have fsynced.
@@ -42,6 +46,23 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
     /// meaningful I/O. Keep each maintenance pass deliberately small.
     static let productionMaximumIncrementalVacuumPagesPerPass = 128
     static let maximumClassificationBatch = 256
+    /// ~16 MB of WAL between automatic checkpoints (4 KiB pages). The old 256
+    /// pages checkpointed — and rewrote the main file — every ~1 MB.
+    static let walAutocheckpointPages = 4_096
+    /// TRUNCATE checkpoint + incremental vacuum rewrite pages; they run in the
+    /// daily charging window, with a backstop so an always-unplugged phone
+    /// still reclaims its WAL and free pages.
+    static let fullMaintenanceMinimumInterval: TimeInterval = 20 * 60 * 60
+    static let fullMaintenanceBackstopInterval: TimeInterval = 72 * 60 * 60
+
+    nonisolated static func fullMaintenanceIsDue(lastFullMaintenanceUnix: TimeInterval?,
+                                                 now: TimeInterval,
+                                                 phoneCharging: Bool) -> Bool {
+        guard let last = lastFullMaintenanceUnix, last <= now else { return true }
+        let elapsed = now - last
+        if elapsed >= fullMaintenanceBackstopInterval { return true }
+        return phoneCharging && elapsed >= fullMaintenanceMinimumInterval
+    }
     /// Covers the maximum 13-day recovery window (1,123,200 one-Hz rows) with
     /// headroom. Enumeration is streaming, so this is a safety ceiling rather
     /// than a resident-memory allocation. Post-proof retention remains lower.
@@ -175,11 +196,11 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             try execute("PRAGMA journal_mode=WAL")
             try execute(unsafeDisableDurabilityForTests
                         ? "PRAGMA synchronous=OFF"
-                        : "PRAGMA synchronous=FULL")
+                        : "PRAGMA synchronous=NORMAL")
             try execute("PRAGMA temp_store=FILE")
             try execute("PRAGMA foreign_keys=ON")
             try execute("PRAGMA busy_timeout=5000")
-            try execute("PRAGMA wal_autocheckpoint=256")
+            try execute("PRAGMA wal_autocheckpoint=\(Self.walAutocheckpointPages)")
             try execute("PRAGMA cache_size=-\(max(256, pageCacheKiB))")
             try execute("PRAGMA auto_vacuum=INCREMENTAL")
             if !databaseAlreadyExisted {
@@ -234,6 +255,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                 CREATE INDEX IF NOT EXISTS history_frame_attempt_pending
                 ON history_frame(last_attempt_id, archive_durable, last_ordinal)
                 """)
+            try execute("CREATE TABLE IF NOT EXISTS ledger_meta (key TEXT PRIMARY KEY NOT NULL, real_value REAL NOT NULL)")
             try execute("""
                 CREATE TABLE IF NOT EXISTS history_archive_receipt (
                     chain_digest TEXT PRIMARY KEY NOT NULL,
@@ -298,7 +320,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         }
     }
 
-    /// Inserts/looks up one complete frame in a FULL-synchronous transaction.
+    /// Inserts/looks up one complete frame in one WAL-durable transaction.
     /// This method is intentionally safe under competing ledger instances: the
     /// exact primary key and `BEGIN IMMEDIATE` serialize first admission.
     func classify(frame: Data, attempt: Attempt, now: Date = Date()) throws -> Classification {
@@ -537,7 +559,7 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
                     recordCount: cumulativeRecordCount,
                     byteCount: cumulativeByteCount)
         }
-        // FULL-synchronous COMMIT has returned before this timestamp is read.
+        // WAL COMMIT (app-crash durable) has returned before this timestamp is read.
         let durableCompletedAtUnix = durabilityNow().timeIntervalSince1970
         return (committed.changedRows, PrefixDurabilityReceipt(
             storeIdentifier: "whoop4-exact-admission-sqlite-prefix-v2",
@@ -849,7 +871,8 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
         identityRetention: TimeInterval = AtriaWhoop4HistoryAdmissionLedger.productionIdentityRetention,
         maximumRows: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumIdentityRows,
         maximumDeletesPerPass: Int = AtriaWhoop4HistoryAdmissionLedger.productionMaximumPruneDeletesPerPass,
-        protectedAttemptIdentifiers: Set<String> = []
+        protectedAttemptIdentifiers: Set<String> = [],
+        phoneCharging: Bool = false
     ) throws -> PruneResult {
         lock.lock()
         defer { lock.unlock() }
@@ -939,12 +962,40 @@ final class AtriaWhoop4HistoryAdmissionLedger: @unchecked Sendable {
             )
         }
         // Deleted pages remain reusable even when an older database was not
-        // created with incremental auto-vacuum. New ledgers also return free
-        // tail pages to the filesystem, and WAL truncation prevents a second
-        // unbounded sidecar from accumulating.
-        try execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        try execute("PRAGMA incremental_vacuum(\(Self.productionMaximumIncrementalVacuumPagesPerPass))")
+        // created with incremental auto-vacuum. Ordinary passes only fold the
+        // WAL back without blocking or truncating; the daily charging-window
+        // pass truncates the WAL and returns free tail pages to the filesystem
+        // so neither sidecar nor free list grows without bound.
+        let nowUnix = now.timeIntervalSince1970
+        if Self.fullMaintenanceIsDue(lastFullMaintenanceUnix: try lastFullMaintenanceUnix(),
+                                     now: nowUnix,
+                                     phoneCharging: phoneCharging) {
+            try execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            try execute("PRAGMA incremental_vacuum(\(Self.productionMaximumIncrementalVacuumPagesPerPass))")
+            try execute(
+                "INSERT INTO ledger_meta(key, real_value) VALUES('last_full_maintenance_unix', ?) "
+                    + "ON CONFLICT(key) DO UPDATE SET real_value = excluded.real_value",
+                bindings: [.double(nowUnix)]
+            )
+        } else {
+            try execute("PRAGMA wal_checkpoint(PASSIVE)")
+        }
         return result
+    }
+
+    private func lastFullMaintenanceUnix() throws -> TimeInterval? {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT real_value FROM ledger_meta WHERE key = 'last_full_maintenance_unix'",
+            -1, &statement, nil
+        ) == SQLITE_OK, let statement else {
+            sqlite3_finalize(statement)
+            throw LedgerError.sqlite(code: sqlite3_errcode(database), operation: "prepare_ledger_meta")
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_double(statement, 0)
     }
 
     func countsForDiagnostics() throws -> (frames: Int, activeAttempts: Int) {

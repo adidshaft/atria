@@ -280,6 +280,23 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
     }
 
     /// The retention decision itself, isolated from any file work.
+    /// Build 99 0x8BADF00D: `flush` re-streamed the whole oversized identity
+    /// index under the store lock on every drain batch. Repeat passes wait an
+    /// hour unless the file grew by the allowance.
+    func testIdentityStreamCompactionIsGatedBetweenFlushes() {
+        typealias Store = AtriaHistoricalArchiveDurableStore
+        let mib: UInt64 = 1_024 * 1_024
+        XCTAssertTrue(Store.identityStreamCompactionIsDue(last: nil, now: 1_000, currentBytes: 40 * mib))
+        let last = (at: TimeInterval(1_000), bytes: 40 * mib)
+        XCTAssertFalse(Store.identityStreamCompactionIsDue(last: last, now: 1_005, currentBytes: 40 * mib))
+        XCTAssertFalse(Store.identityStreamCompactionIsDue(last: last, now: 1_000 + 3_599, currentBytes: 43 * mib))
+        XCTAssertTrue(Store.identityStreamCompactionIsDue(last: last, now: 1_000 + 3_600, currentBytes: 40 * mib))
+        XCTAssertTrue(Store.identityStreamCompactionIsDue(last: last, now: 1_010, currentBytes: 44 * mib),
+                      "growth past the allowance compacts again without waiting")
+        XCTAssertTrue(Store.identityStreamCompactionIsDue(last: last, now: 900, currentBytes: 40 * mib),
+                      "a clock moved backwards never strands compaction")
+    }
+
     func testIdentityLineRetentionScannerMatchesTheParser() {
         let cutoff: TimeInterval = 1_800_000_000
         func retained(_ line: String, protected: Set<String> = []) -> Bool {

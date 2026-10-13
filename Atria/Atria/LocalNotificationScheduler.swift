@@ -2600,8 +2600,35 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         static let legacyDiagnostic = "atria.diagnostic.delivery"
     }
 
+    // Completion-handler forms, not `async`: the compiler-generated @objc
+    // thunk for an `async` delegate method resumes UIKit's completion block on
+    // the cooperative pool, and UIKit's notification-response bookkeeping
+    // (`_updateSnapshotAndStateRestorationWithAction`) asserts main-thread —
+    // build 99 SIGABRT, 2026-10-09. Both bodies are synchronous, so the block
+    // runs on the delegate's own (main) thread, with a main hop as a backstop.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        let options = presentationOptions(for: notification)
+        Self.completeOnMain { completionHandler(options) }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        handle(response: response)
+        Self.completeOnMain(completionHandler)
+    }
+
+    static func completeOnMain(_ body: @escaping () -> Void) {
+        if Thread.isMainThread {
+            body()
+        } else {
+            DispatchQueue.main.async(execute: body)
+        }
+    }
+
+    private func presentationOptions(for notification: UNNotification) -> UNNotificationPresentationOptions {
         let request = notification.request
         AtriaDebugLog("ATRIADBG notification_delivered kind=%@ id=%@ foreground=1",
               kind(for: request.identifier),
@@ -2612,8 +2639,7 @@ final class NotificationDeliveryLogger: NSObject, UNUserNotificationCenterDelega
         return [.banner, .list, .sound]
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter,
-                                didReceive response: UNNotificationResponse) async {
+    private func handle(response: UNNotificationResponse) {
         let request = response.notification.request
         let deepLink = request.content.userInfo["deepLink"] as? String
         // "Log how you feel" on the morning summary is folded into the same
