@@ -4115,3 +4115,23 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         }
     }
 }
+
+final class AtriaArchiveCompactionPacingTests: XCTestCase {
+    /// Soak 2026-10-13: compaction off a BGProcessing task was killed twice for
+    /// sustained CPU because the pacer had no lease to duty-cycle against.
+    func testAutomaticNonProcessingCompactionTakesThePacingLease() {
+        for reason in ["scene_background", "overdue_idle"] {
+            XCTAssertTrue(SessionStore.archiveCompactionNeedsPacingLease(
+                reason: reason, explicitDebugOverride: false, throttleActive: false), reason)
+            XCTAssertFalse(SessionStore.archiveCompactionNeedsPacingLease(
+                reason: reason, explicitDebugOverride: false, throttleActive: true), reason)
+        }
+        for reason in ["bg_processing", "bg_processing_cap_pressure"] {
+            XCTAssertFalse(SessionStore.archiveCompactionNeedsPacingLease(
+                reason: reason, explicitDebugOverride: false, throttleActive: false), reason)
+        }
+        XCTAssertFalse(SessionStore.archiveCompactionNeedsPacingLease(
+            reason: "overdue_idle", explicitDebugOverride: true, throttleActive: false))
+    }
+
+}

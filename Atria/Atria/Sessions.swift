@@ -28247,6 +28247,18 @@ final class SessionStore: ObservableObject {
             && now <= leaseExpiresAt
     }
 
+    /// Automatic compaction off a BGProcessing task runs under the
+    /// background CPU limit (80% over 60 s), so it must hold the shared
+    /// duty-cycle lease. BGProcessing tasks and the explicit debug run do not.
+    nonisolated static func archiveCompactionNeedsPacingLease(
+        reason: String,
+        explicitDebugOverride: Bool,
+        throttleActive: Bool
+    ) -> Bool {
+        guard !explicitDebugOverride, !throttleActive else { return false }
+        return reason == "scene_background" || reason == "overdue_idle"
+    }
+
     nonisolated static func archiveCompactionWorkerShouldContinue(
         _ lease: ArchiveCompactionBGProcessingLease?
     ) -> Bool {
@@ -28683,7 +28695,11 @@ final class SessionStore: ObservableObject {
             : Self.historySnapshotProjectionQueue
         workerQueue.async { [weak self] in
             let shouldContinue = {
-                admission.explicitDebugOverride
+                // Chunk-level loops (catalog verify, replay-index import,
+                // artifact GC) pace here; the digest/compression loops pace
+                // through their own pacer checkpoints.
+                AtriaBackgroundWorkPacer.checkpoint()
+                return admission.explicitDebugOverride
                     || Self.archiveCompactionWorkerShouldContinue(
                         admission.backgroundLease
                     )
@@ -28733,6 +28749,23 @@ final class SessionStore: ObservableObject {
                 remainingLease: admission.backgroundLease
                     .map { $0.expiresAt.timeIntervalSinceNow }
             )
+            // Soak 2026-10-13: two cpu_resource_fatal kills (48 s CPU in
+            // 52 s) inside compactArchive on the 180 s overdue_idle lease.
+            // The pacer only duty-cycles while the shared throttle holds a
+            // lease, and compaction never took one. Take it unless another
+            // background pass already holds it (which paces us anyway).
+            let pacingLease = Self.archiveCompactionNeedsPacingLease(
+                reason: admission.reason,
+                explicitDebugOverride: admission.explicitDebugOverride,
+                throttleActive: AtriaBackgroundProjectionThrottle.shared.isActive
+            ) ? AtriaBackgroundProjectionThrottle.shared.begin(
+                budgetSeconds: convergingBudget.elapsed
+            ) : nil
+            defer {
+                if let pacingLease {
+                    _ = AtriaBackgroundProjectionThrottle.shared.end(lease: pacingLease)
+                }
+            }
             let result = HistoricalArchive.compactArchiveConverging(
                 pinnedWindows: pinnedWindows,
                 reason: admission.reason,
