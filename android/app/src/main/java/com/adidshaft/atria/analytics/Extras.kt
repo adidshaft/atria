@@ -203,3 +203,52 @@ object Reports {
         rows.mapNotNull { it.steps?.toDouble() }.takeIf { it.isNotEmpty() }?.average(),
     )
 }
+
+/** AtriaUnattributedMotionRuns: sustained walking that no workout or sleep explains, asked about. */
+object MotionRuns {
+    const val ACTIVE_MINUTE_STEPS = 25
+    const val JOIN_GAP_MS = 20 * 60_000L
+    const val ASK_MIN_STEPS = 800
+    const val ASK_MIN_ACTIVE_MINUTES = 10
+    const val MAX_QUESTIONS_PER_DAY = 3
+
+    data class Run(val startMs: Long, val endMs: Long, val steps: Int, val activeMinutes: Int)
+
+    /** [minutes] = (minuteStartMs, steps); [explained] = workout/sleep intervals. */
+    fun askable(minutes: List<Pair<Long, Int>>, explained: List<LongRange>): List<Run> {
+        val active = minutes.filter { it.second >= ACTIVE_MINUTE_STEPS && explained.none { r -> it.first in r } }.sortedBy { it.first }
+        val runs = ArrayList<MutableList<Pair<Long, Int>>>()
+        for (m in active) {
+            val last = runs.lastOrNull()
+            if (last != null && m.first - last.last().first <= JOIN_GAP_MS) last += m else runs += mutableListOf(m)
+        }
+        return runs.map { r -> Run(r.first().first, r.last().first + 60_000, r.sumOf { it.second }, r.size) }
+            .filter { it.steps >= ASK_MIN_STEPS && it.activeMinutes >= ASK_MIN_ACTIVE_MINUTES }
+    }
+}
+
+/** AtriaNightBaseline: "ups and downs" of one night against the wearer's own recent nights. */
+object NightBaseline {
+    const val MIN_NIGHTS = 5
+    const val MAX_NIGHTS = 28
+    const val NOTABLE_Z = 1.0
+    const val UNUSUAL_Z = 2.5
+
+    data class Finding(val metric: String, val value: String, val z: Double) {
+        val unusual get() = kotlin.math.abs(z) >= UNUSUAL_Z
+        val label get() = (if (unusual) "Unusual for you" else "Notable") + if (z > 0) " · higher" else " · lower"
+    }
+
+    /** [metrics]: name → (tonight, history, formatter). History is the previous nights, newest first. */
+    fun compare(metrics: List<Triple<String, Double?, List<Double>>>, fmt: (String, Double) -> String): List<Finding>? {
+        val usable = metrics.filter { it.second != null && it.third.size >= MIN_NIGHTS }
+        if (usable.isEmpty()) return null
+        return usable.mapNotNull { (name, v, hist) ->
+            val h = hist.take(MAX_NIGHTS)
+            val m = h.average()
+            val sd = kotlin.math.sqrt(h.sumOf { (it - m) * (it - m) } / (h.size - 1)).coerceAtLeast(1e-6)
+            val z = (v!! - m) / sd
+            if (kotlin.math.abs(z) >= NOTABLE_Z) Finding(name, fmt(name, v), z) else null
+        }.sortedByDescending { kotlin.math.abs(it.z) }
+    }
+}

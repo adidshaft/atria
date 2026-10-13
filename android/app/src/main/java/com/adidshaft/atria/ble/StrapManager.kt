@@ -279,6 +279,22 @@ class StrapManager(private val context: Context, private val repo: Repository) {
         )
     }
 
+    /**
+     * AtriaWhoop4DailyMotionBankRearmPolicy: once per civil day arm the strap's historical motion
+     * bank (69/01) so motion keeps being stored while away from the phone. Fail-closed: only with
+     * fresh accepted HR (≤ 15 s), battery allowing, no workout, and no history serve in flight.
+     */
+    private fun maybeRearmMotionBank(now: Long) {
+        val s = _state.value
+        if (s.status != LinkStatus.CONNECTED || drain.isActive || workoutLease || opInFlight != null) return
+        if (!s.hrFresh || now - s.heartRateAt > 15_000 || powerDecision?.liveMotionAllowed == false) return
+        val st = runBlocking { repo.settings.currentStrap() }
+        val today = java.time.LocalDate.now().toEpochDay()
+        if (st.motionBankArmedDay == today || (st.motionBankUnsupportedUntil ?: 0) > now) return
+        sendCommand(Cmd.TOGGLE_IMU_MODE_HISTORICAL, byteArrayOf(0x01))
+        scope.launch { repo.settings.updateStrap { it.copy(motionBankArmedDay = today) } }
+    }
+
     /** AtriaWhoop4PowerPolicy applied to the link: IMU on/off, sync cadence, user-visible note. */
     private fun evaluatePower() {
         val inputs = phoneInputs()
@@ -585,6 +601,11 @@ class StrapManager(private val context: Context, private val repo: Repository) {
                 scope.launch { repo.settings.updateStrap { it.copy(clockOffsetSeconds = clockOffsetSeconds) } }
             }
             Cmd.TOGGLE_IMU_MODE -> log("imu", "6A ack status=${r.status}")
+            Cmd.TOGGLE_IMU_MODE_HISTORICAL -> {
+                log("imu", "69 bank rearm status=${r.status}")
+                // Firmware that reports 0x03 (unsupported) is not asked again for a week.
+                if (r.unsupported) scope.launch { repo.settings.updateStrap { it.copy(motionBankUnsupportedUntil = System.currentTimeMillis() + 7 * 86_400_000L) } }
+            }
         }
     }
 
@@ -729,6 +750,7 @@ class StrapManager(private val context: Context, private val repo: Repository) {
             if (now - s.heartRateAt > 240_000) { teardown(); setStatus(LinkStatus.DISCONNECTED); scheduleReconnect() }
         }
         evaluatePower()
+        maybeRearmMotionBank(now)
         liveBuffer.flushIfDue(now)
         motion.flushIfStale(now)?.let { m -> scope.launch { repo.insertMotion(listOf(m)) } }
         handler.postDelayed(::watchdog, 10_000)

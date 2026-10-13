@@ -173,3 +173,47 @@ fun ExpandedChartDialog(title: String, color: Color, select: (DailyMetricsEntity
         },
     )
 }
+
+/** AtriaSleepSettlementPresentation: say what's happening while last night is still being worked out. */
+@Composable
+fun SleepSettlementCard(sleptHours: Double?, reviewPending: Boolean, live: com.adidshaft.atria.ble.LiveState) {
+    val s = LocalSurfaces.current
+    if (sleptHours != null || java.time.LocalTime.now().hour !in 4..15) return
+    val (title, body) = when {
+        reviewPending -> "Last night needs a quick check" to "Confirm the possible sleep below so Recovery can be calculated."
+        live.drainActive -> "Working out last night" to "Syncing the strap's stored history (${live.drainRows} saved). Sleep and Recovery appear when it finishes."
+        (live.pendingRecords ?: 0) > 0 -> "Last night is still on the strap" to "Keep the strap near your phone; Atria syncs its stored history in the background."
+        live.status != com.adidshaft.atria.ble.LinkStatus.CONNECTED -> "Waiting for your strap" to "Atria will check last night as soon as the strap reconnects."
+        else -> "No sleep found for last night" to "If you slept without the strap or it was loose, you can log sleep with +."
+    }
+    AtriaCard(tint = AtriaColors.sleep) {
+        Text(title, style = MaterialTheme.typography.titleSmall)
+        Text(body, style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
+    }
+}
+
+/** Night "ups and downs" vs the wearer's own recent nights (AtriaNightBaseline). */
+@Composable
+fun NightBaselineCard(sleep: SleepEntity) {
+    val s = LocalSurfaces.current
+    var findings by remember { mutableStateOf<List<com.adidshaft.atria.analytics.NightBaseline.Finding>?>(null) }
+    LaunchedEffect(sleep.id) {
+        findings = withContext(Dispatchers.IO) {
+            val hist = AtriaApp.graph.repo.db.sleeps().recentConfirmed(40).filter { !it.isNap && it.id != sleep.id && it.endMs < sleep.endMs }
+            com.adidshaft.atria.analytics.NightBaseline.compare(listOf(
+                Triple("Sleep", sleep.asleepMs / 3_600_000.0, hist.map { it.asleepMs / 3_600_000.0 }),
+                Triple("Resting HR", sleep.restingHr?.toDouble(), hist.mapNotNull { it.restingHr?.toDouble() }),
+                Triple("HRV", sleep.rmssd, hist.mapNotNull { it.rmssd }),
+                Triple("Respiratory rate", sleep.respiratoryRate, hist.mapNotNull { it.respiratoryRate }),
+                Triple("Efficiency", sleep.efficiency, hist.mapNotNull { it.efficiency }),
+                Triple("Wake-ups", sleep.disturbances.toDouble(), hist.map { it.disturbances.toDouble() }),
+            )) { name, v -> when (name) { "Sleep" -> formatHours(v); "HRV" -> "${v.toInt()} ms"; "Resting HR" -> "${v.toInt()} bpm"; "Efficiency" -> "${(v * 100).toInt()}%"; "Respiratory rate" -> "%.1f /min".format(v); else -> v.toInt().toString() } }
+        }
+    }
+    val f = findings ?: return
+    AtriaCard {
+        Text("Compared with your nights", style = MaterialTheme.typography.titleSmall)
+        if (f.isEmpty()) Text("Everything was within your usual range.", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
+        f.forEach { KeyValueRow("${it.metric} ${it.value}", it.label, valueColor = if (it.unusual) AtriaColors.stress else s.textSecondary) }
+    }
+}

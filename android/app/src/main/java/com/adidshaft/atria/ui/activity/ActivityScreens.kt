@@ -162,6 +162,7 @@ fun SleepDetailScreen(vm: AppViewModel, id: Long, onBack: () -> Unit) {
             SleepStage.entries.forEach { st -> KeyValueRow(st.label, "${mins[st]!! / 60}h ${mins[st]!! % 60}m", valueColor = stageColor(st)) }
             Text("Stages are an estimate from heart rate and wrist motion, not a sleep study.", style = MaterialTheme.typography.bodySmall, color = s.textTertiary)
         }
+        if (!sl.isNap) com.adidshaft.atria.ui.extras.NightBaselineCard(sl)
         if (!sl.isNap) com.adidshaft.atria.ui.extras.NightInterruptionCard(sl.endMs)
         AtriaCard {
             Text("Heart rate", style = MaterialTheme.typography.titleSmall)

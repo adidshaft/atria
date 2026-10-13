@@ -22,6 +22,8 @@ object Source {
     const val MANUAL = "manual"
     const val DETECTED = "detected"
     const val DEMO = "demo"
+    /** Unattributed strap-motion run awaiting the wearer's verdict. */
+    const val MOTION = "motion"
 }
 
 @Entity(tableName = "hr_samples")

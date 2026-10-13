@@ -97,6 +97,7 @@ fun TodayScreen(vm: AppViewModel, nav: NavHostController) {
     val rec = today?.recovery
     val prev = days.dropLast(1).lastOrNull()?.recovery
     val trend = when { rec == null || prev == null -> null; rec - prev >= 5 -> "Up vs yesterday"; prev - rec >= 5 -> "Down vs yesterday"; else -> "Flat vs yesterday" }
+    com.adidshaft.atria.ui.extras.SleepSettlementCard(today?.sleepHours, candidates.isNotEmpty(), live)
     for (card in settings.todayCards) when (card) {
         "rings" -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             TriRing(
@@ -225,14 +226,14 @@ fun SleepReviewCard(c: SleepEntity, vm: AppViewModel) {
 fun WorkoutReviewCard(w: WorkoutEntity, vm: AppViewModel) {
     val s = LocalSurfaces.current
     AtriaCard(tint = AtriaColors.strain) {
-        Eyebrow("Possible workout", color = AtriaColors.strain)
+        Eyebrow(if (w.source == com.adidshaft.atria.data.Source.MOTION) "Was this a walk?" else "Possible workout", color = AtriaColors.strain)
         Spacer(Modifier.height(4.dp))
         Text("${(w.endMs - w.startMs) / 60_000} min · ${clock(w.startMs)} · strain %.1f".format(w.strain), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
         Text("Avg ${w.avgHr} bpm · max ${w.maxHr} bpm${w.steps?.let { " · $it steps" } ?: ""}", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             PillButton("Save as ${w.activity}", Modifier.weight(1f), color = AtriaColors.strain, height = 46.dp) { vm.reviewWorkout(w.id, true) }
-            PillButton("Dismiss", Modifier.weight(1f), color = s.inset, contentColor = s.textPrimary, height = 46.dp) { vm.reviewWorkout(w.id, false) }
+            PillButton(if (w.source == com.adidshaft.atria.data.Source.MOTION) "Not a walk" else "Dismiss", Modifier.weight(1f), color = s.inset, contentColor = s.textPrimary, height = 46.dp) { vm.reviewWorkout(w.id, false) }
         }
     }
 }

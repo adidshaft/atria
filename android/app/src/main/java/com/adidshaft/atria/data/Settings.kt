@@ -135,6 +135,9 @@ data class StrapState(
     val lastProductiveSliceAt: Long? = null,
     /** User-started "catch up faster" boost (auto-reverts when caught up). */
     val catchUpBoost: Boolean = false,
+    /** Civil day the 69/01 motion bank was last armed, and firmware back-off. */
+    val motionBankArmedDay: Long? = null,
+    val motionBankUnsupportedUntil: Long? = null,
 )
 
 class SettingsRepository(private val context: Context) {

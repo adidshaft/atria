@@ -138,6 +138,7 @@ class MetricsEngine(
             ),
         )
         if (settings.autoDetectWorkouts) detectWorkouts(hr, rest, maxHr, workouts, now)
+        if (settings.autoDetectWorkouts) detectMotionRuns(dayStart, now)
         recovery
     }
 
@@ -236,6 +237,26 @@ class MetricsEngine(
             repo.log("detection", "possible workout ${(e - s) / 60_000} min · strain ${"%.1f".format(StrainLoadModel.displayScore(load))}")
             repo.log("workout", "possible workout ${(e - s) / 60_000} min")
         }
+    }
+
+    /** Unattributed walking (strap steps) → "Was this a walk?" review, max 3 per day. */
+    private suspend fun detectMotionRuns(dayStart: Long, now: Long) {
+        val minutes = repo.db.samples().motion(dayStart, now).map { it.startMs to it.steps }
+        val explained = repo.db.workouts().between(dayStart - 3_600_000L, now).map { it.startMs..it.endMs } +
+            repo.db.sleeps().between(dayStart - 12 * 3_600_000L, now).filter { it.status != "dismissed" }.map { it.startMs..it.endMs }
+        val askedToday = repo.db.workouts().between(dayStart, now).count { it.source == Source.MOTION }
+        com.adidshaft.atria.analytics.MotionRuns.askable(minutes, explained)
+            .filter { now - it.endMs > 5 * 60_000 }
+            .take((com.adidshaft.atria.analytics.MotionRuns.MAX_QUESTIONS_PER_DAY - askedToday).coerceAtLeast(0))
+            .forEach { r ->
+                val hr = repo.hr(r.startMs, r.endMs)
+                repo.db.workouts().insert(WorkoutEntity(
+                    activity = "Walking", startMs = r.startMs, endMs = r.endMs, strain = 0.0,
+                    avgHr = hr.takeIf { it.isNotEmpty() }?.map { it.bpm }?.average()?.roundToInt() ?: 0, maxHr = hr.maxOfOrNull { it.bpm } ?: 0,
+                    calories = null, steps = r.steps, zonesJson = null, status = "review", source = Source.MOTION,
+                ))
+                repo.log("detection", "unexplained walking ${r.activeMinutes} min · ${r.steps} steps · asking")
+            }
     }
 
     private suspend fun learnMaxHr(now: Long) {

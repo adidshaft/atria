@@ -8,6 +8,7 @@ import com.adidshaft.atria.analytics.SleepPlanner
 import com.adidshaft.atria.analytics.StrengthProgress
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.random.Random
@@ -111,5 +112,23 @@ class PowerPolicyTest {
         assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.ACTIVE, B.decide(5 * 3600, true, true))
         assertEquals(com.adidshaft.atria.analytics.CatchUpBoost.Decision.AUTO_REVERT, B.decide(0, false, true))
         assertEquals("~5h behind", B.behindDescription(5 * 3600))
+    }
+}
+
+class MotionRunsAndNightTest {
+    @Test fun unexplainedWalkingIsAskedButExplainedIsNot() {
+        val m = 60_000L; val t0 = 1_800_000_000_000L
+        val minutes = (0 until 15).map { t0 + it * m to 90 } + (0 until 3).map { t0 + (40 + it) * m to 30 }
+        val runs = com.adidshaft.atria.analytics.MotionRuns.askable(minutes, emptyList())
+        assertEquals(1, runs.size); assertEquals(1350, runs[0].steps); assertEquals(15, runs[0].activeMinutes) // the later 3 minutes are 26 min away: beyond the 20-min join gap
+        assertTrue(com.adidshaft.atria.analytics.MotionRuns.askable(minutes, listOf(t0..t0 + 60 * m)).isEmpty())
+        assertTrue(com.adidshaft.atria.analytics.MotionRuns.askable(minutes.take(8), emptyList()).isEmpty())
+    }
+
+    @Test fun nightBaselineFlagsUnusualValues() {
+        val hist = listOf(55.0, 54.0, 56.0, 55.0, 54.0, 56.0)
+        val f = com.adidshaft.atria.analytics.NightBaseline.compare(listOf(Triple("Resting HR", 64.0, hist), Triple("HRV", 60.0, listOf(1.0, 2.0))), { _, v -> v.toString() })!!
+        assertEquals(1, f.size); assertTrue(f[0].unusual); assertTrue(f[0].label.contains("higher"))
+        assertNull(com.adidshaft.atria.analytics.NightBaseline.compare(listOf(Triple("HRV", 60.0, listOf(1.0))), { _, v -> v.toString() }))
     }
 }
