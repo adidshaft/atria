@@ -231,7 +231,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // states the real early/confident day thresholds instead.
             return "An estimate from heart data — not a medical measurement. It needs about 14 days before an early read appears and 28 for a confident baseline, and VO₂max stays \u{201c}preliminary\u{201d} until you've recorded a hard effort that measures your maximum heart rate."
         case .skinTemperature:
-            return "A sleep-only relative signal from the same strap: not core temperature, not a fever check, and not validated against a reference thermometer. Kept on your device and never written to Health."
+            return "A sleep-only relative signal from the same strap: not core temperature, not a fever check, and not checked against a reference thermometer. Kept on your device and never written to Health."
         case .bloodOxygen:
             return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
         case .irregularRhythm:

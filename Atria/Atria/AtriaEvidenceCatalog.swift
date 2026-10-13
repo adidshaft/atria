@@ -226,7 +226,7 @@ struct AtriaEvidenceCatalogScreen: View {
     var body: some View {
         List {
             Section {
-                Text("These records support Atria's definitions and calculations. They do not establish clinical validation of Atria's estimates or endorse a specific training prescription. \(AtriaMetricZone.nonMedicalDisclaimer)")
+                Text("These records support Atria's definitions and calculations. They do not show that Atria's estimates are clinically proven, or endorse a specific training prescription. \(AtriaMetricZone.nonMedicalDisclaimer)")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -2782,6 +2782,8 @@ struct AtriaStrapStepsDetailSheet: View {
     /// about it again.
     var explainedWindows: [DateInterval] = []
     @State private var unverifiedClusters: [AtriaUnattributedMotionRuns.Cluster] = []
+    /// Summed once where the clusters are assigned, not in the card body.
+    @State private var unverifiedStepTotal = 0
     @State private var autoResolvedCount = 0
     @State private var autoResolvedSteps = 0
     @State private var minorMovementSteps = 0
@@ -2917,7 +2919,7 @@ struct AtriaStrapStepsDetailSheet: View {
                 Text("Unverified movement")
                     .font(.caption.weight(.bold))
                 Spacer(minLength: 0)
-                Text("~\(unverifiedClusters.reduce(0) { $0 + $1.estimatedSteps }) steps")
+                Text("~\(unverifiedStepTotal) steps")
                     .font(.caption.weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
@@ -3065,6 +3067,7 @@ struct AtriaStrapStepsDetailSheet: View {
             }
         }
         unverifiedClusters = partition.askable
+        unverifiedStepTotal = partition.askable.reduce(0) { $0 + $1.estimatedSteps }
         autoResolvedCount = partition.autoResolved.count
         autoResolvedSteps = partition.autoResolved
             .filter { $0.verdict == .notWalking }
@@ -6460,7 +6463,7 @@ struct AtriaMetricDetailSheet: View {
                     Spacer(minLength: 0)
                 }
                 .font(.caption.weight(.bold).monospacedDigit())
-                Text("Day Strain combines both lanes. The lifting lane is provisional: sessions without complete RPE add zero.")
+                Text("Day Strain combines both lanes. Lifting sessions without a complete effort rating add zero.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -8423,7 +8426,7 @@ enum AtriaMetricMeaningCopy {
         case .sleepEfficiency:
             return "Sleep efficiency estimates time asleep versus time in bed from duration, not a clinical sleep study. See Sources."
         case .skinTemperature:
-            return "Atria shows only change from this strap's own overnight baseline. It is not an absolute or core temperature, a fever check, or a clinically validated thermometer. See Sources."
+            return "Atria shows only change from this strap's own overnight baseline. It is not an absolute or core temperature, a fever check, or a clinical thermometer. See Sources."
         case .fitnessAge:
             return "Fitness age is an experimental index from fitness signals, not a measurement of biological age, disease risk, or lifespan. See Sources."
         case .hrZones:

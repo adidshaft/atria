@@ -715,7 +715,7 @@ struct AtriaStressDetailView: View {
                         .atriaInspectableGraph(
                             AtriaInspectableGraph(
                                 title: "Physiological stress timeline",
-                                subtitle: "Five-minute estimates each minute; HR-only points are lower confidence and blanks are telemetry gaps",
+                                subtitle: "Five-minute estimates each minute; blanks are times the strap was not recording",
                                 content: .timeSeries([
                                     .init(title: "Physiological stress",
                                           unit: "",
@@ -1636,7 +1636,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
             Text(AtriaStressMinuteBand.scoreLine(reading))
                 .font(.caption.monospacedDigit().weight(.bold))
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" } ?? "HR unavailable")
-            Text(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) ms" }
+            Text(reading.rmssd.map { "HRV \($0.formatted(.number.precision(.fractionLength(1)))) ms" }
                 ?? "HR-only estimate")
             Text("\(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence")
             if reading.baselineLearning { Text("Personal baseline learning") }
@@ -1645,7 +1645,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
         .foregroundStyle(.primary)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityElement(children: .combine)
     }
 

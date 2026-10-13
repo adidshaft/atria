@@ -104,7 +104,7 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
         case .strapBattery:
             return "When the strap battery runs low. Off by default so jumpy 2A19 values do not fire alerts or extra radio work."
         case .bluetoothOff:
-            return "When Bluetooth is off and strap capture stops."
+            return "When Bluetooth is off and the strap stops recording."
         case .fitCheck:
             return "When the strap needs adjusting to read reliably."
         case .sleepLogged:

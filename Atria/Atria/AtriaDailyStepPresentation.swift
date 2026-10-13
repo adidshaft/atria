@@ -308,7 +308,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case .nativeR10Observed:
             return "Observed native motion only while frames arrive. Not compact 0x33 gait."
         case .historicalGravity1Hz:
-            return "1 Hz history is not 100 Hz gait and is not equal-quality backfill."
+            return "Rebuilt from once-a-second history; less precise than live step counting."
         case .compactLive, .unspecified:
             return nil
         }

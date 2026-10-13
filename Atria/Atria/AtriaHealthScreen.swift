@@ -1399,7 +1399,7 @@ struct AtriaHealthScreen: View {
                     AtriaSleepScoreCard(score: provisionalSleepScore)
                         .padding(.top, 8)
                 } label: {
-                    Label("Provisional — Sleep Score", systemImage: "testtube.2")
+                    Label("Sleep Score preview", systemImage: "testtube.2")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                 }

@@ -12,7 +12,7 @@ struct AtriaSampleDataBadge: View {
         .font(compact ? .caption2.weight(.semibold) : .footnote.weight(.semibold))
         .padding(.horizontal, compact ? 8 : 12)
         .padding(.vertical, compact ? 4 : 8)
-        .background(.ultraThinMaterial, in: Capsule())
+        .glassEffect(.regular, in: Capsule())
         .accessibilityIdentifier("atria.demo.sample-data-badge")
         .accessibilityLabel(AtriaAppReviewDemo.bannerDetail)
     }
@@ -47,7 +47,7 @@ struct AtriaDemoDataBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
+        .glassEffect(.regular, in: Capsule())
         .padding(.horizontal, 16)
         // Clears the floating tab bar (the overlay sits in the safe area).
         .padding(.bottom, 66)

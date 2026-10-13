@@ -424,7 +424,7 @@ extension View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 9))
     }
 }
 

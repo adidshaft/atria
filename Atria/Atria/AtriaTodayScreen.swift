@@ -534,10 +534,7 @@ struct AtriaTodayScreen: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStrapStepsDetail) {
-            AtriaStrapStepsDetailSheet(count: liveStore.state.dailyStepPresentation.count
-                                           ?? liveStore.state.strapStepResearchCount,
-                                       validationState: liveStore.state.strapStepResearchState,
-                                       presentation: liveStore.state.dailyStepPresentation,
+            AtriaTodayStrapStepsSheetHost(liveStore: liveStore,
                                        goal: stepsGoal,
                                        nonGaitWindows: AtriaCivilDayStepAuthority
                                            .nonGaitExclusionWindows(workouts: store.confirmedWorkouts),
@@ -4298,6 +4295,28 @@ private struct AtriaTodayLiveStatusHost: View {
                                           now: context.date)
             }
         }
+    }
+}
+
+/// Leaf owner for the steps sheet: the Today parent never observes
+/// `liveStore`, so reading `liveStore.state` there froze the sheet's count at
+/// presentation time. This host observes it and forwards everything else.
+private struct AtriaTodayStrapStepsSheetHost: View {
+    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
+    let goal: Int
+    let nonGaitWindows: [DateInterval]
+    let explainedWindows: [DateInterval]
+    let confirmedSleeps: [UserConfirmedSleep]
+
+    var body: some View {
+        let live = liveStore.state
+        AtriaStrapStepsDetailSheet(count: live.dailyStepPresentation.count ?? live.strapStepResearchCount,
+                                   validationState: live.strapStepResearchState,
+                                   presentation: live.dailyStepPresentation,
+                                   goal: goal,
+                                   nonGaitWindows: nonGaitWindows,
+                                   explainedWindows: explainedWindows,
+                                   confirmedSleeps: confirmedSleeps)
     }
 }
 
