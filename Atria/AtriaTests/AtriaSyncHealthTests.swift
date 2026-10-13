@@ -77,3 +77,24 @@ final class AtriaSyncHealthReadbackTests: XCTestCase {
         XCTAssertTrue(sessions.contains("static let key = \"\(AtriaSyncHealth.confirmedSleepsKey)\""))
     }
 }
+
+final class AtriaConfirmedSleepHealthExportTriggerTests: XCTestCase {
+    private func sleep(_ id: String, hours: Double) -> UserConfirmedSleep {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        return UserConfirmedSleep(id: id, createdAt: start, start: start,
+                                  end: start.addingTimeInterval(hours * 3600),
+                                  source: "test", confidence: "high",
+                                  sessions: 1, samples: 0, avgHR: 60, peakHR: 70,
+                                  restingHR: 55, hrv: nil, hrvWindowCount: nil,
+                                  duration: hours * 3600, span: hours * 3600,
+                                  reason: "test", motionSource: "test",
+                                  motionValidated: false, stageSegments: nil)
+    }
+
+    func testOnlyANewMainSleepTriggersExport() {
+        let night = sleep("a", hours: 7)
+        XCTAssertTrue(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [], saved: [night]))
+        XCTAssertFalse(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [night], saved: [night]))
+        XCTAssertFalse(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [], saved: [sleep("nap", hours: 1)]))
+    }
+}

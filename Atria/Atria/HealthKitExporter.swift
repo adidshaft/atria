@@ -163,6 +163,14 @@ final class HealthKitExporter {
         HKObjectType.workoutType()
     }
 
+    /// True only when the user already granted sleep sharing; automatic
+    /// exports never trigger a permission sheet.
+    static var sleepSharingAuthorized: Bool {
+        guard HKHealthStore.isHealthDataAvailable(),
+              let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return false }
+        return HKHealthStore().authorizationStatus(for: type) == .sharingAuthorized
+    }
+
     private var sleepType: HKCategoryType {
         HKCategoryType.categoryType(forIdentifier: .sleepAnalysis)!
     }
