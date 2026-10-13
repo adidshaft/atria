@@ -866,6 +866,13 @@ struct AtriaSettingsView: View {
             iCloudBackupEnabled,
             useHealthNutrition in
             compactSettingsForm(title: "Data") {
+                Section {
+                    NavigationLink {
+                        AtriaSyncHealthScreen()
+                    } label: {
+                        Label("Sync & storage", systemImage: "stethoscope")
+                    }
+                }
                 dataSection(iCloudBackupEnabled: iCloudBackupEnabled,
                             useHealthNutrition: useHealthNutrition)
             }

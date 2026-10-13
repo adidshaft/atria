@@ -117,6 +117,27 @@ extension AtriaSleepPlanner {
         return ((median % 1440) + 1440) % 1440
     }
 
+    /// The wake time every plan works back from: the wake alarm when it is
+    /// on, otherwise this person's own typical wake (shifted sleepers
+    /// included), and only then the stored default. Without this a plan for
+    /// someone who wakes at 19:15 was built back from a 07:30 default.
+    static func resolvedWakeByMinutes(alarmEnabled: Bool,
+                                      alarmWakeByMinutes: Int,
+                                      recentMainWakes: [Date],
+                                      calendar: Calendar = .current) -> Int {
+        if alarmEnabled { return alarmWakeByMinutes }
+        return typicalWakeMinute(wakes: recentMainWakes, calendar: calendar) ?? alarmWakeByMinutes
+    }
+
+    /// Wake times of the most recent confirmed main sleeps (>= 3 h), newest first.
+    static func recentMainWakes(_ nights: [SleepHistorySnapshot.Night], limit: Int = 14) -> [Date] {
+        Array(nights
+            .filter { $0.confirmed && !$0.isNapEvidence && $0.duration >= 3 * 3600 }
+            .compactMap(\.end)
+            .sorted(by: >)
+            .prefix(limit))
+    }
+
     /// The Sleep sheet's one-line recommendation (owner 2026-10-03).
     static func recommendation(needHours: Double?,
                                goal: AtriaSleepPlannerGoal,

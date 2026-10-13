@@ -18,6 +18,9 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case stackedRecovery
         case easyLoadSleepDebt
         case workoutWithoutHeartRate
+        /// Last week vs the 3 weeks before, Welch-gated (#5).
+        case vitalsWeeklyShift
+        case sleepWeeklyShift
     }
 
     let id: String
@@ -36,6 +39,8 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .hrvDrift: return "waveform.path.ecg"
         case .daySnapshot: return "calendar"
         case .workoutWithoutHeartRate: return "heart.slash"
+        case .vitalsWeeklyShift: return "chart.line.uptrend.xyaxis"
+        case .sleepWeeklyShift: return "bed.double.fill"
         }
     }
 
@@ -57,8 +62,8 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
 
     var ringFamily: RingFamily {
         switch kind {
-        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread, .easyLoadSleepDebt: return .sleep
-        case .recoveryDrift, .readiness, .stackedRecovery, .hrvDrift, .restingHRDrift:
+        case .sleepDebt, .weeklySleepDebt, .bedtimeSpread, .easyLoadSleepDebt, .sleepWeeklyShift: return .sleep
+        case .recoveryDrift, .readiness, .stackedRecovery, .hrvDrift, .restingHRDrift, .vitalsWeeklyShift:
             return .recovery
         case .loadMismatch, .weeklyStrain, .yesterdayStrain, .workoutWithoutHeartRate:
             return .strain
@@ -93,6 +98,7 @@ struct AtriaLearnedInsight: Identifiable, Equatable, Codable, Sendable {
         case .yesterdayStrain: return "Yesterday"
         case .stackedRecovery: return "Stack"
         case .workoutWithoutHeartRate: return "No HR"
+        case .vitalsWeeklyShift, .sleepWeeklyShift: return "Week"
         }
     }
 }
@@ -271,6 +277,9 @@ enum AtriaLearnedInsights {
         if let rhr = restingHRDrift(ordered: ordered, now: now) {
             results.append(rhr)
         }
+        if let shift = AtriaTrendShift.shifts(rollups: ordered, now: now, calendar: calendar).first {
+            results.append(weeklyShiftInsight(shift, now: now))
+        }
         if let strain = weeklyStrain(ordered: ordered, now: now) {
             results.append(strain)
         }
@@ -285,6 +294,18 @@ enum AtriaLearnedInsights {
         }
 
         return Array(results.prefix(maximumInsights))
+    }
+
+    /// The single most notable Welch-gated weekly shift, worded as a fact.
+    static func weeklyShiftInsight(_ shift: AtriaTrendShift.Shift, now: Date) -> AtriaLearnedInsight {
+        AtriaLearnedInsight(
+            id: "week-shift-\(shift.metric.rawValue)-\(shift.delta > 0 ? "up" : "down")",
+            kind: shift.metric == .sleepDuration ? .sleepWeeklyShift : .vitalsWeeklyShift,
+            headline: shift.headline,
+            detail: shift.detail,
+            isPositive: shift.isFavourable,
+            asOf: now
+        )
     }
 
     private static func hours(_ seconds: TimeInterval) -> Double {

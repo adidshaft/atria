@@ -1670,6 +1670,10 @@ struct AtriaWeeklyReportSheet: View {
     /// Empty means the monthly sheet says "Schedule building" rather than
     /// guessing from bedtime-only rollups.
     var sleepNights: [SleepHistorySnapshot.Night] = []
+    /// W3.5: this week's reads in the Learnings deck component — weekly
+    /// shifts, sleep debt and the tag effects that survived correction.
+    /// Shown for the current week only; prior weeks keep their numbers.
+    var weekReads: [AtriaTodayLearningsFeed.Item] = []
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
     @State private var showMonthlyReport = false
@@ -1750,6 +1754,11 @@ struct AtriaWeeklyReportSheet: View {
                     }
 
                     weeklyTrendChart
+
+                    if weekOffset == 0 && !weekReads.isEmpty {
+                        reportKicker("This week")
+                        AtriaTodayLearningsFeed(items: weekReads)
+                    }
 
                     if let note = displayedReport.strainRecoveryNote {
                         Label(note, systemImage: "exclamationmark.triangle.fill")
@@ -4977,7 +4986,8 @@ struct AtriaMetricDetailSheet: View {
                                                                                 yesterdayStrain: yesterdayStrainForLatestNight),
                                        frozenReceipt: latest.frozenSleepNeed?.components,
                                        tonightProjection: tonightProjectedNeed,
-                                       nightEfficiencies: confirmedNightEfficiencies)
+                                       nightEfficiencies: confirmedNightEfficiencies,
+                                       recentMainWakes: AtriaSleepPlanner.recentMainWakes(sleepHistory.nights))
                     sleepNeedLedgerCard(for: latest)
                 }
             } chart: {
@@ -6172,10 +6182,11 @@ struct AtriaMetricDetailSheet: View {
             .sorted { $0.end > $1.end }
             .prefix(14)
             .map(\.end)
-        let wakeBy = recommendationWakeAlarmEnabled
-            ? recommendationWakeByMinutes
-            : AtriaSleepPlanner.typicalWakeMinute(wakes: Array(recentMainWakes))
-                ?? recommendationWakeByMinutes
+        let wakeBy = AtriaSleepPlanner.resolvedWakeByMinutes(
+            alarmEnabled: recommendationWakeAlarmEnabled,
+            alarmWakeByMinutes: recommendationWakeByMinutes,
+            recentMainWakes: Array(recentMainWakes)
+        )
         return AtriaSleepPlanner.recommendation(
             needHours: tonightProjectedNeed.totalHours,
             goal: AtriaSleepPlannerGoal(rawValue: recommendationPlannerGoalRaw) ?? .peak,
@@ -9546,6 +9557,15 @@ private struct AtriaSleepPlanCard: View {
     /// Efficiencies of the user's real confirmed nights, for the planner's
     /// time-in-bed assumption. Passed in so this card stays store-free.
     var nightEfficiencies: [Double] = []
+    /// Recent confirmed main-sleep wakes, so the plan follows this person's
+    /// own schedule when no wake alarm is set.
+    var recentMainWakes: [Date] = []
+
+    private var planWakeByMinutes: Int {
+        AtriaSleepPlanner.resolvedWakeByMinutes(alarmEnabled: wakeAlarmEnabled,
+                                                alarmWakeByMinutes: wakeByMinutes,
+                                                recentMainWakes: recentMainWakes)
+    }
 
     private var wakeAlarmPlan: AtriaWakeAlarmPlan {
         AtriaWakeAlarmPlan(mode: AtriaWakeAlarmPlan.Mode(rawValue: wakeAlarmMode) ?? .smartWindow,
@@ -9596,7 +9616,7 @@ private struct AtriaSleepPlanCard: View {
             ?? SessionStore.configuredSleepBaseNeedHours()
         let plan = AtriaSleepPlanner.plan(needHours: tonightNeed,
                                           goal: goal,
-                                          wakeByMinutes: wakeByMinutes,
+                                          wakeByMinutes: planWakeByMinutes,
                                           nightEfficiencies: nightEfficiencies)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {

@@ -46,9 +46,13 @@ final class AtriaMainThreadWatchdog: NSObject, MXMetricManagerSubscriber, @unche
 
     /// Call once from `didFinishLaunching` on the main thread.
     func install() {
-        guard Self.isEnabledForThisBuild, !installed else { return }
+        guard !installed else { return }
         installed = true
+        // Every build: MetricKit's daily exit counts feed Settings > Data >
+        // Sync & storage ("Stopped by iOS"). The stall timer and full payload
+        // dumps below stay Debug/TestFlight only.
         MXMetricManager.shared.add(self)
+        guard Self.isEnabledForThisBuild else { return }
         let center = NotificationCenter.default
         center.addObserver(forName: UIApplication.didBecomeActiveNotification,
                            object: nil, queue: .main) { [weak self] _ in self?.start() }
@@ -125,7 +129,37 @@ final class AtriaMainThreadWatchdog: NSObject, MXMetricManagerSubscriber, @unche
 
     // MARK: - MXMetricManagerSubscriber
 
+    func didReceive(_ payloads: [MXMetricPayload]) {
+        guard let latest = payloads.max(by: { $0.timeStampEnd < $1.timeStampEnd }),
+              let summary = Self.exitSummary(from: latest) else { return }
+        Self.saveExitSummary(summary)
+    }
+
+    static func exitSummary(from payload: MXMetricPayload) -> AtriaSyncHealth.ExitSummary? {
+        guard let exits = payload.applicationExitMetrics else { return nil }
+        let background = exits.backgroundExitData
+        let foreground = exits.foregroundExitData
+        return AtriaSyncHealth.ExitSummary(
+            periodEndUnix: payload.timeStampEnd.timeIntervalSince1970,
+            cpuLimit: background.cumulativeCPUResourceLimitExitCount,
+            watchdog: background.cumulativeAppWatchdogExitCount + foreground.cumulativeAppWatchdogExitCount,
+            memoryLimit: background.cumulativeMemoryResourceLimitExitCount
+                + foreground.cumulativeMemoryResourceLimitExitCount,
+            crashes: background.cumulativeBadAccessExitCount + foreground.cumulativeBadAccessExitCount
+                + background.cumulativeAbnormalExitCount + foreground.cumulativeAbnormalExitCount
+                + background.cumulativeIllegalInstructionExitCount + foreground.cumulativeIllegalInstructionExitCount,
+            normal: background.cumulativeNormalAppExitCount + foreground.cumulativeNormalAppExitCount
+        )
+    }
+
+    static func saveExitSummary(_ summary: AtriaSyncHealth.ExitSummary,
+                                defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(summary) else { return }
+        defaults.set(data, forKey: AtriaSyncHealth.exitSummaryKey)
+    }
+
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
+        guard Self.isEnabledForThisBuild else { return }
         let directory = Self.diagnosticsDirectory().appendingPathComponent("metrickit", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for payload in payloads {

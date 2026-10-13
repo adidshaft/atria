@@ -386,6 +386,14 @@ struct AtriaTodayScreen: View {
                                 value: compactRingPresentation)
                     .overlay(alignment: .topTrailing) { topActionMenu }
             }
+            // W3.1: the "why" behind today's recovery, against the wearer's
+            // own 28-day baseline. One line; the recovery sheet is the detail.
+            let recoveryDrivers = AtriaRecoveryDrivers.make(rollups: dayDescendingRollups, now: Date())
+            if !recoveryDrivers.isEmpty {
+                AtriaRecoveryDriversStrip(drivers: recoveryDrivers,
+                                          onOpen: { openMetricDetail(.recovery) })
+                    .equatable()
+            }
             // Says what the app is doing with last night instead of saying
             // nothing while it settles. Sits under the hero because it is about
             // the night the ring is already showing.
@@ -553,7 +561,10 @@ struct AtriaTodayScreen: View {
             AtriaWeeklyReportSheet(report: weeklyReport,
                                    rollups: highlightRollups,
                                    cycleStrainByDisplayDay: store.physiologicalCycleStrainByDisplayDay,
-                                   sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights)
+                                   sleepNights: sessionProjectionStore.state.sleepHistorySnapshot.nights,
+                                   weekReads: Self.weeklyReportReads(
+                                       learned: sessionProjectionStore.state.learnedInsights,
+                                       behavior: sessionProjectionStore.state.behaviorInsights))
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -2304,6 +2315,27 @@ struct AtriaTodayScreen: View {
         ).isUpToDate
     }
 
+    /// " · by 21:30" while today is still short of its target and enough
+    /// past days say when it is usually met (W3.4); empty otherwise.
+    static func strainUsuallyReachedSuffix(strain: Double, target: Double,
+                                           now: Date = Date(),
+                                           crossings: AtriaStrainPacing.Crossings = AtriaStrainPacing.load()) -> String {
+        guard strain < target,
+              let minute = AtriaStrainPacing.typicalCrossingMinute(crossings: crossings, now: now) else { return "" }
+        return " · by \(AtriaStrainPacing.timeText(minute))"
+    }
+
+    /// Week-scoped reads for the weekly report, in the Learnings component.
+    static let weeklyReportKinds: Set<AtriaLearnedInsight.Kind> = [
+        .vitalsWeeklyShift, .sleepWeeklyShift, .weeklySleepDebt, .weeklyStrain
+    ]
+
+    static func weeklyReportReads(learned: [AtriaLearnedInsight],
+                                  behavior: [AtriaInsight]) -> [AtriaTodayLearningsFeed.Item] {
+        AtriaTodayLearningsFeed.items(learned: learned.filter { weeklyReportKinds.contains($0.kind) },
+                                      behavior: behavior)
+    }
+
     private var strainMetric: AtriaTriRingMetric {
         // The arc is actual strain on the canonical 0–21 scale. Achievement
         // color and the marker are separate and require a real frozen target.
@@ -2346,7 +2378,8 @@ struct AtriaTodayScreen: View {
                                             ?? "Strain data incomplete")
                                         // §13.4: a fused value names itself as
                                         // the labeled combined total.
-                                        : ((target.map { String(format: "of %.1f", $0) }
+                                        : ((target.map { String(format: "of %.1f", $0)
+                                                + Self.strainUsuallyReachedSuffix(strain: displayHero.strain, target: $0) }
                                             ?? "Strain")
                                             + (displayHero.muscularTRIMP > 0
                                                 ? " · \(AtriaCompactMetricPresentation.combinedCardioLiftingMarker)"

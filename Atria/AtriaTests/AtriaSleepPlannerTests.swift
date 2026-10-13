@@ -47,4 +47,33 @@ final class AtriaSleepPlannerTests: XCTestCase {
         XCTAssertEqual(learned.value, 0.85, accuracy: 0.000_001)
         XCTAssertFalse(learned.isDefault)
     }
+
+    /// W3.3: without a wake alarm the plan follows the wearer's own schedule.
+    /// The owner sleeps ~13:15–19:15; a 07:30 default put "in bed by" ~12 h off.
+    func testPlanWithoutAlarmWorksBackFromTheTypicalShiftedWake() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let wakes = (1...5).map { offset -> Date in
+            let day = calendar.date(byAdding: .day, value: -offset, to: calendar.startOfDay(for: base))!
+            return calendar.date(bySettingHour: 19, minute: 10 + offset, second: 0, of: day)!
+        }
+        let wakeBy = AtriaSleepPlanner.resolvedWakeByMinutes(alarmEnabled: false,
+                                                             alarmWakeByMinutes: 7 * 60 + 30,
+                                                             recentMainWakes: wakes,
+                                                             calendar: calendar)
+        XCTAssertEqual(wakeBy, 19 * 60 + 13)
+        let plan = AtriaSleepPlanner.plan(needHours: 6, goal: .peak, wakeByMinutes: wakeBy, nightEfficiencies: [])
+        XCTAssertGreaterThanOrEqual(plan.inBedByMinutes, 11 * 60)
+        XCTAssertLessThanOrEqual(plan.inBedByMinutes, 14 * 60, "in bed around midday, not at night")
+    }
+
+    func testAlarmWinsAndThinHistoryFallsBackToTheStoredWake() {
+        let wakes = [Date(timeIntervalSince1970: 1_800_000_000)]
+        XCTAssertEqual(AtriaSleepPlanner.resolvedWakeByMinutes(alarmEnabled: true, alarmWakeByMinutes: 400,
+                                                               recentMainWakes: wakes), 400)
+        XCTAssertEqual(AtriaSleepPlanner.resolvedWakeByMinutes(alarmEnabled: false, alarmWakeByMinutes: 450,
+                                                               recentMainWakes: wakes), 450,
+                       "fewer than 3 wakes is not a typical schedule yet")
+    }
 }

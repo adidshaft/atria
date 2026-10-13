@@ -31,6 +31,7 @@ struct AtriaAssistantScreen: View {
 
     @AtriaDefault("atria.sleepPlanner.goal") private var plannerGoalRaw: String = AtriaSleepPlannerGoal.peak.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
+    @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
 
     private struct Exchange: Identifiable, Equatable {
         let id = UUID()
@@ -264,6 +265,11 @@ struct AtriaAssistantScreen: View {
                             provenance: "Sleep Need · legacy record unavailable.")
         }
         let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
+        let wakeByMinutes = AtriaSleepPlanner.resolvedWakeByMinutes(
+            alarmEnabled: wakeAlarmEnabled,
+            alarmWakeByMinutes: self.wakeByMinutes,
+            recentMainWakes: AtriaSleepPlanner.recentMainWakes(snapshot.nights)
+        )
         let plan = AtriaSleepPlanner.plan(needHours: need, goal: goal, wakeByMinutes: wakeByMinutes,
                                           nightEfficiencies: AtriaAssistantSleepPlannerEvidence
                                             .efficiencies(from: snapshot))

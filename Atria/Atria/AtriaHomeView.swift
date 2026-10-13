@@ -3035,6 +3035,15 @@ struct AtriaHomeView: View {
             performMotionAwareUpdate {
                 showStrapScreen = true
             }
+        case .logTag(let raw):
+            // Add-only: a spoken "log caffeine" never un-logs an existing tag.
+            if let tag = BehaviorJournalEntry.Tag(rawValue: raw),
+               !store.behaviorJournalEntry(for: Date()).tags.contains(tag) {
+                store.toggleBehaviorTag(tag)
+            }
+            performMotionAwareUpdate {
+                selectedTab = .journal
+            }
         case .focus(let mode):
             AtriaIntentCommandStore.persistFocusMode(mode)
             let rest = model.homeStatsStore.state.restingHeartRate
@@ -11968,6 +11977,9 @@ final class AtriaHomeModel {
         guard admitsLivePresentationMutation() else { return }
         guard next != heroStore.state else { return }
         heroStore.state = next
+        // W3.4: remember when today's strain first met its target (one tiny
+        // write a day) so Today can say when it is usually reached.
+        AtriaStrainPacing.noteStrain(next.strain, target: next.guidance.target)
         publishHomeStatsIfNeeded(Self.makeHomeStatsState(hero: next))
     }
 

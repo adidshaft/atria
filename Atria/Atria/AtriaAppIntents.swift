@@ -222,6 +222,74 @@ struct AtriaCaptureIntent: AppIntent {
     }
 }
 
+/// Journal tags that make sense to log by voice. Intimacy tags are left out
+/// on purpose: they stay off glanceable and spoken surfaces.
+enum AtriaIntentTag: String, AppEnum, Codable, CaseIterable {
+    case caffeine, alcohol, lateMeal, screenInBed, stress, training
+    case sauna, coldExposure, meditation, unwell, travel, nap
+
+    static var typeDisplayName: LocalizedStringResource { "Journal tag" }
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Journal tag"
+
+    // Literal map: the App Intents metadata processor requires it.
+    static var caseDisplayRepresentations: [Self: DisplayRepresentation] {
+        [
+            .caffeine: "Caffeine",
+            .alcohol: "Alcohol",
+            .lateMeal: "Late meal",
+            .screenInBed: "Screen in bed",
+            .stress: "Stress",
+            .training: "Training",
+            .sauna: "Sauna",
+            .coldExposure: "Cold exposure",
+            .meditation: "Meditation",
+            .unwell: "Feeling unwell",
+            .travel: "Travel",
+            .nap: "Nap"
+        ]
+    }
+
+    var journalTag: BehaviorJournalEntry.Tag {
+        BehaviorJournalEntry.Tag(rawValue: rawValue) ?? .stress
+    }
+}
+
+/// "Log caffeine in Atria": adds the tag to today's journal (never removes).
+struct AtriaLogTagIntent: AppIntent {
+    static let title: LocalizedStringResource = "Log a journal tag"
+    static let description = IntentDescription("Add a tag to today's Atria journal.")
+    static let openAppWhenRun = true
+
+    @Parameter(title: "Tag")
+    var tag: AtriaIntentTag
+
+    init() { tag = .caffeine }
+    init(tag: AtriaIntentTag) { self.tag = tag }
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        AtriaIntentCommandStore.save(.logTag(tag.rawValue))
+        return .result(dialog: IntentDialog(stringLiteral: "Logged \(tag.journalTag.label.lowercased()) for today."))
+    }
+}
+
+/// "Start a walk in Atria": opens Atria and starts a Walking workout through
+/// the same deep link the workout notification uses.
+struct AtriaStartWalkIntent: AppIntent {
+    static let title: LocalizedStringResource = "Start a walk"
+    static let description = IntentDescription("Start a Walking workout in Atria.")
+    static let openAppWhenRun = true
+
+    static let deepLink = URL(string: "atria://workout/start?type=walking")!
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        _ = AtriaNotificationDeepLinkInbox.shared.enqueue(
+            Self.deepLink,
+            responseKey: "intent|start-walk|\(Date().timeIntervalSince1970)"
+        )
+        return .result(dialog: "Starting a walk.")
+    }
+}
+
 struct AtriaAppShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
@@ -255,6 +323,26 @@ struct AtriaAppShortcuts: AppShortcutsProvider {
         )
 
         AppShortcut(
+            intent: AtriaStartWalkIntent(),
+            phrases: [
+                "Start a walk in \(.applicationName)",
+                "Start walking with \(.applicationName)"
+            ],
+            shortTitle: "Start walk",
+            systemImageName: "figure.walk"
+        )
+
+        AppShortcut(
+            intent: AtriaLogTagIntent(),
+            phrases: [
+                "Log \(\.$tag) in \(.applicationName)",
+                "Add \(\.$tag) to my \(.applicationName) journal"
+            ],
+            shortTitle: "Log tag",
+            systemImageName: "tag"
+        )
+
+        AppShortcut(
             intent: AtriaCaptureIntent(command: .start),
             phrases: [
                 "Start backup in \(.applicationName)",
@@ -280,6 +368,8 @@ enum AtriaIntentCommand: Codable, Equatable {
     case open(AtriaIntentDestination)
     case capture(AtriaCaptureCommand)
     case focus(AtriaFocusMode)
+    /// Raw `BehaviorJournalEntry.Tag` value to add to today's journal.
+    case logTag(String)
 }
 
 enum AtriaIntentCommandStore {
