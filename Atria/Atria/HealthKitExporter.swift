@@ -163,6 +163,14 @@ final class HealthKitExporter {
         HKObjectType.workoutType()
     }
 
+    /// True only when the user already granted sleep sharing; automatic
+    /// exports never trigger a permission sheet.
+    static var sleepSharingAuthorized: Bool {
+        guard HKHealthStore.isHealthDataAvailable(),
+              let type = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return false }
+        return HKHealthStore().authorizationStatus(for: type) == .sharingAuthorized
+    }
+
     private var sleepType: HKCategoryType {
         HKCategoryType.categoryType(forIdentifier: .sleepAnalysis)!
     }
@@ -2265,6 +2273,18 @@ final class HealthKitExporter {
                                 start: workout.start,
                                 end: workout.end,
                                 metadata: enrichedMetadata)
+    }
+
+    /// Health gets a night only when the user entered or edited it, or when
+    /// its stages passed validation; unverified detections stay in Atria.
+    nonisolated static func sleepIsExportable(_ sleep: UserConfirmedSleep) -> Bool {
+        guard sleep.end > sleep.start else { return false }
+        if sleep.source.hasPrefix("manual_") || sleep.source.hasPrefix("user_adjusted_") {
+            return true
+        }
+        guard sleep.source == "validated_sleep_stages",
+              let segments = sleep.stageSegments else { return false }
+        return AtriaSleepStageIntegrity.validates(segments, for: sleep)
     }
 
     private func confirmedSleepSamples(for sleep: UserConfirmedSleep) -> [HKCategorySample] {

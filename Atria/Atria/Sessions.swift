@@ -45528,6 +45528,18 @@ final class SessionStore: ObservableObject {
         func markSuppressed(_ ids: Set<String>) { suppressedIDs.formUnion(ids) }
     }
 
+    /// A save that adds a main sleep (>= 3 h) Health has not been offered yet.
+    nonisolated static func confirmedSleepSaveNeedsHealthExport(
+        previous: [UserConfirmedSleep],
+        saved: [UserConfirmedSleep]
+    ) -> Bool {
+        let known = Set(previous.map(\.id))
+        return saved.contains {
+            !known.contains($0.id) && $0.end.timeIntervalSince($0.start) >= 3 * 3600
+                && HealthKitExporter.sleepIsExportable($0)
+        }
+    }
+
     @discardableResult
     private func saveConfirmedSleeps(
         _ sleeps: [UserConfirmedSleep],
@@ -45761,6 +45773,7 @@ final class SessionStore: ObservableObject {
                 )
             }
         }
+        let committedSleeps = settledSleeps
         let commitPreparedEdges = { [weak self] in
             guard let self else { return }
             if let window = preparation.dutyCycleWindow {
@@ -45771,6 +45784,17 @@ final class SessionStore: ObservableObject {
                 now: preparationNow,
                 reason: "confirmed_sleep_change"
             )
+            // Device 2026-10-14: Sync & storage read back 4 of 17 nights in
+            // Apple Health. Export ran only after workouts or a manual tap,
+            // so a confirmed night waited for the next workout. Export on
+            // commit (never on rollback), only where sleep sharing is already
+            // granted so no permission sheet appears. The ledger backfills
+            // every confirmed night not yet written.
+            if Self.confirmedSleepSaveNeedsHealthExport(previous: previous,
+                                                         saved: committedSleeps),
+               HealthKitExporter.sleepSharingAuthorized {
+                self.exportToHealthKit()
+            }
         }
         if let transactionTicket = transactionTicketAtStart,
            recoveredDataMutationTransaction.activeTicket

@@ -77,7 +77,8 @@ enum AtriaSyncHealth {
     struct SleepReadback: Equatable {
         /// Civil days with an Atria-written asleep sample that Health returns.
         var nightsInHealth: Int
-        /// Confirmed main sleeps (>= 3 h) that ended in the window.
+        /// Confirmed main sleeps (>= 3 h) Atria sends to Health (entered,
+        /// edited, or with verified stages) that ended in the window.
         var confirmedNights: Int
     }
 
@@ -90,7 +91,10 @@ enum AtriaSyncHealth {
                                        since: Date) -> [Date] {
         guard let data = defaults.data(forKey: confirmedSleepsKey),
               let sleeps = try? JSONDecoder().decode([UserConfirmedSleep].self, from: data) else { return [] }
-        return sleeps.filter { $0.end >= since && $0.end.timeIntervalSince($0.start) >= 3 * 3600 }.map(\.end)
+        return sleeps.filter {
+            $0.end >= since && $0.end.timeIntervalSince($0.start) >= 3 * 3600
+                && HealthKitExporter.sleepIsExportable($0)
+        }.map(\.end)
     }
 
     /// nil when Health is unavailable or Atria may not write sleep (nothing
@@ -125,7 +129,7 @@ enum AtriaSyncHealth {
 
     static func readbackText(_ readback: SleepReadback?) -> String {
         guard let readback else { return "Health export off" }
-        if readback.confirmedNights == 0 { return "No confirmed nights yet" }
+        if readback.confirmedNights == 0 { return "No nights to send yet" }
         return "\(min(readback.nightsInHealth, readback.confirmedNights)) of \(readback.confirmedNights) nights"
     }
 
@@ -205,7 +209,7 @@ struct AtriaSyncHealthScreen: View {
                     LabeledContent("Sleep in Apple Health",
                                    value: readbackDone ? AtriaSyncHealth.readbackText(sleepReadback) : "Checking…")
                 } footer: {
-                    Text("iOS reports background stops once a day. Sleep covers the last 30 days.")
+                    Text("iOS reports background stops once a day. Health gets nights with verified stages or your edits, last 30 days.")
                 }
             } else {
                 ProgressView()

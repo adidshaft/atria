@@ -63,7 +63,7 @@ final class AtriaSyncHealthTests: XCTestCase {
 final class AtriaSyncHealthReadbackTests: XCTestCase {
     func testReadbackWordsAndCounting() {
         XCTAssertEqual(AtriaSyncHealth.readbackText(nil), "Health export off")
-        XCTAssertEqual(AtriaSyncHealth.readbackText(.init(nightsInHealth: 0, confirmedNights: 0)), "No confirmed nights yet")
+        XCTAssertEqual(AtriaSyncHealth.readbackText(.init(nightsInHealth: 0, confirmedNights: 0)), "No nights to send yet")
         XCTAssertEqual(AtriaSyncHealth.readbackText(.init(nightsInHealth: 22, confirmedNights: 24)), "22 of 24 nights")
         XCTAssertEqual(AtriaSyncHealth.readbackText(.init(nightsInHealth: 30, confirmedNights: 24)), "24 of 24 nights")
         let base = Date(timeIntervalSince1970: 1_800_000_000)
@@ -75,5 +75,31 @@ final class AtriaSyncHealthReadbackTests: XCTestCase {
             .deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
         XCTAssertTrue(sessions.contains("static let key = \"\(AtriaSyncHealth.confirmedSleepsKey)\""))
+    }
+}
+
+final class AtriaConfirmedSleepHealthExportTriggerTests: XCTestCase {
+    private func sleep(_ id: String, hours: Double, source: String = "manual_entry") -> UserConfirmedSleep {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        return UserConfirmedSleep(id: id, createdAt: start, start: start,
+                                  end: start.addingTimeInterval(hours * 3600),
+                                  source: source, confidence: "high",
+                                  sessions: 1, samples: 0, avgHR: 60, peakHR: 70,
+                                  restingHR: 55, hrv: nil, hrvWindowCount: nil,
+                                  duration: hours * 3600, span: hours * 3600,
+                                  reason: "test", motionSource: "test",
+                                  motionValidated: false, stageSegments: nil)
+    }
+
+    func testOnlyANewMainSleepTriggersExport() {
+        let night = sleep("a", hours: 7)
+        XCTAssertTrue(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [], saved: [night]))
+        XCTAssertFalse(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [night], saved: [night]))
+        XCTAssertFalse(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [], saved: [sleep("nap", hours: 1)]))
+        // Unverified detections stay out of Health, so they are not owed.
+        let unverified = sleep("auto", hours: 7, source: "auto_detected")
+        XCTAssertFalse(HealthKitExporter.sleepIsExportable(unverified))
+        XCTAssertFalse(SessionStore.confirmedSleepSaveNeedsHealthExport(previous: [], saved: [unverified]))
+        XCTAssertTrue(HealthKitExporter.sleepIsExportable(sleep("edit", hours: 7, source: "user_adjusted_bedtime")))
     }
 }
