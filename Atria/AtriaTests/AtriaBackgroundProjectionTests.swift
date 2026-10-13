@@ -4134,4 +4134,32 @@ final class AtriaArchiveCompactionPacingTests: XCTestCase {
             reason: "overdue_idle", explicitDebugOverride: true, throttleActive: false))
     }
 
+    /// `DispatchQueue.sync` would run on the calling (main) thread.
+    private func offMain(_ work: @escaping () -> Void) {
+        let done = expectation(description: "off-main checkpoint")
+        Thread.detachNewThread { work(); done.fulfill() }
+        wait(for: [done], timeout: 5)
+    }
+
+    /// The checkpoint never sleeps the main thread, so drive it off-main.
+    func testPacerDutyCyclesOnceTheLeaseIsHeld() throws {
+        let info = ProcessInfo.processInfo
+        try XCTSkipIf(AtriaBackgroundProjectionThrottle.environmentRequiresAbort(
+            thermalState: info.thermalState,
+            isLowPowerModeEnabled: info.isLowPowerModeEnabled),
+            "host thermal=\(info.thermalState.rawValue) lowPower=\(info.isLowPowerModeEnabled) aborts instead of pacing")
+        var slept: TimeInterval = 0
+        var clock: TimeInterval = 100
+        let throttle = AtriaBackgroundProjectionThrottle(
+            sleepFor: { slept += $0; clock += $0 },
+            uptimeNow: { clock })
+        offMain { _ = throttle.cooperativeCheckpointShouldAbort(processedDelta: 64) }
+        XCTAssertEqual(slept, 0, "no lease, no pacing")
+        let lease = throttle.begin(budgetSeconds: 180)
+        clock += 0.5
+        offMain { _ = throttle.cooperativeCheckpointShouldAbort(processedDelta: 64) }
+        XCTAssertEqual(slept, 0.5, accuracy: 0.001, "rests as long as it worked")
+        XCTAssertTrue(throttle.end(lease: lease))
+    }
+
 }
