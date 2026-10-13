@@ -87,7 +87,9 @@ class HealthConnectExporter(private val context: Context, private val repo: Repo
         var written = 0
         val records = ArrayList<Record>()
 
-        for (s in repo.db.sleeps().unexported()) {
+        // Sample data must never reach Health Connect (iOS: App Review data never touches HealthKit).
+        if (repo.settings.current().demoMode) return 0
+        for (s in repo.db.sleeps().unexported().filter { it.source != com.adidshaft.atria.data.Source.DEMO }) {
             val stages = decodeStages(s.stagesJson).map {
                 SleepSessionRecord.Stage(Instant.ofEpochMilli(it.startMs), Instant.ofEpochMilli(it.endMs), when (it.stage) {
                     SleepStage.AWAKE -> SleepSessionRecord.STAGE_TYPE_AWAKE
@@ -108,7 +110,7 @@ class HealthConnectExporter(private val context: Context, private val repo: Repo
             repo.db.sleeps().upsert(s.copy(exportedToHealthConnect = true))
         }
 
-        for (w in repo.db.workouts().unexported()) {
+        for (w in repo.db.workouts().unexported().filter { it.source != com.adidshaft.atria.data.Source.DEMO }) {
             val route = WorkoutRuntime.decodeRoute(w.routeJson)
             records += ExerciseSessionRecord(
                 startTime = Instant.ofEpochMilli(w.startMs), startZoneOffset = offset(w.startMs),

@@ -205,6 +205,18 @@ fun LiveWorkoutScreen(vm: AppViewModel, onClose: () -> Unit) {
             PillButton("Log set", Modifier.weight(1f), Icons.Filled.AddCircle, AtriaColors.teal, height = 64.dp) { logSet = true }
             PillButton(if (workout.isPaused) "Resume" else "Pause", Modifier.weight(1f), if (workout.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause, AtriaColors.orange, height = 64.dp) { runtime.togglePause() }
         }
+        workout.restStartedAt?.let { rs ->
+            val rest = ((now - rs) / 1000).coerceAtLeast(0)
+            if (rest < 600) AtriaCard(tint = AtriaColors.teal) {
+                Text("Rest %d:%02d".format(rest / 60, rest % 60), style = MaterialTheme.typography.headlineMedium, color = AtriaColors.teal)
+                com.adidshaft.atria.ui.components.ProgressBar((rest / 120f).coerceAtMost(1f), AtriaColors.teal)
+                Text(if (rest < 90) "Recovering between sets" else "Ready for the next set", color = s.textSecondary, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        if (workout.segments.size > 1) AtriaCard {
+            Text("Segments", style = MaterialTheme.typography.titleSmall)
+            workout.segments.forEachIndexed { i, (a, t) -> Text("${i + 1}. $a · from ${com.adidshaft.atria.ui.today.clock(t)}", color = s.textSecondary) }
+        }
         if (workout.sets.isNotEmpty()) AtriaCard {
             Text("${workout.sets.size} sets logged", style = MaterialTheme.typography.titleSmall)
             workout.sets.takeLast(5).forEach { Text("${it.exercise} · ${it.reps} reps${it.weightKg?.let { kg -> " · $kg kg" } ?: ""}", color = s.textSecondary) }

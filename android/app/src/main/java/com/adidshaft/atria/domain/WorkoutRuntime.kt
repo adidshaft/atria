@@ -55,6 +55,10 @@ data class LiveWorkout(
     val sets: List<StrengthSet> = emptyList(),
     val zoneSeconds: DoubleArray = DoubleArray(6),
     val strainTarget: Double = 8.0,
+    /** AtriaWorkoutSegmentAttribution: (activity, startMs) per segment of a multi-activity workout. */
+    val segments: List<Pair<String, Long>> = emptyList(),
+    /** Rest timer started when a set is logged (AtriaStrengthSetLogging rest ring). */
+    val restStartedAt: Long? = null,
 ) {
     val elapsedMs get() = (pausedAt ?: System.currentTimeMillis()) - startMs - pausedMs
     val isPaused get() = pausedAt != null
@@ -125,7 +129,15 @@ class WorkoutRuntime(
         }
     }
 
-    fun changeActivity(activity: String) { _live.value = _live.value?.copy(activity = activity) }
+    /** Switching activity mid-workout starts a new segment (the first minute counts as a correction, not a segment). */
+    fun changeActivity(activity: String) {
+        val w = _live.value ?: return
+        if (activity == w.activity) return
+        val now = System.currentTimeMillis()
+        val segs = if (w.segments.isEmpty()) listOf(w.activity to w.startMs) else w.segments
+        _live.value = if (now - w.startMs < 60_000) w.copy(activity = activity, segments = emptyList())
+        else w.copy(activity = activity, segments = segs + (activity to now))
+    }
 
     fun togglePause() {
         val w = _live.value ?: return
@@ -135,7 +147,7 @@ class WorkoutRuntime(
 
     fun logSet(exercise: String, reps: Int, weightKg: Double?) {
         val w = _live.value ?: return
-        _live.value = w.copy(sets = w.sets + StrengthSet(exercise, reps, weightKg, System.currentTimeMillis()))
+        _live.value = w.copy(sets = w.sets + StrengthSet(exercise, reps, weightKg, System.currentTimeMillis()), restStartedAt = System.currentTimeMillis())
     }
 
     fun end(save: Boolean = true) {
@@ -150,13 +162,15 @@ class WorkoutRuntime(
             val final = compute(w)
             repo.db.workouts().upsert(
                 existing.copy(
-                    activity = final.activity, endMs = System.currentTimeMillis(), strain = final.strain, avgHr = final.avgHr, maxHr = final.maxHr,
+                    endMs = System.currentTimeMillis(), strain = final.strain, avgHr = final.avgHr, maxHr = final.maxHr,
                     calories = final.calories, steps = final.steps.takeIf { it > 0 },
                     zonesJson = AppJson.encodeToString(ListSerializer(kotlinx.serialization.serializer<Double>()), final.zoneSeconds.toList()),
                     routeJson = final.route.takeIf { it.isNotEmpty() }?.let { AppJson.encodeToString(ListSerializer(RoutePoint.serializer()), it) },
                     distanceMeters = final.distanceMeters.takeIf { it > 0 },
                     elevationGainMeters = elevationGain(final.route),
                     setsJson = final.sets.takeIf { it.isNotEmpty() }?.let { AppJson.encodeToString(ListSerializer(StrengthSet.serializer()), it) },
+                    notes = final.segments.takeIf { it.size > 1 }?.joinToString(";") { "${it.first}@${it.second}" },
+                    activity = if (final.segments.size > 1) "Multi-activity" else final.activity,
                     status = "confirmed",
                 ),
             )

@@ -69,6 +69,8 @@ data class LiveState(
     val pendingRecords: Long? = null,
     val packets: Long = 0,
     val lastError: String? = null,
+    /** Official WHOOP app installed and short repeated disconnects: it is likely competing for the strap. */
+    val officialAppSuspected: Boolean = false,
     /** AtriaLiveDataNote: why live data is deliberately paused (null when live). */
     val powerNote: String? = null,
     val boost: com.adidshaft.atria.analytics.CatchUpBoost.Decision = com.adidshaft.atria.analytics.CatchUpBoost.Decision.IDLE,
@@ -254,6 +256,11 @@ class StrapManager(private val context: Context, private val repo: Repository) {
 
     fun sessionSteps() = motion.sessionSteps
     private var workoutLease = false
+    private var linkUpAt = 0L
+    private val shortDrops = java.util.ArrayDeque<Long>()
+
+    /** Mirrors AtriaHomeShellSupport: only blame the official app when it is actually installed. */
+    private fun officialAppInstalled(): Boolean = runCatching { context.packageManager.getPackageInfo("com.whoop.android", 0); true }.getOrDefault(false)
 
     /** "Catch up faster": back-to-back history slices with live motion off until caught up. */
     fun setCatchUpBoost(on: Boolean) = handler.post {
@@ -442,6 +449,7 @@ class StrapManager(private val context: Context, private val repo: Repository) {
             if (g != gatt) return@post
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 log("link", "connected")
+                linkUpAt = System.currentTimeMillis()
                 reconnectDelayMs = 2_000
                 directAttempts = 0
                 everConnectedThisLink = true
@@ -453,6 +461,10 @@ class StrapManager(private val context: Context, private val repo: Repository) {
                 // After a real link drops, try fast direct reconnects again before falling back.
                 if (everConnectedThisLink) directAttempts = 0
                 val wasConnected = _state.value.status == LinkStatus.CONNECTED
+                val now = System.currentTimeMillis()
+                if (wasConnected && now - linkUpAt < 120_000) shortDrops.addLast(now)
+                while (shortDrops.isNotEmpty() && now - shortDrops.first() > 30 * 60_000) shortDrops.removeFirst()
+                _state.update { it.copy(officialAppSuspected = shortDrops.size >= 3 && officialAppInstalled()) }
                 teardown()
                 setStatus(LinkStatus.DISCONNECTED)
                 if (wasConnected) scope.launch { repo.settings.updateStrap { it.copy(lastConnectedAt = System.currentTimeMillis()) } }

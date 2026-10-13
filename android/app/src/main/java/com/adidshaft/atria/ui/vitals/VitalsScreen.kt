@@ -234,6 +234,7 @@ private fun TrendsTab(vm: AppViewModel) {
             t.monotony?.let { KeyValueRow("Monotony", "%.2f".format(it)) }
         }
     }
+    com.adidshaft.atria.ui.extras.StrainRecoveryComboCard(days)
     com.adidshaft.atria.ui.extras.ReportsCard(vm)
     com.adidshaft.atria.ui.extras.StrengthProgressCard(vm)
     com.adidshaft.atria.ui.extras.FaceOffShareCard(vm)

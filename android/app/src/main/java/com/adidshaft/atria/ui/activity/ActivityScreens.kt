@@ -191,6 +191,9 @@ fun WorkoutDetailScreen(vm: AppViewModel, id: Long, onBack: () -> Unit) {
                 Column(Modifier.weight(1f)) { Eyebrow("Duration"); Text("${(x.endMs - x.startMs) / 60_000} min", style = MaterialTheme.typography.headlineMedium) }
             }
             Text("${clock(x.startMs)} – ${clock(x.endMs)}", color = s.textSecondary)
+            // AtriaWorkoutMetricPresentation: thin HR coverage makes strain/calories a lower bound.
+            val coverage = if (x.endMs > x.startMs) (hr.size * 1000.0 * 1.0 / (x.endMs - x.startMs)).coerceAtMost(1.0) else 0.0
+            if (hr.isNotEmpty() && coverage < 0.5) Text("Heart rate captured for ${(coverage * 100).toInt()}% of this workout. Strain is a lower bound.", style = MaterialTheme.typography.bodySmall, color = AtriaColors.stress)
             KeyValueRow("Average HR", "${x.avgHr} bpm")
             KeyValueRow("Max HR", "${x.maxHr} bpm")
             x.calories?.let { KeyValueRow("Active energy", "≈ ${it.toInt()} kcal") }
@@ -202,8 +205,20 @@ fun WorkoutDetailScreen(vm: AppViewModel, id: Long, onBack: () -> Unit) {
                 KeyValueRow("Pace", "%d:%02d /km".format((paceSec / 60).toInt(), (paceSec % 60).toInt()))
             }
         }
+        x.notes?.takeIf { it.contains("@") }?.let { n ->
+            AtriaCard {
+                Text("Segments", style = MaterialTheme.typography.titleSmall)
+                n.split(";").mapNotNull { seg -> seg.split("@").takeIf { it.size == 2 }?.let { it[0] to (it[1].toLongOrNull() ?: 0L) } }
+                    .forEach { (a, t) -> KeyValueRow(a, "from ${clock(t)}") }
+            }
+        }
         val route = WorkoutRuntime.decodeRoute(x.routeJson)
-        if (route.size >= 2) AtriaCard(padding = 0.dp) { RouteMap(route.map { GeoPoint(it.lat, it.lon) }) }
+        if (route.size >= 2) AtriaCard(padding = 0.dp) {
+            // One polyline per uninterrupted segment: never draw a straight line across a pause or GPS gap.
+            val segs = ArrayList<MutableList<GeoPoint>>()
+            route.forEachIndexed { i, p -> if (i == 0 || p.t - route[i - 1].t > 30_000) segs += mutableListOf(GeoPoint(p.lat, p.lon)) else segs.last() += GeoPoint(p.lat, p.lon) }
+            RouteMap(segs)
+        }
         AtriaCard {
             Text("Heart rate", style = MaterialTheme.typography.titleSmall)
             TimeSeriesChart(hr, height = 180.dp, startMs = x.startMs, endMs = x.endMs, gapMs = 60_000L, unit = "bpm", description = "Workout heart rate")
@@ -220,7 +235,8 @@ fun WorkoutDetailScreen(vm: AppViewModel, id: Long, onBack: () -> Unit) {
 
 /** MapKit route → osmdroid OpenStreetMap view with the route polyline. */
 @Composable
-fun RouteMap(points: List<GeoPoint>, modifier: Modifier = Modifier) {
+fun RouteMap(segments: List<List<GeoPoint>>, modifier: Modifier = Modifier) {
+    val points = segments.flatten()
     AndroidView(
         modifier = modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(28.dp)),
         factory = { ctx ->
@@ -228,13 +244,14 @@ fun RouteMap(points: List<GeoPoint>, modifier: Modifier = Modifier) {
             MapView(ctx).apply {
                 setTileSource(TileSourceFactory.MAPNIK)
                 setMultiTouchControls(true)
-                val line = Polyline(this).apply {
-                    setPoints(points)
-                    outlinePaint.color = AtriaColors.strain.toArgb()
-                    outlinePaint.strokeWidth = 10f
-                    outlinePaint.strokeCap = Paint.Cap.ROUND
+                segments.filter { it.size >= 2 }.forEach { seg ->
+                    overlays.add(Polyline(this).apply {
+                        setPoints(seg)
+                        outlinePaint.color = AtriaColors.strain.toArgb()
+                        outlinePaint.strokeWidth = 10f
+                        outlinePaint.strokeCap = Paint.Cap.ROUND
+                    })
                 }
-                overlays.add(line)
                 addOnFirstLayoutListener { _, _, _, _, _ -> zoomToBoundingBox(BoundingBox.fromGeoPoints(points).increaseByScale(1.3f), false) }
             }
         },

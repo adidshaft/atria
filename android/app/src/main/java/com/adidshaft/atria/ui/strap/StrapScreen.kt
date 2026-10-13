@@ -129,6 +129,16 @@ fun StrapScreen(vm: AppViewModel, onBack: () -> Unit) {
                     }
                 }
             }
+            if (live.officialAppSuspected) item {
+                AtriaCard(tint = AtriaColors.danger) {
+                    Text("Close WHOOP", style = MaterialTheme.typography.titleSmall)
+                    Text("The official WHOOP app is installed and the strap keeps dropping within minutes. One app owns the strap at a time: force stop WHOOP, then keep wearing the strap near this phone.", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
+                    Spacer(Modifier.height(8.dp))
+                    PillButton("Open WHOOP app settings", Modifier.fillMaxWidth(), color = s.inset, contentColor = s.textPrimary, height = 44.dp) {
+                        runCatching { ctx.startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:com.whoop.android"))) }
+                    }
+                }
+            }
             if (strap.parkedAt != null) item {
                 AtriaCard(tint = AtriaColors.stress) {
                     Text("Strap can't catch up", style = MaterialTheme.typography.titleSmall)

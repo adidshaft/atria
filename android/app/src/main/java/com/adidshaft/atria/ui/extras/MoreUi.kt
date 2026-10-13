@@ -97,7 +97,7 @@ fun LearningsFeed() {
                 val n = all.filter { it.key == t.key && it.value == "no" }.mapNotNull { rec[it.epochDay]?.toDouble() }
                 // Today deck shows only findings that survive the significance gate.
                 BehaviorImpact.evaluate(y, n, t.expected, t.label)?.takeIf { it.significant }?.let { "${t.name}:${it.withN + it.withoutN}" to it }
-            }
+            } + learnedPhysiology(g.repo.db.daily().range(today - 28, today))
         }
     }
     findings.filter { it.first !in dismissed }.take(3).forEach { (key, r) ->
@@ -144,7 +144,9 @@ fun CompatibleHardwareCard() {
 fun ExpandedChartDialog(title: String, color: Color, select: (DailyMetricsEntity) -> Double?, fmt: (Double) -> String, onDismiss: () -> Unit) {
     val s = LocalSurfaces.current
     val g = AtriaApp.graph
-    var range by remember { mutableIntStateOf(1) }
+    val prefs = androidx.compose.ui.platform.LocalContext.current.getSharedPreferences("expanded_chart", android.content.Context.MODE_PRIVATE)
+    var range by remember { mutableIntStateOf(prefs.getInt(title, 1)) }
+    LaunchedEffect(range) { prefs.edit().putInt(title, range).apply() }
     val days = listOf(7L, 30L, 90L)[range]
     var points by remember { mutableStateOf<List<ChartPoint>>(emptyList()) }
     var events by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -215,5 +217,55 @@ fun NightBaselineCard(sleep: SleepEntity) {
         Text("Compared with your nights", style = MaterialTheme.typography.titleSmall)
         if (f.isEmpty()) Text("Everything was within your usual range.", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
         f.forEach { KeyValueRow("${it.metric} ${it.value}", it.label, valueColor = if (it.unusual) AtriaColors.stress else s.textSecondary) }
+    }
+}
+
+
+/**
+ * AtriaLearnedInsights: findings from saved daily metrics alone (no journal needed):
+ * last 7 days vs the 21 before, for HRV, resting HR and sleep. Shown only when the
+ * shift is larger than the wearer's own day-to-day spread (Welch p < 0.05, ≥ 5 days each).
+ */
+fun learnedPhysiology(days: List<DailyMetricsEntity>): List<Pair<String, BehaviorImpact.Result>> {
+    val today = LocalDate.now().toEpochDay()
+    val recent = days.filter { it.epochDay > today - 7 }
+    val prior = days.filter { it.epochDay <= today - 7 }
+    fun test(name: String, sel: (DailyMetricsEntity) -> Double?, fmt: (Double) -> String, higherGood: Boolean): Pair<String, BehaviorImpact.Result>? {
+        val a = recent.mapNotNull(sel); val b = prior.mapNotNull(sel)
+        val r = BehaviorImpact.evaluate(a, b, BehaviorImpact.Expected.NEUTRAL, name) ?: return null
+        if (!r.significant) return null
+        val up = r.delta > 0
+        val headline = "$name ${if (up) "up" else "down"} ${fmt(kotlin.math.abs(r.delta))} this week vs your previous three" + if (up == higherGood) " · good sign" else ""
+        return "learned:$name:${today / 7}" to r.copy(headline = headline)
+    }
+    return listOfNotNull(
+        test("HRV", { it.hrv }, { "%.0f ms".format(it) }, true),
+        test("Resting HR", { it.restingHr?.toDouble() }, { "%.0f bpm".format(it) }, false),
+        test("Sleep", { it.sleepHours }, { formatHours(it) }, true),
+    )
+}
+
+/** AtriaStrainRecoveryComboChart: daily strain bars with the recovery line over 14 days. */
+@Composable
+fun StrainRecoveryComboCard(days: List<DailyMetricsEntity>) {
+    val s = LocalSurfaces.current
+    val window = (13 downTo 0).map { LocalDate.now().minusDays(it.toLong()).toEpochDay() }.map { d -> days.firstOrNull { it.epochDay == d } }
+    if (window.all { it?.strain == null && it?.recovery == null }) return
+    AtriaCard {
+        Text("Strain & Recovery", style = MaterialTheme.typography.titleSmall)
+        androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().height(150.dp)) {
+            val slot = size.width / window.size
+            val h = size.height
+            window.forEachIndexed { i, d ->
+                d?.strain?.let { st ->
+                    val bh = (st / 21.0 * h).toFloat()
+                    drawRoundRect(AtriaColors.strain.copy(alpha = 0.75f), androidx.compose.ui.geometry.Offset(i * slot + slot * 0.2f, h - bh), androidx.compose.ui.geometry.Size(slot * 0.6f, bh), androidx.compose.ui.geometry.CornerRadius(6f))
+                }
+            }
+            val pts = window.mapIndexedNotNull { i, d -> d?.recovery?.let { androidx.compose.ui.geometry.Offset(i * slot + slot / 2, h - (it / 100f) * h) to AtriaColors.recoveryColor(it) } }
+            pts.zipWithNext { a, b -> drawLine(s.textSecondary, a.first, b.first, 3f) }
+            pts.forEach { (o, c) -> drawCircle(c, 7f, o) }
+        }
+        Text("Bars: strain (0–21) · dots: recovery %", style = MaterialTheme.typography.bodySmall, color = s.textTertiary)
     }
 }

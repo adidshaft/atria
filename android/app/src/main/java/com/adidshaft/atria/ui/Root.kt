@@ -205,6 +205,7 @@ fun TabPage(vm: AppViewModel, nav: NavHostController, onQuick: () -> Unit, conte
                 com.adidshaft.atria.ui.components.CircleButton(Icons.Filled.Settings, "Settings") { nav.navigate("settings") }
             }
         }
+        if (live.officialAppSuspected) item { Text("The official WHOOP app may be competing for the strap · open Strap", style = MaterialTheme.typography.bodySmall, color = AtriaColors.danger, modifier = Modifier.padding(start = 8.dp)) }
         live.powerNote?.let { note ->
             item { Text(note, style = MaterialTheme.typography.bodySmall, color = s.textSecondary, modifier = Modifier.padding(start = 8.dp)) }
         }
