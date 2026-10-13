@@ -1,3 +1,4 @@
+import HealthKit
 import SwiftUI
 
 /// Sync & storage health (W4.1): the self-diagnosis the app owes its wearer
@@ -67,6 +68,67 @@ enum AtriaSyncHealth {
         return Date(timeIntervalSince1970: unix)
     }
 
+    // MARK: Apple Health sleep readback (W4.3)
+
+    /// Mirrors SessionStore's private `ConfirmedSleepDefaults.key`.
+    static let confirmedSleepsKey = "atria.confirmedSleeps.v1"
+    static let readbackDays = 30
+
+    struct SleepReadback: Equatable {
+        /// Civil days with an Atria-written asleep sample that Health returns.
+        var nightsInHealth: Int
+        /// Confirmed main sleeps (>= 3 h) that ended in the window.
+        var confirmedNights: Int
+    }
+
+    /// Distinct civil days among `dates`.
+    static func distinctDays(_ dates: [Date], calendar: Calendar = .current) -> Int {
+        Set(dates.map { calendar.startOfDay(for: $0) }).count
+    }
+
+    static func confirmedMainSleepEnds(defaults: UserDefaults = .standard,
+                                       since: Date) -> [Date] {
+        guard let data = defaults.data(forKey: confirmedSleepsKey),
+              let sleeps = try? JSONDecoder().decode([UserConfirmedSleep].self, from: data) else { return [] }
+        return sleeps.filter { $0.end >= since && $0.end.timeIntervalSince($0.start) >= 3 * 3600 }.map(\.end)
+    }
+
+    /// nil when Health is unavailable or Atria may not write sleep (nothing
+    /// to check). Reads only samples whose source is this app.
+    static func sleepReadback(now: Date = Date()) async -> SleepReadback? {
+        guard HKHealthStore.isHealthDataAvailable(),
+              let sleepType = HKCategoryType.categoryType(forIdentifier: .sleepAnalysis) else { return nil }
+        let store = HKHealthStore()
+        guard store.authorizationStatus(for: sleepType) == .sharingAuthorized,
+              let since = Calendar.current.date(byAdding: .day, value: -readbackDays, to: now) else { return nil }
+        let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            HKQuery.predicateForSamples(withStart: since, end: now),
+            HKQuery.predicateForObjects(from: HKSource.default())
+        ])
+        let asleepValues: Set<Int> = [
+            HKCategoryValueSleepAnalysis.asleepUnspecified.rawValue,
+            HKCategoryValueSleepAnalysis.asleepCore.rawValue,
+            HKCategoryValueSleepAnalysis.asleepREM.rawValue,
+            HKCategoryValueSleepAnalysis.asleepDeep.rawValue
+        ]
+        let ends: [Date] = await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(sampleType: sleepType, predicate: predicate,
+                                      limit: HKObjectQueryNoLimit, sortDescriptors: nil) { _, samples, _ in
+                let asleep = (samples as? [HKCategorySample] ?? []).filter { asleepValues.contains($0.value) }
+                continuation.resume(returning: asleep.map(\.endDate))
+            }
+            store.execute(query)
+        }
+        return SleepReadback(nightsInHealth: distinctDays(ends),
+                             confirmedNights: distinctDays(confirmedMainSleepEnds(since: since)))
+    }
+
+    static func readbackText(_ readback: SleepReadback?) -> String {
+        guard let readback else { return "Health export off" }
+        if readback.confirmedNights == 0 { return "No confirmed nights yet" }
+        return "\(min(readback.nightsInHealth, readback.confirmedNights)) of \(readback.confirmedNights) nights"
+    }
+
     // MARK: Plain-language rows
 
     static func linkText(_ snapshot: Snapshot) -> String {
@@ -122,6 +184,8 @@ enum AtriaSyncHealth {
 /// Settings > Data > Sync & storage. One row per question support would ask.
 struct AtriaSyncHealthScreen: View {
     @State private var snapshot: AtriaSyncHealth.Snapshot?
+    @State private var sleepReadback: AtriaSyncHealth.SleepReadback?
+    @State private var readbackDone = false
 
     var body: some View {
         Form {
@@ -138,8 +202,10 @@ struct AtriaSyncHealthScreen: View {
                 Section {
                     LabeledContent("On this iPhone", value: AtriaSyncHealth.storageText(snapshot))
                     LabeledContent("Stopped by iOS", value: AtriaSyncHealth.exitText(snapshot.exits))
+                    LabeledContent("Sleep in Apple Health",
+                                   value: readbackDone ? AtriaSyncHealth.readbackText(sleepReadback) : "Checking…")
                 } footer: {
-                    Text("iOS reports background stops once a day.")
+                    Text("iOS reports background stops once a day. Sleep covers the last 30 days.")
                 }
             } else {
                 ProgressView()
@@ -149,6 +215,8 @@ struct AtriaSyncHealthScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             snapshot = await Task.detached(priority: .userInitiated) { AtriaSyncHealth.load() }.value
+            sleepReadback = await AtriaSyncHealth.sleepReadback()
+            readbackDone = true
         }
     }
 }
