@@ -1,0 +1,175 @@
+package com.adidshaft.atria.ui.extras
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import com.adidshaft.atria.AtriaApp
+import com.adidshaft.atria.analytics.BehaviorImpact
+import com.adidshaft.atria.analytics.formatHours
+import com.adidshaft.atria.data.DailyMetricsEntity
+import com.adidshaft.atria.data.JournalEntity
+import com.adidshaft.atria.data.SleepEntity
+import com.adidshaft.atria.ui.components.AtriaCard
+import com.adidshaft.atria.ui.components.ChartPoint
+import com.adidshaft.atria.ui.components.Eyebrow
+import com.adidshaft.atria.ui.components.KeyValueRow
+import com.adidshaft.atria.ui.components.PillButton
+import com.adidshaft.atria.ui.components.SegmentedTabs
+import com.adidshaft.atria.ui.components.TimeSeriesChart
+import com.adidshaft.atria.ui.journal.JournalTag
+import com.adidshaft.atria.ui.theme.AtriaColors
+import com.adidshaft.atria.ui.theme.LocalSurfaces
+import com.adidshaft.atria.ui.today.clock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.ZoneId
+
+/** AtriaSameDayMainSleepSheet: ask once which of two same-day sleeps is the main one. */
+@Composable
+fun SameDayMainSleepCard() {
+    val s = LocalSurfaces.current
+    val g = AtriaApp.graph
+    val scope = rememberCoroutineScope()
+    var options by remember { mutableStateOf<List<SleepEntity>>(emptyList()) }
+    var answered by remember { mutableStateOf(true) }
+    var tick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(tick) {
+        withContext(Dispatchers.IO) {
+            val today = g.repo.today()
+            options = g.engine.sameDayMainSleeps(today)
+            answered = g.engine.preferredMainSleepId(today) != null
+        }
+    }
+    if (options.size < 2 || answered) return
+    AtriaCard(tint = AtriaColors.sleep) {
+        Text("You slept twice today", style = MaterialTheme.typography.titleSmall)
+        Text("Which was your main sleep? It drives Recovery; the other stays saved as a second sleep.", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
+        Spacer(Modifier.height(8.dp))
+        options.forEach { sl ->
+            PillButton("${clock(sl.startMs)}–${clock(sl.endMs)} · ${formatHours(sl.asleepMs / 3_600_000.0)}", Modifier.fillMaxWidth().padding(vertical = 3.dp), color = s.inset, contentColor = s.textPrimary, height = 44.dp) {
+                scope.launch(Dispatchers.IO) {
+                    g.repo.db.journal().upsert(JournalEntity(g.repo.today().toEpochDay(), "mainsleep", sl.id.toString(), System.currentTimeMillis()))
+                    g.engine.refresh(); tick++
+                }
+            }
+        }
+    }
+}
+
+/** AtriaTodayLearningsFeed: significant findings only, stacked; tap to dismiss. */
+@Composable
+fun LearningsFeed() {
+    val s = LocalSurfaces.current
+    val g = AtriaApp.graph
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val prefs = ctx.getSharedPreferences("learnings", android.content.Context.MODE_PRIVATE)
+    var findings by remember { mutableStateOf<List<Pair<String, BehaviorImpact.Result>>>(emptyList()) }
+    var dismissed by remember { mutableStateOf(prefs.getStringSet("dismissed", emptySet())!!.toSet()) }
+    LaunchedEffect(Unit) {
+        findings = withContext(Dispatchers.IO) {
+            val today = g.repo.today().toEpochDay()
+            val all = g.repo.db.journal().all()
+            val rec = g.repo.db.daily().range(today - 120, today).associate { it.epochDay to it.recovery }
+            JournalTag.entries.filter { !it.private }.mapNotNull { t ->
+                val y = all.filter { it.key == t.key && it.value == "yes" }.mapNotNull { rec[it.epochDay]?.toDouble() }
+                val n = all.filter { it.key == t.key && it.value == "no" }.mapNotNull { rec[it.epochDay]?.toDouble() }
+                // Today deck shows only findings that survive the significance gate.
+                BehaviorImpact.evaluate(y, n, t.expected, t.label)?.takeIf { it.significant }?.let { "${t.name}:${it.withN + it.withoutN}" to it }
+            }
+        }
+    }
+    findings.filter { it.first !in dismissed }.take(3).forEach { (key, r) ->
+        AtriaCard(onClick = {
+            dismissed = dismissed + key
+            prefs.edit().putStringSet("dismissed", dismissed).apply()
+        }) {
+            Eyebrow("Learning", color = AtriaColors.hrv)
+            Text(r.headline, style = MaterialTheme.typography.titleSmall)
+            Text("${r.withN} days with vs ${r.withoutN} without · tap to dismiss", style = MaterialTheme.typography.bodySmall, color = s.textTertiary)
+        }
+    }
+}
+
+/** AtriaDetectionLog: visible record of detection decisions. */
+@Composable
+fun DetectionsCard() {
+    val s = LocalSurfaces.current
+    val entries by AtriaApp.graph.repo.db.log().observe(300).collectAsState(initial = emptyList())
+    val detections = entries.filter { it.tag == "detection" }.take(10)
+    if (detections.isEmpty()) return
+    AtriaCard {
+        Text("Detections", style = MaterialTheme.typography.titleSmall)
+        detections.forEach { e -> KeyValueRow(e.message, clock(e.t)) }
+        Text("What Atria noticed automatically and why it saved or asked.", style = MaterialTheme.typography.bodySmall, color = s.textTertiary)
+    }
+}
+
+/** AtriaCompatibleHardwareScreen: review-accurate hardware disclosure. */
+@Composable
+fun CompatibleHardwareCard() {
+    val s = LocalSurfaces.current
+    AtriaCard {
+        Text("Compatible hardware", style = MaterialTheme.typography.titleSmall)
+        KeyValueRow("WHOOP 4.0", "Validated", valueColor = AtriaColors.calm)
+        KeyValueRow("WHOOP 5.0 / MG", "Not supported")
+        KeyValueRow("Standard Bluetooth HR straps", "Heart rate only, unvalidated")
+        Text("Atria is independent and not affiliated with WHOOP. Blood oxygen stays hidden until validated against a reference.", style = MaterialTheme.typography.bodySmall, color = s.textSecondary)
+    }
+}
+
+/** AtriaExpandedChart: a metric over 7/30/90 days with saved-event markers. */
+@Composable
+fun ExpandedChartDialog(title: String, color: Color, select: (DailyMetricsEntity) -> Double?, fmt: (Double) -> String, onDismiss: () -> Unit) {
+    val s = LocalSurfaces.current
+    val g = AtriaApp.graph
+    var range by remember { mutableIntStateOf(1) }
+    val days = listOf(7L, 30L, 90L)[range]
+    var points by remember { mutableStateOf<List<ChartPoint>>(emptyList()) }
+    var events by remember { mutableStateOf<List<String>>(emptyList()) }
+    LaunchedEffect(range) {
+        withContext(Dispatchers.IO) {
+            val today = LocalDate.now()
+            val rows = g.repo.db.daily().range(today.minusDays(days - 1).toEpochDay(), today.toEpochDay())
+            points = rows.mapNotNull { r -> select(r)?.let { ChartPoint(LocalDate.ofEpochDay(r.epochDay).atTime(12, 0).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli(), it) } }
+            val from = today.minusDays(days - 1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            events = g.repo.db.workouts().between(from, System.currentTimeMillis()).filter { it.status == "confirmed" }.takeLast(8)
+                .map { "${LocalDate.ofEpochDay(it.startMs / 86_400_000)} · ${it.activity} · strain %.1f".format(it.strain) }
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onDismiss) { Text("Done") } },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SegmentedTabs(listOf("7 D", "30 D", "90 D"), range, { range = it })
+                val start = LocalDate.now().minusDays(days - 1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                TimeSeriesChart(points, height = 220.dp, color = color, gapMs = 2 * 86_400_000L, startMs = start, endMs = System.currentTimeMillis(), valueFormat = fmt, description = "$title, $days days")
+                points.map { it.v }.takeIf { it.isNotEmpty() }?.let { v -> Text("Avg ${fmt(v.average())} · low ${fmt(v.min())} · high ${fmt(v.max())}", color = s.textSecondary) }
+                if (events.isNotEmpty()) { Eyebrow("Workouts in range"); events.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = s.textTertiary) } }
+            }
+        },
+    )
+}

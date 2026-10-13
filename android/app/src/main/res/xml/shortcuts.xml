@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App Intents / Siri shortcuts → static launcher shortcuts (also exposed to Google Assistant). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="start_workout" android:enabled="true" android:icon="@drawable/ic_stat_atria"
+        android:shortcutShortLabel="@string/shortcut_workout_short" android:shortcutLongLabel="@string/shortcut_workout_long">
+        <intent android:action="android.intent.action.VIEW" android:data="atria://workout"
+            android:targetPackage="com.adidshaft.atria" android:targetClass="com.adidshaft.atria.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="log_sleep" android:enabled="true" android:icon="@drawable/ic_stat_atria"
+        android:shortcutShortLabel="@string/shortcut_sleep_short">
+        <intent android:action="android.intent.action.VIEW" android:data="atria://log-sleep"
+            android:targetPackage="com.adidshaft.atria" android:targetClass="com.adidshaft.atria.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="journal" android:enabled="true" android:icon="@drawable/ic_stat_atria"
+        android:shortcutShortLabel="@string/shortcut_journal_short">
+        <intent android:action="android.intent.action.VIEW" android:data="atria://journal"
+            android:targetPackage="com.adidshaft.atria" android:targetClass="com.adidshaft.atria.MainActivity" />
+    </shortcut>
+    <shortcut android:shortcutId="breathe" android:enabled="true" android:icon="@drawable/ic_stat_atria"
+        android:shortcutShortLabel="@string/shortcut_breathe_short">
+        <intent android:action="android.intent.action.VIEW" android:data="atria://breathe"
+            android:targetPackage="com.adidshaft.atria" android:targetClass="com.adidshaft.atria.MainActivity" />
+    </shortcut>
+</shortcuts>

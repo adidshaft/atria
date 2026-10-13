@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Atria</string>
+    <string name="widget_today_description">Recovery, strain and sleep at a glance</string>
+    <string name="widget_hr_description">Live heart rate from your strap</string>
+    <string name="shortcut_workout_short">Start workout</string>
+    <string name="shortcut_workout_long">Start a workout</string>
+    <string name="shortcut_sleep_short">Log sleep</string>
+    <string name="shortcut_journal_short">Journal</string>
+    <string name="shortcut_breathe_short">Breathe</string>
+    <string name="widget_steps_description">Today\'s strap-counted steps</string>
+    <string name="widget_strain_description">Today\'s strain</string>
+    <string name="widget_hrv_description">Last night\'s HRV</string>
+</resources>
