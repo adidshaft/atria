@@ -1,3 +1,4 @@
+import HealthKit
 import XCTest
 @testable import Atria
 
@@ -18,15 +19,42 @@ final class AtriaAppReviewDemoTests: XCTestCase {
         XCTAssertFalse(HealthKitExporter.appReviewDemoBlocks("test"))
     }
 
-    func testNutritionQueryReturnsNothingWithSampleData() {
-        AtriaAppReviewDemo.activate()
-        let done = expectation(description: "completion")
-        HealthKitExporter().fetchNutritionSummary(for: Date(), enabled: true) { summary, mass in
-            XCTAssertNil(summary)
-            XCTAssertNil(mass)
-            done.fulfill()
+    /// App Review 2.1(a), 1.0 (101): the Health controls must reach HealthKit
+    /// in sample mode. The sample-mode export request asks for every type a
+    /// real export writes, so the reviewer sees the same access sheet.
+    func testSampleModeExportRequestCoversEveryExportedType() {
+        let types = HealthKitExporter().exportAuthorizationTypes
+        let share = Set(types.share.map(\.identifier))
+        for identifier: HKQuantityTypeIdentifier in [.heartRate, .restingHeartRate, .heartRateVariabilitySDNN,
+                                                     .respiratoryRate, .activeEnergyBurned, .vo2Max] {
+            XCTAssertTrue(share.contains(identifier.rawValue), identifier.rawValue)
         }
-        wait(for: [done], timeout: 1)
+        XCTAssertTrue(share.contains(HKObjectType.workoutType().identifier))
+        XCTAssertTrue(share.contains(HKCategoryTypeIdentifier.sleepAnalysis.rawValue))
+        XCTAssertTrue(types.read.contains(HKQuantityType(.heartRate)))
+    }
+
+    /// App Store / TestFlight / simulator installs have no embedded profile.
+    /// Reading that as "entitlement missing" silently disabled every Health
+    /// request for reviewers (2.1(a), 1.0 (101)).
+    func testHealthKitEntitlementOnlyMissingWhenAProfileProvesIt() throws {
+        func bundle(profile: String?) throws -> Bundle {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("hk-entitlement-\(UUID().uuidString).bundle")
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+            if let profile {
+                try Data(profile.utf8).write(to: dir.appendingPathComponent("embedded.mobileprovision"))
+            }
+            return try XCTUnwrap(Bundle(url: dir))
+        }
+
+        XCTAssertTrue(HealthKitExporter.hasHealthKitEntitlement(bundle: try bundle(profile: nil)),
+                      "No profile means an Apple-signed or simulator install")
+        XCTAssertFalse(HealthKitExporter.hasHealthKitEntitlement(
+            bundle: try bundle(profile: "<key>aps-environment</key>")))
+        XCTAssertTrue(HealthKitExporter.hasHealthKitEntitlement(
+            bundle: try bundle(profile: "<key>com.apple.developer.healthkit</key><true/>")))
     }
 
     func testFixtureCoversEverySupportedSurfaceWithoutUnsupportedSignals() {

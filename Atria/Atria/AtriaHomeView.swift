@@ -1799,7 +1799,7 @@ struct AtriaHomeView: View {
                               onDismissMaxHRSuggestion: { observedPeak in
                                   store.dismissMaxHRSuggestion(observedPeak: observedPeak)
                               },
-                              onExportHealth: { store.exportToHealthKit() },
+                              onExportHealth: { store.exportToHealthKit(userInitiated: true) },
                               buildResearchBundle: { await AtriaResearchBundleBuilder.build(store: store) },
                               buildResearchPreview: { await AtriaResearchBundleBuilder.preview(store: store) },
                               onSyncMissedData: {

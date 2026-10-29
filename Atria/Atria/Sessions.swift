@@ -30946,6 +30946,7 @@ final class SessionStore: ObservableObject {
         }
         AtriaAppReviewDemo.deactivate()
         AtriaOnboardingPersonalization.persistNickname("")
+        UserDefaults.standard.removeObject(forKey: AtriaNutritionContext.healthReadNutritionKey)
         saveBehaviorJournalEntries([])
         sessions = []
         dailyMetricHistory = []
@@ -55935,21 +55936,30 @@ final class SessionStore: ObservableObject {
     /// planning walks every saved session on the main actor (HangTracer
     /// 2026-09-28/29: 1.8 s and 2.7 s right after "End workout"). Repeated
     /// triggers inside the delay produce one export of the latest store.
-    func exportToHealthKit() {
+    /// Only `userInitiated` (Settings) exports may raise the Health access
+    /// sheet; automatic post-workout exports write once access was granted.
+    func exportToHealthKit(userInitiated: Bool = false) {
+        // Sample data is never written to Apple Health, but the button still
+        // shows the real Health access sheet (App Review 2.1(a), 1.0 (101)).
         guard !AtriaAppReviewDemo.isActive else {
-            AtriaDebugLog("ATRIADBG healthkit_export status=suppressed reason=app_review_demo")
+            if userInitiated {
+                healthKitExporter.requestExportAuthorizationWithoutWriting { _ in }
+            }
             return
         }
+        pendingHealthKitExportUserInitiated = pendingHealthKitExportUserInitiated || userInitiated
         pendingHealthKitExport?.cancel()
         pendingHealthKitExport = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             guard !Task.isCancelled, let self else { return }
+            let requestAuthorization = self.pendingHealthKitExportUserInitiated
             self.pendingHealthKitExport = nil
-            self.exportToHealthKitNow()
+            self.pendingHealthKitExportUserInitiated = false
+            self.exportToHealthKitNow(requestAuthorizationIfNeeded: requestAuthorization)
         }
     }
 
-    private func exportToHealthKitNow() {
+    private func exportToHealthKitNow(requestAuthorizationIfNeeded: Bool) {
         let rest = baseline.restingInt ?? 60
         healthKitExporter.export(sessions: sessions,
                                  rest: rest,
@@ -55957,10 +55967,12 @@ final class SessionStore: ObservableObject {
                                  profile: profile,
                                  restingBaselineSamples: baseline.freshRestingSampleCount(),
                                  confirmedWorkouts: confirmedWorkouts,
-                                 confirmedSleeps: confirmedSleeps)
+                                 confirmedSleeps: confirmedSleeps,
+                                 requestAuthorizationIfNeeded: requestAuthorizationIfNeeded)
     }
 
     private var pendingHealthKitExport: Task<Void, Never>?
+    private var pendingHealthKitExportUserInitiated = false
 
     func requestNutritionReadAuthorizationIfEnabled() {
         healthKitExporter.requestNutritionReadAuthorizationIfEnabled()

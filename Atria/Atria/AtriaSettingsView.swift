@@ -1,3 +1,4 @@
+import HealthKit
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -1079,10 +1080,12 @@ struct AtriaSettingsView: View {
                         exportTapped = false
                     }
                 } label: {
-                    Label(exportTapped ? "Syncing to Apple Health…" : "Export to Apple Health",
+                    Label(exportTapped
+                          ? (AtriaAppReviewDemo.isActive ? "Apple Health access requested" : "Syncing to Apple Health…")
+                          : "Export to Apple Health",
                           systemImage: exportTapped ? "checkmark.circle.fill" : "square.and.arrow.up")
                 }
-                .disabled(exportTapped || AtriaAppReviewDemo.isActive)
+                .disabled(exportTapped)
                 .accessibilityIdentifier("atria.settings.health-export")
             } else {
                 settingsInfoRow(icon: "heart.text.square.fill", tint: .red,
@@ -1090,16 +1093,21 @@ struct AtriaSettingsView: View {
                                 detail: "Your heart rate, workouts and sleep sync to Apple Health from the collection tools.")
             }
 
-            // Sample data never touches Apple Health (App Review): the toggle
-            // shows off and cannot be flipped, so no permission sheet appears.
-            Toggle(isOn: AtriaAppReviewDemo.isActive ? .constant(false) : useHealthNutrition) {
+            // Live in sample mode too: App Review rejected 1.0 (101) under
+            // 2.1(a) when this toggle was disabled there. It is read-only.
+            Toggle(isOn: useHealthNutrition) {
                 Label("Use nutrition from Apple Health", systemImage: "fork.knife.circle.fill")
             }
-            .disabled(AtriaAppReviewDemo.isActive)
             .accessibilityIdentifier("atria.settings.health-nutrition")
             .accessibilityHint("Read-only calories, macros, water, caffeine, and alcohol from Apple Health when you grant permission. Atria never asks you to log meals.")
+            if !HKHealthStore.isHealthDataAvailable() {
+                Text("Apple Health isn't available on this device, so no permission sheet can appear.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("atria.settings.health-unavailable-note")
+            }
             if AtriaAppReviewDemo.isActive {
-                Text("Apple Health is off while you explore sample data.")
+                Text("Sample heart rate, sleep and workouts are never written to Apple Health.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("atria.settings.health-demo-note")
@@ -1107,7 +1115,7 @@ struct AtriaSettingsView: View {
         } header: {
             Text("Apple Health · HealthKit")
         } footer: {
-            Text("Nutrition access is read-only. Atria processes Apple Health records on this device. Manage or revoke individual permissions in Apple Health → your profile → Apps → Atria. Sample data never requests access, reads, or writes Apple Health.")
+            Text("Nutrition access is read-only. Atria processes Apple Health records on this device. Manage or revoke individual permissions in Apple Health → your profile → Apps → Atria.")
         }
     }
 
@@ -1805,7 +1813,7 @@ private struct AtriaDataSettingsDefaultsScope<Content: View>: View {
     var body: some View {
         content($iCloudBackupEnabled, $useHealthNutrition)
             .onChange(of: useHealthNutrition) { _, enabled in
-                if enabled, !AtriaAppReviewDemo.isActive {
+                if enabled {
                     onNutritionHealthToggle?()
                 }
             }

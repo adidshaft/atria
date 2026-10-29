@@ -147,8 +147,16 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
     /// App Review: sample data must never reach HealthKit. From a fresh
     /// install, enter sample data, confirm Settings > Apple Health cannot
     /// authorize, visit every tab, then exit back to onboarding.
-    func testFreshInstallSampleDataCannotAuthorizeHealthKit() {
+    func testFreshInstallSampleDataHealthControlsRespond() {
         let app = XCUIApplication()
+        // XCTest reports iPadOS's "iCloud Health Data Sync is Off" notice as a
+        // "Health Access" alert interruption; answer it like a user would.
+        addUIInterruptionMonitor(withDescription: "iCloud Health notice") { alert in
+            let notNow = alert.buttons["Not Now"]
+            guard notNow.exists else { return false }
+            notNow.tap()
+            return true
+        }
         let explore = launchAtFirstRunSetup(app)
         explore.tap()
         let badge = app.descendants(matching: .any)["atria.demo.sample-data-badge"]
@@ -170,27 +178,64 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
             swipes += 1
         }
         XCTAssertTrue(nutrition.exists, "Missing Apple Health nutrition toggle")
-        XCTAssertFalse(nutrition.isEnabled, "Health toggle must be disabled with sample data")
+        // App Review 2.1(a), 1.0 (101): the toggle must respond in sample mode.
+        XCTAssertTrue(nutrition.isEnabled, "Health toggle must stay usable with sample data")
         XCTAssertEqual(nutrition.value as? String, "0")
-        XCTAssertTrue(app.staticTexts["atria.settings.health-demo-note"].exists
-                      || app.descendants(matching: .any)["atria.settings.health-demo-note"].exists,
-                      "Sample data should explain why Apple Health is off")
+        XCTAssertTrue(app.descendants(matching: .any)["atria.settings.health-demo-note"].exists,
+                      "Sample data should say demo records are never written to Apple Health")
         let export = app.buttons["atria.settings.health-export"]
         if export.exists {
-            XCTAssertFalse(export.isEnabled, "Apple Health export must be disabled with sample data")
+            XCTAssertTrue(export.isEnabled, "Apple Health export must stay usable with sample data")
         }
-        // A tap on the disabled control must not raise the Health access sheet.
-        nutrition.tap()
-        XCTAssertFalse(app.navigationBars["Health Access"].waitForExistence(timeout: 3),
-                       "HealthKit authorization must never appear with sample data")
-        XCTAssertFalse(app.staticTexts["Turn On All"].exists)
-        XCTAssertEqual(nutrition.value as? String, "0")
+        tapSwitch(nutrition)
+        XCTAssertEqual(nutrition.value as? String, "1", "Health toggle did not respond")
+        // The real Health access sheet appears (first request on this install).
+        // iPadOS may also show its own "iCloud Health Data Sync is Off" notice,
+        // before or after the access sheet. Dismiss whichever is up.
+        let healthSheet = app.navigationBars["Health Access"]
+        let notNow = app.buttons["Not Now"]
+        var sawHealthSheet = false
+        let deadline = Date().addingTimeInterval(25)
+        while Date() < deadline {
+            if healthSheet.exists {
+                if !sawHealthSheet {
+                    let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+                    shot.name = "health-access-sheet"
+                    shot.lifetime = .keepAlways
+                    add(shot)
+                }
+                sawHealthSheet = true
+                let deny = app.buttons["Don’t Allow"].exists ? app.buttons["Don’t Allow"] : app.buttons["Don't Allow"]
+                if deny.exists { deny.tap() }
+            } else if notNow.exists {
+                notNow.tap()
+            } else if sawHealthSheet {
+                break
+            }
+            _ = healthSheet.waitForExistence(timeout: 1)
+        }
+        XCTAssertTrue(sawHealthSheet, "Toggling Health nutrition must show the system Health access sheet")
+        dismissICloudHealthSyncNotice(in: app)
+        XCTAssertTrue(nutrition.waitForExistence(timeout: 5))
+        XCTAssertEqual(nutrition.value as? String, "1")
 
         // Back from Apple Health to the Settings hub, where Close lives.
+        dismissICloudHealthSyncNotice(in: app, timeout: 6)
         let back = app.navigationBars.buttons.element(boundBy: 0)
-        if back.waitForExistence(timeout: 3), !app.buttons["Close"].exists { back.tap() }
         let close = app.buttons["Close"].firstMatch
-        XCTAssertTrue(close.waitForExistence(timeout: 4), "Missing Settings Close")
+        // A late system notice can absorb the first back tap; retry once.
+        for _ in 0..<2 where !close.exists {
+            if back.waitForExistence(timeout: 3) { back.tap() }
+            if close.waitForExistence(timeout: 4) { break }
+            dismissICloudHealthSyncNotice(in: app, timeout: 6)
+        }
+        if !close.exists {
+            let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            shot.name = "missing-settings-close"
+            shot.lifetime = .keepAlways
+            add(shot)
+        }
+        XCTAssertTrue(close.exists, "Missing Settings Close")
         close.tap()
 
         for tab in ["Today", "Vitals", "Journal", "Activity"] {
@@ -368,5 +413,27 @@ final class AtriaAppReviewDemoUITests: XCTestCase {
         XCTAssertTrue(button.waitForExistence(timeout: 8), "Missing tab \(title)")
         XCTAssertTrue(waitUntilHittable(button, timeout: 5), "Tab \(title) must be accessible")
         button.tap()
+    }
+
+    /// iPadOS can raise "iCloud Health Data Sync is Off" seconds after the
+    /// Health access sheet closes. It is system UI, not Atria's.
+    private func dismissICloudHealthSyncNotice(in app: XCUIApplication, timeout: TimeInterval = 15) {
+        let notNow = app.buttons["Not Now"]
+        let deadline = Date().addingTimeInterval(timeout)
+        var clearSince = Date()
+        while Date() < deadline {
+            if notNow.exists {
+                notNow.tap()
+                clearSince = Date()
+            } else if Date().timeIntervalSince(clearSince) >= 4 {
+                return
+            }
+            _ = notNow.waitForExistence(timeout: 1)
+        }
+    }
+
+    /// Form switches only flip when the trailing control itself is tapped.
+    private func tapSwitch(_ element: XCUIElement) {
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
     }
 }

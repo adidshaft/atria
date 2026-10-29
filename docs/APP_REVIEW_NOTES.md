@@ -54,9 +54,19 @@ physical Apple device pairing with and using a WHOOP 4.0 strap.
   the earlier pairing video does not establish the new GPS workflow.
 - **2.5.1:** Settings now identifies **Apple Health (HealthKit)** as its own
   destination. It explains optional Health reads and writes before permission
-  is requested. The explanation is visible in demo mode; authorization and
-  data operations are disabled while using sample data. Atria does not use
-  CareKit.
+  is requested. Atria does not use CareKit.
+- **2.1(a) Apple Health toggle (October 29):** two causes, both fixed.
+  (1) HealthKit capability detection read `embedded.mobileprovision`, which
+  App Store/TestFlight installs do not carry, so every Health request was a
+  silent no-op in the reviewed build. (2) Sample-data mode, which reviewers
+  use, also disabled the toggle and Export by design. Now: Settings → Apple
+  Health → "Use nutrition from Apple Health" shows the system Health access
+  sheet and reads nutrition (read-only); "Export to Apple Health" shows the
+  full Health access sheet. Sample heart rate, sleep and workouts are never
+  written to Health. Automatic post-workout exports never raise the sheet;
+  they write only after access was granted from Settings. On iPad, iPadOS
+  may follow the sheet with its own "iCloud Health Data Sync is Off" notice.
+  Verified on fresh installs on iPad Air (M3) and iPhone simulators.
 - **2.1:** the hardware-free demo action is pinned at the bottom of every setup
   step, including the first screen, and verified on an iPad simulator.
 - **1.4.1:** the App Store description and in-app information remind users to

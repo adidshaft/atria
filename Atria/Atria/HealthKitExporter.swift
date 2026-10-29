@@ -182,17 +182,49 @@ final class HealthKitExporter {
         Set(Self.nutritionReadIdentifiers.compactMap { HKQuantityType.quantityType(forIdentifier: $0) })
     }
 
-    /// App Review sample data must never touch HealthKit: no authorization
-    /// sheet, read, write, sync or audit. Every public entry point checks this
-    /// live, so leaving demo mode restores normal behaviour with no reset.
+    /// App Review sample data must never be written to Apple Health, and the
+    /// background sync/audit paths stay off. User-initiated permission requests
+    /// and read-only nutrition stay live in sample mode: App Review rejected
+    /// 1.0 (101) under 2.1(a) because the Health toggle did nothing there.
+    /// Every write entry point checks this live, so leaving demo mode restores
+    /// normal behaviour with no reset.
     static func appReviewDemoBlocks(_ route: String) -> Bool {
         guard AtriaAppReviewDemo.isActive else { return false }
         AtriaDebugLog("ATRIADBG healthkit_%@ status=suppressed reason=app_review_demo", route)
         return true
     }
 
+    /// Every type a real export can write or read, so the sample-mode request
+    /// shows the same Health access sheet a strap owner sees.
+    var exportAuthorizationTypes: (share: Set<HKSampleType>, read: Set<HKObjectType>) {
+        let share: Set<HKSampleType> = [heartRateType, restingHeartRateType, hrvType,
+                                        respiratoryRateType, activeEnergyType, vo2MaxType,
+                                        workoutType, sleepType]
+        var read: Set<HKObjectType> = [heartRateType, sleepType,
+                                       bloodPressureSystolicType, bloodPressureDiastolicType]
+        if let sleepingWristTemperatureType {
+            read.insert(sleepingWristTemperatureType)
+        }
+        return (share, read)
+    }
+
+    /// Sample-mode "Export to Apple Health": asks for the real permissions but
+    /// writes nothing, because demo records are not the user's measurements.
+    func requestExportAuthorizationWithoutWriting(completion: @escaping @MainActor (Bool) -> Void) {
+        guard Self.hasHealthKitEntitlement(), HKHealthStore.isHealthDataAvailable() else {
+            AtriaDebugLog("ATRIADBG healthkit_export_authorization status=unavailable")
+            completion(false)
+            return
+        }
+        let types = exportAuthorizationTypes
+        store.requestAuthorization(toShare: types.share, read: types.read) { granted, error in
+            AtriaDebugLog("ATRIADBG healthkit_export_authorization status=%@ writes=0 reason=app_review_demo",
+                          error == nil ? (granted ? "completed" : "denied") : "auth_error")
+            Task { @MainActor in completion(error == nil) }
+        }
+    }
+
     func requestNutritionReadAuthorizationIfEnabled(_ enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey)) {
-        guard !Self.appReviewDemoBlocks("nutrition_read") else { return }
         guard enabled else {
             AtriaDebugLog("ATRIADBG healthkit_nutrition_read status=disabled")
             return
@@ -226,10 +258,6 @@ final class HealthKitExporter {
                                calendar: Calendar = .current,
                                enabled: Bool = UserDefaults.standard.bool(forKey: AtriaNutritionContext.healthReadNutritionKey),
                                completion: @escaping (AtriaNutritionSummary?, Double?) -> Void) {
-        guard !Self.appReviewDemoBlocks("nutrition_query") else {
-            completion(nil, nil)
-            return
-        }
         guard enabled else {
             AtriaDebugLog("ATRIADBG healthkit_nutrition_query status=disabled")
             completion(nil, nil)
@@ -366,7 +394,8 @@ final class HealthKitExporter {
                 profile: AthleteProfile,
                 restingBaselineSamples: Int,
                 confirmedWorkouts: [UserConfirmedWorkout] = [],
-                confirmedSleeps: [UserConfirmedSleep] = []) {
+                confirmedSleeps: [UserConfirmedSleep] = [],
+                requestAuthorizationIfNeeded: Bool = true) {
         guard !Self.appReviewDemoBlocks("export") else { return }
         let diagnostics = HealthKitExporter.diagnostics(for: sessions,
                                                         rest: rest,
@@ -538,6 +567,13 @@ final class HealthKitExporter {
             return
         }
 
+        // Automatic post-workout exports write only after the user granted
+        // access from Settings; they never raise the Health sheet themselves.
+        guard requestAuthorizationIfNeeded else {
+            AtriaDebugLog("ATRIADBG healthkit_export status=authorization_not_requested reason=automatic sessions=%d",
+                          sessions.count)
+            return
+        }
         let requestID = UUID()
         pendingAuthorizationRequestID = requestID
         AtriaDebugLog("ATRIADBG healthkit_export status=authorization_requested sessions=%d hr_samples=%d workouts=%d hrv_samples=%d respiratory_rate_samples=%d sleeps=%d read_hr=1 read_sleep=%d",
@@ -2346,9 +2382,17 @@ final class HealthKitExporter {
         }
     }
 
-    nonisolated private static func hasHealthKitEntitlement() -> Bool {
-        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let data = try? Data(contentsOf: url),
+    /// Only a development/ad-hoc profile can prove the capability is missing.
+    /// App Store and TestFlight installs (and simulator builds) carry no
+    /// embedded.mobileprovision; treating that as "missing" made every Health
+    /// request a silent no-op for reviewers and customers (App Review 2.1(a),
+    /// 1.0 (101)). A truly missing entitlement still surfaces as HealthKit's
+    /// own requestAuthorization error, which every caller logs.
+    nonisolated static func hasHealthKitEntitlement(bundle: Bundle = .main) -> Bool {
+        guard let url = bundle.url(forResource: "embedded", withExtension: "mobileprovision") else {
+            return true
+        }
+        guard let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .isoLatin1) else {
             return false
         }
